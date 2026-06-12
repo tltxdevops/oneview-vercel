@@ -1,0 +1,5 @@
+# Redirects para SPA (Single Page Application)
+# Garante que todas as rotas sejam tratadas pelo index.html
+
+# Todas as requisições que não encontrarem um arquivo devem retornar o index.html
+/* /index.html 200
