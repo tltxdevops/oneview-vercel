@@ -19,7 +19,7 @@ function firstValue(record, keys) {
   }
   return undefined;
 }
-
+//teste
 function asText(value, fallback = "") {
   if (typeof value === "string" && value.trim()) return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
