@@ -7,6 +7,8 @@ import { getStoredTheme, setStoredTheme, getStoredRefreshInterval, setStoredRefr
 import { DataSource, fetchDataSources, requestDataSourceSync } from "@/lib/oneview-api";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { isDemoMode } from "@/lib/demo-mode";
+import { DEMO_READ_ONLY_MESSAGE } from "@/lib/demo-oneview-data";
 
 export default function SettingsPage() {
   const [theme, setTheme] = useState<Theme>(getStoredTheme());
@@ -108,12 +110,20 @@ export default function SettingsPage() {
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold">Data Sources Zabbix</h2>
-              <p className="text-sm text-muted-foreground">Solicitacoes manuais entram no outbox. Quem executa a sincronizacao e o Worker.</p>
+              <p className="text-sm text-muted-foreground">
+                {isDemoMode ? "Datasources exportados do PostgreSQL OneView. Nenhuma conexão externa é realizada." : "Solicitacoes manuais entram no outbox. Quem executa a sincronizacao e o Worker."}
+              </p>
             </div>
             <Button variant="outline" onClick={() => void loadDataSources()} disabled={loadingSources}>
               {loadingSources ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Atualizando...</> : "Atualizar lista"}
             </Button>
           </div>
+
+          {isDemoMode ? (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {DEMO_READ_ONLY_MESSAGE}
+            </div>
+          ) : null}
 
           {loadingSources ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
@@ -126,24 +136,28 @@ export default function SettingsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] text-sm">
+              <table className={isDemoMode ? "w-full min-w-[1050px] text-sm" : "w-full min-w-[1180px] text-sm"}>
                 <thead>
                   <tr className="border-b border-border/70 text-left text-xs uppercase text-muted-foreground">
-                    <th className="py-3 pr-3">Cliente</th>
-                    <th className="py-3 pr-3">Ambiente</th>
+                    <th className="py-3 pr-3">Datasource</th>
                     <th className="py-3 pr-3">Status</th>
-                    <th className="py-3 pr-3">Sync</th>
-                    <th className="py-3 pr-3">Ultimo sucesso</th>
-                    <th className="py-3 pr-3">Falhas</th>
-                    <th className="py-3 pr-3">Detalhe</th>
+                    <th className="py-3 pr-3">sync_enabled</th>
+                    <th className="py-3 pr-3">API URL</th>
+                    {!isDemoMode ? <th className="py-3 pr-3">has_token</th> : null}
+                    <th className="py-3 pr-3">Ultimo sync</th>
+                    <th className="py-3 pr-3">Alertas / Pendencia</th>
                     <th className="py-3 text-right">Acoes</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dataSources.map((source) => (
                     <tr key={source.id} className="border-b border-border/40 last:border-none">
-                      <td className="py-3 pr-3 font-medium">{source.name}</td>
-                      <td className="py-3 pr-3">{source.environment}{source.via_vpn ? " / VPN" : ""}</td>
+                      <td className="py-3 pr-3">
+                        <div className="flex flex-col">
+                          <span className="font-medium">{source.name}</span>
+                          <span className="font-mono text-xs text-muted-foreground">{source.id}</span>
+                        </div>
+                      </td>
                       <td className="py-3 pr-3">
                         <span className={`rounded px-2 py-1 text-xs font-medium ${
                           source.status === "active"
@@ -155,21 +169,24 @@ export default function SettingsPage() {
                           {source.status}
                         </span>
                       </td>
+                      <td className="py-3 pr-3 font-mono text-xs">{String(source.sync_enabled)}</td>
+                      <td className="max-w-[300px] break-all py-3 pr-3 font-mono text-xs">{source.api_url}</td>
+                      {!isDemoMode ? <td className="py-3 pr-3 font-mono text-xs">{source.has_token === undefined ? "-" : String(source.has_token)}</td> : null}
                       <td className="py-3 pr-3">
                         <div className="flex flex-col">
-                          <span>{source.sync_enabled ? "ativo" : "pausado"}</span>
-                          <span className="text-xs text-muted-foreground">{source.sync_interval_seconds}s</span>
+                          <span className={source.last_sync_status === "success" ? "font-medium text-success" : "font-medium text-error"}>{source.last_sync_status ?? "-"}</span>
                           <span className="text-xs text-muted-foreground">{source.last_sync_at ? new Date(source.last_sync_at).toLocaleString("pt-BR") : "-"}</span>
                         </div>
                       </td>
-                      <td className="py-3 pr-3 text-muted-foreground">
-                        {source.last_success_at ? new Date(source.last_success_at).toLocaleString("pt-BR") : "-"}
+                      <td className="max-w-[330px] py-3 pr-3">
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium">{source.alerts_count ?? "-"} alertas</span>
+                          <span className="text-xs text-muted-foreground">{source.pending_reason ?? source.last_error ?? source.last_sync_error ?? "Sem pendencias"}</span>
+                        </div>
                       </td>
-                      <td className="py-3 pr-3">{source.failure_count}</td>
-                      <td className="max-w-[300px] truncate py-3 pr-3 text-muted-foreground">{source.last_error ?? source.last_sync_error ?? "-"}</td>
                       <td className="py-3">
                         <div className="flex justify-end gap-2">
-                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={runningAction !== null || source.status !== "active" || !source.sync_enabled}>
+                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={isDemoMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={isDemoMode ? DEMO_READ_ONLY_MESSAGE : "Enfileirar sincronizacao"}>
                             {runningAction === `sync:${source.id}` ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                             Enfileirar sync
                           </Button>

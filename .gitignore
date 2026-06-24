@@ -12,3 +12,4 @@ pnpm-debug.log*
 *.local
 *.db
 *.sqlite
+dashboard/src/lib/oneview-real-snapshot.safe.json

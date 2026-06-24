@@ -1,5 +1,6 @@
 import { PublicClientApplication, type Configuration, type RedirectRequest, LogLevel } from "@azure/msal-browser";
 import { getRuntimeAppBasePath } from "@/lib/basePath";
+import { isDemoMode } from "@/lib/demo-mode";
 
 declare global {
   interface Window {
@@ -21,8 +22,8 @@ const hasCryptoSupport = !isBrowser
     })();
 const isSecureContext = !isBrowser ? true : window.isSecureContext !== false;
 
-const fallbackRedirectPath = `${baseUrl || ""}/sso/callback` || "/sso/callback";
-const fallbackLogoutPath = `${baseUrl || ""}/login` || "/login";
+const fallbackRedirectPath = `${baseUrl}/sso/callback`;
+const fallbackLogoutPath = `${baseUrl}/login`;
 const currentOriginRedirectUri =
   origin ? `${origin}${fallbackRedirectPath.startsWith("/") ? fallbackRedirectPath : `/${fallbackRedirectPath}`}` : fallbackRedirectPath || "/sso/callback";
 const currentOriginLogoutUri =
@@ -42,10 +43,10 @@ const clientId = runtimeConfig.VITE_AZURE_CLIENT_ID ?? import.meta.env.VITE_AZUR
 export const hasConfiguredClient = Boolean(clientId);
 export const hasConfiguredTenant = Boolean(tenantId);
 
-if (!hasConfiguredClient) {
+if (!isDemoMode && !hasConfiguredClient) {
   console.warn("[auth] VITE_AZURE_CLIENT_ID não definido. Configure o .env para habilitar o SSO.");
 }
-if (!hasConfiguredTenant) {
+if (!isDemoMode && !hasConfiguredTenant) {
   console.warn("[auth] VITE_AZURE_TENANT_ID não definido. Configure o .env para habilitar o SSO.");
 }
 if (isBrowser && !hasCryptoSupport) {

@@ -3,8 +3,10 @@ import settings from "@/lib/settings";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/button";
-import { RefreshCcw, Pause, Play } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { RefreshCcw, Pause, Play, BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isDemoMode } from "@/lib/demo-mode";
 
 interface AppLayoutProps {
   title?: string;
@@ -167,6 +169,15 @@ export function AppLayout({
                 </header>
               )
             )}
+
+            {isDemoMode ? (
+              <div>
+                <Badge className="border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700 hover:bg-emerald-50">
+                  <BadgeCheck className="mr-1.5 h-3.5 w-3.5" />
+                  Apresentação — snapshot real do banco OneView
+                </Badge>
+              </div>
+            ) : null}
 
             {children}
           </div>

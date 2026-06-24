@@ -1,5 +1,7 @@
 import { Alert, Client, Severity } from "@/types";
 import { isSsoEnvironmentReady, loginRequest, msalInstance } from "@/lib/auth/msal";
+import { isDemoMode } from "@/lib/demo-mode";
+import { DEMO_TOTAL_ALERTS, demoAlertMetrics, demoAlerts, demoDataSources } from "@/lib/demo-oneview-data";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -68,6 +70,9 @@ export interface DataSource {
   display_order: number;
   created_at: string;
   updated_at: string;
+  has_token?: boolean;
+  alerts_count?: number;
+  pending_reason?: string | null;
 }
 
 export interface OutboxResult {
@@ -169,10 +174,14 @@ export interface AlertMetrics {
 }
 
 export async function fetchDataSources(): Promise<DataSource[]> {
+  if (isDemoMode) return demoDataSources.map((source) => ({ ...source }));
   return fetchApi<DataSource[]>("/data-sources");
 }
 
 export async function requestDataSourceSync(id: string, reason = "manual_ui"): Promise<OutboxResult> {
+  if (isDemoMode) {
+    throw new Error("Apresentação por snapshot: o sync permanece exclusivamente no Worker separado.");
+  }
   return fetchApi<OutboxResult>(`/data-sources/${id}/request-sync`, {
     method: "POST",
     body: JSON.stringify({ reason }),
@@ -191,6 +200,36 @@ export interface FetchAlertsParams {
 }
 
 export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
+  if (isDemoMode) {
+    let items = [...demoAlerts];
+    if (params?.clientName) items = items.filter((item) => item.client_name === params.clientName);
+    if (params?.severity) items = items.filter((item) => item.severity === params.severity);
+    if (params?.statusInternal) items = items.filter((item) => item.status_internal === params.statusInternal);
+    if (typeof params?.acknowledged === "boolean") {
+      items = items.filter((item) =>
+        (item.acknowledged_internal || item.acknowledged_source) === params.acknowledged,
+      );
+    }
+    if (params?.host) {
+      const host = params.host.toLocaleLowerCase("pt-BR");
+      items = items.filter((item) => item.host_name?.toLocaleLowerCase("pt-BR").includes(host));
+    }
+    if (params?.service) items = items.filter((item) => item.service_name === params.service);
+
+    const hasFilter = Boolean(
+      params?.clientName ||
+      params?.severity ||
+      params?.statusInternal ||
+      typeof params?.acknowledged === "boolean" ||
+      params?.host ||
+      params?.service,
+    );
+    const total = hasFilter ? items.length : DEMO_TOTAL_ALERTS;
+    const offset = Math.max(params?.offset ?? 0, 0);
+    const limit = Math.max(params?.limit ?? total, 0);
+    return { items: items.slice(offset, offset + limit), total };
+  }
+
   const search = new URLSearchParams();
   if (params?.clientName) search.set("client_name", params.clientName);
   if (params?.severity) search.set("severity", params.severity);
@@ -206,14 +245,21 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
 }
 
 export async function fetchAlert(id: string): Promise<OneViewAlert> {
+  if (isDemoMode) {
+    const alert = demoAlerts.find((item) => item.id === id || item.source_event_id === id);
+    if (!alert) throw new Error(`Alerta não encontrado no snapshot OneView: ${id}`);
+    return alert;
+  }
   return fetchApi<OneViewAlert>(`/alerts/${id}`);
 }
 
 export async function fetchAlertMetrics(): Promise<AlertMetrics> {
+  if (isDemoMode) return demoAlertMetrics;
   return fetchApi<AlertMetrics>("/alerts/metrics");
 }
 
 export async function addAlertNote(id: string, message: string, operatorName = "oneview-ui"): Promise<AlertNoteResult> {
+  if (isDemoMode) throw new Error("Apresentação por snapshot: notas reais estão desabilitadas.");
   return fetchApi<AlertNoteResult>(`/alerts/${id}/notes`, {
     method: "POST",
     body: JSON.stringify({ message, operator_name: operatorName }),
@@ -221,6 +267,7 @@ export async function addAlertNote(id: string, message: string, operatorName = "
 }
 
 export async function assignAlert(id: string, operatorName = "oneview-ui"): Promise<AlertAssignmentResult> {
+  if (isDemoMode) throw new Error("Apresentação por snapshot: atribuições reais estão desabilitadas.");
   return fetchApi<AlertAssignmentResult>(`/alerts/${id}/assign`, {
     method: "POST",
     body: JSON.stringify({ operator_name: operatorName }),
@@ -233,6 +280,7 @@ export async function updateAlertStatus(
   message?: string,
   operatorName = "oneview-ui",
 ): Promise<AlertStatusResult> {
+  if (isDemoMode) throw new Error("Apresentação por snapshot: ACK real está desabilitado e não foi executado.");
   return fetchApi<AlertStatusResult>(`/alerts/${id}/status`, {
     method: "POST",
     body: JSON.stringify({ status, message, operator_name: operatorName }),
@@ -240,6 +288,8 @@ export async function updateAlertStatus(
 }
 
 export async function fetchAllAlerts(params?: Omit<FetchAlertsParams, "limit" | "offset">): Promise<AlertListResponse> {
+  if (isDemoMode) return fetchAlerts(params);
+
   const pageSize = 500;
   const firstPage = await fetchAlerts({ ...params, limit: pageSize, offset: 0 });
   const items = [...firstPage.items];

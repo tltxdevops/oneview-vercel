@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
   // HMR config: keep WS endpoint under the same base (e.g., /noc/@vite) so we don't need root (/) proxying
   // If VITE_DEV_SERVER_ORIGIN is provided (e.g., https://devops.teletex.com.br), use it to set host/protocol/port
   let hmr: Record<string, unknown> | undefined;
-  const hmrPath = `${normalizedBase || ""}/@vite` || "/@vite";
+  const hmrPath = `${normalizedBase}/@vite`;
   const origin = env.VITE_DEV_SERVER_ORIGIN?.trim();
   if (origin) {
     try {
@@ -41,6 +41,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     base,
+    envPrefix: ["VITE_", "NEXT_PUBLIC_"],
     server: {
       host: "::",
       port: 6565,

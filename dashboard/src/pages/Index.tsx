@@ -4,7 +4,7 @@ import { ClientSelect } from "@/components/certificados/ClientSelect";
 import { AlertsList } from "@/components/alerts/AlertsList";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Cloud, Database, Server, Wifi, Shield, Filter, Loader2 } from "lucide-react";
+import { Activity, AlertTriangle, Cloud, Database, RefreshCcw, Server, Wifi, Shield, Filter, Loader2 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link } from "react-router-dom";
@@ -19,6 +19,9 @@ import {
 } from "@/lib/oneview-api";
 import { Alert, Severity } from "@/types";
 import { toast } from "sonner";
+import { isDemoMode } from "@/lib/demo-mode";
+import { DEMO_SAMPLE_SIZE, DEMO_TOTAL_ALERTS, demoSyncLogs } from "@/lib/demo-oneview-data";
+import { cn } from "@/lib/utils";
 
 const LOCAL_REFRESH_MS = 30_000;
 const SEVERITY_PRIORITY: Record<string, number> = {
@@ -28,24 +31,20 @@ const SEVERITY_PRIORITY: Record<string, number> = {
   Info: 4,
 };
 
-function formatSyncDate(value: string | null): string {
-  if (!value) return "sem sync";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "sync registrado";
-  return date.toLocaleString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 function formatMetricDuration(seconds: number | undefined): string {
   const value = Math.max(Math.floor(seconds || 0), 0);
   if (value < 60) return `${value}s`;
   if (value < 3600) return `${Math.floor(value / 60)}m`;
   if (value < 86400) return `${Math.floor(value / 3600)}h`;
   return `${Math.floor(value / 86400)}d`;
+}
+
+function formatDataSourceName(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.length <= 3 ? word.toUpperCase() : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`)
+    .join(" ");
 }
 
 export default function Index() {
@@ -192,21 +191,50 @@ export default function Index() {
     const unacknowledged = selectedClient === "all"
       ? metrics?.unacknowledged_total ?? filteredAlerts.filter((alert) => alert.status === "Active").length
       : filteredAlerts.filter((alert) => alert.status === "Active").length;
-    const sourceCount = dataSources.filter((source) => source.status === "active").length;
+    const sourceCount = dataSources.filter((source) => source.sync_enabled && source.status === "active").length;
     const failedSources = dataSources.filter((source) => source.last_sync_status === "failed" || source.last_sync_status === "test_failed").length;
-    const testedSources = dataSources.filter((source) => Boolean(source.last_sync_status)).length;
-    const integrationStatus = testedSources === 0
-      ? `${sourceCount} Data Sources ativos`
-      : `${testedSources}/${sourceCount} testados, ${failedSources} falhas`;
+    const integrationStatus = `${sourceCount} fonte${sourceCount === 1 ? "" : "s"} ativa${sourceCount === 1 ? "" : "s"}${
+      failedSources > 0 ? `, ${failedSources} pendência${failedSources === 1 ? "" : "s"}` : ""
+    }`;
+
+    if (isDemoMode) {
+      const successfulSource = dataSources.find((source) => source.last_sync_status === "success");
+      const failedSource = dataSources.find((source) => source.last_sync_status === "failed" || source.status === "error");
+      const successfulLog = demoSyncLogs.find((log) => log.status === "success" && log.data_source_id === successfulSource?.id)
+        ?? demoSyncLogs.find((log) => log.status === "success");
+      const failedLog = demoSyncLogs.find((log) => log.status === "failed" && log.data_source_id === failedSource?.id)
+        ?? demoSyncLogs.find((log) => log.status === "failed");
+      const worker = successfulLog?.detail.replace(/^Worker\s+/i, "") || "não identificado";
+
+      return [
+        { title: "Alertas sincronizados", status: String(DEMO_TOTAL_ALERTS), icon: <Wifi className="h-5 w-5 text-primary" /> },
+        { title: "Registros no snapshot", status: String(DEMO_SAMPLE_SIZE), icon: <Database className="h-5 w-5 text-primary" /> },
+        { title: "Alertas ativos", status: String(activeTotal), icon: <Activity className="h-5 w-5 text-primary" /> },
+        { title: "Críticos / High", status: String(disasterTotal + highTotal), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
+        {
+          title: formatDataSourceName(successfulSource?.name ?? "Datasource ativo"),
+          status: successfulLog?.status ?? successfulSource?.last_sync_status ?? "sem sync",
+          icon: <RefreshCcw className="h-5 w-5 text-primary" />,
+        },
+        {
+          title: formatDataSourceName(failedSource?.name ?? "Datasource pendente"),
+          status: `pendência · ${failedLog?.status ?? failedSource?.last_sync_status ?? "registrada"}`,
+          icon: <Shield className="h-5 w-5 text-primary" />,
+        },
+        { title: "Worker", status: worker, icon: <Server className="h-5 w-5 text-primary" /> },
+      ].map((card) => ({ ...card, scope }));
+    }
 
     return [
-      { title: "Network", status: `${activeTotal} alertas ativos`, icon: <Wifi className="h-5 w-5 text-primary" /> },
-      { title: "Cloud", status: `${disasterTotal} desastres`, icon: <Cloud className="h-5 w-5 text-primary" /> },
+      { title: "Rede", status: `${activeTotal} alertas ativos`, icon: <Wifi className="h-5 w-5 text-primary" /> },
+      { title: "Nuvem", status: `${disasterTotal} desastres`, icon: <Cloud className="h-5 w-5 text-primary" /> },
       { title: "Servidores", status: `${highTotal} alta severidade`, icon: <Server className="h-5 w-5 text-primary" /> },
       { title: "Banco de dados", status: integrationStatus, icon: <Database className="h-5 w-5 text-primary" /> },
       {
         title: "Reconhecimento",
-        status: `${unacknowledged} pendentes, TMR ${formatMetricDuration(metrics?.avg_ack_time_seconds)}`,
+        status: isDemoMode
+          ? `${unacknowledged} pendentes, ACK desabilitado`
+          : `${unacknowledged} pendentes, TMR ${formatMetricDuration(metrics?.avg_ack_time_seconds)}`,
         icon: <Shield className="h-5 w-5 text-primary" />,
       },
     ].map((card) => ({ ...card, scope }));
@@ -226,10 +254,12 @@ export default function Index() {
       .sort((a, b) => a.display_order - b.display_order || a.name.localeCompare(b.name))
       .map((source) => ({
         ...source,
-        alertCount: alertCountByDataSource[source.id] ?? 0,
+        alertCount: source.alerts_count ?? alertCountByDataSource[source.id] ?? 0,
         syncLabel: source.last_sync_status === "success"
-          ? formatSyncDate(source.last_sync_at)
-          : source.last_sync_status || "nao testado",
+          ? `success · ${source.alerts_count ?? alertCountByDataSource[source.id] ?? 0} alertas`
+          : source.last_sync_status === "failed"
+            ? `failed · ${source.pending_reason ?? source.last_sync_error ?? source.last_error ?? "pendência registrada"}`
+            : source.last_sync_status || "não testado",
       }));
   }, [alertCountByDataSource, dataSources]);
 
@@ -246,7 +276,10 @@ export default function Index() {
       showRefreshMeta={false}
     >
       <div className="flex flex-col gap-6">
-        <section ref={healthRowRef} className="grid grid-cols-1 gap-3 sm:grid-cols-5">
+        <section
+          ref={healthRowRef}
+          className={cn("grid grid-cols-1 gap-3", isDemoMode ? "sm:grid-cols-2 xl:grid-cols-7" : "sm:grid-cols-5")}
+        >
           {healthCards.map((card) => (
             <Card key={card.title} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-3">
@@ -265,7 +298,9 @@ export default function Index() {
             <div>
               <h2 className="text-base font-semibold text-foreground">Clientes Zabbix internos</h2>
               <p className="text-sm text-muted-foreground">
-                {metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalizacao media: {formatMetricDuration(metrics?.avg_normalization_time_seconds)}.
+                {isDemoMode
+                  ? `${DEMO_TOTAL_ALERTS} alertas no banco OneView; ${DEMO_SAMPLE_SIZE} registros exportados no snapshot real.`
+                  : `${metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalização média: ${formatMetricDuration(metrics?.avg_normalization_time_seconds)}.`}
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={loadData} disabled={isLoading}>
@@ -281,13 +316,31 @@ export default function Index() {
                 title={source.last_sync_error || undefined}
               >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="truncate text-sm font-medium text-foreground">{source.name}</span>
+                  <span className="truncate text-sm font-medium text-foreground">{formatDataSourceName(source.name)}</span>
                   <span className="text-base font-semibold text-primary">{source.alertCount}</span>
                 </div>
                 <p className="truncate text-xs text-muted-foreground">{source.syncLabel}</p>
               </div>
             ))}
           </div>
+          {isDemoMode ? (
+            <div className="mt-4 border-t border-border/60 pt-4">
+              <h3 className="mb-2 text-sm font-semibold text-foreground">Últimas sincronizações</h3>
+              <div className="grid gap-2 lg:grid-cols-2">
+                {demoSyncLogs.map((log) => (
+                  <div key={log.id} className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-foreground">{formatDataSourceName(log.datasource)}</span>
+                      <span className={log.status === "success" ? "text-emerald-700" : "text-red-700"}>{log.status}</span>
+                      {log.fetched !== null ? <span>fetched={log.fetched}</span> : null}
+                      {log.upserted !== null ? <span>upserted={log.upserted}</span> : null}
+                    </div>
+                    <p className="mt-1 text-muted-foreground">{log.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </Card>
 
         <div className="flex flex-col gap-6 lg:flex-row lg:min-h-[360px]">
@@ -351,7 +404,7 @@ export default function Index() {
               </header>
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
                 <p className="font-medium text-foreground">Sem dados reais de chamados nesta etapa.</p>
-                <p>Os mocks foram removidos desta tela para testar somente dados persistidos do OneView.</p>
+                <p>Esta etapa usa somente dados persistidos e exportados do OneView.</p>
               </div>
             </div>
           </div>

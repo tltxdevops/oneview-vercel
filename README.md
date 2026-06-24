@@ -1,57 +1,58 @@
 # OneView Vercel
 
-Entregavel da camada Vercel do OneView.
+Camada visual React/Vite do OneView. Deploy executado a partir de `dashboard/`.
 
-## Onde roda
+## Apresentação por snapshot real
 
-- Vercel.
-- Deploy a partir de `dashboard/`.
-- Leitura do PostgreSQL somente via PgBouncer em `192.168.254.4:6432`.
-- Usuario esperado no banco: `oneview_app`.
-
-## Responsabilidade
-
-- Frontend React/Vite.
-- Vercel Functions em `dashboard/api`.
-- Endpoints HTTP leves para consultar dados prontos.
-- Health checks da API, banco, Worker, Data Sources e outbox.
-
-Esta entrega nao consulta Zabbix e nao executa sincronizacao.
-
-## Configuracao
-
-Configure as variaveis do arquivo `.env.example` no projeto da Vercel.
-
-Obrigatorio:
+Ative a apresentação isolada com:
 
 ```env
-DATABASE_URL=postgresql://oneview_app:<PASSWORD>@192.168.254.4:6432/oneview
-POSTGRES_SSL=false
-PG_POOL_MAX=5
+NEXT_PUBLIC_DEMO_MODE=true
 ```
 
-Nao inclua URLs administrativas, variaveis de Worker, variaveis de migration,
-segredos de origem ou credenciais Zabbix neste projeto.
+Nesse modo, a interface operacional original usa o snapshot exportado diretamente
+do PostgreSQL OneView depois do sync do Worker. Não chama Zabbix, não conecta ao
+PostgreSQL privado, não carrega configuração SSO e não executa ACK real. O arquivo
+local é `dashboard/.env.local` e permanece ignorado pelo Git.
 
-## Build e deploy
+O snapshot-fonte fica em `dashboard/src/lib/oneview-real-snapshot.json`. Antes de
+dev, teste ou build, uma allowlist gera `oneview-real-snapshot.safe.json`, sem
+payload bruto ou campos sensíveis. O dashboard mostra o total de 655, os 100
+alertas exportados e os quatro sync logs. `/alertas` mantém filtros locais;
+`/config` mostra os dois datasources em read-only.
+
+Para retornar ao fluxo real, defina `NEXT_PUBLIC_DEMO_MODE=false` ou remova a
+variável. O fluxo real existente e as Vercel Functions permanecem preservados.
+
+## Variáveis na Vercel
+
+Para a apresentação, configure somente `NEXT_PUBLIC_DEMO_MODE=true` em
+Production, Preview e Development. Não adicione token, senha, `DATABASE_URL` ou
+credencial Zabbix ao deployment da apresentação.
+
+Os secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID` e `VERCEL_PROJECT_ID` pertencem ao
+GitHub Actions, não ao frontend nem ao repositório.
+
+## Build e validação
 
 ```bash
 cd dashboard
 npm ci
+npm run test:demo
 npm run build
-vercel deploy --prod
 ```
 
-## Health checks
+`test:demo` valida o código da apresentação e executa o build de produção. O
+lint global (`npm run lint`) ainda contém débitos preexistentes do fluxo real.
 
-```bash
-curl https://<projeto-vercel>/api/health
-curl https://<projeto-vercel>/api/health/db
-curl https://<projeto-vercel>/api/health/worker
-curl https://<projeto-vercel>/api/health/outbox
-```
+## Deploy
 
-## Rollback
+O workflow `.github/workflows/deploy-vercel.yml` replica o fluxo do repositório
+principal: `vercel pull` → `vercel build` → `vercel deploy --prebuilt`. Push na
+`main` publica em produção; outras branches geram preview.
 
-Use o rollback nativo da Vercel para promover o deployment anterior. Nao altere
-Worker ou banco durante rollback da camada Vercel.
+## Fluxo real preservado
+
+Com o modo de apresentação desativado, permanecem disponíveis frontend, autenticação, Vercel
+Functions e health checks existentes. Essa configuração não deve consultar
+Zabbix diretamente; sincronização continua responsabilidade do Worker separado.

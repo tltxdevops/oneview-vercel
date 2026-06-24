@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { isDemoMode } from "@/lib/demo-mode";
 
 const navigation = [
   { name: "Home", href: "/", icon: Home },
@@ -18,9 +19,16 @@ const navigation = [
   { name: "Configurações", href: "/config", icon: Settings },
 ];
 
+const DEMO_USER = {
+  name: "OneView Snapshot",
+  email: "apresentacao@oneview.local",
+  photo: undefined,
+} as const;
+
 export function Sidebar() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const { user, logout } = useAuth();
+  const displayUser = user ?? (isDemoMode ? DEMO_USER : null);
 
   useEffect(() => {
     const isDark = document.documentElement.classList.contains("dark");
@@ -34,8 +42,8 @@ export function Sidebar() {
   };
 
   const initials = useMemo(() => {
-    if (!user?.name && !user?.email) return "--";
-    const source = user?.name || user?.email || "";
+    if (!displayUser?.name && !displayUser?.email) return "--";
+    const source = displayUser?.name || displayUser?.email || "";
     const letters = source
       .split(" ")
       .map((part) => part.trim()[0])
@@ -43,7 +51,7 @@ export function Sidebar() {
       .slice(0, 2)
       .join("");
     return letters.toUpperCase();
-  }, [user?.name, user?.email]);
+  }, [displayUser?.name, displayUser?.email]);
 
   return (
     <aside className="group fixed left-0 top-0 z-40 h-screen w-20 hover:w-64 transition-[width] duration-200 ease-linear bg-sidebar border-r border-sidebar-border flex flex-col overflow-hidden">
@@ -128,28 +136,28 @@ export function Sidebar() {
           <Tooltip>
               <TooltipTrigger asChild>
               <button
-                onClick={logout}
+                onClick={isDemoMode ? undefined : logout}
                 className={cn(
                   "relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/10 text-sm font-semibold uppercase text-white transition hover:opacity-90",
-                  !user && "opacity-70 cursor-not-allowed"
+                  !displayUser && "opacity-70 cursor-not-allowed"
                 )}
-                aria-label={user ? `Sair (${user.email})` : "Usuário não autenticado"}
-                disabled={!user}
+                aria-label={displayUser ? `Perfil (${displayUser.email})` : "Usuário não autenticado"}
+                disabled={!displayUser}
               >
-                {user?.photo ? (
-                  <img src={user.photo} alt={user.name} className="h-full w-full object-cover" />
+                {displayUser?.photo ? (
+                  <img src={displayUser.photo} alt={displayUser.name} className="h-full w-full object-cover" />
                 ) : (
                   <span>{initials}</span>
                 )}
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" className="group-hover:hidden">
-              {user ? (
+              {displayUser ? (
                 <div className="space-y-1">
-                  <p className="text-sm font-semibold">{user.name}</p>
-                  <p className="text-xs text-muted-foreground/80">{user.email}</p>
+                  <p className="text-sm font-semibold">{displayUser.name}</p>
+                  <p className="text-xs text-muted-foreground/80">{displayUser.email}</p>
                   <button
-                    onClick={logout}
+                    onClick={isDemoMode ? undefined : logout}
                     className="mt-1 text-xs font-medium text-primary hover:underline"
                   >
                     Sair
@@ -162,12 +170,12 @@ export function Sidebar() {
           </Tooltip>
 
           <div className="hidden min-w-0 flex-1 flex-col group-hover:flex text-white/90">
-            <span className="text-sm font-semibold truncate">{user?.name ?? "Usuário"}</span>
-            <span className="text-xs text-white/70 truncate">{user?.email ?? "sso@teletex.com"}</span>
+            <span className="text-sm font-semibold truncate">{displayUser?.name ?? "Usuário"}</span>
+            <span className="text-xs text-white/70 truncate">{displayUser?.email ?? "sso@teletex.com"}</span>
             <button
               type="button"
-              onClick={logout}
-              disabled={!user}
+              onClick={isDemoMode ? undefined : logout}
+              disabled={!displayUser || isDemoMode}
               className="mt-2 w-fit text-xs font-medium text-white/80 hover:text-white underline-offset-2 hover:underline disabled:text-white/40"
             >
               Sair
