@@ -13,6 +13,36 @@ const origin = typeof window !== "undefined" ? window.location.origin : "";
 const isLocalhost = typeof window !== "undefined" && /^https?:\/\/(localhost|127\.0\.0\.1)/.test(window.location.origin);
 const runtimeConfig = typeof window !== "undefined" ? window.__APP_CONFIG__ ?? {} : {};
 
+const PLACEHOLDER_PATTERNS = [
+  /^0{8}-0{4}-0{4}-0{4}-0{12}$/i,
+  /[<>]/,
+  /application\s*\(client\)\s*id/i,
+  /directory\s*\(tenant\)\s*id/i,
+  /seu[_\s-]*(tenant|client|dominio|domínio|guid|id)/i,
+  /(tenant|client)[_\s-]*guid/i,
+  /^undefined$/i,
+  /^null$/i,
+];
+
+function cleanAuthValue(value: string | undefined) {
+  const normalized = value?.trim() ?? "";
+  if (!normalized) return "";
+  if (PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(normalized))) return "";
+  return normalized;
+}
+
+function readAuthConfig(...keys: string[]) {
+  for (const key of keys) {
+    const cleanedRuntimeValue = cleanAuthValue(runtimeConfig[key]);
+    if (cleanedRuntimeValue) return cleanedRuntimeValue;
+
+    const cleanedBuildValue = cleanAuthValue(import.meta.env[key]);
+    if (cleanedBuildValue) return cleanedBuildValue;
+  }
+
+  return "";
+}
+
 const isBrowser = typeof window !== "undefined";
 const hasCryptoSupport = !isBrowser
   ? true
@@ -29,16 +59,31 @@ const currentOriginRedirectUri =
 const currentOriginLogoutUri =
   origin ? `${origin}${fallbackLogoutPath.startsWith("/") ? fallbackLogoutPath : `/${fallbackLogoutPath}`}` : fallbackLogoutPath || "/login";
 
+const configuredRedirectUri = readAuthConfig("VITE_AZURE_REDIRECT_URI", "MICROSOFT_REDIRECT_URI");
+const configuredLogoutUri = readAuthConfig("VITE_AZURE_POST_LOGOUT_URI", "MICROSOFT_POST_LOGOUT_URI");
+const localRedirectUri = cleanAuthValue(import.meta.env.VITE_AZURE_REDIRECT_URI_LOCAL);
+const localLogoutUri = cleanAuthValue(import.meta.env.VITE_AZURE_POST_LOGOUT_URI_LOCAL);
+
 const resolvedRedirectUri =
-  (isLocalhost && import.meta.env.VITE_AZURE_REDIRECT_URI_LOCAL) ? import.meta.env.VITE_AZURE_REDIRECT_URI_LOCAL :
-  currentOriginRedirectUri;
+  (isLocalhost && localRedirectUri) ? localRedirectUri :
+  configuredRedirectUri || currentOriginRedirectUri;
 
 const resolvedLogoutUri =
-  (isLocalhost && import.meta.env.VITE_AZURE_POST_LOGOUT_URI_LOCAL) ? import.meta.env.VITE_AZURE_POST_LOGOUT_URI_LOCAL :
-  currentOriginLogoutUri;
+  (isLocalhost && localLogoutUri) ? localLogoutUri :
+  configuredLogoutUri || currentOriginLogoutUri;
 
-const tenantId = runtimeConfig.VITE_AZURE_TENANT_ID ?? import.meta.env.VITE_AZURE_TENANT_ID ?? "";
-const clientId = runtimeConfig.VITE_AZURE_CLIENT_ID ?? import.meta.env.VITE_AZURE_CLIENT_ID ?? "";
+const tenantId = readAuthConfig(
+  "VITE_AZURE_TENANT_ID",
+  "AZURE_TENANT_ID",
+  "MICROSOFT_TENANT_ID",
+  "NEXT_PUBLIC_MICROSOFT_TENANT_ID",
+);
+const clientId = readAuthConfig(
+  "VITE_AZURE_CLIENT_ID",
+  "AZURE_CLIENT_ID",
+  "MICROSOFT_CLIENT_ID",
+  "NEXT_PUBLIC_MICROSOFT_CLIENT_ID",
+);
 
 export const hasConfiguredClient = Boolean(clientId);
 export const hasConfiguredTenant = Boolean(tenantId);
@@ -57,15 +102,14 @@ if (isBrowser && !isSecureContext) {
 }
 
 const authority =
-  runtimeConfig.VITE_AZURE_AUTHORITY ??
-  import.meta.env.VITE_AZURE_AUTHORITY ??
+  readAuthConfig("VITE_AZURE_AUTHORITY", "MICROSOFT_AUTHORITY") ||
   (tenantId ? `https://login.microsoftonline.com/${tenantId}` : "https://login.microsoftonline.com/common");
 
-const scopesEnv = runtimeConfig.VITE_AZURE_SCOPES ?? import.meta.env.VITE_AZURE_SCOPES ?? "openid profile email offline_access User.Read";
+const scopesEnv = readAuthConfig("VITE_AZURE_SCOPES", "MICROSOFT_SCOPE") || "openid profile email offline_access User.Read";
 const scopes = scopesEnv.split(/[,\s]+/).filter(Boolean);
 
 const logLevelFromEnv = (() => {
-  const level = (runtimeConfig.VITE_MSAL_LOG_LEVEL ?? import.meta.env.VITE_MSAL_LOG_LEVEL ?? "warning").toString().trim().toLowerCase();
+  const level = (readAuthConfig("VITE_MSAL_LOG_LEVEL") || "warning").toString().trim().toLowerCase();
   switch (level) {
     case "verbose":
     case "trace":

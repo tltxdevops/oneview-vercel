@@ -27,6 +27,7 @@ const App = () => (
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/sso/callback" element={<SsoCallback />} />
+          <Route path="/auth/microsoft/callback" element={<SsoCallback />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<Index />} />
             <Route path="/alertas" element={<AlertsPage />} />
