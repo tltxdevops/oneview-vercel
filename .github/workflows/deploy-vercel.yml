@@ -10,5 +10,5 @@ jobs:
     uses: tltxdevops/org-actions/.github/workflows/vercel-reusable.yml@main
     with:
       production_branch: main
-      working_directory: .
+      working_directory: dashboard
     secrets: inherit
