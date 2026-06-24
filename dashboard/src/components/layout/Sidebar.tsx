@@ -20,8 +20,8 @@ const navigation = [
 ];
 
 const DEMO_USER = {
-  name: "OneView Snapshot",
-  email: "apresentacao@oneview.local",
+  name: "OneView",
+  email: "snapshot@oneview.local",
   photo: undefined,
 } as const;
 

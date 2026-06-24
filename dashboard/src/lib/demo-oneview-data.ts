@@ -26,7 +26,7 @@ export const SNAPSHOT_GENERATED_AT = snapshot.generated_at;
 export const DEMO_TOTAL_ALERTS = Math.max(0, Number(snapshot.alerts_count) || snapshot.alerts.length);
 export const DEMO_SAMPLE_SIZE = snapshot.alerts.length;
 export const DEMO_READ_ONLY_MESSAGE =
-  "Ações desabilitadas na apresentação. O snapshot real do banco OneView é somente leitura e nenhum ACK real foi executado.";
+  "Ações operacionais desabilitadas neste modo de leitura. Nenhum ACK real foi executado.";
 
 export const demoDataSources: DataSource[] = snapshot.data_sources.map((source) => ({ ...source }));
 export const demoAlerts: OneViewAlert[] = snapshot.alerts.map((alert) => ({

@@ -208,7 +208,7 @@ export default function Index() {
 
       return [
         { title: "Alertas sincronizados", status: String(DEMO_TOTAL_ALERTS), icon: <Wifi className="h-5 w-5 text-primary" /> },
-        { title: "Registros no snapshot", status: String(DEMO_SAMPLE_SIZE), icon: <Database className="h-5 w-5 text-primary" /> },
+        { title: "Registros exportados", status: String(DEMO_SAMPLE_SIZE), icon: <Database className="h-5 w-5 text-primary" /> },
         { title: "Alertas ativos", status: String(activeTotal), icon: <Activity className="h-5 w-5 text-primary" /> },
         { title: "Críticos / High", status: String(disasterTotal + highTotal), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
         {
@@ -299,7 +299,7 @@ export default function Index() {
               <h2 className="text-base font-semibold text-foreground">Clientes Zabbix internos</h2>
               <p className="text-sm text-muted-foreground">
                 {isDemoMode
-                  ? `${DEMO_TOTAL_ALERTS} alertas no banco OneView; ${DEMO_SAMPLE_SIZE} registros exportados no snapshot real.`
+                  ? `${DEMO_TOTAL_ALERTS} alertas sincronizados no banco OneView; ${DEMO_SAMPLE_SIZE} registros exportados após sincronização do Worker.`
                   : `${metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalização média: ${formatMetricDuration(metrics?.avg_normalization_time_seconds)}.`}
               </p>
             </div>

@@ -111,7 +111,7 @@ export default function SettingsPage() {
             <div>
               <h2 className="text-lg font-semibold">Data Sources Zabbix</h2>
               <p className="text-sm text-muted-foreground">
-                {isDemoMode ? "Datasources exportados do PostgreSQL OneView. Nenhuma conexão externa é realizada." : "Solicitacoes manuais entram no outbox. Quem executa a sincronizacao e o Worker."}
+                {isDemoMode ? "Datasources reais exportados do banco OneView. Nenhuma conexão externa é realizada neste modo de leitura." : "Solicitacoes manuais entram no outbox. Quem executa a sincronizacao e o Worker."}
               </p>
             </div>
             <Button variant="outline" onClick={() => void loadDataSources()} disabled={loadingSources}>

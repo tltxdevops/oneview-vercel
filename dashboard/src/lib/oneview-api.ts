@@ -180,7 +180,7 @@ export async function fetchDataSources(): Promise<DataSource[]> {
 
 export async function requestDataSourceSync(id: string, reason = "manual_ui"): Promise<OutboxResult> {
   if (isDemoMode) {
-    throw new Error("Apresentação por snapshot: o sync permanece exclusivamente no Worker separado.");
+    throw new Error("Modo leitura por snapshot real: o sync permanece exclusivamente no Worker separado.");
   }
   return fetchApi<OutboxResult>(`/data-sources/${id}/request-sync`, {
     method: "POST",
@@ -259,7 +259,7 @@ export async function fetchAlertMetrics(): Promise<AlertMetrics> {
 }
 
 export async function addAlertNote(id: string, message: string, operatorName = "oneview-ui"): Promise<AlertNoteResult> {
-  if (isDemoMode) throw new Error("Apresentação por snapshot: notas reais estão desabilitadas.");
+  if (isDemoMode) throw new Error("Modo leitura por snapshot real: notas reais estão desabilitadas.");
   return fetchApi<AlertNoteResult>(`/alerts/${id}/notes`, {
     method: "POST",
     body: JSON.stringify({ message, operator_name: operatorName }),
@@ -267,7 +267,7 @@ export async function addAlertNote(id: string, message: string, operatorName = "
 }
 
 export async function assignAlert(id: string, operatorName = "oneview-ui"): Promise<AlertAssignmentResult> {
-  if (isDemoMode) throw new Error("Apresentação por snapshot: atribuições reais estão desabilitadas.");
+  if (isDemoMode) throw new Error("Modo leitura por snapshot real: atribuições reais estão desabilitadas.");
   return fetchApi<AlertAssignmentResult>(`/alerts/${id}/assign`, {
     method: "POST",
     body: JSON.stringify({ operator_name: operatorName }),
@@ -280,7 +280,7 @@ export async function updateAlertStatus(
   message?: string,
   operatorName = "oneview-ui",
 ): Promise<AlertStatusResult> {
-  if (isDemoMode) throw new Error("Apresentação por snapshot: ACK real está desabilitado e não foi executado.");
+  if (isDemoMode) throw new Error("Modo leitura por snapshot real: ACK real está desabilitado e não foi executado.");
   return fetchApi<AlertStatusResult>(`/alerts/${id}/status`, {
     method: "POST",
     body: JSON.stringify({ status, message, operator_name: operatorName }),

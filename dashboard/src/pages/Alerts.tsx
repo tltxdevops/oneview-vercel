@@ -270,8 +270,8 @@ export default function AlertsPage() {
     if (isDemoMode) {
       return [
         { title: "Alertas sincronizados", value: totalAlerts, description: "Total validado", icon: <Activity className="h-5 w-5" />, accent: "bg-primary/10 text-primary" },
-        { title: "Registros no snapshot", value: total, description: `de ${totalAlerts} sincronizados`, icon: <Search className="h-5 w-5" />, accent: "bg-info/10 text-info" },
-        { title: "Ativos", value: filteredEvents.filter((event) => event.sourceStatus === "active").length, description: "No snapshot local", icon: <AlertTriangle className="h-5 w-5" />, accent: "bg-error/10 text-error" },
+        { title: "Registros exportados", value: total, description: `de ${totalAlerts} sincronizados`, icon: <Search className="h-5 w-5" />, accent: "bg-info/10 text-info" },
+        { title: "Ativos", value: filteredEvents.filter((event) => event.sourceStatus === "active").length, description: "Sincronizados no OneView", icon: <AlertTriangle className="h-5 w-5" />, accent: "bg-error/10 text-error" },
         { title: "Críticos / High", value: highSeverity, description: "Z5 + Z4", icon: <Ticket className="h-5 w-5" />, accent: "bg-warning/10 text-warning" },
       ];
     }
@@ -357,8 +357,8 @@ export default function AlertsPage() {
 
   return (
     <AppLayout
-      title={isDemoMode ? "Alertas do snapshot OneView" : "Alertas"}
-      description={isDemoMode ? "Registros exportados diretamente do PostgreSQL OneView após o sync do Worker." : "Eventos Zabbix persistidos no OneView."}
+      title={isDemoMode ? "Alertas sincronizados" : "Alertas"}
+      description={isDemoMode ? "Dados reais exportados após sincronização do Worker." : "Eventos Zabbix persistidos no OneView."}
       enableAutoRefresh={false}
       showRefreshMeta={false}
       contentClassName={isDemoMode ? "gap-3 p-4" : undefined}
@@ -531,7 +531,7 @@ export default function AlertsPage() {
         <div className={cn("flex flex-col gap-2 border-b border-border/60", isDemoMode ? "px-4 py-3" : "px-6 py-5")}>
           <div className="flex flex-col gap-1 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">{isDemoMode ? "Alertas do snapshot real" : "Eventos retornados"}</h2>
+              <h2 className="text-lg font-semibold">{isDemoMode ? "Alertas sincronizados" : "Eventos retornados"}</h2>
               <p className={cn(isDemoMode ? "text-sm font-semibold text-foreground" : "text-xs text-muted-foreground")}>
                 {isDemoMode
                   ? `Exibindo ${filteredEvents.length} de ${totalAlerts} alertas sincronizados`
@@ -540,7 +540,7 @@ export default function AlertsPage() {
             </div>
             <div className="flex flex-col items-start gap-1 text-xs text-muted-foreground lg:items-end">
               {isDemoMode ? (
-                <span>Datasource: {selectedClientSummary} · snapshot local com {filteredEvents.length} alertas</span>
+                <span>Datasource: {selectedClientSummary} · exportação real com {filteredEvents.length} alertas</span>
               ) : (
                 <>
                   <span>Clientes: {selectedClientSummary}</span>
