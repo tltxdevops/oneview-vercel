@@ -33,7 +33,63 @@ type AuthContextValue = {
   acquireToken: (scopes?: string[]) => Promise<string | null>;
 };
 
+type GraphProfile = {
+  id?: unknown;
+  mail?: unknown;
+  userPrincipalName?: unknown;
+  displayName?: unknown;
+  givenName?: unknown;
+  surname?: unknown;
+  jobTitle?: unknown;
+};
+
 const STORAGE_KEY = "oneview-auth-user";
+const MSAL_TIMEOUT_MS = 15_000;
+const GRAPH_PROFILE_TIMEOUT_MS = 8_000;
+const GRAPH_PHOTO_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout>;
+
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} excedeu ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function getErrorDetails(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+
+  if (typeof error === "object" && error !== null) {
+    const record = error as Record<string, unknown>;
+    return {
+      name: asString(record.name),
+      message: asString(record.message) || "Falha ao inicializar autenticação SSO",
+      stack: asString(record.stack),
+    };
+  }
+
+  return {
+    name: undefined,
+    message: String(error || "Falha ao inicializar autenticação SSO"),
+    stack: undefined,
+  };
+}
 
 function readStoredUser(): AuthUser | null {
   if (typeof window === "undefined") return null;
@@ -113,28 +169,28 @@ async function fetchGraphPhoto(token: string): Promise<string | undefined> {
   return `data:${contentType};base64,${base64}`;
 }
 
-function normalizeUser(account: AccountInfo, profile?: any, photo?: string): AuthUser {
+function normalizeUser(account: AccountInfo, profile?: GraphProfile, photo?: string): AuthUser {
   const claims = account.idTokenClaims ?? {};
   const emailFromClaims = (claims.email as string) || (claims.preferred_username as string) || account.username;
-  const profileMail = typeof profile?.mail === "string" ? profile.mail : undefined;
-  const userPrincipal = typeof profile?.userPrincipalName === "string" ? profile.userPrincipalName : undefined;
+  const profileMail = asString(profile?.mail);
+  const userPrincipal = asString(profile?.userPrincipalName);
 
   const email = emailFromClaims || profileMail || userPrincipal || "";
   const displayName =
-    (typeof profile?.displayName === "string" && profile.displayName) ||
+    asString(profile?.displayName) ||
     (typeof claims.name === "string" && claims.name) ||
     account.name ||
     email ||
     "Usuário";
 
   return {
-    id: (profile?.id as string) || account.localAccountId || null,
+    id: asString(profile?.id) || account.localAccountId || null,
     name: displayName,
     email,
-    firstName: typeof profile?.givenName === "string" ? profile.givenName : (claims.given_name as string | undefined),
-    lastName: typeof profile?.surname === "string" ? profile.surname : (claims.family_name as string | undefined),
+    firstName: asString(profile?.givenName) || (claims.given_name as string | undefined),
+    lastName: asString(profile?.surname) || (claims.family_name as string | undefined),
     username: userPrincipal || account.username,
-    jobTitle: typeof profile?.jobTitle === "string" ? profile.jobTitle : undefined,
+    jobTitle: asString(profile?.jobTitle),
     photo,
   };
 }
@@ -183,17 +239,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     try {
-      const silentResult = await msalInstance.acquireTokenSilent({
-        ...loginRequest,
-        account,
-      });
+      const silentResult = await withTimeout(
+        msalInstance.acquireTokenSilent({
+          ...loginRequest,
+          account,
+        }),
+        MSAL_TIMEOUT_MS,
+        "acquireTokenSilent",
+      );
 
       const [profile, photo] = await Promise.all([
-        fetchGraphProfile(silentResult.accessToken).catch((graphError) => {
+        withTimeout(fetchGraphProfile(silentResult.accessToken), GRAPH_PROFILE_TIMEOUT_MS, "Graph /me").catch((graphError) => {
           console.warn("[auth] Falha ao carregar perfil do Graph", graphError);
           return undefined;
         }),
-        fetchGraphPhoto(silentResult.accessToken).catch(() => undefined),
+        withTimeout(fetchGraphPhoto(silentResult.accessToken), GRAPH_PHOTO_TIMEOUT_MS, "Graph photo").catch(() => undefined),
       ]);
 
       if (!isMountedRef.current) return;
@@ -221,7 +281,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setIsLoading(false);
       }
     }
-  }, [environmentError, isSsoEnvironmentReady]);
+  }, [environmentError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -239,11 +299,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
       try {
         console.log("[auth] Inicializando MSAL...");
-        await msalInstance.initialize();
+        await withTimeout(msalInstance.initialize(), MSAL_TIMEOUT_MS, "MSAL initialize");
         console.log("[auth] MSAL inicializado com sucesso");
         
         console.log("[auth] Processando redirect promise...");
-        const redirectResult = await msalInstance.handleRedirectPromise();
+        const redirectResult = await withTimeout(msalInstance.handleRedirectPromise(), MSAL_TIMEOUT_MS, "MSAL handleRedirectPromise");
         console.log("[auth] Redirect result:", redirectResult);
 
         if (cancelled || !isMountedRef.current) {
@@ -267,15 +327,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         console.log("[auth] Carregando usuário...");
         await loadUser();
       } catch (err) {
+        const details = getErrorDetails(err);
         console.error("[auth] Erro inicializando MSAL - Detalhes completos:", err);
         console.error("[auth] Tipo do erro:", typeof err);
-        console.error("[auth] Nome do erro:", (err as any)?.name);
-        console.error("[auth] Mensagem do erro:", (err as any)?.message);
-        console.error("[auth] Stack:", (err as any)?.stack);
+        console.error("[auth] Nome do erro:", details.name);
+        console.error("[auth] Mensagem do erro:", details.message);
+        console.error("[auth] Stack:", details.stack);
         if (!cancelled && isMountedRef.current) {
           setIsLoading(false);
-          const errorMsg = (err as any)?.message || "Falha ao inicializar autenticação SSO";
-          setError(`Erro SSO: ${errorMsg}`);
+          setError(`Erro SSO: ${details.message}`);
         }
       }
     };
@@ -285,7 +345,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return () => {
       cancelled = true;
     };
-  }, [loadUser, environmentError, isSsoEnvironmentReady]);
+  }, [loadUser, environmentError]);
 
   const login = useCallback(async () => {
     if (!msalInstance || !isSsoEnvironmentReady) {
@@ -294,7 +354,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
     setError(null);
     await msalInstance.loginRedirect(loginRequest);
-  }, [environmentError, isSsoEnvironmentReady]);
+  }, [environmentError]);
 
   const logout = useCallback(async () => {
     // Limpa apenas a sessão local da dashboard, sem fazer logout da Microsoft
@@ -313,7 +373,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     
     // Redireciona para a página de login sem fazer logout da Microsoft
     window.location.href = "/login";
-  }, [isSsoEnvironmentReady]);
+  }, []);
 
   const refreshUser = useCallback(async () => {
     setIsLoading(true);
@@ -331,16 +391,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       const scopes = additionalScopes && additionalScopes.length > 0 ? additionalScopes : loginRequest.scopes;
-      const result = await msalInstance.acquireTokenSilent({
-        scopes,
-        account,
-      });
+      const result = await withTimeout(
+        msalInstance.acquireTokenSilent({
+          scopes,
+          account,
+        }),
+        MSAL_TIMEOUT_MS,
+        "acquireTokenSilent",
+      );
       return result.accessToken;
     } catch (err) {
       console.error("[auth] Erro ao adquirir token", err);
       return null;
     }
-  }, [isSsoEnvironmentReady]);
+  }, []);
 
   const value = useMemo<AuthContextValue>(() => ({
     user, 

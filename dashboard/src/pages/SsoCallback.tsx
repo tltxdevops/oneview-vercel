@@ -13,6 +13,21 @@ const SsoCallback = () => {
   const state = (location.state as LocationState) || {};
 
   useEffect(() => {
+    if (!isLoading) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      navigate("/login", {
+        replace: true,
+        state: {
+          authError: "Tempo excedido ao concluir o SSO. Tente entrar novamente.",
+        },
+      });
+    }, 20_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isLoading, navigate]);
+
+  useEffect(() => {
     if (isLoading) return;
 
     if (user) {

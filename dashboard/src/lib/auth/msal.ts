@@ -155,6 +155,7 @@ const msalConfig: Configuration = {
     authority,
     redirectUri: resolvedRedirectUri,
     postLogoutRedirectUri: resolvedLogoutUri,
+    navigateToLoginRequestUrl: false,
   },
   cache: {
     cacheLocation: "localStorage",
