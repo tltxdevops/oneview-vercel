@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-//teste
+
 const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = resolve(dashboardRoot, "src/lib/oneview-real-snapshot.json");
 const outputPath = resolve(dashboardRoot, "src/lib/oneview-real-snapshot.safe.json");
