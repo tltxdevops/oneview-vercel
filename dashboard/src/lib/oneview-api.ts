@@ -112,6 +112,7 @@ export interface AlertStatusResult {
 export interface OneViewAlert {
   id: string;
   data_source_id: string;
+  datasource_name?: string;
   client_name: string;
   source_type: string;
   source_event_id: string;
@@ -129,6 +130,7 @@ export interface OneViewAlert {
   acknowledged_source: boolean;
   acknowledged_internal: boolean;
   first_seen_at: string;
+  started_at?: string;
   last_seen_at: string;
   resolved_at: string | null;
   duration_seconds: number;

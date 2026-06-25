@@ -42,14 +42,16 @@ import {
 } from "@/lib/oneview-api";
 import { toast } from "sonner";
 import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import { DEMO_READ_ONLY_MESSAGE, DEMO_TOTAL_ALERTS } from "@/lib/demo-oneview-data";
+import { DEMO_READ_ONLY_MESSAGE, DEMO_TOTAL_ALERTS, SNAPSHOT_GENERATED_AT } from "@/lib/demo-oneview-data";
 import {
+  Archive,
   Activity,
   AlertTriangle,
   ArrowUpDown,
   BellOff,
   CalendarRange,
   Check,
+  Clock3,
   Eye,
   Loader2,
   MessageSquare,
@@ -60,6 +62,7 @@ import {
 
 type AckFilter = "all" | "acknowledged" | "unacknowledged";
 type StatusFilter = "all" | "active" | "resolved";
+type OperationalFilter = "all" | "recent" | "watching" | "historical" | "unhandled" | "critical";
 type SortField = "clock" | "severity" | "eventid" | "name";
 type SeverityLevelValue = "0" | "1" | "2" | "3" | "4" | "5";
 
@@ -76,6 +79,7 @@ interface AlertEvent {
   sourceStatus: "active" | "resolved";
   statusInternal: string;
   durationLabel: string;
+  startedAt: string;
   lastSeen: string;
   clientName: string;
   clientId: string;
@@ -106,7 +110,8 @@ const severityNumberByApi: Record<string, string> = {
 };
 
 const toEvent = (alert: OneViewAlert): AlertEvent => {
-  const firstSeen = new Date(alert.first_seen_at);
+  const startedAt = alert.started_at ?? alert.first_seen_at;
+  const firstSeen = new Date(startedAt);
   const clock = Number.isNaN(firstSeen.getTime())
     ? Math.floor(Date.now() / 1000)
     : Math.floor(firstSeen.getTime() / 1000);
@@ -124,6 +129,7 @@ const toEvent = (alert: OneViewAlert): AlertEvent => {
     sourceStatus: alert.status_source === "resolved" ? "resolved" : "active",
     statusInternal: alert.status_internal,
     durationLabel: formatDurationSeconds(alert.duration_seconds),
+    startedAt,
     lastSeen: alert.last_seen_at,
     clientName: alert.client_name,
     clientId: alert.data_source_id,
@@ -135,6 +141,32 @@ const toEvent = (alert: OneViewAlert): AlertEvent => {
 const parseUnix = (value: string) => Number.parseInt(value, 10);
 const toSeverity = (level: number): Severity => severityCatalog[level]?.badge ?? "Info";
 const formatTimestamp = (clock: number) => format(new Date(clock * 1000), "dd/MM/yyyy HH:mm:ss");
+const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const parseDateMs = (value?: string | null) => {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const isActiveEvent = (event: AlertEvent) => event.sourceStatus === "active";
+const isAcknowledgedEvent = (event: AlertEvent) => event.ackState === "1";
+const isCriticalEvent = (event: AlertEvent) => Number(event.severity) >= 4;
+const isRecentEvent = (event: AlertEvent, referenceTime: number) => {
+  if (!isActiveEvent(event)) return false;
+  const eventStart = parseDateMs(event.startedAt) ?? parseDateMs(event.lastSeen) ?? parseUnix(event.clock) * 1000;
+  return eventStart >= referenceTime - RECENT_WINDOW_MS;
+};
+
+const matchesOperationalFilter = (event: AlertEvent, filter: OperationalFilter, referenceTime: number) => {
+  if (filter === "all") return true;
+  if (filter === "recent") return isRecentEvent(event, referenceTime);
+  if (filter === "watching") return isActiveEvent(event) && !isRecentEvent(event, referenceTime);
+  if (filter === "historical") return !isActiveEvent(event);
+  if (filter === "unhandled") return isActiveEvent(event) && !isAcknowledgedEvent(event);
+  if (filter === "critical") return isCriticalEvent(event);
+  return true;
+};
 
 const getDefaultRange = (): DateRange => {
   const now = new Date();
@@ -147,6 +179,7 @@ export default function AlertsPage() {
   const [severityLevels, setSeverityLevels] = useState<SeverityLevelValue[]>(DEFAULT_SEVERITIES);
   const [ackFilter, setAckFilter] = useState<AckFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [operationalFilter, setOperationalFilter] = useState<OperationalFilter>("all");
   const [sortField, setSortField] = useState<SortField>("clock");
   const [sortOrder, setSortOrder] = useState<"ASC" | "DESC">("DESC");
   const [searchTerm, setSearchTerm] = useState("");
@@ -158,6 +191,7 @@ export default function AlertsPage() {
   const [totalAlerts, setTotalAlerts] = useState(isDemoMode ? DEMO_TOTAL_ALERTS : 0);
 
   const clients = useMemo(() => dataSourcesToClients(dataSources), [dataSources]);
+  const snapshotReferenceTime = useMemo(() => parseDateMs(SNAPSHOT_GENERATED_AT) ?? Date.now(), []);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -233,6 +267,9 @@ export default function AlertsPage() {
     if (timeRangeSeconds.to !== undefined) {
       items = items.filter((event) => parseUnix(event.clock) <= timeRangeSeconds.to!);
     }
+    if (operationalFilter !== "all") {
+      items = items.filter((event) => matchesOperationalFilter(event, operationalFilter, snapshotReferenceTime));
+    }
 
     items.sort((a, b) => {
       if (sortField === "clock") {
@@ -252,14 +289,40 @@ export default function AlertsPage() {
     ackFilter,
     events,
     normalizedSelectedClients,
+    operationalFilter,
     searchTerm,
     severityFilter,
     sortField,
     sortOrder,
+    snapshotReferenceTime,
     statusFilter,
     timeRangeSeconds.from,
     timeRangeSeconds.to,
   ]);
+
+  const operationalStats = useMemo(() => {
+    const recent = events.filter((event) => isRecentEvent(event, snapshotReferenceTime)).length;
+    const watching = events.filter((event) => isActiveEvent(event) && !isRecentEvent(event, snapshotReferenceTime)).length;
+    const historical = events.filter((event) => !isActiveEvent(event)).length;
+    const unhandled = events.filter((event) => isActiveEvent(event) && !isAcknowledgedEvent(event)).length;
+    const critical = events.filter(isCriticalEvent).length;
+    const byDatasource = dataSources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      status: source.status,
+      count: events.filter((event) => event.clientId === source.id || event.clientName === source.name).length,
+    }));
+
+    return { recent, watching, historical, unhandled, critical, byDatasource };
+  }, [dataSources, events, snapshotReferenceTime]);
+
+  const operationalCards = useMemo(() => [
+    { title: "Recentes", value: operationalStats.recent, description: "Ativos vistos nas últimas 24h do snapshot", filter: "recent" as OperationalFilter, icon: <Clock3 className="h-4 w-4" /> },
+    { title: "Em acompanhamento", value: operationalStats.watching, description: "Ativos mais antigos", filter: "watching" as OperationalFilter, icon: <Activity className="h-4 w-4" /> },
+    { title: "Históricos", value: operationalStats.historical, description: "Resolvidos no snapshot", filter: "historical" as OperationalFilter, icon: <Archive className="h-4 w-4" /> },
+    { title: "Sem tratamento", value: operationalStats.unhandled, description: "Ativos sem ACK/atribuição/nota visível", filter: "unhandled" as OperationalFilter, icon: <AlertTriangle className="h-4 w-4" /> },
+    { title: "Críticos", value: operationalStats.critical, description: "Severidade Z5/Z4", filter: "critical" as OperationalFilter, icon: <Ticket className="h-4 w-4" /> },
+  ], [operationalStats]);
 
   const kpis = useMemo(() => {
     const total = filteredEvents.length;
@@ -295,6 +358,7 @@ export default function AlertsPage() {
     setSeverityLevels(DEFAULT_SEVERITIES);
     setAckFilter("all");
     setStatusFilter("all");
+    setOperationalFilter("all");
     setSortField("clock");
     setSortOrder("DESC");
     setSearchTerm("");
@@ -392,6 +456,55 @@ export default function AlertsPage() {
         ))}
       </section>
 
+      {isDemoMode ? (
+        <Card className="rounded-[10px] border border-border/60 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Visão operacional</h2>
+                <p className="text-xs text-muted-foreground">Classificação local calculada sobre o snapshot real do banco OneView.</p>
+              </div>
+              <Button variant="ghost" size="sm" className="h-8 w-fit rounded-lg border border-border/70 bg-white px-3 text-xs" onClick={() => setOperationalFilter("all")}>
+                Ver todos
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              {operationalCards.map((card) => (
+                <button
+                  key={card.title}
+                  type="button"
+                  onClick={() => setOperationalFilter(card.filter)}
+                  className={cn(
+                    "rounded-lg border p-3 text-left transition hover:border-black",
+                    operationalFilter === card.filter ? "border-black bg-black text-white" : "border-border/70 bg-white text-foreground",
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide">{card.title}</span>
+                    {card.icon}
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold tabular-nums">{card.value}</p>
+                  <p className={cn("mt-1 text-[11px]", operationalFilter === card.filter ? "text-white/70" : "text-muted-foreground")}>{card.description}</p>
+                </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
+              {operationalStats.byDatasource.map((source) => (
+                <div key={source.id} className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-foreground">{source.name}</span>
+                    <span className={source.status === "active" ? "text-success" : "text-error"}>{source.status}</span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">{source.count} alertas no snapshot</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
       <Card className={cn("rounded-[10px] border border-border/60 bg-white shadow-sm", isDemoMode ? "p-4" : "p-6")}>
         <div className={cn("flex flex-col", isDemoMode ? "gap-3" : "gap-5")}>
           <div className={cn("grid", isDemoMode ? "gap-3" : "gap-4 lg:grid-cols-[1.6fr,1fr]")}>
@@ -457,7 +570,23 @@ export default function AlertsPage() {
             ) : null}
           </div>
 
-          <div className={cn("grid", isDemoMode ? "gap-3 md:grid-cols-3" : "gap-4 md:grid-cols-2 xl:grid-cols-3")}>
+          <div className={cn("grid", isDemoMode ? "gap-3 md:grid-cols-4" : "gap-4 md:grid-cols-2 xl:grid-cols-3")}>
+            {isDemoMode ? (
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-semibold uppercase text-muted-foreground">Visão operacional</span>
+                <Select value={operationalFilter} onValueChange={(value) => setOperationalFilter(value as OperationalFilter)}>
+                  <SelectTrigger className="h-10 rounded-lg border border-border/70 bg-white text-sm"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="recent">Recentes</SelectItem>
+                    <SelectItem value="watching">Em acompanhamento</SelectItem>
+                    <SelectItem value="historical">Históricos</SelectItem>
+                    <SelectItem value="unhandled">Sem tratamento</SelectItem>
+                    <SelectItem value="critical">Críticos Z5/Z4</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
             {isDemoMode ? (
               <div className="flex flex-col gap-2">
                 <span className="text-xs font-semibold uppercase text-muted-foreground">Datasource</span>

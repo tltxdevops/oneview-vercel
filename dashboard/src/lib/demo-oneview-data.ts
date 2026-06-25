@@ -28,11 +28,26 @@ export const DEMO_SAMPLE_SIZE = snapshot.alerts.length;
 export const DEMO_READ_ONLY_MESSAGE =
   "Ações operacionais desabilitadas neste modo de leitura. Nenhum ACK real foi executado.";
 
-export const demoDataSources: DataSource[] = snapshot.data_sources.map((source) => ({ ...source }));
 export const demoAlerts: OneViewAlert[] = snapshot.alerts.map((alert) => ({
   ...alert,
   payload_normalized: { ...alert.payload_normalized },
 }));
+
+const alertCountByDataSource = new Map<string, number>();
+const alertCountByClient = new Map<string, number>();
+demoAlerts.forEach((alert) => {
+  alertCountByDataSource.set(alert.data_source_id, (alertCountByDataSource.get(alert.data_source_id) ?? 0) + 1);
+  alertCountByClient.set(alert.client_name, (alertCountByClient.get(alert.client_name) ?? 0) + 1);
+});
+
+export const demoDataSources: DataSource[] = snapshot.data_sources.map((source) => {
+  const legacyAlertCount = Number((source as DataSource & { alert_count?: number }).alert_count ?? source.alerts_count ?? 0);
+  const computedAlertCount = alertCountByDataSource.get(source.id) ?? alertCountByClient.get(source.name) ?? 0;
+  return {
+    ...source,
+    alerts_count: legacyAlertCount > 0 ? legacyAlertCount : computedAlertCount,
+  };
+});
 export const demoSyncLogs: SnapshotSyncLog[] = snapshot.sync_logs.map((log) => ({ ...log }));
 
 const activeAlerts = demoAlerts.filter((alert) => alert.status_source !== "resolved");
