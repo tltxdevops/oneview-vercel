@@ -72,6 +72,8 @@ export default function handler(req, res) {
     "openid profile email offline_access User.Read";
 
   return sendJson(res, 200, {
+    ONEVIEW_SNAPSHOT_MODE: firstAuthValue(process.env.ONEVIEW_SNAPSHOT_MODE, process.env.NEXT_PUBLIC_SNAPSHOT_MODE) || "true",
+    NEXT_PUBLIC_DEMO_MODE: firstAuthValue(process.env.NEXT_PUBLIC_DEMO_MODE, process.env.VITE_DEMO_MODE) || "",
     VITE_AZURE_CLIENT_ID: clientId,
     VITE_AZURE_TENANT_ID: tenantId,
     VITE_AZURE_AUTHORITY: authority,

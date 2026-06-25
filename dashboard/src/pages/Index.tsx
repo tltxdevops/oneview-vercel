@@ -19,7 +19,7 @@ import {
 } from "@/lib/oneview-api";
 import { Alert, Severity } from "@/types";
 import { toast } from "sonner";
-import { isDemoMode } from "@/lib/demo-mode";
+import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
 import { DEMO_SAMPLE_SIZE, DEMO_TOTAL_ALERTS, demoSyncLogs } from "@/lib/demo-oneview-data";
 import { cn } from "@/lib/utils";
 

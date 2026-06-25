@@ -41,7 +41,7 @@ import {
   updateAlertStatus,
 } from "@/lib/oneview-api";
 import { toast } from "sonner";
-import { isDemoMode } from "@/lib/demo-mode";
+import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
 import { DEMO_READ_ONLY_MESSAGE, DEMO_TOTAL_ALERTS } from "@/lib/demo-oneview-data";
 import {
   Activity,

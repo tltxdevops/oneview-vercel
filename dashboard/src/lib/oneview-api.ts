@@ -1,6 +1,6 @@
 import { Alert, Client, Severity } from "@/types";
 import { isSsoEnvironmentReady, loginRequest, msalInstance } from "@/lib/auth/msal";
-import { isDemoMode } from "@/lib/demo-mode";
+import { isSnapshotMode } from "@/lib/demo-mode";
 import { DEMO_TOTAL_ALERTS, demoAlertMetrics, demoAlerts, demoDataSources } from "@/lib/demo-oneview-data";
 
 const API_BASE_URL =
@@ -174,12 +174,12 @@ export interface AlertMetrics {
 }
 
 export async function fetchDataSources(): Promise<DataSource[]> {
-  if (isDemoMode) return demoDataSources.map((source) => ({ ...source }));
+  if (isSnapshotMode) return demoDataSources.map((source) => ({ ...source }));
   return fetchApi<DataSource[]>("/data-sources");
 }
 
 export async function requestDataSourceSync(id: string, reason = "manual_ui"): Promise<OutboxResult> {
-  if (isDemoMode) {
+  if (isSnapshotMode) {
     throw new Error("Modo leitura por snapshot real: o sync permanece exclusivamente no Worker separado.");
   }
   return fetchApi<OutboxResult>(`/data-sources/${id}/request-sync`, {
@@ -200,7 +200,7 @@ export interface FetchAlertsParams {
 }
 
 export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
-  if (isDemoMode) {
+  if (isSnapshotMode) {
     let items = [...demoAlerts];
     if (params?.clientName) items = items.filter((item) => item.client_name === params.clientName);
     if (params?.severity) items = items.filter((item) => item.severity === params.severity);
@@ -245,7 +245,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
 }
 
 export async function fetchAlert(id: string): Promise<OneViewAlert> {
-  if (isDemoMode) {
+  if (isSnapshotMode) {
     const alert = demoAlerts.find((item) => item.id === id || item.source_event_id === id);
     if (!alert) throw new Error(`Alerta não encontrado no snapshot OneView: ${id}`);
     return alert;
@@ -254,12 +254,12 @@ export async function fetchAlert(id: string): Promise<OneViewAlert> {
 }
 
 export async function fetchAlertMetrics(): Promise<AlertMetrics> {
-  if (isDemoMode) return demoAlertMetrics;
+  if (isSnapshotMode) return demoAlertMetrics;
   return fetchApi<AlertMetrics>("/alerts/metrics");
 }
 
 export async function addAlertNote(id: string, message: string, operatorName = "oneview-ui"): Promise<AlertNoteResult> {
-  if (isDemoMode) throw new Error("Modo leitura por snapshot real: notas reais estão desabilitadas.");
+  if (isSnapshotMode) throw new Error("Modo leitura por snapshot real: notas reais estão desabilitadas.");
   return fetchApi<AlertNoteResult>(`/alerts/${id}/notes`, {
     method: "POST",
     body: JSON.stringify({ message, operator_name: operatorName }),
@@ -267,7 +267,7 @@ export async function addAlertNote(id: string, message: string, operatorName = "
 }
 
 export async function assignAlert(id: string, operatorName = "oneview-ui"): Promise<AlertAssignmentResult> {
-  if (isDemoMode) throw new Error("Modo leitura por snapshot real: atribuições reais estão desabilitadas.");
+  if (isSnapshotMode) throw new Error("Modo leitura por snapshot real: atribuições reais estão desabilitadas.");
   return fetchApi<AlertAssignmentResult>(`/alerts/${id}/assign`, {
     method: "POST",
     body: JSON.stringify({ operator_name: operatorName }),
@@ -280,7 +280,7 @@ export async function updateAlertStatus(
   message?: string,
   operatorName = "oneview-ui",
 ): Promise<AlertStatusResult> {
-  if (isDemoMode) throw new Error("Modo leitura por snapshot real: ACK real está desabilitado e não foi executado.");
+  if (isSnapshotMode) throw new Error("Modo leitura por snapshot real: ACK real está desabilitado e não foi executado.");
   return fetchApi<AlertStatusResult>(`/alerts/${id}/status`, {
     method: "POST",
     body: JSON.stringify({ status, message, operator_name: operatorName }),
@@ -288,7 +288,7 @@ export async function updateAlertStatus(
 }
 
 export async function fetchAllAlerts(params?: Omit<FetchAlertsParams, "limit" | "offset">): Promise<AlertListResponse> {
-  if (isDemoMode) return fetchAlerts(params);
+  if (isSnapshotMode) return fetchAlerts(params);
 
   const pageSize = 500;
   const firstPage = await fetchAlerts({ ...params, limit: pageSize, offset: 0 });

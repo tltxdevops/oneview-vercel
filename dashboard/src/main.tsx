@@ -1,5 +1,4 @@
 import "./index.css";
-import { isDemoMode } from "@/lib/demo-mode";
 
 declare global {
   interface Window {
@@ -36,9 +35,7 @@ async function loadRuntimeConfig() {
 }
 
 async function bootstrap() {
-  if (!isDemoMode) {
-    await loadRuntimeConfig();
-  }
+  await loadRuntimeConfig();
 
   const [{ createRoot }, { default: App }, { AuthProvider }] = await Promise.all([
     import("react-dom/client"),

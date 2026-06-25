@@ -7,7 +7,7 @@ import { getStoredTheme, setStoredTheme, getStoredRefreshInterval, setStoredRefr
 import { DataSource, fetchDataSources, requestDataSourceSync } from "@/lib/oneview-api";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { isDemoMode } from "@/lib/demo-mode";
+import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
 import { DEMO_READ_ONLY_MESSAGE } from "@/lib/demo-oneview-data";
 
 export default function SettingsPage() {
