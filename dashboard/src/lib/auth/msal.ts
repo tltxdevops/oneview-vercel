@@ -159,6 +159,7 @@ const msalConfig: Configuration = {
   },
   cache: {
     cacheLocation: "localStorage",
+    temporaryCacheLocation: "localStorage",
     storeAuthStateInCookie: false,
   },
   system: {

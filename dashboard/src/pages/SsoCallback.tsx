@@ -38,7 +38,15 @@ const SsoCallback = () => {
 
     if (error) {
       navigate("/login", { replace: true, state: { authError: error } });
+      return;
     }
+
+    navigate("/login", {
+      replace: true,
+      state: {
+        authError: "SSO concluído sem conta ativa. Tente entrar novamente.",
+      },
+    });
   }, [isLoading, user, error, navigate, state.from]);
 
   return (

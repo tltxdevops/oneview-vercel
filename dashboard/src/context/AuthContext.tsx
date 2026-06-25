@@ -91,6 +91,18 @@ function getErrorDetails(error: unknown) {
   };
 }
 
+function getRedirectHash() {
+  if (typeof window === "undefined") return undefined;
+  const hash = window.location.hash || "";
+  return /[#&](code|error)=/i.test(hash) ? hash : undefined;
+}
+
+function hasAuthResponseInUrl() {
+  if (typeof window === "undefined") return false;
+  const value = `${window.location.search || ""}${window.location.hash || ""}`;
+  return /[?#&](code|error)=/i.test(value);
+}
+
 function readStoredUser(): AuthUser | null {
   if (typeof window === "undefined") return null;
   try {
@@ -303,7 +315,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         console.log("[auth] MSAL inicializado com sucesso");
         
         console.log("[auth] Processando redirect promise...");
-        const redirectResult = await withTimeout(msalInstance.handleRedirectPromise(), MSAL_TIMEOUT_MS, "MSAL handleRedirectPromise");
+        const redirectResult = await withTimeout(msalInstance.handleRedirectPromise(getRedirectHash()), MSAL_TIMEOUT_MS, "MSAL handleRedirectPromise");
         console.log("[auth] Redirect result:", redirectResult);
 
         if (cancelled || !isMountedRef.current) {
@@ -321,6 +333,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             msalInstance.setActiveAccount(existingAccount);
           } else {
             console.log("[auth] Nenhuma conta encontrada");
+            if (hasAuthResponseInUrl()) {
+              setError("SSO retornou autorização, mas não foi possível recuperar a sessão local. Tente entrar novamente.");
+            }
           }
         }
 
