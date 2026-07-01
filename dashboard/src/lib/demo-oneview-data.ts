@@ -15,9 +15,9 @@ interface SnapshotSyncLog {
 interface SafeSnapshot {
   generated_at: string;
   alerts_count: number;
-  data_sources: DataSource[];
+  data_sources: Array<Omit<DataSource, "api_url">>;
   sync_logs: SnapshotSyncLog[];
-  alerts: OneViewAlert[];
+  alerts: Array<Omit<OneViewAlert, "host_name" | "host_ip" | "payload_normalized"> & { host_alias?: string }>;
 }
 
 const snapshot = safeSnapshotJson as unknown as SafeSnapshot;
@@ -30,7 +30,9 @@ export const DEMO_READ_ONLY_MESSAGE =
 
 export const demoAlerts: OneViewAlert[] = snapshot.alerts.map((alert) => ({
   ...alert,
-  payload_normalized: { ...alert.payload_normalized },
+  host_name: alert.host_alias ?? "Host protegido",
+  host_ip: null,
+  payload_normalized: {},
 }));
 
 const alertCountByDataSource = new Map<string, number>();
@@ -45,6 +47,7 @@ export const demoDataSources: DataSource[] = snapshot.data_sources.map((source) 
   const computedAlertCount = alertCountByDataSource.get(source.id) ?? alertCountByClient.get(source.name) ?? 0;
   return {
     ...source,
+    api_url: "",
     alerts_count: legacyAlertCount > 0 ? legacyAlertCount : computedAlertCount,
   };
 });

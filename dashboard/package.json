@@ -14,6 +14,7 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "test:bff": "node --test tests/oneview-bff.test.mjs",
     "lint:demo": "eslint src/main.tsx src/lib/demo-mode.ts src/lib/demo-oneview-data.ts src/lib/oneview-api.ts src/lib/auth/msal.ts src/components/auth/ProtectedRoute.tsx src/components/layout/AppLayout.tsx src/components/layout/Sidebar.tsx src/pages/Index.tsx src/pages/Alerts.tsx src/pages/Settings.tsx vite.config.ts",
     "pretest:demo": "npm run generate:snapshot",
     "test:demo": "npm run lint:demo && npm run build",
