@@ -8,11 +8,11 @@ import { useAuth } from "@/hooks/useAuth";
 import { isDemoMode } from "@/lib/demo-mode";
 
 const navigation = [
-  { name: "Home", href: "/", icon: Home },
+  { name: "Início", href: "/", icon: Home },
   { name: "Alertas", href: "/alertas", icon: Bell },
   { name: "Banco de Dados", href: "/banco-dados", icon: Database },
   { name: "Certificados", href: "/certificados", icon: ShieldCheck },
-  { name: "Workspaces", href: "/workspaces", icon: Monitor },
+  { name: "Espaços", href: "/workspaces", icon: Monitor },
   { name: "KPIs", href: "/kpis", icon: BarChart3 },
   { name: "Chamados", href: "/chamados", icon: Ticket },
   { name: "Relatórios", href: "/relatorios", icon: FileText },

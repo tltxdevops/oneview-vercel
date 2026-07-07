@@ -208,18 +208,18 @@ export default function Index() {
         { title: "Alertas sincronizados", status: SNAPSHOT_TOTAL_ALERTS.toLocaleString("pt-BR"), icon: <Wifi className="h-5 w-5 text-primary" /> },
         { title: "Alertas exportados", status: SNAPSHOT_EXPORTED_ALERTS.toLocaleString("pt-BR"), icon: <Database className="h-5 w-5 text-primary" /> },
         { title: "Alertas ativos", status: String(activeTotal), icon: <Activity className="h-5 w-5 text-primary" /> },
-        { title: "Críticos / High", status: String(disasterTotal + highTotal), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
+        { title: "Críticos / Alta", status: String(disasterTotal + highTotal), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
         {
-          title: "Datasources ativas",
+          title: "Fontes de dados ativas",
           status: `${SNAPSHOT_SUMMARY.datasources_active}/${SNAPSHOT_SUMMARY.datasources_total}`,
           icon: <RefreshCcw className="h-5 w-5 text-primary" />,
         },
         {
-          title: "Datasources com erro",
+          title: "Fontes de dados com erro",
           status: String(SNAPSHOT_SUMMARY.datasources_error),
           icon: <Shield className="h-5 w-5 text-primary" />,
         },
-        { title: "Snapshot atualizado", status: formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT), icon: <Server className="h-5 w-5 text-primary" /> },
+        { title: "Dados atualizados", status: formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT), icon: <Server className="h-5 w-5 text-primary" /> },
       ].map((card) => ({ ...card, scope }));
     }
 
@@ -254,10 +254,10 @@ export default function Index() {
         ...source,
         alertCount: source.alerts_count ?? alertCountByDataSource[source.id] ?? 0,
         syncLabel: source.last_sync_status === "success"
-          ? `success · ${source.alerts_count ?? alertCountByDataSource[source.id] ?? 0} alertas`
+          ? `sucesso · ${source.alerts_count ?? alertCountByDataSource[source.id] ?? 0} alertas`
           : source.last_sync_status === "failed"
-            ? `failed · ${source.pending_reason ?? source.last_sync_error ?? source.last_error ?? "pendência registrada"}`
-            : source.last_sync_status || "não testado",
+            ? `falha · ${source.pending_reason ?? source.last_sync_error ?? source.last_error ?? "pendência registrada"}`
+            : source.last_sync_status === "running" ? "em execução" : source.last_sync_status || "não testado",
       }));
   }, [alertCountByDataSource, dataSources]);
 
@@ -297,7 +297,7 @@ export default function Index() {
               <h2 className="text-base font-semibold text-foreground">Clientes Zabbix internos</h2>
               <p className="text-sm text-muted-foreground">
                 {isDemoMode
-                  ? `${SNAPSHOT_TOTAL_ALERTS.toLocaleString("pt-BR")} alertas sincronizados; ${SNAPSHOT_EXPORTED_ALERTS.toLocaleString("pt-BR")} alertas ativos recentes no snapshot atualizado.`
+                  ? `${SNAPSHOT_TOTAL_ALERTS.toLocaleString("pt-BR")} alertas sincronizados; ${SNAPSHOT_EXPORTED_ALERTS.toLocaleString("pt-BR")} alertas ativos recentes na cópia atualizada.`
                   : `${metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalização média: ${formatMetricDuration(metrics?.avg_normalization_time_seconds)}.`}
               </p>
             </div>
@@ -329,9 +329,9 @@ export default function Index() {
                   <div key={log.id} className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold text-foreground">{formatDataSourceName(log.datasource)}</span>
-                      <span className={log.status === "success" ? "text-emerald-700" : "text-red-700"}>{log.status}</span>
-                      {log.fetched !== null ? <span>fetched={log.fetched}</span> : null}
-                      {log.upserted !== null ? <span>upserted={log.upserted}</span> : null}
+                      <span className={log.status === "success" ? "text-emerald-700" : "text-red-700"}>{log.status === "success" ? "sucesso" : log.status === "failed" ? "falha" : log.status}</span>
+                      {log.fetched !== null ? <span>obtidos={log.fetched}</span> : null}
+                      {log.upserted !== null ? <span>gravados={log.upserted}</span> : null}
                     </div>
                     <p className="mt-1 text-muted-foreground">{log.detail}</p>
                   </div>
@@ -401,7 +401,7 @@ export default function Index() {
                 </Button>
               </header>
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
-                <p className="font-medium text-foreground">Integração de chamados não disponível no snapshot atual.</p>
+                <p className="font-medium text-foreground">Integração de chamados não disponível na cópia atual.</p>
                 <p>Este painel consolida os alertas operacionais persistidos pelo OneView.</p>
               </div>
             </div>

@@ -527,7 +527,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
         devices[0];
 
       if (!mainDevice) {
-        setError("Nenhum device encontrado para este workspace.");
+        setError("Nenhum dispositivo encontrado para este espaço de trabalho.");
         return;
       }
 
@@ -681,18 +681,18 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <DialogTitle className="text-xl font-semibold text-black flex items-center gap-3">
-                  Performance da reunião
+                   Desempenho da reunião
                 </DialogTitle>
                 <DialogDescription className="text-sm text-gray-600">
                 Telemetria em tempo real direto da xAPI do equipamento Cisco.
                 </DialogDescription>
                 <div className="flex flex-wrap items-center gap-2 mt-3">
                 <Badge variant="outline" className="text-xs">
-                  Workspace: {workspace.displayName}
+                  Espaço: {workspace.displayName}
                 </Badge>
                   {meetingId && (
                     <Badge variant="outline" className="text-xs font-mono">
-                      Meeting ID: {meetingId}
+                      ID da reunião: {meetingId}
                     </Badge>
                   )}
                   {devicePerformances.length > 0 && (
@@ -701,7 +701,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
                       className="text-xs font-mono cursor-pointer"
                       onClick={() => setShowDeviceIds((v) => !v)}
                     >
-                      Devices ({devicePerformances.length})
+                      Dispositivos ({devicePerformances.length})
                     </Badge>
                   )}
                 </div>
@@ -722,7 +722,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
               )}
               {platformLabel.includes("Teams") && (!performance?.audioTx || !performance?.audioRx) && (
                 <div className="mt-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                  Chamada Teams: para ver MediaChannels (TX/RX) é preciso que o dispositivo esteja em modo MTR com xAPI liberada; em endpoints Webex apenas a sinalização básica aparece.
+                   Chamada Teams: para ver os canais de mídia (TX/RX), o dispositivo precisa estar no modo MTR com xAPI liberada; em equipamentos Webex, apenas a sinalização básica aparece.
                 </div>
               )}
             </div>
@@ -806,7 +806,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
               label="Qualidade média"
               value={
                 avgLoss !== undefined
-                  ? `${avgLoss}% loss` + (avgBitrate ? ` · ${avgBitrate} kbps` : "")
+                  ? `${avgLoss}% de perda` + (avgBitrate ? ` · ${avgBitrate} kbps` : "")
                   : avgBitrate
                     ? `${avgBitrate} kbps`
                     : "--"
@@ -847,17 +847,17 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
                             <span>{label}</span>
                           </div>
                           {renderMetric(
-                            "Bitrate",
+                            "Taxa de bits",
                             data?.bitrateKbps ? `${data.bitrateKbps} kbps` : undefined,
                             metricColor(data?.bitrateKbps as number | undefined, { warn: 1000, bad: 200 })
                           )}
                           {renderMetric(
-                            "Loss",
+                            "Perda",
                             data?.packetLoss,
                             metricColor(data?.packetLoss as number | undefined, { warn: 5, bad: 15 })
                           )}
                           {renderMetric(
-                            "Jitter",
+                            "Variação",
                             data?.jitterMs ? `${data.jitterMs} ms` : undefined,
                             metricColor(data?.jitterMs as number | undefined, { warn: 20, bad: 50 })
                           )}
@@ -884,7 +884,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
             <Card className="border bg-white p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Users className="h-4 w-4 text-black" />
-                <h3 className="text-sm font-semibold text-black">Participantes (streams vistos pelo equipamento)</h3>
+                <h3 className="text-sm font-semibold text-black">Participantes (fluxos vistos pelo equipamento)</h3>
                 <Badge variant="outline" className="ml-auto cursor-pointer" onClick={() => setShowParticipants((v) => !v)}>
                   {showParticipants ? "Ocultar" : "Mostrar"}
                 </Badge>
@@ -904,14 +904,14 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
                           {incoming.length > 0 ? incoming.map((ch: any, idx: number) => (
                             <div key={`in-${idx}`} className="rounded border px-2 py-1 text-[11px] space-y-0.5">
                               <div className="flex justify-between">
-                                <span>{ch.type}/{ch.role || "Main"}</span>
-                                <span className="text-gray-500">{ch.direction}</span>
+                                <span>{ch.type}/{ch.role === "Main" ? "Principal" : ch.role || "Principal"}</span>
+                                <span className="text-gray-500">{String(ch.direction).toLowerCase() === "incoming" ? "entrada" : String(ch.direction).toLowerCase() === "outgoing" ? "saída" : ch.direction}</span>
                               </div>
                               {ch.codec && <div>Codec: {ch.codec}</div>}
                               {ch.resolution && <div>Res/FPS: {ch.resolution} {ch.fps ? `@${ch.fps}` : ""}</div>}
-                              {ch.bitrateKbps ? <div>Bitrate: {ch.bitrateKbps} kbps</div> : null}
-                              {(ch.packetLoss || ch.jitterMs || ch.rttMs) ? (
-                                <div>Loss: {ch.packetLoss ?? "--"} | Jitter: {ch.jitterMs ?? "--"} | RTT: {ch.rttMs ?? "--"}</div>
+                              {ch.bitrateKbps ? <div>Taxa de bits: {ch.bitrateKbps} kbps</div> : null}
+                               {(ch.packetLoss || ch.jitterMs || ch.rttMs) ? (
+                                 <div>Perda: {ch.packetLoss ?? "--"} | Variação: {ch.jitterMs ?? "--"} | RTT: {ch.rttMs ?? "--"}</div>
                               ) : null}
                             </div>
                           )) : <p className="text-[11px] text-gray-500">Nenhum fluxo.</p>}
@@ -929,7 +929,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
             <Card className="border bg-white p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Monitor className="h-4 w-4 text-black" />
-                <h3 className="text-sm font-semibold text-black">Outros devices do workspace</h3>
+                <h3 className="text-sm font-semibold text-black">Outros dispositivos do espaço</h3>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-black">
                 {devicePerformances
@@ -969,7 +969,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
                       <div key={idx} className="rounded border px-2 py-1 flex items-center justify-between">
                         <div className="flex flex-col">
                           <span className="text-black">ID {h.id}</span>
-                          <span className="text-gray-600">{h.type}</span>
+                          <span className="text-gray-600">{String(h.type).toLowerCase() === "input" ? "Entrada" : h.type}</span>
                         </div>
                         <span className={
                           String(h.connected).toLowerCase() === "true"
@@ -1002,7 +1002,7 @@ export function WorkspaceCallPerformanceModal({ workspace, open, onOpenChange }:
                             ? "text-green-600 font-semibold"
                             : "text-red-600 font-semibold"
                         }>
-                          {u.status || "Desconhecido"}
+                          {String(u.status).toLowerCase() === "connected" ? "Conectado" : String(u.status).toLowerCase() === "disconnected" ? "Desconectado" : u.status || "Desconhecido"}
                         </span>
                       </div>
                     ))}

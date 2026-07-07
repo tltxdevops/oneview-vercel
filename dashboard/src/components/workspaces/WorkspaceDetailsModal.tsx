@@ -39,7 +39,7 @@ interface WorkspaceDetailsModalProps {
 
 const healthConfig = {
   ok: { icon: CheckCircle2, color: "text-green-600", bg: "bg-green-50 dark:bg-green-950/30", label: "OK" },
-  info: { icon: Info, color: "text-blue-600", bg: "bg-blue-50 dark:bg-blue-950/30", label: "Info" },
+  info: { icon: Info, color: "text-blue-600", bg: "bg-blue-50 dark:bg-blue-950/30", label: "Informativo" },
   warning: { icon: AlertTriangle, color: "text-yellow-600", bg: "bg-yellow-50 dark:bg-yellow-950/30", label: "Aviso" },
   error: { icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50 dark:bg-red-950/30", label: "Erro" },
 };
@@ -48,7 +48,7 @@ const deviceStatusConfig: Record<string, { icon: any; color: string; label: stri
   connected: { icon: Wifi, color: "text-green-600", label: "Conectado" },
   disconnected: { icon: WifiOff, color: "text-red-600", label: "Desconectado" },
   connected_with_issues: { icon: AlertTriangle, color: "text-yellow-600", label: "Com problemas" },
-  offline_expired: { icon: WifiOff, color: "text-gray-500", label: "Offline" },
+  offline_expired: { icon: WifiOff, color: "text-gray-500", label: "Fora de linha" },
   activating: { icon: Wifi, color: "text-blue-500", label: "Ativando" },
   unknown: { icon: AlertTriangle, color: "text-gray-400", label: "Desconhecido" },
   offline_deep_sleep: { icon: WifiOff, color: "text-gray-400", label: "Hibernando" },
@@ -56,7 +56,7 @@ const deviceStatusConfig: Record<string, { icon: any; color: string; label: stri
 
 const workspaceTypeLabels: Record<string, string> = {
   meetingRoom: "Sala de Reunião",
-  huddle: "Huddle Room",
+  huddle: "Sala colaborativa",
   focus: "Sala de Foco",
   open: "Espaço Aberto",
   desk: "Mesa",
@@ -123,7 +123,7 @@ export function WorkspaceDetailsModal({ workspace, open, onOpenChange }: Workspa
     return (
       <Dialog open={false} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-4xl">
-          <p>Workspace não encontrado</p>
+          <p>Espaço de trabalho não encontrado</p>
         </DialogContent>
       </Dialog>
     );
@@ -182,7 +182,7 @@ export function WorkspaceDetailsModal({ workspace, open, onOpenChange }: Workspa
                 {hasMeetings && (
                   <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md">
                     <Video className="h-3.5 w-3.5 text-black" />
-                    <span className="text-xs font-medium text-black">Meetings</span>
+                    <span className="text-xs font-medium text-black">Reuniões</span>
                   </div>
                 )}
                 {!hasCalling && !hasCalendar && !hasMeetings && (
@@ -204,7 +204,7 @@ export function WorkspaceDetailsModal({ workspace, open, onOpenChange }: Workspa
               <div className="p-3 rounded-lg border bg-white">
                 <div className="flex items-center gap-2 mb-1">
                   <Monitor className="h-4 w-4 text-black" />
-                  <span className="text-xs font-medium text-gray-600">Devices Online</span>
+                  <span className="text-xs font-medium text-gray-600">Dispositivos online</span>
                 </div>
                 <p className="text-2xl font-bold text-black">{connectedDevices}<span className="text-base text-gray-500 font-normal">/{totalDevices}</span></p>
               </div>
@@ -254,7 +254,7 @@ export function WorkspaceDetailsModal({ workspace, open, onOpenChange }: Workspa
           {/* Devices - Dados REAIS da API */}
           <div className="rounded-lg border bg-white p-4">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-black">Devices ({connectedDevices}/{totalDevices})</h3>
+              <h3 className="text-sm font-semibold text-black">Dispositivos ({connectedDevices}/{totalDevices})</h3>
               {loadingDevices && (
                 <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
               )}
@@ -262,7 +262,7 @@ export function WorkspaceDetailsModal({ workspace, open, onOpenChange }: Workspa
             
             {devices.length === 0 && !loadingDevices ? (
               <p className="text-xs text-gray-500 text-center py-4">
-                Nenhum device encontrado
+                Nenhum dispositivo encontrado
               </p>
             ) : (
               <div className="space-y-2">
@@ -293,7 +293,7 @@ export function WorkspaceDetailsModal({ workspace, open, onOpenChange }: Workspa
                           )}
                           {device.serial && (
                             <div className="text-gray-600">
-                              <span className="font-medium">Serial:</span> <span className="font-mono">{device.serial}</span>
+                              <span className="font-medium">Número de série:</span> <span className="font-mono">{device.serial}</span>
                             </div>
                           )}
                           {Array.isArray(device.errorCodes) && device.errorCodes.length > 0 && (
@@ -436,14 +436,16 @@ export function WorkspaceDetailsModal({ workspace, open, onOpenChange }: Workspa
               )}
               {workspace.calendar?.emailAddress && (
                 <div className="flex justify-between">
-                  <span className="text-gray-600">Email:</span>
+                  <span className="text-gray-600">E-mail:</span>
                   <span className="font-mono text-black">{workspace.calendar.emailAddress}</span>
                 </div>
               )}
               {workspace.hotdeskingStatus && (
                 <div className="flex justify-between">
-                  <span className="text-gray-600">Hotdesking:</span>
-                  <span className="text-black capitalize">{workspace.hotdeskingStatus}</span>
+                  <span className="text-gray-600">Mesa compartilhada:</span>
+                  <span className="text-black capitalize">
+                    {String(workspace.hotdeskingStatus).toLowerCase() === "active" ? "Ativa" : String(workspace.hotdeskingStatus).toLowerCase() === "inactive" ? "Inativa" : workspace.hotdeskingStatus}
+                  </span>
                 </div>
               )}
               <div className="flex justify-between pt-2 border-t">

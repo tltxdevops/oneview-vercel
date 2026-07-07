@@ -8,7 +8,7 @@ const deviceStatusConfig = {
   connected: { icon: Wifi, color: "text-green-500", bg: "bg-green-500/10", label: "Conectado" },
   disconnected: { icon: WifiOff, color: "text-red-500", bg: "bg-red-500/10", label: "Desconectado" },
   connected_with_issues: { icon: AlertTriangle, color: "text-yellow-500", bg: "bg-yellow-500/10", label: "Com problemas" },
-  offline_expired: { icon: WifiOff, color: "text-gray-500", bg: "bg-gray-500/10", label: "Offline" },
+  offline_expired: { icon: WifiOff, color: "text-gray-500", bg: "bg-gray-500/10", label: "Fora de linha" },
   activating: { icon: Wifi, color: "text-blue-500", bg: "bg-blue-500/10", label: "Ativando" },
   unknown: { icon: WifiOff, color: "text-gray-400", bg: "bg-gray-400/10", label: "Desconhecido" },
   offline_deep_sleep: { icon: WifiOff, color: "text-gray-400", bg: "bg-gray-400/10", label: "Hibernando" },

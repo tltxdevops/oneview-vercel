@@ -32,7 +32,7 @@ const REFRESH_INTERVAL_SECONDS = 60;
 
 const STATUS_CONFIG: Record<DatabaseStatus, { label: string; badgeClass: string; dotClass: string; chartColor: string }> = {
   Online: {
-    label: "Online",
+    label: "Disponível",
     badgeClass: "border-emerald-500/50 bg-emerald-500/10 text-emerald-600",
     dotClass: "bg-emerald-500",
     chartColor: "#22c55e",
@@ -309,7 +309,7 @@ export default function BancoDadosPage() {
         <Card className="rounded-[10px] border border-border/60 bg-white p-6 shadow-sm xl:col-span-2">
           <div className="flex items-start justify-between gap-2">
             <div>
-              <h2 className="text-lg font-semibold text-foreground">Histórico de performance</h2>
+              <h2 className="text-lg font-semibold text-foreground">Histórico de desempenho</h2>
               <p className="text-xs text-muted-foreground">
                 Evolução de CPU, memória e IO nas últimas 24h.
               </p>
@@ -361,12 +361,12 @@ export default function BancoDadosPage() {
           <TableHeader>
             <TableRow className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground/80">
               <TableHead className="w-[220px]">Banco</TableHead>
-              <TableHead>Engine</TableHead>
+              <TableHead>Mecanismo</TableHead>
               <TableHead className="hidden lg:table-cell">Ambiente</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="hidden xl:table-cell">CPU</TableHead>
               <TableHead className="hidden xl:table-cell">Memória</TableHead>
-              <TableHead className="hidden 2xl:table-cell">Storage</TableHead>
+              <TableHead className="hidden 2xl:table-cell">Armazenamento</TableHead>
               <TableHead className="hidden xl:table-cell">Latência</TableHead>
               <TableHead className="hidden 2xl:table-cell">Replicação</TableHead>
               <TableHead className="text-right">Último backup</TableHead>
@@ -487,9 +487,9 @@ export default function BancoDadosPage() {
                         <span className="text-xs text-muted-foreground">{clientInstances.length} instâncias</span>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <StatusCounter label="Online" value={online} status="Online" />
+                        <StatusCounter label="Disponíveis" value={online} status="Online" />
                         <StatusCounter label="Degradado" value={degrade} status="Degradado" />
-                        <StatusCounter label="Offline" value={offline} status="Offline" />
+                        <StatusCounter label="Indisponíveis" value={offline} status="Offline" />
                       </div>
                     </div>
                   </div>

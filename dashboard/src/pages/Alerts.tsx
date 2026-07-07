@@ -273,22 +273,22 @@ export default function AlertsPage() {
     if (isDemoMode && SNAPSHOT_GRAFANA_SUMMARY) {
       return [
         { title: "TOTAL", value: SNAPSHOT_TOTAL_ALERTS, description: "Alertas sincronizados", icon: Activity, tone: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
-        { title: "ACKNOWLEDGED", value: SNAPSHOT_GRAFANA_SUMMARY.acknowledged, description: "Reconhecidos na origem", icon: CheckCircle2, tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
-        { title: "UNACKNOWLEDGED", value: SNAPSHOT_GRAFANA_SUMMARY.unacknowledged, description: "Aguardando tratamento", icon: CircleAlert, tone: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
-        { title: "AVERAGE", value: SNAPSHOT_GRAFANA_SUMMARY.average, description: "Severidade média", icon: TriangleAlert, tone: "border-yellow-500/40 bg-yellow-500/10 text-yellow-300" },
-        { title: "HIGH", value: SNAPSHOT_GRAFANA_SUMMARY.high, description: "Alta severidade", icon: ShieldAlert, tone: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
-        { title: "DISASTER", value: SNAPSHOT_GRAFANA_SUMMARY.disaster, description: "Incidentes críticos", icon: Siren, tone: "border-red-500/50 bg-red-500/10 text-red-300" },
+        { title: "RECONHECIDOS", value: SNAPSHOT_GRAFANA_SUMMARY.acknowledged, description: "Reconhecidos na origem", icon: CheckCircle2, tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
+        { title: "NÃO RECONHECIDOS", value: SNAPSHOT_GRAFANA_SUMMARY.unacknowledged, description: "Aguardando tratamento", icon: CircleAlert, tone: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
+        { title: "MÉDIA", value: SNAPSHOT_GRAFANA_SUMMARY.average, description: "Severidade média", icon: TriangleAlert, tone: "border-yellow-500/40 bg-yellow-500/10 text-yellow-300" },
+        { title: "ALTA", value: SNAPSHOT_GRAFANA_SUMMARY.high, description: "Alta severidade", icon: ShieldAlert, tone: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
+        { title: "DESASTRE", value: SNAPSHOT_GRAFANA_SUMMARY.disaster, description: "Incidentes críticos", icon: Siren, tone: "border-red-500/50 bg-red-500/10 text-red-300" },
       ];
     }
     const total = filteredEvents.length;
     const acknowledged = filteredEvents.filter((event) => event.ackState === "1").length;
     return [
       { title: "TOTAL", value: total, description: "Alertas na visão atual", icon: Activity, tone: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
-      { title: "ACKNOWLEDGED", value: acknowledged, description: "Reconhecidos na origem", icon: CheckCircle2, tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
-      { title: "UNACKNOWLEDGED", value: total - acknowledged, description: "Aguardando tratamento", icon: CircleAlert, tone: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
-      { title: "AVERAGE", value: filteredEvents.filter((event) => event.severity === "3").length, description: "Severidade média", icon: TriangleAlert, tone: "border-yellow-500/40 bg-yellow-500/10 text-yellow-300" },
-      { title: "HIGH", value: filteredEvents.filter((event) => event.severity === "4").length, description: "Alta severidade", icon: ShieldAlert, tone: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
-      { title: "DISASTER", value: filteredEvents.filter((event) => event.severity === "5").length, description: "Incidentes críticos", icon: Siren, tone: "border-red-500/50 bg-red-500/10 text-red-300" },
+      { title: "RECONHECIDOS", value: acknowledged, description: "Reconhecidos na origem", icon: CheckCircle2, tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
+      { title: "NÃO RECONHECIDOS", value: total - acknowledged, description: "Aguardando tratamento", icon: CircleAlert, tone: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
+      { title: "MÉDIA", value: filteredEvents.filter((event) => event.severity === "3").length, description: "Severidade média", icon: TriangleAlert, tone: "border-yellow-500/40 bg-yellow-500/10 text-yellow-300" },
+      { title: "ALTA", value: filteredEvents.filter((event) => event.severity === "4").length, description: "Alta severidade", icon: ShieldAlert, tone: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
+      { title: "DESASTRE", value: filteredEvents.filter((event) => event.severity === "5").length, description: "Incidentes críticos", icon: Siren, tone: "border-red-500/50 bg-red-500/10 text-red-300" },
     ];
   }, [filteredEvents]);
 
@@ -334,7 +334,7 @@ export default function AlertsPage() {
           </span>
           <div>
             <p className="text-sm font-semibold tracking-wide text-white">TELETEX · ONEVIEW</p>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Network Operations Center</p>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Centro de Operações de Rede</p>
           </div>
         </div>
       }
@@ -353,7 +353,7 @@ export default function AlertsPage() {
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-white lg:text-3xl">Painel operacional de alertas</h1>
             <p className="mt-1 text-sm text-slate-400">
-              Dados reais atualizados em {formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT)} · {totalAlerts.toLocaleString("pt-BR")} alertas sincronizados · snapshot em modo leitura
+              Dados reais atualizados em {formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT)} · {totalAlerts.toLocaleString("pt-BR")} alertas sincronizados · cópia em modo leitura
             </p>
           </div>
           <Button
@@ -371,7 +371,7 @@ export default function AlertsPage() {
     >
       <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
         <LockKeyhole className="h-4 w-4 shrink-0" />
-        <span><strong>Modo leitura:</strong> {SNAPSHOT_READ_ONLY_MESSAGE} A Vercel não mantém conexão live; IPs, endpoints e hostnames internos permanecem protegidos.</span>
+        <span><strong>Modo leitura:</strong> {SNAPSHOT_READ_ONLY_MESSAGE} A Vercel não mantém conexão em tempo real; endereços IP, pontos de acesso e nomes internos permanecem protegidos.</span>
       </div>
 
       <section aria-label="Filtro por cliente" className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3">
@@ -438,8 +438,8 @@ export default function AlertsPage() {
               <SelectTrigger className="h-10 min-w-44 border-slate-700 bg-slate-900 text-slate-200"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todos</SelectItem>
-                <SelectItem value="acknowledged">Acknowledged</SelectItem>
-                <SelectItem value="unacknowledged">Unacknowledged</SelectItem>
+                <SelectItem value="acknowledged">Reconhecidos</SelectItem>
+                <SelectItem value="unacknowledged">Não reconhecidos</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -513,7 +513,7 @@ export default function AlertsPage() {
           <div>
             <h2 className="text-base font-semibold text-white">Alertas operacionais</h2>
             <p className="text-xs text-slate-400">
-              Exibindo {Math.min(filteredEvents.length, MAX_VISIBLE_ALERTS).toLocaleString("pt-BR")} de {filteredEvents.length.toLocaleString("pt-BR")} alertas filtrados no snapshot de {events.length.toLocaleString("pt-BR")} · total sincronizado {totalAlerts.toLocaleString("pt-BR")}
+              Exibindo {Math.min(filteredEvents.length, MAX_VISIBLE_ALERTS).toLocaleString("pt-BR")} de {filteredEvents.length.toLocaleString("pt-BR")} alertas filtrados na cópia de {events.length.toLocaleString("pt-BR")} · total sincronizado {totalAlerts.toLocaleString("pt-BR")}
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -532,13 +532,13 @@ export default function AlertsPage() {
                 <TableHead className="w-32">Severidade</TableHead>
                 <TableHead>Problema</TableHead>
                 <TableHead className="w-28">Tempo</TableHead>
-                <TableHead className="w-56">Info</TableHead>
+                <TableHead className="w-56">Informações</TableHead>
                 <TableHead className="w-36">ACK</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400"><Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />Carregando eventos do snapshot...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400"><Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />Carregando eventos da cópia...</TableCell></TableRow>
               ) : filteredEvents.length === 0 ? (
                 <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400">Nenhum alerta corresponde aos filtros selecionados.</TableCell></TableRow>
               ) : (

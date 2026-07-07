@@ -30,7 +30,7 @@ export function WorkspaceFilters({
       <div className="relative flex-1">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
-          placeholder="Buscar workspace..."
+          placeholder="Buscar espaço de trabalho..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           className="pl-9"
@@ -46,7 +46,7 @@ export function WorkspaceFilters({
           <SelectContent>
             <SelectItem value="all">Todos os tipos</SelectItem>
             <SelectItem value="meetingRoom">Sala de Reunião</SelectItem>
-            <SelectItem value="huddle">Huddle Room</SelectItem>
+            <SelectItem value="huddle">Sala colaborativa</SelectItem>
             <SelectItem value="focus">Sala de Foco</SelectItem>
             <SelectItem value="open">Espaço Aberto</SelectItem>
             <SelectItem value="desk">Mesa</SelectItem>
@@ -61,7 +61,7 @@ export function WorkspaceFilters({
           <SelectContent>
             <SelectItem value="all">Todos os status</SelectItem>
             <SelectItem value="ok">OK</SelectItem>
-            <SelectItem value="info">Info</SelectItem>
+            <SelectItem value="info">Informativo</SelectItem>
             <SelectItem value="warning">Aviso</SelectItem>
             <SelectItem value="error">Erro</SelectItem>
           </SelectContent>

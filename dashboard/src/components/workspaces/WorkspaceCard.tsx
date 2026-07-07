@@ -21,7 +21,7 @@ const healthLevelConfig = {
 
 const workspaceTypeLabels: Record<string, string> = {
   meetingRoom: "Sala de Reunião",
-  huddle: "Huddle Room",
+  huddle: "Sala colaborativa",
   focus: "Sala de Foco",
   open: "Espaço Aberto",
   desk: "Mesa",
@@ -134,7 +134,7 @@ export function WorkspaceCard({ workspace, onClick, onMeetingClick }: WorkspaceC
               {workspace.displayName}
             </h3>
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Health status inline */}
+               {/* Estado de integridade */}
               <div className={cn("px-2 py-0.5 rounded flex items-center gap-1", healthConfig.bg)}>
                 <HealthIcon className={cn("h-3 w-3", healthConfig.color)} />
                 <span className={cn("text-xs font-medium", healthConfig.color)}>
@@ -180,12 +180,12 @@ export function WorkspaceCard({ workspace, onClick, onMeetingClick }: WorkspaceC
 
       {/* Métricas */}
       <div className="px-4 pb-4 space-y-3">
-        {/* Devices, Alertas e Reunião */}
+        {/* Dispositivos, alertas e reunião */}
         <div className="grid grid-cols-3 gap-3">
           <div className="space-y-1">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <Monitor className="h-3.5 w-3.5" />
-              <span>Devices</span>
+              <span>Dispositivos</span>
             </div>
             <div className="flex items-baseline gap-1.5">
               <span className={cn(
@@ -288,7 +288,7 @@ export function WorkspaceCard({ workspace, onClick, onMeetingClick }: WorkspaceC
             {hasMeetings && (
               <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 dark:bg-gray-800/40 rounded-md">
                 <Video className="h-3.5 w-3.5 text-black dark:text-gray-100" />
-                <span className="text-xs font-medium text-black dark:text-gray-100">Meetings</span>
+                <span className="text-xs font-medium text-black dark:text-gray-100">Reuniões</span>
               </div>
             )}
             {!hasCalling && !hasCalendar && !hasMeetings && (

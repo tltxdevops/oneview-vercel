@@ -266,7 +266,7 @@ export default function WorkspacesPage() {
 
   return (
     <AppLayout 
-      title="Workspaces Cisco" 
+      title="Espaços Cisco"
       description="Monitoramento de salas e dispositivos Webex"
       clientSelect={
         <ClientSelect
@@ -290,7 +290,7 @@ export default function WorkspacesPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-3xl font-bold text-foreground">{kpis.total}</p>
-                  <p className="text-xs font-medium text-muted-foreground mt-2">Total Workspaces</p>
+                   <p className="text-xs font-medium text-muted-foreground mt-2">Total de espaços</p>
                 </div>
                 <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
                   <Monitor className="h-6 w-6 text-primary" />
@@ -306,7 +306,7 @@ export default function WorkspacesPage() {
                   {kpis.connectedDevices}
                   <span className="text-lg text-muted-foreground ml-1">/{kpis.totalDevices}</span>
                 </p>
-                <p className="text-xs font-medium text-muted-foreground mt-2">Devices Online</p>
+                 <p className="text-xs font-medium text-muted-foreground mt-2">Dispositivos online</p>
               </div>
               <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
                 <CheckCircle2 className="h-6 w-6 text-primary" />
@@ -319,7 +319,7 @@ export default function WorkspacesPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-3xl font-bold text-foreground">{kpis.activeMeetings}</p>
-                <p className="text-xs font-medium text-muted-foreground mt-2">Em Uso Agora</p>
+                <p className="text-xs font-medium text-muted-foreground mt-2">Em uso agora</p>
               </div>
               <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
                 <Video className="h-6 w-6 text-primary" />
@@ -360,7 +360,7 @@ export default function WorkspacesPage() {
           <div className="flex items-center justify-center py-12">
             <div className="flex flex-col items-center gap-4">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <p className="text-sm text-muted-foreground">Carregando workspaces...</p>
+               <p className="text-sm text-muted-foreground">Carregando espaços de trabalho...</p>
             </div>
           </div>
         ) : error ? (
@@ -368,7 +368,7 @@ export default function WorkspacesPage() {
             <div className="flex flex-col items-center justify-center text-center space-y-3">
               <AlertTriangle className="h-12 w-12 text-destructive" />
               <div>
-                <h3 className="text-lg font-semibold">Erro ao carregar workspaces</h3>
+                <h3 className="text-lg font-semibold">Erro ao carregar espaços de trabalho</h3>
                 <p className="text-sm text-muted-foreground mt-1">{error}</p>
                 <Button onClick={handleRefresh} variant="outline" className="mt-4">
                   Tentar novamente
@@ -397,7 +397,7 @@ export default function WorkspacesPage() {
                   <div className="flex flex-col items-center justify-center text-center space-y-3">
                     <WifiOff className="h-12 w-12 text-muted-foreground" />
                     <div>
-                      <h3 className="text-lg font-semibold">Nenhum workspace encontrado</h3>
+                      <h3 className="text-lg font-semibold">Nenhum espaço de trabalho encontrado</h3>
                       <p className="text-sm text-muted-foreground mt-1">
                         Tente ajustar os filtros ou buscar por outro termo
                       </p>

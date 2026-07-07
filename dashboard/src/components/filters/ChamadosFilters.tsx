@@ -53,10 +53,10 @@ export function ChamadosFilters({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">Todas</SelectItem>
-              <SelectItem value="Info">Info</SelectItem>
-              <SelectItem value="Average">Average</SelectItem>
-              <SelectItem value="High">High</SelectItem>
-              <SelectItem value="Critical">Critical</SelectItem>
+              <SelectItem value="Info">Informativa</SelectItem>
+              <SelectItem value="Average">Média</SelectItem>
+              <SelectItem value="High">Alta</SelectItem>
+              <SelectItem value="Critical">Crítica</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -126,10 +126,10 @@ export function ChamadosFilters({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">Todas</SelectItem>
-              <SelectItem value="Info">Info</SelectItem>
-              <SelectItem value="Average">Average</SelectItem>
-              <SelectItem value="High">High</SelectItem>
-              <SelectItem value="Critical">Critical</SelectItem>
+              <SelectItem value="Info">Informativa</SelectItem>
+              <SelectItem value="Average">Média</SelectItem>
+              <SelectItem value="High">Alta</SelectItem>
+              <SelectItem value="Critical">Crítica</SelectItem>
             </SelectContent>
           </Select>
         </div>

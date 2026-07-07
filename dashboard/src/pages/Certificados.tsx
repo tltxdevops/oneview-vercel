@@ -277,7 +277,7 @@ export default function CertificadosPage() {
 
   <section className="rounded-[10px] border border-border/60 bg-white p-6 shadow-sm">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <h2 className="text-lg font-semibold">Top 10 mais críticos</h2>
+                <h2 className="text-lg font-semibold">10 mais críticos</h2>
                 <p className="text-xs text-muted-foreground">
                   Menores valores de dias restantes aparecem primeiro (expirados ficam com 0 dias).
                 </p>

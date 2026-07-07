@@ -10,6 +10,20 @@ import { toast } from "sonner";
 import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
 import { SNAPSHOT_READ_ONLY_MESSAGE } from "@/lib/demo-oneview-data";
 
+const sourceStatusLabel: Record<DataSource["status"], string> = {
+  active: "Ativa",
+  inactive: "Inativa",
+  error: "Erro",
+};
+
+const syncStatusLabel: Record<string, string> = {
+  success: "Sucesso",
+  failed: "Falha",
+  running: "Em execução",
+  pending: "Pendente",
+  test_failed: "Falha no teste",
+};
+
 export default function SettingsPage() {
   const [theme, setTheme] = useState<Theme>(getStoredTheme());
   const [interval, setInterval] = useState<number>(getStoredRefreshInterval());
@@ -32,7 +46,7 @@ export default function SettingsPage() {
     try {
       setDataSources(await fetchDataSources());
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao carregar Data Sources");
+      toast.error(error instanceof Error ? error.message : "Erro ao carregar fontes de dados");
     } finally {
       setLoadingSources(false);
     }
@@ -60,21 +74,21 @@ export default function SettingsPage() {
     setRunningAction(`sync:${source.id}`);
     try {
       const result = await requestDataSourceSync(source.id);
-      toast.success(`${source.name}: solicitacao enfileirada (${result.outbox_id})`);
+      toast.success(`${source.name}: solicitação enfileirada (${result.outbox_id})`);
       await loadDataSources();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao solicitar sincronizacao");
+      toast.error(error instanceof Error ? error.message : "Erro ao solicitar sincronização");
     } finally {
       setRunningAction(null);
     }
   };
 
   return (
-    <AppLayout title="Configurações" description="Ajustes do dashboard e integrações">
+    <AppLayout title="Configurações" description="Ajustes do painel e integrações">
       <div className="space-y-6">
         <Card className="p-6">
           <h2 className="mb-3 text-lg font-semibold">Tema</h2>
-          <p className="mb-3 text-sm text-muted-foreground">Escolha tema da dashboard</p>
+          <p className="mb-3 text-sm text-muted-foreground">Escolha o tema do painel</p>
           <div className="flex items-center gap-3">
             <button
               onClick={() => applyTheme("light")}
@@ -92,8 +106,8 @@ export default function SettingsPage() {
         </Card>
 
         <Card className="p-6">
-          <h2 className="mb-3 text-lg font-semibold">Atualizacao automatica</h2>
-          <p className="mb-3 text-sm text-muted-foreground">Intervalo em segundos para auto-refresh (minimo 5s)</p>
+          <h2 className="mb-3 text-lg font-semibold">Atualização automática</h2>
+          <p className="mb-3 text-sm text-muted-foreground">Intervalo em segundos para atualização automática (mínimo de 5 segundos)</p>
           <div className="flex items-center gap-3">
             <Input
               type="number"
@@ -109,9 +123,9 @@ export default function SettingsPage() {
         <Card className="p-6">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">Data Sources Zabbix</h2>
+              <h2 className="text-lg font-semibold">Fontes de dados Zabbix</h2>
               <p className="text-sm text-muted-foreground">
-                {isDemoMode ? "Datasources do snapshot real atualizado. A Vercel não realiza conexão externa neste modo de leitura." : "Solicitações manuais entram no outbox. A sincronização é executada pelo Worker."}
+                {isDemoMode ? "Fontes de dados da cópia real atualizada. A Vercel não realiza conexão externa neste modo de leitura." : "Solicitações manuais entram na fila. A sincronização é executada pelo serviço dedicado."}
               </p>
             </div>
             <Button variant="outline" onClick={() => void loadDataSources()} disabled={loadingSources}>
@@ -128,25 +142,25 @@ export default function SettingsPage() {
           {loadingSources ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />
-              Carregando Data Sources...
+              Carregando fontes de dados...
             </div>
           ) : dataSources.length === 0 ? (
             <div className="rounded-lg border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
-              Nenhum datasource disponível no snapshot atual.
+              Nenhuma fonte de dados disponível na cópia atual.
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className={isDemoMode ? "w-full min-w-[1050px] text-sm" : "w-full min-w-[1180px] text-sm"}>
                 <thead>
                   <tr className="border-b border-border/70 text-left text-xs uppercase text-muted-foreground">
-                    <th className="py-3 pr-3">Datasource</th>
+                    <th className="py-3 pr-3">Fonte de dados</th>
                     <th className="py-3 pr-3">Status</th>
-                    <th className="py-3 pr-3">sync_enabled</th>
-                    {!isDemoMode ? <th className="py-3 pr-3">API URL</th> : null}
-                    {!isDemoMode ? <th className="py-3 pr-3">has_token</th> : null}
-                    <th className="py-3 pr-3">Ultimo sync</th>
-                    <th className="py-3 pr-3">Alertas / Pendencia</th>
-                    <th className="py-3 text-right">Acoes</th>
+                    <th className="py-3 pr-3">Sincronização habilitada</th>
+                    {!isDemoMode ? <th className="py-3 pr-3">URL da API</th> : null}
+                    {!isDemoMode ? <th className="py-3 pr-3">Token configurado</th> : null}
+                    <th className="py-3 pr-3">Última sincronização</th>
+                    <th className="py-3 pr-3">Alertas / Pendência</th>
+                    <th className="py-3 text-right">Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -166,29 +180,29 @@ export default function SettingsPage() {
                               ? "bg-red-50 text-red-700"
                               : "bg-muted text-muted-foreground"
                         }`}>
-                          {source.status}
+                          {sourceStatusLabel[source.status]}
                         </span>
                       </td>
-                      <td className="py-3 pr-3 font-mono text-xs">{String(source.sync_enabled)}</td>
+                      <td className="py-3 pr-3 text-xs">{source.sync_enabled ? "Sim" : "Não"}</td>
                       {!isDemoMode ? <td className="max-w-[300px] break-all py-3 pr-3 font-mono text-xs">{source.api_url}</td> : null}
-                      {!isDemoMode ? <td className="py-3 pr-3 font-mono text-xs">{source.has_token === undefined ? "-" : String(source.has_token)}</td> : null}
+                      {!isDemoMode ? <td className="py-3 pr-3 text-xs">{source.has_token === undefined ? "-" : source.has_token ? "Sim" : "Não"}</td> : null}
                       <td className="py-3 pr-3">
                         <div className="flex flex-col">
-                          <span className={source.last_sync_status === "success" ? "font-medium text-success" : "font-medium text-error"}>{source.last_sync_status ?? "-"}</span>
+                          <span className={source.last_sync_status === "success" ? "font-medium text-success" : "font-medium text-error"}>{source.last_sync_status ? syncStatusLabel[source.last_sync_status] ?? source.last_sync_status : "-"}</span>
                           <span className="text-xs text-muted-foreground">{source.last_sync_at ? new Date(source.last_sync_at).toLocaleString("pt-BR") : "-"}</span>
                         </div>
                       </td>
                       <td className="max-w-[330px] py-3 pr-3">
                         <div className="flex flex-col gap-1">
                           <span className="font-medium">{source.alerts_count ?? "-"} alertas</span>
-                          <span className="text-xs text-muted-foreground">{source.pending_reason ?? source.last_error ?? source.last_sync_error ?? "Sem pendencias"}</span>
+                          <span className="text-xs text-muted-foreground">{source.pending_reason ?? source.last_error ?? source.last_sync_error ?? "Sem pendências"}</span>
                         </div>
                       </td>
                       <td className="py-3">
                         <div className="flex justify-end gap-2">
                           <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={isDemoMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={isDemoMode ? SNAPSHOT_READ_ONLY_MESSAGE : "Enfileirar sincronização"}>
                             {runningAction === `sync:${source.id}` ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                            Enfileirar sync
+                            Solicitar sincronização
                           </Button>
                         </div>
                       </td>
