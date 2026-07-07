@@ -24,45 +24,38 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
-import { SeverityBadge } from "@/components/badges/SeverityBadge";
-import { ClientSelect } from "@/components/certificados/ClientSelect";
-import { Severity } from "@/types";
 import { cn } from "@/lib/utils";
 import {
   DataSource,
   OneViewAlert,
-  addAlertNote,
-  assignAlert,
-  dataSourcesToClients,
-  fetchAlert,
   fetchAllAlerts,
   fetchDataSources,
   formatDurationSeconds,
-  updateAlertStatus,
 } from "@/lib/oneview-api";
 import { toast } from "sonner";
 import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import { DEMO_READ_ONLY_MESSAGE, DEMO_TOTAL_ALERTS, SNAPSHOT_GENERATED_AT } from "@/lib/demo-oneview-data";
+import { DEMO_READ_ONLY_MESSAGE, DEMO_TOTAL_ALERTS } from "@/lib/demo-oneview-data";
 import {
-  Archive,
   Activity,
-  AlertTriangle,
   ArrowUpDown,
-  BellOff,
   CalendarRange,
   Check,
-  Clock3,
-  Eye,
+  CheckCircle2,
+  CircleAlert,
+  Info,
+  LockKeyhole,
   Loader2,
   MessageSquare,
+  RefreshCcw,
   Search,
-  Ticket,
+  ShieldAlert,
+  Siren,
+  TriangleAlert,
   UserCheck,
 } from "lucide-react";
 
 type AckFilter = "all" | "acknowledged" | "unacknowledged";
 type StatusFilter = "all" | "active" | "resolved";
-type OperationalFilter = "all" | "recent" | "watching" | "historical" | "unhandled" | "critical";
 type SortField = "clock" | "severity" | "eventid" | "name";
 type SeverityLevelValue = "0" | "1" | "2" | "3" | "4" | "5";
 
@@ -73,27 +66,22 @@ interface AlertEvent {
   name: string;
   ackState: "0" | "1";
   severity: string;
-  suppressed: "0" | "1";
   hosts: { hostid: string; name: string }[];
-  opdata: string;
   sourceStatus: "active" | "resolved";
-  statusInternal: string;
   durationLabel: string;
-  startedAt: string;
   lastSeen: string;
   clientName: string;
   clientId: string;
-  hostGroup?: string | null;
   serviceName?: string | null;
 }
 
-const severityCatalog: Record<number, { label: string; badge: Severity; short: string }> = {
-  5: { label: "Desastre", badge: "Critical", short: "Z5" },
-  4: { label: "Alta", badge: "High", short: "Z4" },
-  3: { label: "Media", badge: "Average", short: "Z3" },
-  2: { label: "Aviso", badge: "Average", short: "Z2" },
-  1: { label: "Informativo", badge: "Info", short: "Z1" },
-  0: { label: "Nao classificado", badge: "Info", short: "Z0" },
+const severityCatalog: Record<number, { label: string; short: string }> = {
+  5: { label: "Desastre", short: "Z5" },
+  4: { label: "Alta", short: "Z4" },
+  3: { label: "Média", short: "Z3" },
+  2: { label: "Aviso", short: "Z2" },
+  1: { label: "Informativo", short: "Z1" },
+  0: { label: "Não classificado", short: "Z0" },
 };
 
 const severityOrder = [5, 4, 3, 2, 1, 0] as const;
@@ -123,49 +111,32 @@ const toEvent = (alert: OneViewAlert): AlertEvent => {
     name: alert.problem_name,
     ackState: alert.acknowledged_internal || alert.acknowledged_source ? "1" : "0",
     severity: severityNumberByApi[alert.severity] ?? "0",
-    suppressed: alert.payload_normalized?.suppressed ? "1" : "0",
     hosts: [{ hostid: alert.source_host_id ?? "", name: alert.host_name ?? "-" }],
-    opdata: alert.payload_normalized?.opdata ?? "",
     sourceStatus: alert.status_source === "resolved" ? "resolved" : "active",
-    statusInternal: alert.status_internal,
     durationLabel: formatDurationSeconds(alert.duration_seconds),
-    startedAt,
     lastSeen: alert.last_seen_at,
     clientName: alert.client_name,
     clientId: alert.data_source_id,
-    hostGroup: alert.host_group,
     serviceName: alert.service_name,
   };
 };
 
 const parseUnix = (value: string) => Number.parseInt(value, 10);
-const toSeverity = (level: number): Severity => severityCatalog[level]?.badge ?? "Info";
 const formatTimestamp = (clock: number) => format(new Date(clock * 1000), "dd/MM/yyyy HH:mm:ss");
-const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_VISIBLE_ALERTS = 250;
+const teletexLogoSrc = `${import.meta.env.BASE_URL}tltx/tltx-t-branco.svg`;
 
-const parseDateMs = (value?: string | null) => {
-  if (!value) return null;
-  const parsed = new Date(value).getTime();
-  return Number.isNaN(parsed) ? null : parsed;
-};
-
-const isActiveEvent = (event: AlertEvent) => event.sourceStatus === "active";
-const isAcknowledgedEvent = (event: AlertEvent) => event.ackState === "1";
-const isCriticalEvent = (event: AlertEvent) => Number(event.severity) >= 4;
-const isRecentEvent = (event: AlertEvent, referenceTime: number) => {
-  if (!isActiveEvent(event)) return false;
-  const eventStart = parseDateMs(event.startedAt) ?? parseDateMs(event.lastSeen) ?? parseUnix(event.clock) * 1000;
-  return eventStart >= referenceTime - RECENT_WINDOW_MS;
-};
-
-const matchesOperationalFilter = (event: AlertEvent, filter: OperationalFilter, referenceTime: number) => {
-  if (filter === "all") return true;
-  if (filter === "recent") return isRecentEvent(event, referenceTime);
-  if (filter === "watching") return isActiveEvent(event) && !isRecentEvent(event, referenceTime);
-  if (filter === "historical") return !isActiveEvent(event);
-  if (filter === "unhandled") return isActiveEvent(event) && !isAcknowledgedEvent(event);
-  if (filter === "critical") return isCriticalEvent(event);
-  return true;
+const safeDisplayText = (value: unknown, fallback = "—", maxLength = 240) => {
+  if (typeof value !== "string") return fallback;
+  const sanitized = Array.from(value)
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 32 && code !== 127 ? character : " ";
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitized ? sanitized.slice(0, maxLength) : fallback;
 };
 
 const getDefaultRange = (): DateRange => {
@@ -179,19 +150,14 @@ export default function AlertsPage() {
   const [severityLevels, setSeverityLevels] = useState<SeverityLevelValue[]>(DEFAULT_SEVERITIES);
   const [ackFilter, setAckFilter] = useState<AckFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [operationalFilter, setOperationalFilter] = useState<OperationalFilter>("all");
   const [sortField, setSortField] = useState<SortField>("clock");
   const [sortOrder, setSortOrder] = useState<"ASC" | "DESC">("DESC");
   const [searchTerm, setSearchTerm] = useState("");
   const [timeRange, setTimeRange] = useState<DateRange | undefined>(() => isDemoMode ? undefined : getDefaultRange());
   const [selectedClient, setSelectedClient] = useState<string | string[]>("all");
   const [isLoading, setIsLoading] = useState(false);
-  const [runningAction, setRunningAction] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [totalAlerts, setTotalAlerts] = useState(isDemoMode ? DEMO_TOTAL_ALERTS : 0);
-
-  const clients = useMemo(() => dataSourcesToClients(dataSources), [dataSources]);
-  const snapshotReferenceTime = useMemo(() => parseDateMs(SNAPSHOT_GENERATED_AT) ?? Date.now(), []);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -267,10 +233,6 @@ export default function AlertsPage() {
     if (timeRangeSeconds.to !== undefined) {
       items = items.filter((event) => parseUnix(event.clock) <= timeRangeSeconds.to!);
     }
-    if (operationalFilter !== "all") {
-      items = items.filter((event) => matchesOperationalFilter(event, operationalFilter, snapshotReferenceTime));
-    }
-
     items.sort((a, b) => {
       if (sortField === "clock") {
         return sortOrder === "DESC" ? parseUnix(b.clock) - parseUnix(a.clock) : parseUnix(a.clock) - parseUnix(b.clock);
@@ -289,63 +251,36 @@ export default function AlertsPage() {
     ackFilter,
     events,
     normalizedSelectedClients,
-    operationalFilter,
     searchTerm,
     severityFilter,
     sortField,
     sortOrder,
-    snapshotReferenceTime,
     statusFilter,
     timeRangeSeconds.from,
     timeRangeSeconds.to,
   ]);
 
-  const operationalStats = useMemo(() => {
-    const recent = events.filter((event) => isRecentEvent(event, snapshotReferenceTime)).length;
-    const watching = events.filter((event) => isActiveEvent(event) && !isRecentEvent(event, snapshotReferenceTime)).length;
-    const historical = events.filter((event) => !isActiveEvent(event)).length;
-    const unhandled = events.filter((event) => isActiveEvent(event) && !isAcknowledgedEvent(event)).length;
-    const critical = events.filter(isCriticalEvent).length;
-    const byDatasource = dataSources.map((source) => ({
-      id: source.id,
-      name: source.name,
-      status: source.status,
-      count: events.filter((event) => event.clientId === source.id || event.clientName === source.name).length,
-    }));
-
-    return { recent, watching, historical, unhandled, critical, byDatasource };
-  }, [dataSources, events, snapshotReferenceTime]);
-
-  const operationalCards = useMemo(() => [
-    { title: "Recentes", value: operationalStats.recent, description: "Ativos vistos nas últimas 24h do snapshot", filter: "recent" as OperationalFilter, icon: <Clock3 className="h-4 w-4" /> },
-    { title: "Em acompanhamento", value: operationalStats.watching, description: "Ativos mais antigos", filter: "watching" as OperationalFilter, icon: <Activity className="h-4 w-4" /> },
-    { title: "Históricos", value: operationalStats.historical, description: "Resolvidos no snapshot", filter: "historical" as OperationalFilter, icon: <Archive className="h-4 w-4" /> },
-    { title: "Sem tratamento", value: operationalStats.unhandled, description: "Ativos sem ACK/atribuição/nota visível", filter: "unhandled" as OperationalFilter, icon: <AlertTriangle className="h-4 w-4" /> },
-    { title: "Críticos", value: operationalStats.critical, description: "Severidade Z5/Z4", filter: "critical" as OperationalFilter, icon: <Ticket className="h-4 w-4" /> },
-  ], [operationalStats]);
-
-  const kpis = useMemo(() => {
+  const summaryCards = useMemo(() => {
     const total = filteredEvents.length;
     const acknowledged = filteredEvents.filter((event) => event.ackState === "1").length;
-    const pending = total - acknowledged;
-    const highSeverity = filteredEvents.filter((event) => Number(event.severity) >= 4).length;
-
-    if (isDemoMode) {
-      return [
-        { title: "Alertas sincronizados", value: totalAlerts, description: "Total validado", icon: <Activity className="h-5 w-5" />, accent: "bg-primary/10 text-primary" },
-        { title: "Registros exportados", value: total, description: `de ${totalAlerts} sincronizados`, icon: <Search className="h-5 w-5" />, accent: "bg-info/10 text-info" },
-        { title: "Ativos", value: filteredEvents.filter((event) => event.sourceStatus === "active").length, description: "Sincronizados no OneView", icon: <AlertTriangle className="h-5 w-5" />, accent: "bg-error/10 text-error" },
-        { title: "Críticos / High", value: highSeverity, description: "Z5 + Z4", icon: <Ticket className="h-5 w-5" />, accent: "bg-warning/10 text-warning" },
-      ];
-    }
-
     return [
-      { title: "Eventos monitorados", value: total, description: "Dados persistidos", icon: <Activity className="h-5 w-5" />, accent: "bg-primary/10 text-primary" },
-      { title: "Pendentes", value: pending, description: "Sem reconhecimento", icon: <AlertTriangle className="h-5 w-5" />, accent: "bg-error/10 text-error" },
-      { title: "Reconhecidos", value: acknowledged, description: "Fonte ou interno", icon: <Check className="h-5 w-5" />, accent: "bg-success/10 text-success" },
-      { title: "Alta severidade", value: highSeverity, description: ">= Z4", icon: <Ticket className="h-5 w-5" />, accent: "bg-warning/10 text-warning" },
+      { title: "TOTAL", value: total, description: "Alertas na visão atual", icon: Activity, tone: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
+      { title: "ACKNOWLEDGED", value: acknowledged, description: "Reconhecidos na origem", icon: CheckCircle2, tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
+      { title: "UNACKNOWLEDGED", value: total - acknowledged, description: "Aguardando tratamento", icon: CircleAlert, tone: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
+      { title: "AVERAGE", value: filteredEvents.filter((event) => event.severity === "3").length, description: "Severidade média", icon: TriangleAlert, tone: "border-yellow-500/40 bg-yellow-500/10 text-yellow-300" },
+      { title: "HIGH", value: filteredEvents.filter((event) => event.severity === "4").length, description: "Alta severidade", icon: ShieldAlert, tone: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
+      { title: "DISASTER", value: filteredEvents.filter((event) => event.severity === "5").length, description: "Incidentes críticos", icon: Siren, tone: "border-red-500/50 bg-red-500/10 text-red-300" },
     ];
-  }, [filteredEvents, totalAlerts]);
+  }, [filteredEvents]);
+
+  const clientTabs = useMemo(() => [
+    { id: "all", name: "Todos", count: events.length },
+    ...dataSources.map((source) => ({
+      id: source.id,
+      name: safeDisplayText(source.name, "Cliente"),
+      count: events.filter((event) => event.clientId === source.id || event.clientName === source.name).length,
+    })),
+  ], [dataSources, events]);
 
   const timeRangeLabel = useMemo(() => {
     if (timeRange?.from && timeRange?.to) return `${format(timeRange.from, "dd/MM/yyyy")} - ${format(timeRange.to, "dd/MM/yyyy")}`;
@@ -358,429 +293,306 @@ export default function AlertsPage() {
     setSeverityLevels(DEFAULT_SEVERITIES);
     setAckFilter("all");
     setStatusFilter("all");
-    setOperationalFilter("all");
     setSortField("clock");
     setSortOrder("DESC");
     setSearchTerm("");
     setTimeRange(isDemoMode ? undefined : getDefaultRange());
-    if (isDemoMode) setSelectedClient("all");
+    setSelectedClient("all");
   }, []);
-
-  const selectedClientSummary = useMemo(() => {
-    if (normalizedSelectedClients.includes("all")) return "Todos";
-    const names = normalizedSelectedClients
-      .map((id) => clients.find((client) => client.id === id)?.name ?? id)
-      .filter(Boolean);
-    return names.length === 1 ? names[0] : `${names[0]} (+${names.length - 1})`;
-  }, [clients, normalizedSelectedClients]);
-
-  const runAlertAction = useCallback(async (key: string, action: () => Promise<void>) => {
-    setRunningAction(key);
-    try {
-      await action();
-      await loadData();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao executar acao");
-    } finally {
-      setRunningAction(null);
-    }
-  }, [loadData]);
-
-  const handleDetails = useCallback((event: AlertEvent) => {
-    void runAlertAction(`details:${event.id}`, async () => {
-      const detail = await fetchAlert(event.id);
-      await updateAlertStatus(event.id, "viewed", "Visualizado pela tela de alertas");
-      toast.info(`${detail.client_name} | ${detail.host_name ?? "-"} | ${detail.problem_name}`);
-    });
-  }, [runAlertAction]);
-
-  const handleAddNote = useCallback((event: AlertEvent) => {
-    const message = window.prompt(`Observacao interna para o alerta ${event.eventid}`);
-    if (!message?.trim()) return;
-    void runAlertAction(`note:${event.id}`, async () => {
-      await addAlertNote(event.id, message.trim());
-      toast.success("Observacao registrada no historico do alerta");
-    });
-  }, [runAlertAction]);
-
-  const handleAssign = useCallback((event: AlertEvent) => {
-    void runAlertAction(`assign:${event.id}`, async () => {
-      await assignAlert(event.id);
-      toast.success("Atendimento assumido e historico atualizado");
-    });
-  }, [runAlertAction]);
-
-  const handleAck = useCallback((event: AlertEvent) => {
-    const confirmed = window.confirm("Registrar reconhecimento interno no OneView? ACK real no Zabbix esta bloqueado.");
-    if (!confirmed) return;
-    void runAlertAction(`ack:${event.id}`, async () => {
-      await updateAlertStatus(event.id, "acknowledged", "Reconhecimento interno pela tela de alertas");
-      toast.success("Reconhecimento interno registrado");
-    });
-  }, [runAlertAction]);
 
   return (
     <AppLayout
-      title={isDemoMode ? "Alertas sincronizados" : "Alertas"}
-      description={isDemoMode ? "Dados reais exportados após sincronização do Worker." : "Eventos Zabbix persistidos no OneView."}
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      contentClassName={isDemoMode ? "gap-3 p-4" : undefined}
-      onRefresh={loadData}
+      contentClassName="dark min-h-[calc(100vh-80px)] gap-4 bg-background p-4 text-foreground lg:p-5"
+      topbarClassName="dark border-slate-800 bg-slate-950/95 text-slate-100 supports-[backdrop-filter]:bg-slate-950/90"
       clientSelect={
-        <ClientSelect
-          clients={clients}
-          selectedClient={selectedClient}
-          onClientChange={setSelectedClient}
-        />
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-900">
+            <img src={teletexLogoSrc} alt="Teletex" className="h-6 w-6" />
+          </span>
+          <div>
+            <p className="text-sm font-semibold tracking-wide text-white">TELETEX · ONEVIEW</p>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Network Operations Center</p>
+          </div>
+        </div>
+      }
+      topbarRightSection={
+        <div className="flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+          <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
+          Monitoramento somente leitura
+        </div>
+      }
+      headerContent={
+        <header className="flex flex-col gap-4 border-b border-slate-800 pb-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-sky-400">
+              <Activity className="h-4 w-4" />
+              Operação em tempo real
+            </div>
+            <h1 className="text-2xl font-semibold tracking-tight text-white lg:text-3xl">Painel operacional de alertas</h1>
+            <p className="mt-1 text-sm text-slate-400">
+              Snapshot sanitizado · {totalAlerts.toLocaleString("pt-BR")} alertas sincronizados · atualização manual
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="border-slate-700 bg-slate-900 text-slate-200 hover:border-sky-500 hover:bg-slate-800 hover:text-white"
+            onClick={() => void loadData()}
+            disabled={isLoading}
+          >
+            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            Atualizar painel
+          </Button>
+        </header>
       }
     >
-      {isDemoMode ? (
-        <div className="rounded-[10px] border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
-          {DEMO_READ_ONLY_MESSAGE}
-        </div>
-      ) : null}
+      <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
+        <LockKeyhole className="h-4 w-4 shrink-0" />
+        <span><strong>Modo leitura:</strong> {DEMO_READ_ONLY_MESSAGE} IPs e endpoints internos permanecem protegidos.</span>
+      </div>
 
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {kpis.map((kpi) => (
-          <Card key={kpi.title} className={cn("rounded-[10px] border border-border/60 bg-white shadow-sm", isDemoMode ? "p-3" : "p-5")}>
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{kpi.title}</p>
-                <p className={cn("font-semibold tabular-nums", isDemoMode ? "mt-1 text-2xl" : "mt-2 text-3xl")}>{kpi.value}</p>
-                <p className="mt-1 text-xs text-muted-foreground/80">{kpi.description}</p>
-              </div>
-              <div className={cn("flex items-center justify-center rounded-lg", isDemoMode ? "h-8 w-8" : "h-10 w-10", kpi.accent)}>{kpi.icon}</div>
-            </div>
-          </Card>
-        ))}
+      <section aria-label="Filtro por cliente" className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3">
+        <div className="flex min-w-max items-center gap-2">
+          {clientTabs.map((client) => {
+            const active = normalizedSelectedClients.includes("all") ? client.id === "all" : normalizedSelectedClients.includes(client.id);
+            return (
+              <button
+                key={client.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setSelectedClient(client.id)}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400",
+                  active
+                    ? "border-sky-500 bg-sky-500/15 text-sky-200"
+                    : "border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-600 hover:text-slate-200",
+                )}
+              >
+                {client.name}
+                <span className={cn("rounded-md px-1.5 py-0.5 font-mono text-[10px]", active ? "bg-sky-400/20" : "bg-slate-800")}>{client.count}</span>
+              </button>
+            );
+          })}
+        </div>
       </section>
 
-      {isDemoMode ? (
-        <Card className="rounded-[10px] border border-border/60 bg-white p-4 shadow-sm">
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Visão operacional</h2>
-                <p className="text-xs text-muted-foreground">Classificação local calculada sobre o snapshot real do banco OneView.</p>
-              </div>
-              <Button variant="ghost" size="sm" className="h-8 w-fit rounded-lg border border-border/70 bg-white px-3 text-xs" onClick={() => setOperationalFilter("all")}>
-                Ver todos
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              {operationalCards.map((card) => (
-                <button
-                  key={card.title}
-                  type="button"
-                  onClick={() => setOperationalFilter(card.filter)}
-                  className={cn(
-                    "rounded-lg border p-3 text-left transition hover:border-black",
-                    operationalFilter === card.filter ? "border-black bg-black text-white" : "border-border/70 bg-white text-foreground",
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wide">{card.title}</span>
-                    {card.icon}
-                  </div>
-                  <p className="mt-2 text-2xl font-semibold tabular-nums">{card.value}</p>
-                  <p className={cn("mt-1 text-[11px]", operationalFilter === card.filter ? "text-white/70" : "text-muted-foreground")}>{card.description}</p>
-                </button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
-              {operationalStats.byDatasource.map((source) => (
-                <div key={source.id} className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-foreground">{source.name}</span>
-                    <span className={source.status === "active" ? "text-success" : "text-error"}>{source.status}</span>
-                  </div>
-                  <p className="mt-1 text-muted-foreground">{source.count} alertas no snapshot</p>
+      <section aria-label="Resumo operacional" className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-6">
+        {summaryCards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <Card key={card.title} className={cn("border p-4 shadow-none", card.tone)}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-80">{card.title}</p>
+                  <p className="mt-2 font-mono text-3xl font-semibold tabular-nums text-white">{card.value.toLocaleString("pt-BR")}</p>
+                  <p className="mt-1 text-[11px] opacity-70">{card.description}</p>
                 </div>
-              ))}
-            </div>
-          </div>
-        </Card>
-      ) : null}
-
-      <Card className={cn("rounded-[10px] border border-border/60 bg-white shadow-sm", isDemoMode ? "p-4" : "p-6")}>
-        <div className={cn("flex flex-col", isDemoMode ? "gap-3" : "gap-5")}>
-          <div className={cn("grid", isDemoMode ? "gap-3" : "gap-4 lg:grid-cols-[1.6fr,1fr]")}>
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold uppercase text-muted-foreground">Pesquisa</span>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/80" />
-                <Input
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Buscar por host, servico ou problema"
-                  className="h-10 rounded-lg border border-border/70 bg-white pl-9 text-sm"
-                />
+                <Icon className="h-5 w-5 shrink-0" />
               </div>
-            </div>
-            <div className={cn("flex flex-col gap-2", isDemoMode && "hidden")}>
-              <span className="text-xs font-semibold uppercase text-muted-foreground">Janela temporal</span>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" className="flex h-10 w-full items-center justify-between rounded-lg border border-border/70 bg-white px-3 text-sm font-normal text-foreground">
-                    <span className="truncate text-left">{timeRangeLabel}</span>
-                    <CalendarRange className="ml-2 h-4 w-4 text-muted-foreground/80" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="start" className="w-auto p-0">
-                  <Calendar mode="range" numberOfMonths={1} selected={timeRange} onSelect={setTimeRange} />
-                </PopoverContent>
-              </Popover>
-            </div>
+            </Card>
+          );
+        })}
+      </section>
+
+      <Card className="border-slate-800 bg-slate-950 p-4 shadow-none">
+        <div className="grid gap-4 xl:grid-cols-[minmax(260px,1.5fr)_auto_auto_auto_auto] xl:items-end">
+          <label className="flex flex-col gap-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            Buscar alerta
+            <span className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <Input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Host, serviço ou problema"
+                className="h-10 border-slate-700 bg-slate-900 pl-9 text-slate-100 placeholder:text-slate-600"
+              />
+            </span>
+          </label>
+
+          <div className="flex flex-col gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Reconhecimento</span>
+            <Select value={ackFilter} onValueChange={(value) => setAckFilter(value as AckFilter)}>
+              <SelectTrigger className="h-10 min-w-44 border-slate-700 bg-slate-900 text-slate-200"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos</SelectItem>
+                <SelectItem value="acknowledged">Acknowledged</SelectItem>
+                <SelectItem value="unacknowledged">Unacknowledged</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
-          <div className={cn("flex flex-col gap-3", isDemoMode && "lg:flex-row lg:items-end lg:justify-between")}>
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold uppercase text-muted-foreground">Severidade Zabbix</span>
-              <ToggleGroup
-                type="multiple"
-                value={severityLevels}
-                onValueChange={(value) => setSeverityLevels(value.length > 0 ? (value as SeverityLevelValue[]) : [])}
-                className="flex flex-wrap gap-2"
+          <div className="flex flex-col gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Status</span>
+            <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
+              <SelectTrigger className="h-10 min-w-36 border-slate-700 bg-slate-900 text-slate-200"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos</SelectItem>
+                <SelectItem value="active">Ativos</SelectItem>
+                <SelectItem value="resolved">Resolvidos</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Ordenação</span>
+            <Select value={sortField} onValueChange={(value) => setSortField(value as SortField)}>
+              <SelectTrigger className="h-10 min-w-36 border-slate-700 bg-slate-900 text-slate-200"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="clock">Horário</SelectItem>
+                <SelectItem value="severity">Severidade</SelectItem>
+                <SelectItem value="eventid">Evento</SelectItem>
+                <SelectItem value="name">Problema</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" className="border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500 hover:bg-slate-800 hover:text-white" onClick={() => setSortOrder((value) => value === "ASC" ? "DESC" : "ASC")} aria-label="Alternar ordem">
+              <ArrowUpDown className="h-4 w-4" />
+            </Button>
+            <Button type="button" variant="outline" className="border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500 hover:bg-slate-800 hover:text-white" onClick={handleClearFilters}>
+              Limpar
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-800 pt-4">
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Severidade</span>
+          <ToggleGroup type="multiple" value={severityLevels} onValueChange={(value) => setSeverityLevels(value as SeverityLevelValue[])} className="flex flex-wrap justify-start gap-2">
+            {severityOrder.map((level) => (
+              <ToggleGroupItem
+                key={level}
+                value={String(level)}
+                aria-label={severityCatalog[level].label}
+                className="h-8 border border-slate-700 bg-slate-900 px-3 text-[10px] font-semibold text-slate-400 data-[state=on]:border-sky-500 data-[state=on]:bg-sky-500/15 data-[state=on]:text-sky-200"
               >
-                {severityOrder.map((level) => (
-                  <ToggleGroupItem
-                    key={level}
-                    value={String(level) as SeverityLevelValue}
-                    className="h-9 rounded-lg border border-border/70 bg-white px-3 text-[11px] font-semibold uppercase tracking-wide text-foreground data-[state=on]:border-black data-[state=on]:bg-black data-[state=on]:text-white"
-                    title={severityCatalog[level].label}
-                    aria-label={severityCatalog[level].label}
-                  >
-                    {severityCatalog[level].short}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </div>
-            {isDemoMode ? (
-              <div className="flex items-center justify-end gap-2">
-                <Button variant="ghost" size="sm" className="h-9 rounded-lg border border-border/70 bg-white px-4 text-xs font-semibold" onClick={handleClearFilters}>
-                  Limpar filtros
+                {severityCatalog[level].short} · {severityCatalog[level].label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          {!isDemoMode ? (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" className="ml-auto border-slate-700 bg-slate-900 text-slate-300">
+                  <CalendarRange className="h-4 w-4" />{timeRangeLabel}
                 </Button>
-                <Button size="sm" className="h-9 rounded-lg px-4 text-xs font-semibold" onClick={() => void loadData()} disabled={isLoading}>
-                  {isLoading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Consultando...</> : "Atualizar"}
-                </Button>
-              </div>
-            ) : null}
-          </div>
-
-          <div className={cn("grid", isDemoMode ? "gap-3 md:grid-cols-4" : "gap-4 md:grid-cols-2 xl:grid-cols-3")}>
-            {isDemoMode ? (
-              <div className="flex flex-col gap-2">
-                <span className="text-xs font-semibold uppercase text-muted-foreground">Visão operacional</span>
-                <Select value={operationalFilter} onValueChange={(value) => setOperationalFilter(value as OperationalFilter)}>
-                  <SelectTrigger className="h-10 rounded-lg border border-border/70 bg-white text-sm"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="recent">Recentes</SelectItem>
-                    <SelectItem value="watching">Em acompanhamento</SelectItem>
-                    <SelectItem value="historical">Históricos</SelectItem>
-                    <SelectItem value="unhandled">Sem tratamento</SelectItem>
-                    <SelectItem value="critical">Críticos Z5/Z4</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
-            {isDemoMode ? (
-              <div className="flex flex-col gap-2">
-                <span className="text-xs font-semibold uppercase text-muted-foreground">Datasource</span>
-                <Select value={normalizedSelectedClients[0] ?? "all"} onValueChange={setSelectedClient}>
-                  <SelectTrigger className="h-10 rounded-lg border border-border/70 bg-white text-sm"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {clients.map((client) => <SelectItem key={client.id} value={client.id}>{client.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold uppercase text-muted-foreground">Reconhecimento</span>
-              <Select value={ackFilter} onValueChange={(value) => setAckFilter(value as AckFilter)}>
-                <SelectTrigger className="h-10 rounded-lg border border-border/70 bg-white text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="acknowledged">Somente reconhecidos</SelectItem>
-                  <SelectItem value="unacknowledged">Somente pendentes</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold uppercase text-muted-foreground">Status</span>
-              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
-                <SelectTrigger className="h-10 rounded-lg border border-border/70 bg-white text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="active">Ativos</SelectItem>
-                  <SelectItem value="resolved">Resolvidos</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className={cn("flex flex-col gap-2", isDemoMode && "hidden")}>
-              <span className="text-xs font-semibold uppercase text-muted-foreground">Ordem</span>
-              <Button variant="outline" className="flex h-10 items-center justify-between rounded-lg border border-border/70 bg-white px-3 text-sm font-medium" onClick={() => setSortOrder((prev) => (prev === "ASC" ? "DESC" : "ASC"))}>
-                <span>{sortOrder === "ASC" ? "Ascendente" : "Descendente"}</span>
-                <ArrowUpDown className="h-4 w-4 text-muted-foreground/80" />
-              </Button>
-            </div>
-          </div>
-
-          <div className={cn("grid gap-4 md:grid-cols-[2fr,1fr]", isDemoMode && "hidden")}>
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold uppercase text-muted-foreground">Campo de ordenacao</span>
-              <Select value={sortField} onValueChange={(value) => setSortField(value as SortField)}>
-                <SelectTrigger className="h-10 rounded-lg border border-border/70 bg-white text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="clock">clock</SelectItem>
-                  <SelectItem value="severity">severity</SelectItem>
-                  <SelectItem value="eventid">eventid</SelectItem>
-                  <SelectItem value="name">name</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-end justify-end gap-2">
-              <Button variant="ghost" size="sm" className="h-9 rounded-lg border border-border/70 bg-white px-4 text-xs font-semibold" onClick={handleClearFilters}>
-                Limpar filtros
-              </Button>
-              <Button size="sm" className="h-9 rounded-lg px-4 text-xs font-semibold" onClick={() => void loadData()} disabled={isLoading}>
-                {isLoading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Consultando...</> : "Atualizar"}
-              </Button>
-            </div>
-          </div>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-auto p-0">
+                <Calendar mode="range" numberOfMonths={1} selected={timeRange} onSelect={setTimeRange} />
+              </PopoverContent>
+            </Popover>
+          ) : null}
         </div>
       </Card>
 
-      <Card className="rounded-[10px] border border-border/60 bg-white shadow-sm">
-        <div className={cn("flex flex-col gap-2 border-b border-border/60", isDemoMode ? "px-4 py-3" : "px-6 py-5")}>
-          <div className="flex flex-col gap-1 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">{isDemoMode ? "Alertas sincronizados" : "Eventos retornados"}</h2>
-              <p className={cn(isDemoMode ? "text-sm font-semibold text-foreground" : "text-xs text-muted-foreground")}>
-                {isDemoMode
-                  ? `Exibindo ${filteredEvents.length} de ${totalAlerts} alertas sincronizados`
-                  : `${filteredEvents.length} registros encontrados`}
-              </p>
-            </div>
-            <div className="flex flex-col items-start gap-1 text-xs text-muted-foreground lg:items-end">
-              {isDemoMode ? (
-                <span>Datasource: {selectedClientSummary} · exportação real com {filteredEvents.length} alertas</span>
-              ) : (
-                <>
-                  <span>Clientes: {selectedClientSummary}</span>
-                  <span>Janela: {timeRangeLabel}</span>
-                  <span>Data Sources: {dataSources.length}</span>
-                </>
-              )}
-            </div>
+      <Card className="overflow-hidden border-slate-800 bg-slate-950 shadow-none">
+        <div className="flex flex-col gap-2 border-b border-slate-800 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-white">Alertas operacionais</h2>
+            <p className="text-xs text-slate-400">
+              Exibindo {Math.min(filteredEvents.length, MAX_VISIBLE_ALERTS).toLocaleString("pt-BR")} de {filteredEvents.length.toLocaleString("pt-BR")} alertas filtrados
+            </p>
           </div>
-          {fetchError && <div className="rounded-lg border border-error/60 bg-error/10 px-4 py-3 text-sm text-error">{fetchError}</div>}
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <Info className="h-4 w-4" /> Dados sensíveis removidos antes da exibição
+          </div>
+          {fetchError ? <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">Falha ao carregar os alertas.</div> : null}
         </div>
 
-        <div className="overflow-x-auto">
-          <Table className="min-w-full text-sm">
+        <div className="max-h-[62vh] overflow-auto">
+          <Table className="min-w-[1280px] text-xs">
             <TableHeader>
-              <TableRow className="bg-muted/30 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <TableRow className="border-slate-800 bg-slate-900/95 text-[10px] uppercase tracking-[0.14em] text-slate-400 hover:bg-slate-900/95">
+                <TableHead className="w-40">Cliente</TableHead>
+                <TableHead className="w-44">Host</TableHead>
+                <TableHead className="w-28">IP</TableHead>
                 <TableHead className="w-32">Severidade</TableHead>
-                <TableHead className="w-48">Host</TableHead>
                 <TableHead>Problema</TableHead>
-                <TableHead className="w-44">Datasource / Cliente</TableHead>
-                <TableHead className="w-32">Status</TableHead>
-                <TableHead className="w-24">ACK</TableHead>
-                <TableHead className="w-32">Duracao</TableHead>
-                <TableHead className="w-40">Ultima atualizacao</TableHead>
-                <TableHead className="w-52">Acoes</TableHead>
+                <TableHead className="w-28">Tempo</TableHead>
+                <TableHead className="w-56">Info</TableHead>
+                <TableHead className="w-36">ACK</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground"><Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />Consultando eventos no OneView...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400"><Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />Consultando eventos no OneView...</TableCell></TableRow>
               ) : filteredEvents.length === 0 ? (
-                <TableRow><TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">{isDemoMode ? "Nenhum alerta corresponde aos filtros locais." : "Nenhum evento real encontrado. Sincronize um Data Source em Configuracoes."}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400">Nenhum alerta corresponde aos filtros selecionados.</TableCell></TableRow>
               ) : (
-                filteredEvents.map((event) => {
+                filteredEvents.slice(0, MAX_VISIBLE_ALERTS).map((event) => {
                   const severityLevel = Number(event.severity);
                   const lastSeenDate = new Date(event.lastSeen);
                   const lastSeenClock = Number.isNaN(lastSeenDate.getTime())
                     ? parseUnix(event.clock)
                     : Math.floor(lastSeenDate.getTime() / 1000);
                   const hostPrimary = event.hosts?.[0]?.name ?? "-";
+                  const severityTone = severityLevel === 5
+                    ? "border-red-500/40 bg-red-500/15 text-red-300"
+                    : severityLevel === 4
+                      ? "border-orange-500/40 bg-orange-500/15 text-orange-300"
+                      : severityLevel === 3
+                        ? "border-yellow-500/40 bg-yellow-500/15 text-yellow-300"
+                        : "border-sky-500/30 bg-sky-500/10 text-sky-300";
 
                   return (
-                    <TableRow key={event.id} className="border-b border-border/40 last:border-none">
-                      <TableCell>
+                    <TableRow key={event.id} className="border-slate-800/80 bg-slate-950 text-slate-300 hover:bg-slate-900/80">
+                      <TableCell className="py-3">
+                        <span className="font-semibold text-slate-200">{safeDisplayText(event.clientName, "Cliente")}</span>
+                      </TableCell>
+                      <TableCell className="py-3">
                         <div className="flex flex-col gap-1">
-                          <SeverityBadge severity={toSeverity(severityLevel)} />
-                          <span className="text-[10px] text-muted-foreground">{severityCatalog[severityLevel]?.label ?? "-"}</span>
+                          <span className="font-medium text-slate-200">{safeDisplayText(hostPrimary, "Host protegido")}</span>
+                          <span className="font-mono text-[10px] text-slate-600">#{safeDisplayText(event.eventid, "—", 80)}</span>
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex flex-col text-sm font-medium text-foreground">
-                          <span>{hostPrimary}</span>
-                          <span className="font-mono text-[10px] text-muted-foreground">#{event.eventid}</span>
-                          {event.hostGroup && <span className="text-[11px] text-muted-foreground">{event.hostGroup}</span>}
-                        </div>
+                      <TableCell className="py-3">
+                        <span className="inline-flex items-center gap-1.5 text-slate-500"><LockKeyhole className="h-3.5 w-3.5" />Protegido</span>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex flex-col gap-2">
-                          <span className="text-sm font-medium text-foreground/90">{event.name}</span>
-                          {event.opdata && <span className="text-xs text-muted-foreground/80">{event.opdata}</span>}
-                          {event.serviceName && <span className="text-xs text-muted-foreground/80">Servico: {event.serviceName}</span>}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-col">
-                          <span className="text-sm font-semibold text-foreground/90">{event.clientName}</span>
-                          <span className="text-[11px] text-muted-foreground">{event.clientId}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-col gap-1">
-                          <Badge className={cn(
-                            "h-6 w-fit rounded-full border-transparent px-3 text-[11px]",
-                            event.sourceStatus === "active" ? "bg-error/10 text-error" : "bg-success/10 text-success",
-                          )}>
-                            {event.sourceStatus === "active" ? "Ativo" : "Resolvido"}
-                          </Badge>
-                          <span className="text-[10px] text-muted-foreground">{event.statusInternal}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={cn("rounded-full", event.ackState === "1" ? "border-success/30 text-success" : "border-warning/40 text-warning")}>
-                          {event.ackState === "1" ? "Sim" : "Nao"}
+                      <TableCell className="py-3">
+                        <Badge className={cn("border px-2 py-1 text-[10px] font-bold uppercase hover:bg-inherit", severityTone)}>
+                          {severityCatalog[severityLevel]?.label ?? "Informativo"}
                         </Badge>
                       </TableCell>
-                      <TableCell><span className="text-sm font-medium tabular-nums text-foreground">{event.durationLabel}</span></TableCell>
-                      <TableCell>
-                        <div className="flex flex-col text-xs text-foreground">
-                          <span className="font-medium">{formatTimestamp(lastSeenClock)}</span>
-                          <span className="text-[11px] text-muted-foreground">{event.sourceStatus === "active" ? "Em acompanhamento" : "Normalizado"}</span>
+                      <TableCell className="py-3">
+                        <div className="max-w-2xl">
+                          <p className="font-medium leading-5 text-slate-100">{safeDisplayText(event.name, "Alerta sem descrição")}</p>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            {event.serviceName ? `Serviço: ${safeDisplayText(event.serviceName, "—", 100)}` : "Origem sanitizada"}
+                          </p>
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg border border-border/70 text-muted-foreground hover:border-black hover:text-foreground" onClick={() => handleDetails(event)} disabled={isDemoMode || runningAction !== null} title={isDemoMode ? DEMO_READ_ONLY_MESSAGE : "Ver detalhes"} aria-label={`Ver detalhes ${event.eventid}`}>
-                            {runningAction === `details:${event.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
-                          </Button>
-                          <Button variant="outline" size="sm" className="h-8 rounded-lg px-3 text-xs" onClick={() => handleAssign(event)} disabled={isDemoMode || runningAction !== null} title={isDemoMode ? DEMO_READ_ONLY_MESSAGE : "Assumir atendimento interno"}>
-                            {runningAction === `assign:${event.id}` ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <UserCheck className="mr-1.5 h-3.5 w-3.5" />}Atribuir
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg border border-border/70 text-muted-foreground hover:border-black hover:text-foreground" onClick={() => handleAddNote(event)} disabled={isDemoMode || runningAction !== null} title={isDemoMode ? DEMO_READ_ONLY_MESSAGE : "Criar nota"} aria-label={`Criar nota ${event.eventid}`}>
-                            {runningAction === `note:${event.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageSquare className="h-4 w-4" />}
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg border border-border/70 text-muted-foreground hover:border-black hover:text-foreground" onClick={() => handleAck(event)} disabled={isDemoMode || runningAction !== null} title={isDemoMode ? DEMO_READ_ONLY_MESSAGE : "Reconhecimento interno"} aria-label={`Reconhecer internamente ${event.eventid}`}>
-                            {runningAction === `ack:${event.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                          </Button>
-                          {isDemoMode ? (
-                            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg border border-border/70 text-muted-foreground" disabled title={DEMO_READ_ONLY_MESSAGE} aria-label={`Silenciar ${event.eventid}`}>
-                              <BellOff className="h-4 w-4" />
+                      <TableCell className="py-3 font-mono text-slate-300">
+                        {safeDisplayText(event.durationLabel)}
+                      </TableCell>
+                      <TableCell className="py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex flex-col gap-1">
+                            <span className={cn("font-semibold", event.sourceStatus === "active" ? "text-red-300" : "text-emerald-300")}>{event.sourceStatus === "active" ? "ATIVO" : "RESOLVIDO"}</span>
+                            <span className="font-mono text-[10px] text-slate-500">{formatTimestamp(lastSeenClock)}</span>
+                          </div>
+                          <div className="flex gap-1" aria-label="Ações somente leitura">
+                            <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={DEMO_READ_ONLY_MESSAGE} aria-label="Atribuição indisponível no modo leitura">
+                              <UserCheck className="h-3.5 w-3.5" />
+                              Atribuir
                             </Button>
-                          ) : null}
+                            <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={DEMO_READ_ONLY_MESSAGE} aria-label="Comentários indisponíveis no modo leitura">
+                              <MessageSquare className="h-3.5 w-3.5" />
+                              Comentar
+                            </Button>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="py-3">
+                        <div className="flex items-center gap-2">
+                          <Badge className={cn("border px-2 py-1 text-[10px] hover:bg-inherit", event.ackState === "1" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-amber-500/40 bg-amber-500/10 text-amber-300")}>
+                            {event.ackState === "1" ? "ACK" : "PENDENTE"}
+                          </Badge>
+                          <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={DEMO_READ_ONLY_MESSAGE} aria-label="ACK indisponível no modo leitura">
+                            <Check className="h-3.5 w-3.5" />
+                            ACK
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>

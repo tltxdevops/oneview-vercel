@@ -19,7 +19,31 @@ O snapshot-fonte fica em `dashboard/src/lib/oneview-real-snapshot.json`. Antes d
 dev, teste ou build, uma allowlist gera `oneview-real-snapshot.safe.json`, sem
 payload bruto ou campos sensíveis. O dashboard mostra o total de 655, os 100
 alertas exportados e os quatro sync logs. `/alertas` mantém filtros locais;
-`/config` mostra os dois datasources em read-only.
+`/config` mostra os dois datasources em read-only. O snapshot seguro também
+elimina `api_url`, hostnames/IPs internos, `payload_raw` e `payload_normalized`.
+Hosts exibidos usam aliases neutros gerados no build.
+
+## BFF OneView
+
+Rotas explícitas em `dashboard/api/oneview/`:
+
+- `GET /api/oneview/health`
+- `GET /api/oneview/dashboard-summary`
+- `GET /api/oneview/grafana-summary`
+- `GET /api/oneview/alerts`
+- `GET /api/oneview/clients-summary`
+
+Todas exigem token Microsoft validado server-side. Estado inicial:
+
+```env
+ONEVIEW_LIVE_API_ENABLED=false
+ONEVIEW_SNAPSHOT_FALLBACK_ENABLED=true
+```
+
+Com live desligado, retornam snapshot e `X-OneView-Data-Source: snapshot`.
+Quando habilitada, `ONEVIEW_API_BASE_URL`, `CF_ACCESS_CLIENT_ID` e
+`CF_ACCESS_CLIENT_SECRET` devem existir somente nas variáveis server-side da
+Vercel. Falhas 502/503/504 e timeout podem usar fallback; 401/403 nunca usam.
 
 Para retornar ao fluxo real, defina `NEXT_PUBLIC_DEMO_MODE=false` ou remova a
 variável. O fluxo real existente e as Vercel Functions permanecem preservados.
@@ -38,6 +62,7 @@ GitHub Actions, não ao frontend nem ao repositório.
 ```bash
 cd dashboard
 npm ci
+npm run test:bff
 npm run test:demo
 npm run build
 ```

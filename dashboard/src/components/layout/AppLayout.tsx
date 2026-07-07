@@ -12,9 +12,11 @@ interface AppLayoutProps {
   title?: string;
   description?: ReactNode;
   clientSelect?: ReactNode;
+  topbarRightSection?: ReactNode;
   headerAside?: ReactNode;
   children: ReactNode;
   contentClassName?: string;
+  topbarClassName?: string;
   headerContent?: ReactNode;
   onRefresh?: () => void | Promise<void>;
   refreshInterval?: number;
@@ -29,9 +31,11 @@ export function AppLayout({
   title,
   description,
   clientSelect,
+  topbarRightSection,
   headerAside,
   children,
   contentClassName,
+  topbarClassName,
   headerContent,
   onRefresh,
   refreshInterval = DEFAULT_REFRESH_INTERVAL,
@@ -146,7 +150,7 @@ export function AppLayout({
     <div className="flex min-h-screen bg-background antialiased">
       <Sidebar />
       <div className="ml-20 flex min-h-screen flex-1 flex-col">
-        <Topbar clientSection={clientSelect} rightSection={topbarControls} />
+        <Topbar clientSection={clientSelect} rightSection={topbarRightSection ?? topbarControls} className={topbarClassName} />
         <main className="flex-1 overflow-x-hidden">
           <div className={cn("flex flex-col gap-5 p-5", contentClassName)}>
             {headerContent ?? (

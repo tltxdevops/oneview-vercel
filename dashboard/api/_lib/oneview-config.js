@@ -1,14 +1,14 @@
 const ROUTES = Object.freeze({
   health: Object.freeze({ upstreamPath: "/health", role: "viewer", fallbackSafe: true, query: [] }),
-  "dashboard-summary": Object.freeze({ upstreamPath: "/dashboard-summary", role: "viewer", fallbackSafe: true, query: [] }),
-  "grafana-summary": Object.freeze({ upstreamPath: "/grafana-summary", role: "viewer", fallbackSafe: true, query: [] }),
+  "dashboard-summary": Object.freeze({ upstreamPath: "/dashboard/summary", role: "viewer", fallbackSafe: true, query: [] }),
+  "grafana-summary": Object.freeze({ upstreamPath: "/dashboard/grafana-summary", role: "viewer", fallbackSafe: true, query: [] }),
   alerts: Object.freeze({
     upstreamPath: "/alerts",
     role: "viewer",
     fallbackSafe: true,
     query: ["client_name", "severity", "status_internal", "acknowledged", "limit", "offset"],
   }),
-  "clients-summary": Object.freeze({ upstreamPath: "/clients-summary", role: "viewer", fallbackSafe: true, query: [] }),
+  "clients-summary": Object.freeze({ upstreamPath: "/clients/summary", role: "viewer", fallbackSafe: true, query: [] }),
 });
 
 function booleanValue(value, fallback) {
