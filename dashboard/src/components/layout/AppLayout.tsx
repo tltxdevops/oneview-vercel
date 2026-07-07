@@ -178,7 +178,7 @@ export function AppLayout({
               <div>
                 <Badge className="border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700 hover:bg-emerald-50">
                   <BadgeCheck className="mr-1.5 h-3.5 w-3.5" />
-                  Snapshot real do banco OneView
+                  Dados reais atualizados · snapshot em modo leitura
                 </Badge>
               </div>
             ) : null}

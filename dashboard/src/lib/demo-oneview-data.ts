@@ -12,9 +12,63 @@ interface SnapshotSyncLog {
   created_at: string;
 }
 
+interface SnapshotSummary {
+  total_alerts: number;
+  active_alerts: number;
+  datasources_total: number;
+  datasources_active: number;
+  datasources_error: number;
+  critical_high: number;
+}
+
+interface SnapshotGrafanaSummary {
+  total: number;
+  acknowledged: number;
+  unacknowledged: number;
+  average: number;
+  high: number;
+  disaster: number;
+  by_client: Array<{ client: string; count: number }>;
+  last_updated_at: string | null;
+}
+
+interface SnapshotClientSummary {
+  client: string;
+  datasource: string;
+  total: number;
+  active: number;
+  acknowledged: number;
+  unacknowledged: number;
+  average: number;
+  high: number;
+  disaster: number;
+  last_seen_at: string | null;
+}
+
+interface SnapshotOperationalView {
+  recentes: number;
+  em_acompanhamento: number;
+  historicos: number;
+  sem_tratamento: number;
+  criticos: number;
+  por_datasource: Array<{
+    datasource: string;
+    total: number;
+    active: number;
+    resolved: number;
+    critical: number;
+    untreated: number;
+  }>;
+}
+
 interface SafeSnapshot {
   generated_at: string;
   alerts_count: number;
+  exported_alerts_count?: number;
+  summary?: SnapshotSummary;
+  grafana_summary?: SnapshotGrafanaSummary;
+  clients_summary?: SnapshotClientSummary[];
+  operational_view?: SnapshotOperationalView;
   data_sources: Array<Omit<DataSource, "api_url">>;
   sync_logs: SnapshotSyncLog[];
   alerts: Array<Omit<OneViewAlert, "host_name" | "host_ip" | "payload_normalized"> & { host_alias?: string }>;
@@ -23,10 +77,22 @@ interface SafeSnapshot {
 const snapshot = safeSnapshotJson as unknown as SafeSnapshot;
 
 export const SNAPSHOT_GENERATED_AT = snapshot.generated_at;
-export const DEMO_TOTAL_ALERTS = Math.max(0, Number(snapshot.alerts_count) || snapshot.alerts.length);
-export const DEMO_SAMPLE_SIZE = snapshot.alerts.length;
-export const DEMO_READ_ONLY_MESSAGE =
-  "Ações operacionais desabilitadas neste modo de leitura. Nenhum ACK real foi executado.";
+export const SNAPSHOT_TOTAL_ALERTS = Math.max(0, Number(snapshot.summary?.total_alerts ?? snapshot.alerts_count) || snapshot.alerts.length);
+export const SNAPSHOT_EXPORTED_ALERTS = Math.max(0, Number(snapshot.exported_alerts_count) || snapshot.alerts.length);
+export const SNAPSHOT_SUMMARY: SnapshotSummary = snapshot.summary ?? {
+  total_alerts: SNAPSHOT_TOTAL_ALERTS,
+  active_alerts: snapshot.alerts.filter((alert) => alert.status_source !== "resolved").length,
+  datasources_total: snapshot.data_sources.length,
+  datasources_active: snapshot.data_sources.filter((source) => source.status === "active").length,
+  datasources_error: snapshot.data_sources.filter((source) => source.status === "error").length,
+  critical_high: snapshot.alerts.filter((alert) => ["high", "disaster"].includes(alert.severity)).length,
+};
+export const SNAPSHOT_GRAFANA_SUMMARY = snapshot.grafana_summary;
+export const SNAPSHOT_CLIENT_SUMMARIES = snapshot.clients_summary ?? [];
+export const SNAPSHOT_OPERATIONAL_VIEW = snapshot.operational_view;
+export const SNAPSHOT_LAST_UPDATED_AT = snapshot.grafana_summary?.last_updated_at ?? snapshot.generated_at;
+export const SNAPSHOT_READ_ONLY_MESSAGE =
+  "Ações operacionais desabilitadas neste modo de leitura. Nenhum ACK real é executado.";
 
 export const demoAlerts: OneViewAlert[] = snapshot.alerts.map((alert) => ({
   ...alert,
@@ -73,13 +139,21 @@ const serviceCounts = countBy(demoAlerts, (alert) => alert.service_name ?? "Não
 const hostCounts = countBy(demoAlerts, (alert) => alert.host_name ?? "Host não identificado");
 
 export const demoAlertMetrics: AlertMetrics = {
-  active_total: activeAlerts.length,
-  by_severity: [...severityCounts].map(([severity, count]) => ({ severity, count })),
+  active_total: SNAPSHOT_SUMMARY.active_alerts,
+  by_severity: SNAPSHOT_GRAFANA_SUMMARY
+    ? [
+        { severity: "average", count: SNAPSHOT_GRAFANA_SUMMARY.average },
+        { severity: "high", count: SNAPSHOT_GRAFANA_SUMMARY.high },
+        { severity: "disaster", count: SNAPSHOT_GRAFANA_SUMMARY.disaster },
+      ]
+    : [...severityCounts].map(([severity, count]) => ({ severity, count })),
   by_status: [...statusCounts].map(([status_internal, count]) => ({ status_internal, count })),
-  by_client: demoDataSources.map((source) => ({
-    client_name: source.client_name,
-    count: source.alerts_count ?? demoAlerts.filter((alert) => alert.data_source_id === source.id).length,
-  })),
+  by_client: SNAPSHOT_CLIENT_SUMMARIES.length > 0
+    ? SNAPSHOT_CLIENT_SUMMARIES.map((client) => ({ client_name: client.client, count: client.active }))
+    : demoDataSources.map((source) => ({
+        client_name: source.client_name,
+        count: source.alerts_count ?? demoAlerts.filter((alert) => alert.data_source_id === source.id).length,
+      })),
   by_service: [...serviceCounts].map(([service_name, count]) => ({
     service_name,
     environment: "internal",
@@ -89,7 +163,7 @@ export const demoAlertMetrics: AlertMetrics = {
     .sort(([, countA], [, countB]) => countB - countA)
     .slice(0, 10)
     .map(([host_name, count]) => ({ host_name, count })),
-  unacknowledged_total: activeAlerts.length - activeAcknowledged.length,
+  unacknowledged_total: SNAPSHOT_OPERATIONAL_VIEW?.sem_tratamento ?? activeAlerts.length - activeAcknowledged.length,
   longest_duration: [...demoAlerts]
     .sort((alertA, alertB) => alertB.duration_seconds - alertA.duration_seconds)
     .slice(0, 10)

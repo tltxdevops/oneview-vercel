@@ -20,7 +20,13 @@ import {
 import { Alert, Severity } from "@/types";
 import { toast } from "sonner";
 import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import { DEMO_SAMPLE_SIZE, DEMO_TOTAL_ALERTS, demoSyncLogs } from "@/lib/demo-oneview-data";
+import {
+  SNAPSHOT_EXPORTED_ALERTS,
+  SNAPSHOT_LAST_UPDATED_AT,
+  SNAPSHOT_SUMMARY,
+  SNAPSHOT_TOTAL_ALERTS,
+  demoSyncLogs,
+} from "@/lib/demo-oneview-data";
 import { cn } from "@/lib/utils";
 
 const LOCAL_REFRESH_MS = 30_000;
@@ -198,30 +204,22 @@ export default function Index() {
     }`;
 
     if (isDemoMode) {
-      const successfulSource = dataSources.find((source) => source.last_sync_status === "success");
-      const failedSource = dataSources.find((source) => source.last_sync_status === "failed" || source.status === "error");
-      const successfulLog = demoSyncLogs.find((log) => log.status === "success" && log.data_source_id === successfulSource?.id)
-        ?? demoSyncLogs.find((log) => log.status === "success");
-      const failedLog = demoSyncLogs.find((log) => log.status === "failed" && log.data_source_id === failedSource?.id)
-        ?? demoSyncLogs.find((log) => log.status === "failed");
-      const worker = successfulLog?.detail.replace(/^Worker\s+/i, "") || "não identificado";
-
       return [
-        { title: "Alertas sincronizados", status: String(DEMO_TOTAL_ALERTS), icon: <Wifi className="h-5 w-5 text-primary" /> },
-        { title: "Registros exportados", status: String(DEMO_SAMPLE_SIZE), icon: <Database className="h-5 w-5 text-primary" /> },
+        { title: "Alertas sincronizados", status: SNAPSHOT_TOTAL_ALERTS.toLocaleString("pt-BR"), icon: <Wifi className="h-5 w-5 text-primary" /> },
+        { title: "Alertas exportados", status: SNAPSHOT_EXPORTED_ALERTS.toLocaleString("pt-BR"), icon: <Database className="h-5 w-5 text-primary" /> },
         { title: "Alertas ativos", status: String(activeTotal), icon: <Activity className="h-5 w-5 text-primary" /> },
         { title: "Críticos / High", status: String(disasterTotal + highTotal), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
         {
-          title: formatDataSourceName(successfulSource?.name ?? "Datasource ativo"),
-          status: successfulLog?.status ?? successfulSource?.last_sync_status ?? "sem sync",
+          title: "Datasources ativas",
+          status: `${SNAPSHOT_SUMMARY.datasources_active}/${SNAPSHOT_SUMMARY.datasources_total}`,
           icon: <RefreshCcw className="h-5 w-5 text-primary" />,
         },
         {
-          title: formatDataSourceName(failedSource?.name ?? "Datasource pendente"),
-          status: `pendência · ${failedLog?.status ?? failedSource?.last_sync_status ?? "registrada"}`,
+          title: "Datasources com erro",
+          status: String(SNAPSHOT_SUMMARY.datasources_error),
           icon: <Shield className="h-5 w-5 text-primary" />,
         },
-        { title: "Worker", status: worker, icon: <Server className="h-5 w-5 text-primary" /> },
+        { title: "Snapshot atualizado", status: formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT), icon: <Server className="h-5 w-5 text-primary" /> },
       ].map((card) => ({ ...card, scope }));
     }
 
@@ -299,13 +297,13 @@ export default function Index() {
               <h2 className="text-base font-semibold text-foreground">Clientes Zabbix internos</h2>
               <p className="text-sm text-muted-foreground">
                 {isDemoMode
-                  ? `${DEMO_TOTAL_ALERTS} alertas sincronizados no banco OneView; ${DEMO_SAMPLE_SIZE} registros exportados após sincronização do Worker.`
+                  ? `${SNAPSHOT_TOTAL_ALERTS.toLocaleString("pt-BR")} alertas sincronizados; ${SNAPSHOT_EXPORTED_ALERTS.toLocaleString("pt-BR")} alertas ativos recentes no snapshot atualizado.`
                   : `${metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalização média: ${formatMetricDuration(metrics?.avg_normalization_time_seconds)}.`}
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={loadData} disabled={isLoading}>
               {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Recarregar dados
+              Recarregar visualização
             </Button>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -403,8 +401,8 @@ export default function Index() {
                 </Button>
               </header>
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
-                <p className="font-medium text-foreground">Sem dados reais de chamados nesta etapa.</p>
-                <p>Esta etapa usa somente dados persistidos e exportados do OneView.</p>
+                <p className="font-medium text-foreground">Integração de chamados não disponível no snapshot atual.</p>
+                <p>Este painel consolida os alertas operacionais persistidos pelo OneView.</p>
               </div>
             </div>
           </div>
@@ -412,4 +410,11 @@ export default function Index() {
       </div>
     </AppLayout>
   );
+}
+
+function formatSnapshotDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "data indisponível"
+    : date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 }

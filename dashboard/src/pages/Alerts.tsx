@@ -34,7 +34,12 @@ import {
 } from "@/lib/oneview-api";
 import { toast } from "sonner";
 import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import { DEMO_READ_ONLY_MESSAGE, DEMO_TOTAL_ALERTS } from "@/lib/demo-oneview-data";
+import {
+  SNAPSHOT_GRAFANA_SUMMARY,
+  SNAPSHOT_LAST_UPDATED_AT,
+  SNAPSHOT_READ_ONLY_MESSAGE,
+  SNAPSHOT_TOTAL_ALERTS,
+} from "@/lib/demo-oneview-data";
 import {
   Activity,
   ArrowUpDown,
@@ -123,6 +128,10 @@ const toEvent = (alert: OneViewAlert): AlertEvent => {
 
 const parseUnix = (value: string) => Number.parseInt(value, 10);
 const formatTimestamp = (clock: number) => format(new Date(clock * 1000), "dd/MM/yyyy HH:mm:ss");
+const formatSnapshotDate = (value: string) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "data indisponível" : date.toLocaleString("pt-BR");
+};
 const MAX_VISIBLE_ALERTS = 250;
 const teletexLogoSrc = `${import.meta.env.BASE_URL}tltx/tltx-t-branco.svg`;
 
@@ -157,7 +166,7 @@ export default function AlertsPage() {
   const [selectedClient, setSelectedClient] = useState<string | string[]>("all");
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [totalAlerts, setTotalAlerts] = useState(isDemoMode ? DEMO_TOTAL_ALERTS : 0);
+  const [totalAlerts, setTotalAlerts] = useState(isDemoMode ? SNAPSHOT_TOTAL_ALERTS : 0);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -261,6 +270,16 @@ export default function AlertsPage() {
   ]);
 
   const summaryCards = useMemo(() => {
+    if (isDemoMode && SNAPSHOT_GRAFANA_SUMMARY) {
+      return [
+        { title: "TOTAL", value: SNAPSHOT_TOTAL_ALERTS, description: "Alertas sincronizados", icon: Activity, tone: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
+        { title: "ACKNOWLEDGED", value: SNAPSHOT_GRAFANA_SUMMARY.acknowledged, description: "Reconhecidos na origem", icon: CheckCircle2, tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
+        { title: "UNACKNOWLEDGED", value: SNAPSHOT_GRAFANA_SUMMARY.unacknowledged, description: "Aguardando tratamento", icon: CircleAlert, tone: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
+        { title: "AVERAGE", value: SNAPSHOT_GRAFANA_SUMMARY.average, description: "Severidade média", icon: TriangleAlert, tone: "border-yellow-500/40 bg-yellow-500/10 text-yellow-300" },
+        { title: "HIGH", value: SNAPSHOT_GRAFANA_SUMMARY.high, description: "Alta severidade", icon: ShieldAlert, tone: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
+        { title: "DISASTER", value: SNAPSHOT_GRAFANA_SUMMARY.disaster, description: "Incidentes críticos", icon: Siren, tone: "border-red-500/50 bg-red-500/10 text-red-300" },
+      ];
+    }
     const total = filteredEvents.length;
     const acknowledged = filteredEvents.filter((event) => event.ackState === "1").length;
     return [
@@ -274,11 +293,13 @@ export default function AlertsPage() {
   }, [filteredEvents]);
 
   const clientTabs = useMemo(() => [
-    { id: "all", name: "Todos", count: events.length },
+    { id: "all", name: "Todos", count: isDemoMode ? SNAPSHOT_TOTAL_ALERTS : events.length },
     ...dataSources.map((source) => ({
       id: source.id,
       name: safeDisplayText(source.name, "Cliente"),
-      count: events.filter((event) => event.clientId === source.id || event.clientName === source.name).length,
+      count: isDemoMode
+        ? source.alerts_count ?? 0
+        : events.filter((event) => event.clientId === source.id || event.clientName === source.name).length,
     })),
   ], [dataSources, events]);
 
@@ -328,11 +349,11 @@ export default function AlertsPage() {
           <div>
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-sky-400">
               <Activity className="h-4 w-4" />
-              Operação em tempo real
+              Visão operacional consolidada
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-white lg:text-3xl">Painel operacional de alertas</h1>
             <p className="mt-1 text-sm text-slate-400">
-              Snapshot sanitizado · {totalAlerts.toLocaleString("pt-BR")} alertas sincronizados · atualização manual
+              Dados reais atualizados em {formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT)} · {totalAlerts.toLocaleString("pt-BR")} alertas sincronizados · snapshot em modo leitura
             </p>
           </div>
           <Button
@@ -343,14 +364,14 @@ export default function AlertsPage() {
             disabled={isLoading}
           >
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            Atualizar painel
+            Recarregar visualização
           </Button>
         </header>
       }
     >
       <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
         <LockKeyhole className="h-4 w-4 shrink-0" />
-        <span><strong>Modo leitura:</strong> {DEMO_READ_ONLY_MESSAGE} IPs e endpoints internos permanecem protegidos.</span>
+        <span><strong>Modo leitura:</strong> {SNAPSHOT_READ_ONLY_MESSAGE} A Vercel não mantém conexão live; IPs, endpoints e hostnames internos permanecem protegidos.</span>
       </div>
 
       <section aria-label="Filtro por cliente" className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3">
@@ -492,7 +513,7 @@ export default function AlertsPage() {
           <div>
             <h2 className="text-base font-semibold text-white">Alertas operacionais</h2>
             <p className="text-xs text-slate-400">
-              Exibindo {Math.min(filteredEvents.length, MAX_VISIBLE_ALERTS).toLocaleString("pt-BR")} de {filteredEvents.length.toLocaleString("pt-BR")} alertas filtrados
+              Exibindo {Math.min(filteredEvents.length, MAX_VISIBLE_ALERTS).toLocaleString("pt-BR")} de {filteredEvents.length.toLocaleString("pt-BR")} alertas filtrados no snapshot de {events.length.toLocaleString("pt-BR")} · total sincronizado {totalAlerts.toLocaleString("pt-BR")}
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -517,7 +538,7 @@ export default function AlertsPage() {
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400"><Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />Consultando eventos no OneView...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400"><Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />Carregando eventos do snapshot...</TableCell></TableRow>
               ) : filteredEvents.length === 0 ? (
                 <TableRow><TableCell colSpan={8} className="py-16 text-center text-slate-400">Nenhum alerta corresponde aos filtros selecionados.</TableCell></TableRow>
               ) : (
@@ -573,11 +594,11 @@ export default function AlertsPage() {
                             <span className="font-mono text-[10px] text-slate-500">{formatTimestamp(lastSeenClock)}</span>
                           </div>
                           <div className="flex gap-1" aria-label="Ações somente leitura">
-                            <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={DEMO_READ_ONLY_MESSAGE} aria-label="Atribuição indisponível no modo leitura">
+                            <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={SNAPSHOT_READ_ONLY_MESSAGE} aria-label="Atribuição indisponível no modo leitura">
                               <UserCheck className="h-3.5 w-3.5" />
                               Atribuir
                             </Button>
-                            <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={DEMO_READ_ONLY_MESSAGE} aria-label="Comentários indisponíveis no modo leitura">
+                            <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={SNAPSHOT_READ_ONLY_MESSAGE} aria-label="Comentários indisponíveis no modo leitura">
                               <MessageSquare className="h-3.5 w-3.5" />
                               Comentar
                             </Button>
@@ -589,7 +610,7 @@ export default function AlertsPage() {
                           <Badge className={cn("border px-2 py-1 text-[10px] hover:bg-inherit", event.ackState === "1" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-amber-500/40 bg-amber-500/10 text-amber-300")}>
                             {event.ackState === "1" ? "ACK" : "PENDENTE"}
                           </Badge>
-                          <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={DEMO_READ_ONLY_MESSAGE} aria-label="ACK indisponível no modo leitura">
+                          <Button variant="ghost" size="sm" className="h-7 border border-slate-700 px-2 text-[10px] text-slate-500" disabled title={SNAPSHOT_READ_ONLY_MESSAGE} aria-label="ACK indisponível no modo leitura">
                             <Check className="h-3.5 w-3.5" />
                             ACK
                           </Button>

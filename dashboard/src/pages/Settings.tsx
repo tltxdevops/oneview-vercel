@@ -8,7 +8,7 @@ import { DataSource, fetchDataSources, requestDataSourceSync } from "@/lib/onevi
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import { DEMO_READ_ONLY_MESSAGE } from "@/lib/demo-oneview-data";
+import { SNAPSHOT_READ_ONLY_MESSAGE } from "@/lib/demo-oneview-data";
 
 export default function SettingsPage() {
   const [theme, setTheme] = useState<Theme>(getStoredTheme());
@@ -70,7 +70,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <AppLayout title="Configuracoes" description="Ajustes da dashboard e integracoes">
+    <AppLayout title="Configurações" description="Ajustes do dashboard e integrações">
       <div className="space-y-6">
         <Card className="p-6">
           <h2 className="mb-3 text-lg font-semibold">Tema</h2>
@@ -111,7 +111,7 @@ export default function SettingsPage() {
             <div>
               <h2 className="text-lg font-semibold">Data Sources Zabbix</h2>
               <p className="text-sm text-muted-foreground">
-                {isDemoMode ? "Datasources reais exportados do banco OneView. Nenhuma conexão externa é realizada neste modo de leitura." : "Solicitacoes manuais entram no outbox. Quem executa a sincronizacao e o Worker."}
+                {isDemoMode ? "Datasources do snapshot real atualizado. A Vercel não realiza conexão externa neste modo de leitura." : "Solicitações manuais entram no outbox. A sincronização é executada pelo Worker."}
               </p>
             </div>
             <Button variant="outline" onClick={() => void loadDataSources()} disabled={loadingSources}>
@@ -121,7 +121,7 @@ export default function SettingsPage() {
 
           {isDemoMode ? (
             <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              {DEMO_READ_ONLY_MESSAGE}
+              {SNAPSHOT_READ_ONLY_MESSAGE}
             </div>
           ) : null}
 
@@ -132,7 +132,7 @@ export default function SettingsPage() {
             </div>
           ) : dataSources.length === 0 ? (
             <div className="rounded-lg border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
-              Nenhum Data Source cadastrado. Configure o piloto na DB VM, rode as migrations e execute database/scripts/seed_zabbix_data_sources.py.
+              Nenhum datasource disponível no snapshot atual.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -142,7 +142,7 @@ export default function SettingsPage() {
                     <th className="py-3 pr-3">Datasource</th>
                     <th className="py-3 pr-3">Status</th>
                     <th className="py-3 pr-3">sync_enabled</th>
-                    <th className="py-3 pr-3">API URL</th>
+                    {!isDemoMode ? <th className="py-3 pr-3">API URL</th> : null}
                     {!isDemoMode ? <th className="py-3 pr-3">has_token</th> : null}
                     <th className="py-3 pr-3">Ultimo sync</th>
                     <th className="py-3 pr-3">Alertas / Pendencia</th>
@@ -170,7 +170,7 @@ export default function SettingsPage() {
                         </span>
                       </td>
                       <td className="py-3 pr-3 font-mono text-xs">{String(source.sync_enabled)}</td>
-                      <td className="max-w-[300px] break-all py-3 pr-3 font-mono text-xs">{source.api_url}</td>
+                      {!isDemoMode ? <td className="max-w-[300px] break-all py-3 pr-3 font-mono text-xs">{source.api_url}</td> : null}
                       {!isDemoMode ? <td className="py-3 pr-3 font-mono text-xs">{source.has_token === undefined ? "-" : String(source.has_token)}</td> : null}
                       <td className="py-3 pr-3">
                         <div className="flex flex-col">
@@ -186,7 +186,7 @@ export default function SettingsPage() {
                       </td>
                       <td className="py-3">
                         <div className="flex justify-end gap-2">
-                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={isDemoMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={isDemoMode ? DEMO_READ_ONLY_MESSAGE : "Enfileirar sincronizacao"}>
+                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={isDemoMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={isDemoMode ? SNAPSHOT_READ_ONLY_MESSAGE : "Enfileirar sincronização"}>
                             {runningAction === `sync:${source.id}` ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                             Enfileirar sync
                           </Button>

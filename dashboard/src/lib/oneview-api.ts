@@ -1,7 +1,7 @@
 import { Alert, Client, Severity } from "@/types";
 import { isSsoEnvironmentReady, loginRequest, msalInstance } from "@/lib/auth/msal";
 import { isSnapshotMode } from "@/lib/demo-mode";
-import { DEMO_TOTAL_ALERTS, demoAlertMetrics, demoAlerts, demoDataSources } from "@/lib/demo-oneview-data";
+import { SNAPSHOT_TOTAL_ALERTS, demoAlertMetrics, demoAlerts, demoDataSources } from "@/lib/demo-oneview-data";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -226,7 +226,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
       params?.host ||
       params?.service,
     );
-    const total = hasFilter ? items.length : DEMO_TOTAL_ALERTS;
+    const total = hasFilter ? items.length : SNAPSHOT_TOTAL_ALERTS;
     const offset = Math.max(params?.offset ?? 0, 0);
     const limit = Math.max(params?.limit ?? total, 0);
     return { items: items.slice(offset, offset + limit), total };
