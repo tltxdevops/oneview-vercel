@@ -1,3 +1,5 @@
+import { getOneViewDbConfig } from "./oneview-db.js";
+
 const ROUTES = Object.freeze({
   health: Object.freeze({ upstreamPath: "/health", role: "viewer", fallbackSafe: true, query: [] }),
   "dashboard-summary": Object.freeze({ upstreamPath: "/dashboard/summary", role: "viewer", fallbackSafe: true, query: [] }),
@@ -6,9 +8,11 @@ const ROUTES = Object.freeze({
     upstreamPath: "/alerts",
     role: "viewer",
     fallbackSafe: true,
-    query: ["client_name", "severity", "status_internal", "acknowledged", "limit", "offset"],
+    query: ["client_name", "severity", "status_internal", "acknowledged", "host", "service", "limit", "offset"],
   }),
   "clients-summary": Object.freeze({ upstreamPath: "/clients/summary", role: "viewer", fallbackSafe: true, query: [] }),
+  "data-sources": Object.freeze({ upstreamPath: "/data-sources", role: "viewer", fallbackSafe: true, query: [] }),
+  "sync-logs": Object.freeze({ upstreamPath: "/sync-logs/latest", role: "viewer", fallbackSafe: true, query: ["limit"] }),
 });
 
 function booleanValue(value, fallback) {
@@ -27,13 +31,17 @@ export function getOneViewRoute(name) {
 }
 
 export function getOneViewConfig(env = process.env) {
-  const liveEnabled = booleanValue(env.ONEVIEW_LIVE_API_ENABLED, false);
+  const liveDbEnabled = booleanValue(env.ONEVIEW_LIVE_DB_ENABLED, false);
+  const liveApiEnabled = booleanValue(env.ONEVIEW_LIVE_API_ENABLED, false);
+  const liveMode = liveDbEnabled ? "database" : liveApiEnabled ? "upstream" : "snapshot";
+  const liveEnabled = liveMode !== "snapshot";
   const snapshotFallbackEnabled = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, true);
   const apiBaseUrl = String(env.ONEVIEW_API_BASE_URL || "").trim();
   const accessClientId = String(env.CF_ACCESS_CLIENT_ID || "").trim();
   const accessClientSecret = String(env.CF_ACCESS_CLIENT_SECRET || "").trim();
+  const dbConfig = liveMode === "database" ? getOneViewDbConfig(env) : null;
 
-  if (liveEnabled) {
+  if (liveMode === "upstream") {
     let parsedUrl;
     try {
       parsedUrl = new URL(apiBaseUrl);
@@ -50,11 +58,13 @@ export function getOneViewConfig(env = process.env) {
 
   return Object.freeze({
     liveEnabled,
+    liveMode,
     snapshotFallbackEnabled,
     apiBaseUrl,
     accessClientId,
     accessClientSecret,
     timeoutMs: timeoutValue(env.ONEVIEW_API_TIMEOUT_MS),
+    dbConfig,
   });
 }
 

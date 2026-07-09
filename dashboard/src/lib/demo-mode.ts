@@ -35,3 +35,10 @@ export const isSnapshotMode = readBooleanFlag(
   "NEXT_PUBLIC_DEMO_MODE",
   "VITE_DEMO_MODE",
 );
+
+export const isReadOnlyMode = readBooleanFlag(
+  true,
+  "ONEVIEW_READ_ONLY_MODE",
+  "NEXT_PUBLIC_ONEVIEW_READ_ONLY_MODE",
+  "VITE_ONEVIEW_READ_ONLY_MODE",
+);

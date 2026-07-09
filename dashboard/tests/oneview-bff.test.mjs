@@ -20,8 +20,9 @@ function response() {
 }
 
 const authenticated = async () => ({ roles: ["viewer"] });
-const snapshotConfig = () => ({ liveEnabled: false, snapshotFallbackEnabled: true });
-const liveConfig = () => ({ liveEnabled: true, snapshotFallbackEnabled: true });
+const snapshotConfig = () => ({ liveEnabled: false, liveMode: "snapshot", snapshotFallbackEnabled: true });
+const liveApiConfig = () => ({ liveEnabled: true, liveMode: "upstream", snapshotFallbackEnabled: true });
+const liveDbConfig = () => ({ liveEnabled: true, liveMode: "database", snapshotFallbackEnabled: true, dbConfig: {} });
 const fallback = async () => ({ status: "snapshot-ok" });
 
 test("usuário sem token recebe 401", async () => {
@@ -66,22 +67,47 @@ test("live desligado retorna snapshot", async () => {
   await createOneViewHandler("health", { authorize: authenticated, configProvider: snapshotConfig, fallback })(request(), res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers["x-oneview-data-source"], "snapshot");
+  assert.equal(res.body.data_source, "snapshot");
+});
+
+test("provider database 200 retorna database", async () => {
+  const res = response();
+  const database = async () => ({ status: "db-ok" });
+  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveDbConfig, database, fallback })(request(), res);
+  assert.equal(res.body.status, "db-ok");
+  assert.equal(res.headers["x-oneview-data-source"], "database");
+  assert.equal(res.body.data_source, "database");
+});
+
+test("provider database com falha usa snapshot", async () => {
+  const res = response();
+  const database = async () => {
+    const error = new Error("db_down");
+    error.code = "db_down";
+    throw error;
+  };
+  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveDbConfig, database, fallback })(request(), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["x-oneview-data-source"], "snapshot");
+  assert.equal(res.body.data_source, "snapshot");
 });
 
 test("upstream 200 retorna live", async () => {
   const res = response();
   const upstream = async () => ({ status: "live-ok" });
-  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveConfig, upstream, fallback })(request(), res);
+  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveApiConfig, upstream, fallback })(request(), res);
   assert.equal(res.body.status, "live-ok");
   assert.equal(res.headers["x-oneview-data-source"], "live");
+  assert.equal(res.body.data_source, "live");
 });
 
 test("upstream 503 retorna snapshot", async () => {
   const res = response();
   const upstream = async () => { throw new OneViewUpstreamError(503, "upstream_unavailable"); };
-  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveConfig, upstream, fallback })(request(), res);
+  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveApiConfig, upstream, fallback })(request(), res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers["x-oneview-data-source"], "snapshot");
+  assert.equal(res.body.data_source, "snapshot");
 });
 
 for (const status of [401, 403]) {
@@ -92,7 +118,7 @@ for (const status of [401, 403]) {
     const trackedFallback = async () => { fallbackCalled = true; return {}; };
     await createOneViewHandler("health", {
       authorize: authenticated,
-      configProvider: liveConfig,
+      configProvider: liveApiConfig,
       upstream,
       fallback: trackedFallback,
     })(request(), res);
@@ -102,14 +128,14 @@ for (const status of [401, 403]) {
   });
 }
 
-test("response remove secrets e endpoints", () => {
+test("response remove secrets e mantém host protegido", () => {
   const sanitized = sanitizeOneViewPayload({
     ok: true,
-    authorization: "Bearer secret",
+    host_name: "Host protegido 0001",
     api_url: "http://127.0.0.1:8001",
     nested: { password: "secret", note: "http://internal.example.local/path" },
   });
-  assert.deepEqual(sanitized, { ok: true, nested: { note: "[redacted]" } });
+  assert.deepEqual(sanitized, { ok: true, host_name: "Host protegido 0001", nested: { note: "[redacted]" } });
 });
 
 test("upstream encaminha somente headers controlados", async () => {

@@ -7,7 +7,7 @@ import { getStoredTheme, setStoredTheme, getStoredRefreshInterval, setStoredRefr
 import { DataSource, fetchDataSources, requestDataSourceSync } from "@/lib/oneview-api";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
+import { isReadOnlyMode, isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
 import { SNAPSHOT_READ_ONLY_MESSAGE } from "@/lib/demo-oneview-data";
 
 const sourceStatusLabel: Record<DataSource["status"], string> = {
@@ -25,6 +25,8 @@ const syncStatusLabel: Record<string, string> = {
 };
 
 export default function SettingsPage() {
+  const readOnlyMode = isDemoMode || isReadOnlyMode;
+  const hideSensitiveColumns = isDemoMode || isReadOnlyMode;
   const [theme, setTheme] = useState<Theme>(getStoredTheme());
   const [interval, setInterval] = useState<number>(getStoredRefreshInterval());
   const [saving, setSaving] = useState(false);
@@ -125,7 +127,9 @@ export default function SettingsPage() {
             <div>
               <h2 className="text-lg font-semibold">Fontes de dados Zabbix</h2>
               <p className="text-sm text-muted-foreground">
-                {isDemoMode ? "Fontes de dados da cópia real atualizada. A Vercel não realiza conexão externa neste modo de leitura." : "Solicitações manuais entram na fila. A sincronização é executada pelo serviço dedicado."}
+                {readOnlyMode
+                  ? "Fontes de dados carregadas em modo leitura. A interface não executa sync, ACK ou ações operacionais."
+                  : "Solicitações manuais entram na fila. A sincronização é executada pelo serviço dedicado."}
               </p>
             </div>
             <Button variant="outline" onClick={() => void loadDataSources()} disabled={loadingSources}>
@@ -133,7 +137,7 @@ export default function SettingsPage() {
             </Button>
           </div>
 
-          {isDemoMode ? (
+          {readOnlyMode ? (
             <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               {SNAPSHOT_READ_ONLY_MESSAGE}
             </div>
@@ -150,14 +154,14 @@ export default function SettingsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className={isDemoMode ? "w-full min-w-[1050px] text-sm" : "w-full min-w-[1180px] text-sm"}>
+              <table className={hideSensitiveColumns ? "w-full min-w-[1050px] text-sm" : "w-full min-w-[1180px] text-sm"}>
                 <thead>
                   <tr className="border-b border-border/70 text-left text-xs uppercase text-muted-foreground">
                     <th className="py-3 pr-3">Fonte de dados</th>
                     <th className="py-3 pr-3">Status</th>
                     <th className="py-3 pr-3">Sincronização habilitada</th>
-                    {!isDemoMode ? <th className="py-3 pr-3">URL da API</th> : null}
-                    {!isDemoMode ? <th className="py-3 pr-3">Token configurado</th> : null}
+                    {!hideSensitiveColumns ? <th className="py-3 pr-3">URL da API</th> : null}
+                    {!hideSensitiveColumns ? <th className="py-3 pr-3">Token configurado</th> : null}
                     <th className="py-3 pr-3">Última sincronização</th>
                     <th className="py-3 pr-3">Alertas / Pendência</th>
                     <th className="py-3 text-right">Ações</th>
@@ -184,8 +188,8 @@ export default function SettingsPage() {
                         </span>
                       </td>
                       <td className="py-3 pr-3 text-xs">{source.sync_enabled ? "Sim" : "Não"}</td>
-                      {!isDemoMode ? <td className="max-w-[300px] break-all py-3 pr-3 font-mono text-xs">{source.api_url}</td> : null}
-                      {!isDemoMode ? <td className="py-3 pr-3 text-xs">{source.has_token === undefined ? "-" : source.has_token ? "Sim" : "Não"}</td> : null}
+                      {!hideSensitiveColumns ? <td className="max-w-[300px] break-all py-3 pr-3 font-mono text-xs">{source.api_url}</td> : null}
+                      {!hideSensitiveColumns ? <td className="py-3 pr-3 text-xs">{source.has_token === undefined ? "-" : source.has_token ? "Sim" : "Não"}</td> : null}
                       <td className="py-3 pr-3">
                         <div className="flex flex-col">
                           <span className={source.last_sync_status === "success" ? "font-medium text-success" : "font-medium text-error"}>{source.last_sync_status ? syncStatusLabel[source.last_sync_status] ?? source.last_sync_status : "-"}</span>
@@ -200,7 +204,7 @@ export default function SettingsPage() {
                       </td>
                       <td className="py-3">
                         <div className="flex justify-end gap-2">
-                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={isDemoMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={isDemoMode ? SNAPSHOT_READ_ONLY_MESSAGE : "Enfileirar sincronização"}>
+                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={readOnlyMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={readOnlyMode ? SNAPSHOT_READ_ONLY_MESSAGE : "Enfileirar sincronização"}>
                             {runningAction === `sync:${source.id}` ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                             Solicitar sincronização
                           </Button>

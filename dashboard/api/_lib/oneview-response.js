@@ -1,10 +1,11 @@
 import { methodNotAllowed, sendJson } from "./http.js";
 import { allowedQueryString, getOneViewConfig, getOneViewRoute } from "./oneview-config.js";
+import { fetchOneViewDatabase } from "./oneview-db.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { fetchOneViewUpstream } from "./oneview-upstream.js";
 import { getOneViewSnapshotPayload } from "./oneview-fallback.js";
 
-const FORBIDDEN_KEY = /(?:authorization|cookie|token|password|senha|secret|credential|dsn|api_url|payload_raw|payload_normalized|host_name|hostname|host_ip)/i;
+const FORBIDDEN_KEY = /(?:authorization|cookie|token|password|senha|secret|credential|dsn|api_url|payload_raw|payload_normalized)/i;
 const PRIVATE_VALUE = /(?:https?:\/\/[^\s]+|\b(?:localhost|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?\b)/i;
 const FALLBACK_STATUS = new Set([502, 503, 504]);
 
@@ -25,7 +26,11 @@ function sendOneViewJson(res, status, payload, source) {
   res.setHeader("Cache-Control", "private, no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (source) res.setHeader("X-OneView-Data-Source", source);
-  return sendJson(res, status, sanitizeOneViewPayload(payload));
+  const sanitized = sanitizeOneViewPayload(payload);
+  if (source && sanitized && typeof sanitized === "object" && !Array.isArray(sanitized) && !("data_source" in sanitized)) {
+    sanitized.data_source = source;
+  }
+  return sendJson(res, status, sanitized);
 }
 
 function publicUpstreamStatus(error) {
@@ -37,6 +42,7 @@ export function createOneViewHandler(routeName, dependencies = {}) {
   const authorize = dependencies.authorize || requireOneViewAuth;
   const configProvider = dependencies.configProvider || getOneViewConfig;
   const upstream = dependencies.upstream || fetchOneViewUpstream;
+  const database = dependencies.database || fetchOneViewDatabase;
   const fallback = dependencies.fallback || getOneViewSnapshotPayload;
 
   return async function oneViewHandler(req, res) {
@@ -52,7 +58,7 @@ export function createOneViewHandler(routeName, dependencies = {}) {
     try {
       config = configProvider();
     } catch {
-      return sendOneViewJson(res, 503, { error: "live_api_not_configured" });
+      return sendOneViewJson(res, 503, { error: "live_data_not_configured" });
     }
 
     if (!config.liveEnabled) {
@@ -68,11 +74,16 @@ export function createOneViewHandler(routeName, dependencies = {}) {
     }
 
     try {
+      if (config.liveMode === "database") {
+        const payload = await database(routeName, req, config);
+        return sendOneViewJson(res, 200, payload, "database");
+      }
       const payload = await upstream(route, allowedQueryString(req, route), config);
       return sendOneViewJson(res, 200, payload, "live");
     } catch (error) {
-      const status = publicUpstreamStatus(error);
-      if (config.snapshotFallbackEnabled && route.fallbackSafe && FALLBACK_STATUS.has(status)) {
+      const status = config.liveMode === "database" ? 503 : publicUpstreamStatus(error);
+      const shouldFallback = config.liveMode === "database" ? true : FALLBACK_STATUS.has(status);
+      if (config.snapshotFallbackEnabled && route.fallbackSafe && shouldFallback) {
         try {
           const payload = await fallback(routeName, req);
           return sendOneViewJson(res, 200, payload, "snapshot");
@@ -80,7 +91,11 @@ export function createOneViewHandler(routeName, dependencies = {}) {
           return sendOneViewJson(res, 503, { error: "snapshot_unavailable" });
         }
       }
-      return sendOneViewJson(res, status, { error: error?.code || "upstream_request_failed" });
+      return sendOneViewJson(
+        res,
+        status,
+        { error: error?.code || (config.liveMode === "database" ? "database_request_failed" : "upstream_request_failed") },
+      );
     }
   };
 }
