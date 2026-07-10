@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getStoredTheme, setStoredTheme, getStoredRefreshInterval, setStoredRefreshInterval, Theme } from "@/lib/settings";
-import { DataSource, fetchDataSources, requestDataSourceSync } from "@/lib/oneview-api";
+import { DataSource, OneViewDataSourceKind, fetchDataSourcesWithMeta, requestDataSourceSync } from "@/lib/oneview-api";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { isReadOnlyMode, isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
@@ -31,6 +31,8 @@ export default function SettingsPage() {
   const [interval, setInterval] = useState<number>(getStoredRefreshInterval());
   const [saving, setSaving] = useState(false);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [dataSource, setDataSource] = useState<OneViewDataSourceKind | null>(null);
+  const [checkedAt, setCheckedAt] = useState<string | null>(null);
   const [loadingSources, setLoadingSources] = useState(false);
   const [runningAction, setRunningAction] = useState<string | null>(null);
 
@@ -43,19 +45,18 @@ export default function SettingsPage() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  const loadDataSources = async () => {
+  const loadDataSources = useCallback(async () => {
     setLoadingSources(true);
     try {
-      setDataSources(await fetchDataSources());
+      const response = await fetchDataSourcesWithMeta();
+      setDataSources(response.items);
+      setDataSource(response.data_source ?? null);
+      setCheckedAt(response.checked_at ?? null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Erro ao carregar fontes de dados");
     } finally {
       setLoadingSources(false);
     }
-  };
-
-  useEffect(() => {
-    void loadDataSources();
   }, []);
 
   const applyTheme = (nextTheme: Theme) => {
@@ -86,7 +87,15 @@ export default function SettingsPage() {
   };
 
   return (
-    <AppLayout title="Configurações" description="Ajustes do painel e integrações">
+    <AppLayout
+      title="Configurações"
+      description="Ajustes do painel e integrações"
+      onRefresh={loadDataSources}
+      refreshInterval={60}
+      showRefreshMeta={false}
+      dataSource={dataSource}
+      checkedAt={checkedAt}
+    >
       <div className="space-y-6">
         <Card className="p-6">
           <h2 className="mb-3 text-lg font-semibold">Tema</h2>

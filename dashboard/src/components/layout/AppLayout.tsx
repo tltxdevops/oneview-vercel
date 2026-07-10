@@ -23,6 +23,8 @@ interface AppLayoutProps {
   enableAutoRefresh?: boolean;
   initiallyPaused?: boolean;
   showRefreshMeta?: boolean;
+  dataSource?: "database" | "snapshot" | null;
+  checkedAt?: string | null;
 }
 
 const DEFAULT_REFRESH_INTERVAL = 60;
@@ -42,6 +44,8 @@ export function AppLayout({
   enableAutoRefresh = true,
   initiallyPaused = false,
   showRefreshMeta = true,
+  dataSource,
+  checkedAt,
 }: AppLayoutProps) {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [isPaused, setIsPaused] = useState(initiallyPaused);
@@ -146,6 +150,13 @@ export function AppLayout({
     );
   }, [showRefreshMeta, enableAutoRefresh, isPaused, countdown, formattedLastUpdate]);
 
+  const effectiveDataSource = dataSource ?? (isSnapshotMode ? "snapshot" : null);
+  const checkedAtLabel = useMemo(() => {
+    if (!checkedAt) return null;
+    const date = new Date(checkedAt);
+    return Number.isNaN(date.getTime()) ? null : date.toLocaleString("pt-BR");
+  }, [checkedAt]);
+
   return (
     <div className="flex min-h-screen bg-background antialiased">
       <Sidebar />
@@ -174,12 +185,20 @@ export function AppLayout({
               )
             )}
 
-            {isSnapshotMode ? (
-              <div>
-                <Badge className="border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700 hover:bg-emerald-50">
+            {effectiveDataSource ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className={cn(
+                  "border px-3 py-1 hover:bg-inherit",
+                  effectiveDataSource === "database"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-amber-200 bg-amber-50 text-amber-800",
+                )}>
                   <BadgeCheck className="mr-1.5 h-3.5 w-3.5" />
-                  Dados reais atualizados · modo somente leitura
+                  {effectiveDataSource === "database" ? "Banco em tempo real" : "Cópia atualizada"}
                 </Badge>
+                {checkedAtLabel ? (
+                  <span className="text-xs text-muted-foreground">Última consulta: {checkedAtLabel}</span>
+                ) : null}
               </div>
             ) : null}
 

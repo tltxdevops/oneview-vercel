@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateRange } from "react-day-picker";
 import { endOfDay, endOfMonth, format, startOfDay, startOfMonth } from "date-fns";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -34,9 +34,10 @@ import {
 import { cn } from "@/lib/utils";
 import {
   DataSource,
+  OneViewDataSourceKind,
   OneViewAlert,
-  fetchAllAlerts,
-  fetchDataSources,
+  fetchAlerts,
+  fetchDataSourcesWithMeta,
   formatDurationSeconds,
 } from "@/lib/oneview-api";
 import { toast } from "sonner";
@@ -105,6 +106,9 @@ const severityOrder = [5, 4, 3, 2, 1, 0] as const;
 const ALL_SEVERITIES: SeverityLevelValue[] = ["0", "1", "2", "3", "4", "5"];
 const DEFAULT_SEVERITIES: SeverityLevelValue[] = isDemoMode ? ALL_SEVERITIES : ["4", "5"];
 const MAX_VISIBLE_ALERTS = 250;
+const AUTOMATIC_ALERT_LIMIT = 500;
+const DATA_SOURCES_REFRESH_MS = 60_000;
+const ALERTS_REFRESH_MS = 120_000;
 
 const severityNumberByApi: Record<string, string> = {
   disaster: "5",
@@ -150,6 +154,18 @@ const formatSnapshotDate = (value: string) => {
   return Number.isNaN(date.getTime()) ? "data indisponível" : date.toLocaleString("pt-BR");
 };
 
+const effectiveDataSource = (...sources: Array<OneViewDataSourceKind | undefined>): OneViewDataSourceKind | null => {
+  if (sources.includes("snapshot")) return "snapshot";
+  if (sources.includes("database")) return "database";
+  return null;
+};
+
+const latestCheckedAt = (...values: Array<string | undefined>): string | null => (
+  values
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null
+);
+
 const safeDisplayText = (value: unknown, fallback = "-", maxLength = 240) => {
   if (typeof value !== "string") return fallback;
   const sanitized = Array.from(value)
@@ -183,31 +199,71 @@ export default function AlertsPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [totalAlerts, setTotalAlerts] = useState(isDemoMode ? SNAPSHOT_TOTAL_ALERTS : 0);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [sourcesMeta, setSourcesMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [alertsMeta, setAlertsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const selectedEventCacheRef = useRef<AlertEvent | null>(null);
+  const pendingLoadsRef = useRef(0);
 
-  const loadData = useCallback(async () => {
+  const beginLoad = useCallback(() => {
+    pendingLoadsRef.current += 1;
     setIsLoading(true);
+  }, []);
+
+  const endLoad = useCallback(() => {
+    pendingLoadsRef.current = Math.max(pendingLoadsRef.current - 1, 0);
+    setIsLoading(pendingLoadsRef.current > 0);
+  }, []);
+
+  const loadDataSources = useCallback(async () => {
+    beginLoad();
     setFetchError(null);
     try {
-      const [sources, alertsResponse] = await Promise.all([
-        fetchDataSources(),
-        fetchAllAlerts(),
-      ]);
-      setDataSources(sources);
-      setEvents(alertsResponse.items.map(toEvent));
+      const sourcesResponse = await fetchDataSourcesWithMeta();
+      setDataSources(sourcesResponse.items);
+      setSourcesMeta({ source: sourcesResponse.data_source, checkedAt: sourcesResponse.checked_at });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao carregar fontes de dados";
+      setFetchError(message);
+      toast.error(message);
+    } finally {
+      endLoad();
+    }
+  }, [beginLoad, endLoad]);
+
+  const loadAlerts = useCallback(async () => {
+    beginLoad();
+    setFetchError(null);
+    try {
+      const alertsResponse = await fetchAlerts({ limit: AUTOMATIC_ALERT_LIMIT, offset: 0 });
+      const nextEvents = alertsResponse.items.map(toEvent);
+      setEvents(nextEvents);
       setTotalAlerts(alertsResponse.total);
+      setAlertsMeta({ source: alertsResponse.data_source, checkedAt: alertsResponse.checked_at });
+      if (selectedEventCacheRef.current) {
+        const refreshedSelection = nextEvents.find((event) => event.id === selectedEventCacheRef.current?.id);
+        if (refreshedSelection) selectedEventCacheRef.current = refreshedSelection;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erro ao carregar dados reais";
       setFetchError(message);
       toast.error(message);
-      setEvents([]);
     } finally {
-      setIsLoading(false);
+      endLoad();
     }
-  }, []);
+  }, [beginLoad, endLoad]);
+
+  const loadData = useCallback(async () => {
+    await Promise.all([loadDataSources(), loadAlerts()]);
+  }, [loadAlerts, loadDataSources]);
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    const sourcesTimer = window.setInterval(() => void loadDataSources(), DATA_SOURCES_REFRESH_MS);
+    const alertsTimer = window.setInterval(() => void loadAlerts(), ALERTS_REFRESH_MS);
+    return () => {
+      window.clearInterval(sourcesTimer);
+      window.clearInterval(alertsTimer);
+    };
+  }, [loadAlerts, loadDataSources]);
 
   const severityFilter = useMemo(() => {
     if (severityLevels.length === 0) return undefined;
@@ -287,10 +343,17 @@ export default function AlertsPage() {
     timeRangeSeconds.to,
   ]);
 
-  const selectedEvent = useMemo(
-    () => filteredEvents.find((event) => event.id === selectedEventId) ?? null,
-    [filteredEvents, selectedEventId],
-  );
+  const selectedEvent = useMemo(() => {
+    const current = events.find((event) => event.id === selectedEventId) ?? null;
+    if (current) {
+      selectedEventCacheRef.current = current;
+      return current;
+    }
+    return selectedEventCacheRef.current?.id === selectedEventId ? selectedEventCacheRef.current : null;
+  }, [events, selectedEventId]);
+
+  const currentDataSource = effectiveDataSource(sourcesMeta.source, alertsMeta.source);
+  const lastCheckedAt = latestCheckedAt(sourcesMeta.checkedAt, alertsMeta.checkedAt);
 
   const summaryCards = useMemo(() => {
     if (isDemoMode && SNAPSHOT_GRAFANA_SUMMARY) {
@@ -322,16 +385,15 @@ export default function AlertsPage() {
     {
       id: "all",
       name: "Todos",
-      count: isDemoMode ? SNAPSHOT_TOTAL_ALERTS : events.length,
+      count: totalAlerts,
     },
     ...dataSources.map((source) => ({
       id: source.id,
       name: safeDisplayText(source.name, "Cliente"),
-      count: isDemoMode
-        ? source.alerts_count ?? 0
-        : events.filter((event) => event.clientId === source.id || event.clientName === source.name).length,
+      count: source.alerts_count
+        ?? events.filter((event) => event.clientId === source.id || event.clientName === source.name).length,
     })),
-  ], [dataSources, events]);
+  ], [dataSources, events, totalAlerts]);
 
   const selectedClientLabel = useMemo(() => {
     if (selectedClientIds.length === 0) return "Todos os clientes";
@@ -373,20 +435,31 @@ export default function AlertsPage() {
   }, []);
 
   const closeDrawer = useCallback(() => {
+    selectedEventCacheRef.current = null;
     setSelectedEventId(null);
+  }, []);
+
+  const selectEvent = useCallback((event: AlertEvent) => {
+    selectedEventCacheRef.current = event;
+    setSelectedEventId(event.id);
   }, []);
 
   return (
     <AppLayout
+      onRefresh={loadData}
       enableAutoRefresh={false}
       showRefreshMeta={false}
+      dataSource={currentDataSource}
+      checkedAt={lastCheckedAt}
       contentClassName="gap-6 p-5"
       headerContent={
         <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-foreground lg:text-3xl">Alertas</h1>
             <p className="mt-1 text-sm text-muted-foreground">Eventos Zabbix persistidos no OneView</p>
-            <p className="mt-2 text-xs text-muted-foreground">Cópia atualizada em {formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT)}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Última consulta: {lastCheckedAt ? formatSnapshotDate(lastCheckedAt) : "aguardando primeira resposta"}
+            </p>
           </div>
           <Button type="button" variant="outline" onClick={() => void loadData()} disabled={isLoading}>
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -638,11 +711,11 @@ export default function AlertsPage() {
                       role="button"
                       tabIndex={0}
                       aria-selected={selected}
-                      onClick={() => setSelectedEventId(event.id)}
+                      onClick={() => selectEvent(event)}
                       onKeyDown={(keyboardEvent) => {
                         if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
                           keyboardEvent.preventDefault();
-                          setSelectedEventId(event.id);
+                          selectEvent(event);
                         }
                       }}
                       className={cn(
@@ -789,8 +862,12 @@ export default function AlertsPage() {
                     </li>
                     <li className="relative">
                       <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-muted-foreground" />
-                      <p className="font-medium text-foreground">Incluído na cópia atualizada</p>
-                      <p className="text-muted-foreground">{formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT)}</p>
+                      <p className="font-medium text-foreground">
+                        {currentDataSource === "database" ? "Consultado no banco OneView" : "Incluído na cópia atualizada"}
+                      </p>
+                      <p className="text-muted-foreground">
+                        {formatSnapshotDate(lastCheckedAt ?? SNAPSHOT_LAST_UPDATED_AT)}
+                      </p>
                     </li>
                   </ol>
                 </div>

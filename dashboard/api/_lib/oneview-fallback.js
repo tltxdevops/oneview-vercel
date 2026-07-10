@@ -192,10 +192,11 @@ export async function getOneViewSnapshotPayload(routeName, req) {
     case "health":
       return {
         status: "ok",
-        generated_at: snapshot.generated_at,
-        alerts_count: Math.max(0, Number(snapshot.alerts_count) || alerts.length),
-        active_alerts: Math.max(0, Number(snapshot.summary?.active_alerts) || alerts.length),
-        data_sources_total: (snapshot.data_sources || []).length,
+        database_reachable: false,
+        counts: {
+          total_alerts: Math.max(0, Number(snapshot.alerts_count) || alerts.length),
+          active_alerts: Math.max(0, Number(snapshot.summary?.active_alerts) || alerts.length),
+        },
       };
     case "dashboard-summary":
       return dashboardSummaryPayload(snapshot);

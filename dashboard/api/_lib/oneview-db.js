@@ -78,11 +78,16 @@ function aliasForHost(rawHost, aliases) {
   return aliases.get(normalized) ?? "Host protegido";
 }
 
-function sanitizeDatabaseError(error) {
-  const message = String(error?.message || error || "database_request_failed")
-    .replace(URL_PATTERN, "[ENDPOINT_PROTEGIDO]")
-    .replace(PRIVATE_IP_PATTERN, "[IP_PROTEGIDO]");
-  return { code: textValue(error?.code, "database_request_failed"), message };
+function databaseFailureCode(error) {
+  const code = String(error?.code || "").toUpperCase();
+  const message = String(error?.message || "").toLowerCase();
+  if (["28P01", "28000"].includes(code)) return "database_authentication_failed";
+  if (["ETIMEDOUT", "ESOCKETTIMEDOUT", "57014"].includes(code) || message.includes("timeout")) return "database_timeout";
+  if (code.includes("CERT") || message.includes("certificate") || message.includes("tls") || message.includes("ssl")) {
+    return "database_tls_failed";
+  }
+  if (["42P01", "42703"].includes(code)) return "database_schema_unavailable";
+  return "database_unavailable";
 }
 
 function poolSignature(config) {
@@ -401,25 +406,25 @@ async function fetchSyncLogsPayload(req, config) {
 }
 
 async function fetchHealthPayload(config) {
-  const row = await queryRow(
-    config,
-    `
-      select
-        current_database() as database_name,
-        current_user as database_user,
-        (select count(*)::int from data_sources) as data_sources_total,
-        (select count(*)::int from alerts) as alerts_total,
-        (select count(*)::int from v_active_alerts) as active_alerts_total
-    `,
-  );
+  const [reachableRow, countsRow] = await Promise.all([
+    queryRow(config, "select 1 as reachable"),
+    queryRow(
+      config,
+      `
+        select
+          (select count(*)::int from alerts) as total_alerts,
+          (select count(*)::int from v_active_alerts) as active_alerts
+      `,
+    ),
+  ]);
 
   return {
     status: "ok",
-    generated_at: generatedAt(),
-    database_status: "connected",
-    alerts_count: integerValue(row?.alerts_total, 0),
-    active_alerts: integerValue(row?.active_alerts_total, 0),
-    data_sources_total: integerValue(row?.data_sources_total, 0),
+    database_reachable: integerValue(reachableRow?.reachable, 0) === 1,
+    counts: {
+      total_alerts: integerValue(countsRow?.total_alerts, 0),
+      active_alerts: integerValue(countsRow?.active_alerts, 0),
+    },
   };
 }
 
@@ -616,8 +621,10 @@ export function getOneViewDbPool(config = getOneViewDbConfig()) {
       application_name: "oneview-vercel-bff",
     });
     pool.on("error", (error) => {
-      const sanitized = sanitizeDatabaseError(error);
-      console.error("[oneview-db]", sanitized.code, sanitized.message);
+      console.error(JSON.stringify({
+        event: "oneview_database_pool_error",
+        code: databaseFailureCode(error),
+      }));
     });
     poolKey = signature;
   }
@@ -646,9 +653,8 @@ export async function fetchOneViewDatabase(routeName, req, config) {
         throw new Error("oneview_route_not_supported");
     }
   } catch (error) {
-    const sanitized = sanitizeDatabaseError(error);
-    const failure = new Error(sanitized.message);
-    failure.code = sanitized.code;
+    const failure = new Error("database_request_failed");
+    failure.code = databaseFailureCode(error);
     throw failure;
   }
 }

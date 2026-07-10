@@ -11,10 +11,11 @@ import { Link } from "react-router-dom";
 import {
   DataSource,
   AlertMetrics,
+  OneViewDataSourceKind,
   dataSourcesToClients,
-  fetchAllAlerts,
+  fetchAlerts,
   fetchAlertMetrics,
-  fetchDataSources,
+  fetchDataSourcesWithMeta,
   oneViewAlertToLegacyAlert,
 } from "@/lib/oneview-api";
 import { Alert, Severity } from "@/types";
@@ -29,7 +30,9 @@ import {
 } from "@/lib/demo-oneview-data";
 import { cn } from "@/lib/utils";
 
-const LOCAL_REFRESH_MS = 30_000;
+const SUMMARY_REFRESH_MS = 60_000;
+const ALERTS_REFRESH_MS = 120_000;
+const AUTOMATIC_ALERT_LIMIT = 500;
 const SEVERITY_PRIORITY: Record<string, number> = {
   Critical: 1,
   High: 2,
@@ -57,8 +60,12 @@ export default function Index() {
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
+  const [sourcesMeta, setSourcesMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [alertsMeta, setAlertsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [metricsMeta, setMetricsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [selectedClient, setSelectedClient] = useState<string | string[]>("all");
   const [isLoading, setIsLoading] = useState(false);
+  const pendingLoadsRef = useRef(0);
   const alertsContainerRef = useRef<HTMLDivElement | null>(null);
   const [visibleAlertCount, setVisibleAlertCount] = useState<number | null>(null);
   const healthRowRef = useRef<HTMLDivElement | null>(null);
@@ -66,37 +73,65 @@ export default function Index() {
 
   const clients = useMemo(() => dataSourcesToClients(dataSources), [dataSources]);
 
-  const loadData = useCallback(async () => {
+  const beginLoad = useCallback(() => {
+    pendingLoadsRef.current += 1;
     setIsLoading(true);
+  }, []);
+
+  const endLoad = useCallback(() => {
+    pendingLoadsRef.current = Math.max(pendingLoadsRef.current - 1, 0);
+    setIsLoading(pendingLoadsRef.current > 0);
+  }, []);
+
+  const loadSummaryAndSources = useCallback(async () => {
+    beginLoad();
     try {
-      const [sources, alertsResponse, metricsResponse] = await Promise.all([
-        fetchDataSources(),
-        fetchAllAlerts(),
+      const [sourcesResponse, metricsResponse] = await Promise.all([
+        fetchDataSourcesWithMeta(),
         fetchAlertMetrics(),
       ]);
-      setDataSources(sources);
-      setAlerts(alertsResponse.items.map(oneViewAlertToLegacyAlert));
+      setDataSources(sourcesResponse.items);
+      setSourcesMeta({ source: sourcesResponse.data_source, checkedAt: sourcesResponse.checked_at });
       setMetrics(metricsResponse);
+      setMetricsMeta({ source: metricsResponse.data_source, checkedAt: metricsResponse.checked_at });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erro ao carregar dados reais";
       toast.error(message);
-      setAlerts([]);
     } finally {
-      setIsLoading(false);
+      endLoad();
     }
-  }, []);
+  }, [beginLoad, endLoad]);
+
+  const loadAlerts = useCallback(async () => {
+    beginLoad();
+    try {
+      const alertsResponse = await fetchAlerts({ limit: AUTOMATIC_ALERT_LIMIT, offset: 0 });
+      setAlerts(alertsResponse.items.map(oneViewAlertToLegacyAlert));
+      setAlertsMeta({ source: alertsResponse.data_source, checkedAt: alertsResponse.checked_at });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao carregar alertas";
+      toast.error(message);
+    } finally {
+      endLoad();
+    }
+  }, [beginLoad, endLoad]);
+
+  const loadData = useCallback(async () => {
+    await Promise.all([loadSummaryAndSources(), loadAlerts()]);
+  }, [loadAlerts, loadSummaryAndSources]);
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    const summaryTimer = window.setInterval(() => void loadSummaryAndSources(), SUMMARY_REFRESH_MS);
+    const alertsTimer = window.setInterval(() => void loadAlerts(), ALERTS_REFRESH_MS);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void loadData();
-    }, LOCAL_REFRESH_MS);
+    return () => {
+      window.clearInterval(summaryTimer);
+      window.clearInterval(alertsTimer);
+    };
+  }, [loadAlerts, loadSummaryAndSources]);
 
-    return () => window.clearInterval(timer);
-  }, [loadData]);
+  const currentDataSource = effectiveDataSource(sourcesMeta.source, alertsMeta.source, metricsMeta.source);
+  const lastCheckedAt = latestCheckedAt(sourcesMeta.checkedAt, alertsMeta.checkedAt, metricsMeta.checkedAt);
 
   const filteredAlerts = useMemo(() => {
     if (selectedClient === "all" || (Array.isArray(selectedClient) && selectedClient.includes("all"))) {
@@ -271,7 +306,10 @@ export default function Index() {
         />
       }
       onRefresh={loadData}
+      enableAutoRefresh={false}
       showRefreshMeta={false}
+      dataSource={currentDataSource}
+      checkedAt={lastCheckedAt}
     >
       <div className="flex flex-col gap-6">
         <section
@@ -410,6 +448,18 @@ export default function Index() {
       </div>
     </AppLayout>
   );
+}
+
+function effectiveDataSource(...sources: Array<OneViewDataSourceKind | undefined>): OneViewDataSourceKind | null {
+  if (sources.includes("snapshot")) return "snapshot";
+  if (sources.includes("database")) return "database";
+  return null;
+}
+
+function latestCheckedAt(...values: Array<string | undefined>): string | null {
+  return values
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
 }
 
 function formatSnapshotDate(value: string): string {

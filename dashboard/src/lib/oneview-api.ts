@@ -35,13 +35,14 @@ async function authHeaders(): Promise<Record<string, string>> {
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   const authorization = await authHeaders();
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    cache: "no-store",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...authorization,
       ...(init?.headers ?? {}),
     },
-    ...init,
   });
 
   if (!response.ok) {
@@ -49,7 +50,30 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`API Error: ${response.status} - ${errorText || response.statusText}`);
   }
 
-  return response.json();
+  const body = (await response.json()) as T;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+
+  const record = body as Record<string, unknown>;
+  const headerSource = response.headers.get("X-OneView-Data-Source");
+  const bodySource = record.data_source;
+  const dataSource = headerSource === "snapshot" || bodySource === "snapshot"
+    ? "snapshot"
+    : headerSource === "database" || bodySource === "database"
+      ? "database"
+      : undefined;
+
+  return {
+    ...record,
+    ...(dataSource ? { data_source: dataSource } : {}),
+    checked_at: typeof record.checked_at === "string" ? record.checked_at : new Date().toISOString(),
+  } as T;
+}
+
+export type OneViewDataSourceKind = "database" | "snapshot";
+
+export interface OneViewResponseMeta {
+  data_source?: OneViewDataSourceKind;
+  checked_at?: string;
 }
 
 export interface DataSource {
@@ -155,13 +179,12 @@ export interface OneViewAlert {
   updated_at: string;
 }
 
-export interface AlertListResponse {
+export interface AlertListResponse extends OneViewResponseMeta {
   items: OneViewAlert[];
   total: number;
-  data_source?: string;
 }
 
-export interface AlertMetrics {
+export interface AlertMetrics extends OneViewResponseMeta {
   active_total: number;
   by_severity: Array<{ severity: string; count: number }>;
   by_status: Array<{ status_internal: string; count: number }>;
@@ -182,19 +205,27 @@ export interface AlertMetrics {
   avg_normalization_time_seconds: number;
 }
 
-interface DataSourceListResponse {
+export interface DataSourceListResponse extends OneViewResponseMeta {
   items: Array<Partial<DataSource> & Pick<DataSource, "id" | "name" | "client_name" | "status">>;
+}
+
+function snapshotMeta(): Required<OneViewResponseMeta> {
+  return { data_source: "snapshot", checked_at: new Date().toISOString() };
 }
 
 function readOnlyMessage(action: string): string {
   return `Modo leitura atual: ${action} está desabilitado.`;
 }
 
-export async function fetchDataSources(): Promise<DataSource[]> {
-  if (isSnapshotMode) return demoDataSources.map((source) => ({ ...source }));
+export async function fetchDataSourcesWithMeta(): Promise<{ items: DataSource[] } & OneViewResponseMeta> {
+  const response: DataSourceListResponse = isSnapshotMode
+    ? { items: demoDataSources.map((source) => ({ ...source })), ...snapshotMeta() }
+    : await fetchApi<DataSourceListResponse>("/oneview/data-sources");
 
-  const response = await fetchApi<DataSourceListResponse>("/oneview/data-sources");
-  return response.items.map((source) => ({
+  return {
+    data_source: response.data_source,
+    checked_at: response.checked_at,
+    items: response.items.map((source) => ({
     id: source.id,
     name: source.name,
     client_name: source.client_name,
@@ -221,7 +252,12 @@ export async function fetchDataSources(): Promise<DataSource[]> {
     has_token: source.has_token,
     alerts_count: source.alerts_count,
     pending_reason: source.pending_reason ?? null,
-  }));
+    })),
+  };
+}
+
+export async function fetchDataSources(): Promise<DataSource[]> {
+  return (await fetchDataSourcesWithMeta()).items;
 }
 
 export async function requestDataSourceSync(id: string, reason = "manual_ui"): Promise<OutboxResult> {
@@ -273,7 +309,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
     const total = hasFilter ? items.length : SNAPSHOT_TOTAL_ALERTS;
     const offset = Math.max(params?.offset ?? 0, 0);
     const limit = Math.max(params?.limit ?? total, 0);
-    return { items: items.slice(offset, offset + limit), total, data_source: "snapshot" };
+    return { items: items.slice(offset, offset + limit), total, ...snapshotMeta() };
   }
 
   const search = new URLSearchParams();
@@ -304,7 +340,7 @@ export async function fetchAlert(id: string): Promise<OneViewAlert> {
 }
 
 export async function fetchAlertMetrics(): Promise<AlertMetrics> {
-  if (isSnapshotMode) return demoAlertMetrics;
+  if (isSnapshotMode) return { ...demoAlertMetrics, ...snapshotMeta() };
   return fetchApi<AlertMetrics>("/oneview/dashboard-summary");
 }
 

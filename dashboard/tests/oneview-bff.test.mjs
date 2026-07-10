@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { getOneViewConfig } from "../api/_lib/oneview-config.js";
 import { createOneViewHandler, sanitizeOneViewPayload } from "../api/_lib/oneview-response.js";
-import { fetchOneViewUpstream, OneViewUpstreamError } from "../api/_lib/oneview-upstream.js";
+import { fetchOneViewUpstream } from "../api/_lib/oneview-upstream.js";
 
 function request(method = "GET", query = {}, headers = {}) {
   return { method, query, headers };
@@ -21,9 +22,12 @@ function response() {
 
 const authenticated = async () => ({ roles: ["viewer"] });
 const snapshotConfig = () => ({ liveEnabled: false, liveMode: "snapshot", snapshotFallbackEnabled: true });
-const liveApiConfig = () => ({ liveEnabled: true, liveMode: "upstream", snapshotFallbackEnabled: true });
 const liveDbConfig = () => ({ liveEnabled: true, liveMode: "database", snapshotFallbackEnabled: true, dbConfig: {} });
+const liveDbWithoutFallbackConfig = () => ({ liveEnabled: true, liveMode: "database", snapshotFallbackEnabled: false, dbConfig: {} });
 const fallback = async () => ({ status: "snapshot-ok" });
+const noLog = () => undefined;
+const noCache = "no-store, no-cache, max-age=0, must-revalidate";
+const routes = ["health", "dashboard-summary", "grafana-summary", "alerts", "clients-summary", "data-sources", "sync-logs"];
 
 test("usuário sem token recebe 401", async () => {
   const previous = process.env.ONEVIEW_API_AUTH_REQUIRED;
@@ -49,12 +53,14 @@ test("usuário sem permissão recebe 403", async () => {
   assert.equal(res.statusCode, 403);
 });
 
-test("POST recebe 405", async () => {
-  const res = response();
-  await createOneViewHandler("health", { authorize: authenticated })(request("POST"), res);
-  assert.equal(res.statusCode, 405);
-  assert.equal(res.headers.allow, "GET");
-});
+for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+  test(`${method} recebe 405`, async () => {
+    const res = response();
+    await createOneViewHandler("health", { authorize: authenticated })(request(method), res);
+    assert.equal(res.statusCode, 405);
+    assert.equal(res.headers.allow, "GET");
+  });
+}
 
 test("rota inexistente recebe 404", async () => {
   const res = response();
@@ -68,16 +74,50 @@ test("live desligado retorna snapshot", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers["x-oneview-data-source"], "snapshot");
   assert.equal(res.body.data_source, "snapshot");
+  assert.equal(res.headers["cache-control"], noCache);
+  assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T/);
 });
 
-test("provider database 200 retorna database", async () => {
-  const res = response();
-  const database = async () => ({ status: "db-ok" });
-  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveDbConfig, database, fallback })(request(), res);
-  assert.equal(res.body.status, "db-ok");
-  assert.equal(res.headers["x-oneview-data-source"], "database");
-  assert.equal(res.body.data_source, "database");
-});
+for (const route of routes) {
+  test(`${route}: database retorna metadados e cache no-store`, async () => {
+    const res = response();
+    const database = async () => ({ items: [{ id: "safe-row" }] });
+    await createOneViewHandler(route, {
+      authorize: authenticated,
+      configProvider: liveDbConfig,
+      database,
+      fallback,
+      logger: noLog,
+    })(request(), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers["x-oneview-data-source"], "database");
+    assert.equal(res.body.data_source, "database");
+    assert.equal(res.headers["cache-control"], noCache);
+    assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  });
+}
+
+for (const route of routes) {
+  test(`${route}: falha no database usa snapshot explicitamente`, async () => {
+    const res = response();
+    const database = async () => {
+      const error = new Error("detalhe interno que nao pode sair");
+      error.code = "database_unavailable";
+      throw error;
+    };
+    await createOneViewHandler(route, {
+      authorize: authenticated,
+      configProvider: liveDbConfig,
+      database,
+      fallback: async () => ({ items: [] }),
+      logger: noLog,
+    })(request(), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers["x-oneview-data-source"], "snapshot");
+    assert.equal(res.body.data_source, "snapshot");
+    assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  });
+}
 
 test("provider database com falha usa snapshot", async () => {
   const res = response();
@@ -86,47 +126,97 @@ test("provider database com falha usa snapshot", async () => {
     error.code = "db_down";
     throw error;
   };
-  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveDbConfig, database, fallback })(request(), res);
+  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveDbConfig, database, fallback, logger: noLog })(request(), res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers["x-oneview-data-source"], "snapshot");
   assert.equal(res.body.data_source, "snapshot");
+  assert.equal(res.headers["cache-control"], noCache);
+  assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T/);
 });
 
-test("upstream 200 retorna live", async () => {
+test("falha no database sem fallback retorna erro sanitizado", async () => {
   const res = response();
-  const upstream = async () => ({ status: "live-ok" });
-  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveApiConfig, upstream, fallback })(request(), res);
-  assert.equal(res.body.status, "live-ok");
-  assert.equal(res.headers["x-oneview-data-source"], "live");
-  assert.equal(res.body.data_source, "live");
+  const database = async () => {
+    const error = new Error("password=nao-vazar host=interno SQL select segredo");
+    error.code = "database_authentication_failed";
+    throw error;
+  };
+  await createOneViewHandler("health", {
+    authorize: authenticated,
+    configProvider: liveDbWithoutFallbackConfig,
+    database,
+    fallback,
+    logger: noLog,
+  })(request(), res);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.headers["x-oneview-data-source"], "database");
+  assert.equal(res.body.data_source, "database");
+  assert.equal(res.body.error, "database_authentication_failed");
+  assert.doesNotMatch(JSON.stringify(res.body), /nao-vazar|interno|select segredo|password/i);
 });
 
-test("upstream 503 retorna snapshot", async () => {
-  const res = response();
-  const upstream = async () => { throw new OneViewUpstreamError(503, "upstream_unavailable"); };
-  await createOneViewHandler("health", { authorize: authenticated, configProvider: liveApiConfig, upstream, fallback })(request(), res);
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.headers["x-oneview-data-source"], "snapshot");
-  assert.equal(res.body.data_source, "snapshot");
-});
-
-for (const status of [401, 403]) {
-  test(`upstream ${status} não faz fallback`, async () => {
-    const res = response();
-    let fallbackCalled = false;
-    const upstream = async () => { throw new OneViewUpstreamError(status, `upstream_${status}`); };
-    const trackedFallback = async () => { fallbackCalled = true; return {}; };
-    await createOneViewHandler("health", {
-      authorize: authenticated,
-      configProvider: liveApiConfig,
-      upstream,
-      fallback: trackedFallback,
-    })(request(), res);
-    assert.equal(res.statusCode, status);
-    assert.equal(fallbackCalled, false);
-    assert.equal(res.headers["x-oneview-data-source"], undefined);
+test("ONEVIEW_SNAPSHOT_MODE=false e LIVE_DB=true selecionam database em runtime", () => {
+  const config = getOneViewConfig({
+    ONEVIEW_SNAPSHOT_MODE: "false",
+    ONEVIEW_LIVE_DB_ENABLED: "true",
+    ONEVIEW_SNAPSHOT_FALLBACK_ENABLED: "true",
+    ONEVIEW_DB_HOST: "db.example.test",
+    ONEVIEW_DB_PORT: "443",
+    ONEVIEW_DB_NAME: "oneview",
+    ONEVIEW_DB_USER: "readonly",
+    POSTGRES_APP_PASSWORD: "test-only",
   });
-}
+  assert.equal(config.snapshotMode, false);
+  assert.equal(config.liveEnabled, true);
+  assert.equal(config.liveMode, "database");
+});
+
+test("fallback permanece desabilitado quando a env não está explicitamente true", () => {
+  assert.equal(getOneViewConfig({}).snapshotFallbackEnabled, false);
+  assert.equal(getOneViewConfig({ ONEVIEW_SNAPSHOT_FALLBACK_ENABLED: "true" }).snapshotFallbackEnabled, true);
+});
+
+test("ONEVIEW_SNAPSHOT_MODE=true usa snapshot como fonte principal", async () => {
+  const res = response();
+  let databaseCalled = false;
+  const database = async () => { databaseCalled = true; return {}; };
+  await createOneViewHandler("health", {
+    authorize: authenticated,
+    configProvider: () => ({ snapshotMode: true, liveEnabled: false, snapshotFallbackEnabled: false }),
+    database,
+    fallback,
+    logger: noLog,
+  })(request(), res);
+  assert.equal(databaseCalled, false);
+  assert.equal(res.body.data_source, "snapshot");
+});
+
+test("log oneview_request é estruturado e não contém detalhes sensíveis", async () => {
+  const entries = [];
+  const database = async () => {
+    const error = new Error("password=nao-vazar host=interno");
+    error.code = "database_timeout";
+    throw error;
+  };
+  const res = response();
+  await createOneViewHandler("alerts", {
+    authorize: authenticated,
+    configProvider: liveDbConfig,
+    database,
+    fallback: async () => ({ items: [{ id: "safe" }] }),
+    logger: (entry) => entries.push(JSON.parse(entry)),
+  })(request(), res);
+  assert.deepEqual(entries, [{
+    event: "oneview_request",
+    route: "/api/oneview/alerts",
+    data_source: "snapshot",
+    duration_ms: entries[0].duration_ms,
+    rows: 1,
+    fallback_code: "database_timeout",
+  }]);
+  assert.equal(Number.isInteger(entries[0].duration_ms), true);
+  assert.doesNotMatch(JSON.stringify(entries), /nao-vazar|interno|password/i);
+});
 
 test("response remove secrets e mantém host protegido", () => {
   const sanitized = sanitizeOneViewPayload({

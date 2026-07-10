@@ -31,38 +31,28 @@ export function getOneViewRoute(name) {
 }
 
 export function getOneViewConfig(env = process.env) {
+  const snapshotMode = booleanValue(env.ONEVIEW_SNAPSHOT_MODE, false);
   const liveDbEnabled = booleanValue(env.ONEVIEW_LIVE_DB_ENABLED, false);
-  const liveApiEnabled = booleanValue(env.ONEVIEW_LIVE_API_ENABLED, false);
-  const liveMode = liveDbEnabled ? "database" : liveApiEnabled ? "upstream" : "snapshot";
-  const liveEnabled = liveMode !== "snapshot";
-  const snapshotFallbackEnabled = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, true);
-  const apiBaseUrl = String(env.ONEVIEW_API_BASE_URL || "").trim();
-  const accessClientId = String(env.CF_ACCESS_CLIENT_ID || "").trim();
-  const accessClientSecret = String(env.CF_ACCESS_CLIENT_SECRET || "").trim();
-  const dbConfig = liveMode === "database" ? getOneViewDbConfig(env) : null;
+  const liveMode = liveDbEnabled && !snapshotMode ? "database" : "snapshot";
+  const liveEnabled = liveMode === "database";
+  const snapshotFallbackEnabled = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, false);
+  let dbConfig = null;
 
-  if (liveMode === "upstream") {
-    let parsedUrl;
+  if (liveEnabled) {
     try {
-      parsedUrl = new URL(apiBaseUrl);
+      dbConfig = getOneViewDbConfig(env);
     } catch {
-      throw new Error("oneview_live_config_invalid");
-    }
-    if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password) {
-      throw new Error("oneview_live_config_invalid");
-    }
-    if (!accessClientId || !accessClientSecret) {
-      throw new Error("oneview_live_config_incomplete");
+      // A falha será tratada pelo handler e só usará snapshot quando
+      // ONEVIEW_SNAPSHOT_FALLBACK_ENABLED=true.
+      dbConfig = null;
     }
   }
 
   return Object.freeze({
+    snapshotMode,
     liveEnabled,
     liveMode,
     snapshotFallbackEnabled,
-    apiBaseUrl,
-    accessClientId,
-    accessClientSecret,
     timeoutMs: timeoutValue(env.ONEVIEW_API_TIMEOUT_MS),
     dbConfig,
   });
