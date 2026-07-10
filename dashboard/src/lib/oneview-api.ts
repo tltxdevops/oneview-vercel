@@ -2,12 +2,17 @@ import { Alert, Client, Severity } from "@/types";
 import { isSsoEnvironmentReady, loginRequest, msalInstance } from "@/lib/auth/msal";
 import { isReadOnlyMode, isSnapshotMode } from "@/lib/demo-mode";
 import { SNAPSHOT_TOTAL_ALERTS, demoAlertMetrics, demoAlerts, demoDataSources } from "@/lib/demo-oneview-data";
+import { getServerAuthToken, serverAuthEnabled } from "@/lib/server-auth";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   (typeof window !== "undefined" ? `${window.location.origin}/api` : "/api");
 
 async function authHeaders(): Promise<Record<string, string>> {
+  if (serverAuthEnabled()) {
+    const token = getServerAuthToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
   if (import.meta.env.VITE_ONEVIEW_API_AUTH_DISABLED === "true") return {};
   if (!msalInstance || !isSsoEnvironmentReady) return {};
 
@@ -30,6 +35,7 @@ async function authHeaders(): Promise<Record<string, string>> {
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   const authorization = await authHeaders();
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...authorization,

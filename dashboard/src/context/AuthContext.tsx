@@ -11,6 +11,13 @@ import {
   hasSecureCryptoSupport,
   isRunningInSecureContext,
 } from "@/lib/auth/msal";
+import {
+  completeServerMicrosoftLoginFromUrl,
+  fetchServerAuthUser,
+  logoutServerAuth,
+  serverAuthEnabled,
+  startServerMicrosoftLogin,
+} from "@/lib/server-auth";
 
 type AuthUser = {
   id: string | null;
@@ -230,7 +237,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     };
   }, []);
 
-  const loadUser = useCallback(async () => {
+  const loadUser = useCallback(async (accountOverride?: AccountInfo | null) => {
     if (!msalInstance || !isSsoEnvironmentReady) {
       if (!isMountedRef.current) return;
       setUser(null);
@@ -240,33 +247,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
 
-    const account = msalInstance.getActiveAccount() ?? msalInstance.getAllAccounts()[0] ?? null;
+    const account = accountOverride ?? msalInstance.getActiveAccount() ?? null;
 
     if (!account) {
       if (!isMountedRef.current) return;
-      setUser(null);
-      persistUser(null);
+      setUser((currentUser) => currentUser ?? readStoredUser());
       setIsLoading(false);
       return;
     }
 
     try {
-      const silentResult = await withTimeout(
-        msalInstance.acquireTokenSilent({
-          ...loginRequest,
-          account,
-        }),
-        MSAL_TIMEOUT_MS,
-        "acquireTokenSilent",
-      );
-
-      const [profile, photo] = await Promise.all([
-        withTimeout(fetchGraphProfile(silentResult.accessToken), GRAPH_PROFILE_TIMEOUT_MS, "Graph /me").catch((graphError) => {
-          console.warn("[auth] Falha ao carregar perfil do Graph", graphError);
-          return undefined;
-        }),
-        withTimeout(fetchGraphPhoto(silentResult.accessToken), GRAPH_PHOTO_TIMEOUT_MS, "Graph photo").catch(() => undefined),
-      ]);
+      const profile = undefined;
+      const photo = undefined;
 
       if (!isMountedRef.current) return;
 
@@ -299,6 +291,27 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     let cancelled = false;
 
     const init = async () => {
+      if (serverAuthEnabled()) {
+        try {
+          const serverUser = (await completeServerMicrosoftLoginFromUrl()) ?? (await fetchServerAuthUser());
+          if (cancelled || !isMountedRef.current) return;
+          setUser(serverUser);
+          persistUser(serverUser);
+          setError(null);
+        } catch (err) {
+          console.warn("[auth] Falha ao carregar sessão server-side", err);
+          if (!cancelled && isMountedRef.current) {
+            setUser(null);
+            persistUser(null);
+          }
+        } finally {
+          if (!cancelled && isMountedRef.current) {
+            setIsLoading(false);
+          }
+        }
+        return;
+      }
+
       if (!msalInstance || !isSsoEnvironmentReady) {
         if (!cancelled && isMountedRef.current) {
           setIsLoading(false);
@@ -327,7 +340,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           msalInstance.setActiveAccount(redirectResult.account);
         } else {
           console.log("[auth] Nenhuma conta no redirect, procurando contas existentes...");
-          const existingAccount = msalInstance.getActiveAccount() ?? msalInstance.getAllAccounts()[0];
+          const existingAccount = null;
           if (existingAccount) {
             console.log("[auth] Conta existente encontrada:", existingAccount.username);
             msalInstance.setActiveAccount(existingAccount);
@@ -340,6 +353,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         }
 
         console.log("[auth] Carregando usuário...");
+        if (!redirectResult?.account) {
+          setUser(null);
+          persistUser(null);
+          setIsLoading(false);
+          return;
+        }
+
         await loadUser();
       } catch (err) {
         const details = getErrorDetails(err);
@@ -363,6 +383,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [loadUser, environmentError]);
 
   const login = useCallback(async () => {
+    if (serverAuthEnabled()) {
+      setError(null);
+      await startServerMicrosoftLogin();
+      return;
+    }
+
     if (!msalInstance || !isSsoEnvironmentReady) {
       setError(environmentError);
       return;
@@ -372,6 +398,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [environmentError]);
 
   const logout = useCallback(async () => {
+    if (serverAuthEnabled()) {
+      await logoutServerAuth();
+    }
+
     // Limpa apenas a sessão local da dashboard, sem fazer logout da Microsoft
     console.log("[auth] Fazendo logout local (mantendo sessão Microsoft)");
     persistUser(null);
@@ -392,10 +422,25 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const refreshUser = useCallback(async () => {
     setIsLoading(true);
+    if (serverAuthEnabled()) {
+      try {
+        const serverUser = await fetchServerAuthUser();
+        if (!isMountedRef.current) return;
+        setUser(serverUser);
+        persistUser(serverUser);
+      } finally {
+        if (isMountedRef.current) setIsLoading(false);
+      }
+      return;
+    }
     await loadUser();
   }, [loadUser]);
 
   const acquireToken = useCallback(async (additionalScopes?: string[]) => {
+    if (serverAuthEnabled()) {
+      return null;
+    }
+
     if (!msalInstance || !isSsoEnvironmentReady) {
       return null;
     }

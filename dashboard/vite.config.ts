@@ -5,6 +5,7 @@ import path from "path";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const devPort = Number(process.env.PORT || env.VITE_DEV_SERVER_PORT || 6565);
 
   const rawBase = env.VITE_APP_BASE_PATH?.trim() ?? "";
   const normalizedBase = rawBase
@@ -44,7 +45,7 @@ export default defineConfig(({ mode }) => {
     envPrefix: ["VITE_", "NEXT_PUBLIC_"],
     server: {
       host: "::",
-      port: 6565,
+      port: devPort,
       allowedHosts: ["devops.teletex.com.br", "noc.teletex.com.br", "noc.teletexdev.com.br"],
       origin: env.VITE_DEV_SERVER_ORIGIN || undefined,
       hmr,

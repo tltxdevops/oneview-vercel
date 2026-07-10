@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { sendJson } from "./http.js";
+import { sessionUserFromRequest, sessionUserFromToken } from "./microsoft-sso.js";
 
 let jwks;
 
@@ -101,6 +102,32 @@ export async function requireAuth(req, res, { role = "viewer" } = {}) {
   }
 
   const token = bearerToken(req);
+  const sessionUser = sessionUserFromRequest(req) || sessionUserFromToken(token);
+  if (sessionUser?.email) {
+    const email = String(sessionUser.email).toLowerCase();
+    if (!isAllowedViewer(email)) {
+      sendJson(res, 403, { error: "user_not_allowed" });
+      return null;
+    }
+
+    const roles = rolesFor(email);
+    for (const roleName of sessionUser.roles || []) roles.add(roleName);
+    if (!hasRole(roles, role)) {
+      sendJson(res, 403, { error: "insufficient_role" });
+      return null;
+    }
+
+    const auth = {
+      id: String(sessionUser.id || email),
+      email,
+      name: String(sessionUser.name || email),
+      roles: [...roles],
+      source: "session",
+    };
+    req.oneviewAuth = auth;
+    return auth;
+  }
+
   if (!token) {
     sendJson(res, 401, { error: "authentication_required" });
     return null;
