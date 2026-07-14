@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { getOneViewConfig } from "../api/_lib/oneview-config.js";
+import { getOneViewDbConfig } from "../api/_lib/oneview-db.js";
 import { createOneViewHandler, sanitizeOneViewPayload } from "../api/_lib/oneview-response.js";
 import { fetchOneViewUpstream } from "../api/_lib/oneview-upstream.js";
 
@@ -28,6 +29,18 @@ const fallback = async () => ({ status: "snapshot-ok" });
 const noLog = () => undefined;
 const noCache = "no-store, no-cache, max-age=0, must-revalidate";
 const routes = ["health", "dashboard-summary", "grafana-summary", "alerts", "clients-summary", "data-sources", "sync-logs"];
+const validDbEnv = (overrides = {}) => ({
+  ONEVIEW_SNAPSHOT_MODE: "false",
+  ONEVIEW_LIVE_DB_ENABLED: "true",
+  ONEVIEW_SNAPSHOT_FALLBACK_ENABLED: "true",
+  ONEVIEW_READ_ONLY_MODE: "true",
+  ONEVIEW_DB_HOST: "db.example.test",
+  ONEVIEW_DB_PORT: "443",
+  ONEVIEW_DB_NAME: "oneview",
+  ONEVIEW_DB_USER: "oneview_vercel_readonly",
+  POSTGRES_READONLY_PASSWORD: "primary-test-value",
+  ...overrides,
+});
 
 test("usuário sem token recebe 401", async () => {
   const previous = process.env.ONEVIEW_API_AUTH_REQUIRED;
@@ -74,6 +87,7 @@ test("live desligado retorna snapshot", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers["x-oneview-data-source"], "snapshot");
   assert.equal(res.body.data_source, "snapshot");
+  assert.equal(res.body.fallback_code, "live_database_disabled");
   assert.equal(res.headers["cache-control"], noCache);
   assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T/);
 });
@@ -92,6 +106,7 @@ for (const route of routes) {
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers["x-oneview-data-source"], "database");
     assert.equal(res.body.data_source, "database");
+    assert.equal(res.body.fallback_code, null);
     assert.equal(res.headers["cache-control"], noCache);
     assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T.*Z$/);
   });
@@ -115,6 +130,7 @@ for (const route of routes) {
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers["x-oneview-data-source"], "snapshot");
     assert.equal(res.body.data_source, "snapshot");
+    assert.equal(res.body.fallback_code, "database_unavailable");
     assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T.*Z$/);
   });
 }
@@ -130,6 +146,7 @@ test("provider database com falha usa snapshot", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers["x-oneview-data-source"], "snapshot");
   assert.equal(res.body.data_source, "snapshot");
+  assert.equal(res.body.fallback_code, "database_unavailable");
   assert.equal(res.headers["cache-control"], noCache);
   assert.match(res.body.checked_at, /^\d{4}-\d{2}-\d{2}T/);
 });
@@ -151,24 +168,107 @@ test("falha no database sem fallback retorna erro sanitizado", async () => {
   assert.equal(res.statusCode, 503);
   assert.equal(res.headers["x-oneview-data-source"], "database");
   assert.equal(res.body.data_source, "database");
+  assert.equal(res.body.fallback_code, null);
   assert.equal(res.body.error, "database_authentication_failed");
   assert.doesNotMatch(JSON.stringify(res.body), /nao-vazar|interno|select segredo|password/i);
 });
 
 test("ONEVIEW_SNAPSHOT_MODE=false e LIVE_DB=true selecionam database em runtime", () => {
-  const config = getOneViewConfig({
-    ONEVIEW_SNAPSHOT_MODE: "false",
-    ONEVIEW_LIVE_DB_ENABLED: "true",
-    ONEVIEW_SNAPSHOT_FALLBACK_ENABLED: "true",
-    ONEVIEW_DB_HOST: "db.example.test",
-    ONEVIEW_DB_PORT: "443",
-    ONEVIEW_DB_NAME: "oneview",
-    ONEVIEW_DB_USER: "readonly",
-    POSTGRES_APP_PASSWORD: "test-only",
-  });
+  const config = getOneViewConfig(validDbEnv());
   assert.equal(config.snapshotMode, false);
   assert.equal(config.liveEnabled, true);
   assert.equal(config.liveMode, "database");
+});
+
+test("somente POSTGRES_READONLY_PASSWORD e selecionado", () => {
+  const configured = getOneViewDbConfig(validDbEnv({ POSTGRES_APP_PASSWORD: "legacy-test-value" }));
+  assert.equal(configured.password, "primary-test-value");
+
+  assert.throws(
+    () => getOneViewDbConfig(validDbEnv({ POSTGRES_READONLY_PASSWORD: undefined, POSTGRES_APP_PASSWORD: "legacy-test-value" })),
+    /oneview_db_config_incomplete/,
+  );
+});
+
+test("oneview_vercel_readonly em modo read-only permite a consulta database", async () => {
+  const config = getOneViewConfig(validDbEnv());
+  let databaseCalled = false;
+  const res = response();
+
+  await createOneViewHandler("health", {
+    authorize: authenticated,
+    configProvider: () => config,
+    database: async (_route, _req, runtimeConfig) => {
+      databaseCalled = true;
+      assert.equal(runtimeConfig.dbConfig.user, "oneview_vercel_readonly");
+      return { status: "ok" };
+    },
+    fallback,
+    logger: noLog,
+  })(request(), res);
+
+  assert.equal(databaseCalled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data_source, "database");
+});
+
+for (const unsafeUser of ["oneview_readonly", "oneview_app", "oneview_owner", "oneview_worker", "postgres", "outro_usuario"]) {
+  test(`${unsafeUser} e recusado antes da query em modo read-only`, () => {
+    assert.throws(
+      () => getOneViewDbConfig(validDbEnv({ ONEVIEW_DB_USER: unsafeUser })),
+      (error) => error?.code === "unsafe_database_user" && error?.message === "unsafe_database_user",
+    );
+  });
+}
+
+test("usuario inseguro usa snapshot sem chamar database e sem vazar dados", async () => {
+  const passwordValue = "unsafe-user-test-value";
+  const config = getOneViewConfig(validDbEnv({
+    ONEVIEW_DB_USER: "oneview_app",
+    POSTGRES_READONLY_PASSWORD: passwordValue,
+  }));
+  let databaseCalled = false;
+  const entries = [];
+  const res = response();
+
+  await createOneViewHandler("health", {
+    authorize: authenticated,
+    configProvider: () => config,
+    database: async () => { databaseCalled = true; return { status: "unexpected" }; },
+    fallback: async () => ({ status: "snapshot-ok" }),
+    logger: (entry) => entries.push(entry),
+  })(request(), res);
+
+  assert.equal(config.dbConfig, null);
+  assert.equal(config.dbConfigErrorCode, "unsafe_database_user");
+  assert.equal(databaseCalled, false);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["x-oneview-data-source"], "snapshot");
+  assert.equal(res.body.fallback_code, "unsafe_database_user");
+  assert.doesNotMatch(`${JSON.stringify(res.body)}\n${entries.join("\n")}`, /oneview_app|unsafe-user-test-value/i);
+});
+
+test("usuario inseguro sem fallback retorna erro seguro antes da query", async () => {
+  const config = getOneViewConfig(validDbEnv({
+    ONEVIEW_DB_USER: "oneview_app",
+    ONEVIEW_SNAPSHOT_FALLBACK_ENABLED: "false",
+  }));
+  let databaseCalled = false;
+  const res = response();
+
+  await createOneViewHandler("health", {
+    authorize: authenticated,
+    configProvider: () => config,
+    database: async () => { databaseCalled = true; return {}; },
+    fallback,
+    logger: noLog,
+  })(request(), res);
+
+  assert.equal(databaseCalled, false);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.error, "unsafe_database_user");
+  assert.equal(res.body.fallback_code, "unsafe_database_user");
+  assert.doesNotMatch(JSON.stringify(res.body), /oneview_app|primary-test-value/i);
 });
 
 test("fallback permanece desabilitado quando a env não está explicitamente true", () => {
@@ -189,6 +289,7 @@ test("ONEVIEW_SNAPSHOT_MODE=true usa snapshot como fonte principal", async () =>
   })(request(), res);
   assert.equal(databaseCalled, false);
   assert.equal(res.body.data_source, "snapshot");
+  assert.equal(res.body.fallback_code, "snapshot_mode");
 });
 
 test("log oneview_request é estruturado e não contém detalhes sensíveis", async () => {

@@ -4,11 +4,16 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getStoredTheme, setStoredTheme, getStoredRefreshInterval, setStoredRefreshInterval, Theme } from "@/lib/settings";
-import { DataSource, OneViewDataSourceKind, fetchDataSourcesWithMeta, requestDataSourceSync } from "@/lib/oneview-api";
+import {
+  DataSource,
+  OneViewDataSourceKind,
+  ONEVIEW_READ_ONLY_MESSAGE,
+  fetchDataSourcesWithMeta,
+  requestDataSourceSync,
+} from "@/lib/oneview-api";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { isReadOnlyMode, isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import { SNAPSHOT_READ_ONLY_MESSAGE } from "@/lib/demo-oneview-data";
+import { isReadOnlyMode } from "@/lib/demo-mode";
 
 const sourceStatusLabel: Record<DataSource["status"], string> = {
   active: "Ativa",
@@ -25,8 +30,8 @@ const syncStatusLabel: Record<string, string> = {
 };
 
 export default function SettingsPage() {
-  const readOnlyMode = isDemoMode || isReadOnlyMode;
-  const hideSensitiveColumns = isDemoMode || isReadOnlyMode;
+  const readOnlyMode = isReadOnlyMode;
+  const hideSensitiveColumns = isReadOnlyMode;
   const [theme, setTheme] = useState<Theme>(getStoredTheme());
   const [interval, setInterval] = useState<number>(getStoredRefreshInterval());
   const [saving, setSaving] = useState(false);
@@ -148,7 +153,7 @@ export default function SettingsPage() {
 
           {readOnlyMode ? (
             <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              {SNAPSHOT_READ_ONLY_MESSAGE}
+              {ONEVIEW_READ_ONLY_MESSAGE}
             </div>
           ) : null}
 
@@ -159,7 +164,7 @@ export default function SettingsPage() {
             </div>
           ) : dataSources.length === 0 ? (
             <div className="rounded-lg border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
-              Nenhuma fonte de dados disponível na cópia atual.
+              Nenhuma fonte de dados disponível na resposta atual.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -213,7 +218,7 @@ export default function SettingsPage() {
                       </td>
                       <td className="py-3">
                         <div className="flex justify-end gap-2">
-                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={readOnlyMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={readOnlyMode ? SNAPSHOT_READ_ONLY_MESSAGE : "Enfileirar sincronização"}>
+                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={readOnlyMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={readOnlyMode ? ONEVIEW_READ_ONLY_MESSAGE : "Enfileirar sincronização"}>
                             {runningAction === `sync:${source.id}` ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                             Solicitar sincronização
                           </Button>

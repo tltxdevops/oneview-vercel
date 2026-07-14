@@ -21,13 +21,14 @@ export function sanitizeOneViewPayload(value) {
   return value;
 }
 
-function sendOneViewJson(res, status, payload, source) {
+function sendOneViewJson(res, status, payload, source, fallbackCode = null) {
   res.setHeader("Cache-Control", NO_CACHE);
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (source) res.setHeader("X-OneView-Data-Source", source);
   const sanitized = sanitizeOneViewPayload(payload);
   if (sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)) {
     if (source) sanitized.data_source = source;
+    if (source) sanitized.fallback_code = fallbackCode;
     sanitized.checked_at = new Date().toISOString();
   }
   return sendJson(res, status, sanitized);
@@ -42,6 +43,7 @@ function responseRows(payload) {
 
 function safeFallbackCode(error) {
   const code = String(error?.code || "");
+  if (code === "unsafe_database_user") return code;
   return code.startsWith("database_") ? code : "database_unavailable";
 }
 
@@ -75,7 +77,7 @@ export function createOneViewHandler(routeName, dependencies = {}) {
 
     const finish = (status, payload, source, fallbackCode = null) => {
       writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode);
-      return sendOneViewJson(res, status, payload, source);
+      return sendOneViewJson(res, status, payload, source, fallbackCode);
     };
 
     let config;
@@ -104,6 +106,18 @@ export function createOneViewHandler(routeName, dependencies = {}) {
       } catch {
         return finish(503, { error: "snapshot_unavailable" }, "snapshot", "snapshot_unavailable");
       }
+    }
+
+    if (config.dbConfigErrorCode === "unsafe_database_user") {
+      if (config.snapshotFallbackEnabled && route.fallbackSafe) {
+        try {
+          const payload = await fallback(routeName, req);
+          return finish(200, payload, "snapshot", "unsafe_database_user");
+        } catch {
+          return finish(503, { error: "snapshot_unavailable" }, "snapshot", "snapshot_unavailable");
+        }
+      }
+      return finish(503, { error: "unsafe_database_user" }, "database", "unsafe_database_user");
     }
 
     try {

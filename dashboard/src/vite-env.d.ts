@@ -2,7 +2,6 @@
 
 interface ImportMetaEnv {
   readonly [key: string]: string | undefined;
-  readonly NEXT_PUBLIC_DEMO_MODE?: string;
   readonly VITE_AZURE_CLIENT_ID?: string;
   readonly VITE_AZURE_TENANT_ID?: string;
   readonly VITE_AZURE_AUTHORITY?: string;

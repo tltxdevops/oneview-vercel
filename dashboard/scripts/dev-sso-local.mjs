@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const apiPort = Number(process.env.ONEVIEW_LOCAL_API_PORT || 8000);
 const appPort = Number(process.env.VITE_DEV_SERVER_PORT || process.env.PORT || 6565);
+const oneViewBffPort = Number(process.env.ONEVIEW_LOCAL_BFF_PORT || 8787);
 
 function loadDotenv(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -117,8 +118,15 @@ const vite = spawn(npmCommand, ["run", "dev:vite"], {
   env: {
     ...process.env,
     VITE_AUTH_MODE: "server",
+    ...(process.env.ONEVIEW_AUTH_BYPASS_MODE
+      ? { VITE_AUTH_BYPASS_MODE: process.env.ONEVIEW_AUTH_BYPASS_MODE }
+      : {}),
+    ...(process.env.ONEVIEW_READ_ONLY_MODE
+      ? { VITE_ONEVIEW_READ_ONLY_MODE: process.env.ONEVIEW_READ_ONLY_MODE }
+      : {}),
     VITE_DEV_SERVER_PORT: String(appPort),
     VITE_API_PROXY_TARGET: `http://localhost:${apiPort}`,
+    VITE_ONEVIEW_API_PROXY_TARGET: `http://127.0.0.1:${oneViewBffPort}`,
   },
 });
 

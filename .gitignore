@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!.env.local.example
 node_modules/
 dist/
 .vercel/
@@ -16,3 +17,5 @@ dashboard/src/lib/oneview-real-snapshot.safe.json
 
 .vercel
 .env*
+!.env.example
+!dashboard/.env.local.example

@@ -37,14 +37,16 @@ export function getOneViewConfig(env = process.env) {
   const liveEnabled = liveMode === "database";
   const snapshotFallbackEnabled = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, false);
   let dbConfig = null;
+  let dbConfigErrorCode = null;
 
   if (liveEnabled) {
     try {
       dbConfig = getOneViewDbConfig(env);
-    } catch {
+    } catch (error) {
       // A falha será tratada pelo handler e só usará snapshot quando
       // ONEVIEW_SNAPSHOT_FALLBACK_ENABLED=true.
       dbConfig = null;
+      dbConfigErrorCode = error?.code === "unsafe_database_user" ? "unsafe_database_user" : null;
     }
   }
 
@@ -55,6 +57,7 @@ export function getOneViewConfig(env = process.env) {
     snapshotFallbackEnabled,
     timeoutMs: timeoutValue(env.ONEVIEW_API_TIMEOUT_MS),
     dbConfig,
+    dbConfigErrorCode,
   });
 }
 

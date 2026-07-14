@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateRange } from "react-day-picker";
-import { endOfDay, endOfMonth, format, startOfDay, startOfMonth } from "date-fns";
+import { endOfDay, format, startOfDay } from "date-fns";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,22 +34,18 @@ import {
 import { cn } from "@/lib/utils";
 import {
   DataSource,
+  AlertMetrics,
   OneViewDataSourceKind,
+  OneViewHealthResponse,
   OneViewAlert,
+  ONEVIEW_READ_ONLY_MESSAGE,
   fetchAlerts,
+  fetchAlertMetrics,
   fetchDataSourcesWithMeta,
+  fetchOneViewHealth,
   formatDurationSeconds,
 } from "@/lib/oneview-api";
 import { toast } from "sonner";
-import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import {
-  SNAPSHOT_GRAFANA_SUMMARY,
-  SNAPSHOT_EXPORTED_ALERTS,
-  SNAPSHOT_LAST_UPDATED_AT,
-  SNAPSHOT_READ_ONLY_MESSAGE,
-  SNAPSHOT_SUMMARY,
-  SNAPSHOT_TOTAL_ALERTS,
-} from "@/lib/demo-oneview-data";
 import {
   Activity,
   ArrowUpDown,
@@ -104,9 +100,10 @@ const severityCatalog: Record<number, { label: string; short: string }> = {
 
 const severityOrder = [5, 4, 3, 2, 1, 0] as const;
 const ALL_SEVERITIES: SeverityLevelValue[] = ["0", "1", "2", "3", "4", "5"];
-const DEFAULT_SEVERITIES: SeverityLevelValue[] = isDemoMode ? ALL_SEVERITIES : ["4", "5"];
+const DEFAULT_SEVERITIES: SeverityLevelValue[] = ALL_SEVERITIES;
 const MAX_VISIBLE_ALERTS = 250;
 const AUTOMATIC_ALERT_LIMIT = 500;
+const SUMMARY_REFRESH_MS = 60_000;
 const DATA_SOURCES_REFRESH_MS = 60_000;
 const ALERTS_REFRESH_MS = 120_000;
 
@@ -149,7 +146,7 @@ const toEvent = (alert: OneViewAlert): AlertEvent => {
 const parseUnix = (value: string) => Number.parseInt(value, 10);
 const formatTimestamp = (clock: number) => format(new Date(clock * 1000), "dd/MM/yyyy HH:mm:ss");
 
-const formatSnapshotDate = (value: string) => {
+const formatDateTime = (value: string) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "data indisponível" : date.toLocaleString("pt-BR");
 };
@@ -179,28 +176,27 @@ const safeDisplayText = (value: unknown, fallback = "-", maxLength = 240) => {
   return sanitized ? sanitized.slice(0, maxLength) : fallback;
 };
 
-const getDefaultRange = (): DateRange => {
-  const now = new Date();
-  return { from: startOfMonth(now), to: endOfMonth(now) };
-};
-
 export default function AlertsPage() {
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [events, setEvents] = useState<AlertEvent[]>([]);
+  const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
+  const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
   const [severityLevels, setSeverityLevels] = useState<SeverityLevelValue[]>(DEFAULT_SEVERITIES);
   const [ackFilter, setAckFilter] = useState<AckFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortField, setSortField] = useState<SortField>("clock");
   const [sortOrder, setSortOrder] = useState<"ASC" | "DESC">("DESC");
   const [searchTerm, setSearchTerm] = useState("");
-  const [timeRange, setTimeRange] = useState<DateRange | undefined>(() => (isDemoMode ? undefined : getDefaultRange()));
+  const [timeRange, setTimeRange] = useState<DateRange | undefined>();
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [totalAlerts, setTotalAlerts] = useState(isDemoMode ? SNAPSHOT_TOTAL_ALERTS : 0);
+  const [totalAlerts, setTotalAlerts] = useState(0);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [sourcesMeta, setSourcesMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [alertsMeta, setAlertsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [metricsMeta, setMetricsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [healthMeta, setHealthMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const selectedEventCacheRef = useRef<AlertEvent | null>(null);
   const pendingLoadsRef = useRef(0);
 
@@ -252,18 +248,41 @@ export default function AlertsPage() {
     }
   }, [beginLoad, endLoad]);
 
+  const loadSummary = useCallback(async () => {
+    beginLoad();
+    setFetchError(null);
+    try {
+      const [healthResponse, metricsResponse] = await Promise.all([
+        fetchOneViewHealth(),
+        fetchAlertMetrics(),
+      ]);
+      setHealth(healthResponse);
+      setHealthMeta({ source: healthResponse.data_source, checkedAt: healthResponse.checked_at });
+      setMetrics(metricsResponse);
+      setMetricsMeta({ source: metricsResponse.data_source, checkedAt: metricsResponse.checked_at });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao carregar resumo operacional";
+      setFetchError(message);
+      toast.error(message);
+    } finally {
+      endLoad();
+    }
+  }, [beginLoad, endLoad]);
+
   const loadData = useCallback(async () => {
-    await Promise.all([loadDataSources(), loadAlerts()]);
-  }, [loadAlerts, loadDataSources]);
+    await Promise.all([loadDataSources(), loadSummary(), loadAlerts()]);
+  }, [loadAlerts, loadDataSources, loadSummary]);
 
   useEffect(() => {
+    const summaryTimer = window.setInterval(() => void loadSummary(), SUMMARY_REFRESH_MS);
     const sourcesTimer = window.setInterval(() => void loadDataSources(), DATA_SOURCES_REFRESH_MS);
     const alertsTimer = window.setInterval(() => void loadAlerts(), ALERTS_REFRESH_MS);
     return () => {
+      window.clearInterval(summaryTimer);
       window.clearInterval(sourcesTimer);
       window.clearInterval(alertsTimer);
     };
-  }, [loadAlerts, loadDataSources]);
+  }, [loadAlerts, loadDataSources, loadSummary]);
 
   const severityFilter = useMemo(() => {
     if (severityLevels.length === 0) return undefined;
@@ -352,34 +371,47 @@ export default function AlertsPage() {
     return selectedEventCacheRef.current?.id === selectedEventId ? selectedEventCacheRef.current : null;
   }, [events, selectedEventId]);
 
-  const currentDataSource = effectiveDataSource(sourcesMeta.source, alertsMeta.source);
-  const lastCheckedAt = latestCheckedAt(sourcesMeta.checkedAt, alertsMeta.checkedAt);
+  const currentDataSource = effectiveDataSource(
+    healthMeta.source,
+    sourcesMeta.source,
+    alertsMeta.source,
+    metricsMeta.source,
+  );
+  const lastCheckedAt = latestCheckedAt(
+    healthMeta.checkedAt,
+    sourcesMeta.checkedAt,
+    alertsMeta.checkedAt,
+    metricsMeta.checkedAt,
+  );
 
   const summaryCards = useMemo(() => {
-    if (isDemoMode && SNAPSHOT_GRAFANA_SUMMARY) {
-      return [
-        { title: "Alertas sincronizados", value: SNAPSHOT_TOTAL_ALERTS, description: "Total persistido no OneView", icon: Activity, iconTone: "bg-primary/10 text-primary" },
-        { title: "Alertas exportados", value: SNAPSHOT_EXPORTED_ALERTS, description: "Eventos na cópia atual", icon: CheckCircle2, iconTone: "bg-primary/10 text-primary" },
-        { title: "Alertas ativos", value: SNAPSHOT_SUMMARY.active_alerts, description: "Ocorrências em acompanhamento", icon: CircleAlert, iconTone: "bg-amber-100 text-amber-700" },
-        { title: "Reconhecidos", value: SNAPSHOT_GRAFANA_SUMMARY.acknowledged, description: "Reconhecidos na origem", icon: UserCheck, iconTone: "bg-emerald-100 text-emerald-700" },
-        { title: "Pendentes", value: SNAPSHOT_GRAFANA_SUMMARY.unacknowledged, description: "Aguardando tratamento", icon: TriangleAlert, iconTone: "bg-yellow-100 text-yellow-700" },
-        { title: "Alta", value: SNAPSHOT_GRAFANA_SUMMARY.high, description: "Prioridade elevada", icon: ShieldAlert, iconTone: "bg-orange-100 text-orange-700" },
-        { title: "Desastre", value: SNAPSHOT_GRAFANA_SUMMARY.disaster, description: "Incidentes críticos", icon: Siren, iconTone: "bg-red-100 text-red-700" },
-      ];
-    }
-
-    const acknowledged = filteredEvents.filter((event) => event.ackState === "1").length;
+    const scoped = selectedClientIds.length > 0;
+    const sampleAcknowledged = filteredEvents.filter((event) => event.ackState === "1").length;
+    const active = scoped
+      ? filteredEvents.filter((event) => event.sourceStatus === "active").length
+      : metrics?.active_total ?? filteredEvents.filter((event) => event.sourceStatus === "active").length;
+    const pending = scoped
+      ? filteredEvents.length - sampleAcknowledged
+      : metrics?.unacknowledged_total ?? filteredEvents.length - sampleAcknowledged;
+    const acknowledged = scoped ? sampleAcknowledged : Math.max(active - pending, 0);
+    const severityMetrics = Object.fromEntries((metrics?.by_severity ?? []).map((item) => [item.severity, item.count]));
+    const high = scoped
+      ? filteredEvents.filter((event) => event.severity === "4").length
+      : severityMetrics.high ?? filteredEvents.filter((event) => event.severity === "4").length;
+    const disaster = scoped
+      ? filteredEvents.filter((event) => event.severity === "5").length
+      : severityMetrics.disaster ?? filteredEvents.filter((event) => event.severity === "5").length;
 
     return [
-      { title: "Alertas sincronizados", value: totalAlerts, description: "Total persistido no OneView", icon: Activity, iconTone: "bg-primary/10 text-primary" },
+      { title: "Alertas sincronizados", value: health?.counts.total_alerts ?? metrics?.alerts_total ?? totalAlerts, description: "Total persistido no OneView", icon: Activity, iconTone: "bg-primary/10 text-primary" },
       { title: "Alertas exportados", value: events.length, description: "Eventos carregados na visão", icon: CheckCircle2, iconTone: "bg-primary/10 text-primary" },
-      { title: "Alertas ativos", value: filteredEvents.filter((event) => event.sourceStatus === "active").length, description: "Ocorrências em acompanhamento", icon: CircleAlert, iconTone: "bg-amber-100 text-amber-700" },
+      { title: "Alertas ativos", value: active, description: "Ocorrências em acompanhamento", icon: CircleAlert, iconTone: "bg-amber-100 text-amber-700" },
       { title: "Reconhecidos", value: acknowledged, description: "Reconhecidos na origem", icon: UserCheck, iconTone: "bg-emerald-100 text-emerald-700" },
-      { title: "Pendentes", value: filteredEvents.length - acknowledged, description: "Aguardando tratamento", icon: TriangleAlert, iconTone: "bg-yellow-100 text-yellow-700" },
-      { title: "Alta", value: filteredEvents.filter((event) => event.severity === "4").length, description: "Prioridade elevada", icon: ShieldAlert, iconTone: "bg-orange-100 text-orange-700" },
-      { title: "Desastre", value: filteredEvents.filter((event) => event.severity === "5").length, description: "Incidentes críticos", icon: Siren, iconTone: "bg-red-100 text-red-700" },
+      { title: "Pendentes", value: pending, description: "Aguardando tratamento", icon: TriangleAlert, iconTone: "bg-yellow-100 text-yellow-700" },
+      { title: "Alta", value: high, description: "Prioridade elevada", icon: ShieldAlert, iconTone: "bg-orange-100 text-orange-700" },
+      { title: "Desastre", value: disaster, description: "Incidentes críticos", icon: Siren, iconTone: "bg-red-100 text-red-700" },
     ];
-  }, [events.length, filteredEvents, totalAlerts]);
+  }, [events.length, filteredEvents, health, metrics, selectedClientIds.length, totalAlerts]);
 
   const clientCards = useMemo(() => [
     {
@@ -417,7 +449,7 @@ export default function AlertsPage() {
     setSortField("clock");
     setSortOrder("DESC");
     setSearchTerm("");
-    setTimeRange(isDemoMode ? undefined : getDefaultRange());
+    setTimeRange(undefined);
     setSelectedClientIds([]);
   }, []);
 
@@ -458,7 +490,7 @@ export default function AlertsPage() {
             <h1 className="text-2xl font-semibold tracking-tight text-foreground lg:text-3xl">Alertas</h1>
             <p className="mt-1 text-sm text-muted-foreground">Eventos Zabbix persistidos no OneView</p>
             <p className="mt-2 text-xs text-muted-foreground">
-              Última consulta: {lastCheckedAt ? formatSnapshotDate(lastCheckedAt) : "aguardando primeira resposta"}
+              Última consulta: {lastCheckedAt ? formatDateTime(lastCheckedAt) : "aguardando primeira resposta"}
             </p>
           </div>
           <Button type="button" variant="outline" onClick={() => void loadData()} disabled={isLoading}>
@@ -629,19 +661,17 @@ export default function AlertsPage() {
             ))}
           </ToggleGroup>
 
-          {!isDemoMode ? (
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button size="sm" variant="outline" className="ml-auto">
-                  <CalendarRange className="h-4 w-4" />
-                  {timeRangeLabel}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-auto p-0">
-                <Calendar mode="range" numberOfMonths={1} selected={timeRange} onSelect={setTimeRange} />
-              </PopoverContent>
-            </Popover>
-          ) : null}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="outline" className="ml-auto">
+                <CalendarRange className="h-4 w-4" />
+                {timeRangeLabel}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-auto p-0">
+              <Calendar mode="range" numberOfMonths={1} selected={timeRange} onSelect={setTimeRange} />
+            </PopoverContent>
+          </Popover>
         </div>
       </Card>
 
@@ -679,7 +709,7 @@ export default function AlertsPage() {
                 <TableRow>
                   <TableCell colSpan={8} className="py-16 text-center text-muted-foreground">
                     <Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />
-                    Carregando eventos da cópia...
+                    Consultando eventos do OneView...
                   </TableCell>
                 </TableRow>
               ) : filteredEvents.length === 0 ? (
@@ -842,7 +872,7 @@ export default function AlertsPage() {
                   <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm sm:col-span-2">
                     <p className="text-[11px] text-muted-foreground">Última atualização</p>
                     <p className="mt-1 font-semibold text-foreground">
-                      {formatSnapshotDate(selectedEvent.lastSeen)}
+                      {formatDateTime(selectedEvent.lastSeen)}
                     </p>
                   </Card>
                 </div>
@@ -858,7 +888,7 @@ export default function AlertsPage() {
                     <li className="relative">
                       <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-primary" />
                       <p className="font-medium text-foreground">Persistido no OneView</p>
-                      <p className="text-muted-foreground">{formatSnapshotDate(selectedEvent.persistedAt)}</p>
+                      <p className="text-muted-foreground">{formatDateTime(selectedEvent.persistedAt)}</p>
                     </li>
                     <li className="relative">
                       <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-muted-foreground" />
@@ -866,7 +896,7 @@ export default function AlertsPage() {
                         {currentDataSource === "database" ? "Consultado no banco OneView" : "Incluído na cópia atualizada"}
                       </p>
                       <p className="text-muted-foreground">
-                        {formatSnapshotDate(lastCheckedAt ?? SNAPSHOT_LAST_UPDATED_AT)}
+                        {formatDateTime(lastCheckedAt ?? selectedEvent.lastSeen)}
                       </p>
                     </li>
                   </ol>
@@ -879,15 +909,15 @@ export default function AlertsPage() {
                     <Eye className="h-4 w-4" />
                     Visualizar
                   </Button>
-                  <Button type="button" variant="outline" disabled title={SNAPSHOT_READ_ONLY_MESSAGE} className="gap-2">
+                  <Button type="button" variant="outline" disabled title={ONEVIEW_READ_ONLY_MESSAGE} className="gap-2">
                     <Check className="h-4 w-4" />
                     ACK
                   </Button>
-                  <Button type="button" variant="outline" disabled title={SNAPSHOT_READ_ONLY_MESSAGE} className="gap-2">
+                  <Button type="button" variant="outline" disabled title={ONEVIEW_READ_ONLY_MESSAGE} className="gap-2">
                     <UserCheck className="h-4 w-4" />
                     Atribuir
                   </Button>
-                  <Button type="button" variant="outline" disabled title={SNAPSHOT_READ_ONLY_MESSAGE} className="gap-2">
+                  <Button type="button" variant="outline" disabled title={ONEVIEW_READ_ONLY_MESSAGE} className="gap-2">
                     <MessageSquare className="h-4 w-4" />
                     Comentar
                   </Button>

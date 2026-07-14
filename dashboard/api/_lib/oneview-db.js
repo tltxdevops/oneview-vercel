@@ -81,7 +81,9 @@ function aliasForHost(rawHost, aliases) {
 function databaseFailureCode(error) {
   const code = String(error?.code || "").toUpperCase();
   const message = String(error?.message || "").toLowerCase();
-  if (["28P01", "28000"].includes(code)) return "database_authentication_failed";
+  if (["28P01", "28000"].includes(code) || message.includes("password authentication failed")) {
+    return "database_authentication_failed";
+  }
   if (["ETIMEDOUT", "ESOCKETTIMEDOUT", "57014"].includes(code) || message.includes("timeout")) return "database_timeout";
   if (code.includes("CERT") || message.includes("certificate") || message.includes("tls") || message.includes("ssl")) {
     return "database_tls_failed";
@@ -576,7 +578,14 @@ export function getOneViewDbConfig(env = process.env) {
   const host = textValue(env.ONEVIEW_DB_HOST);
   const database = textValue(env.ONEVIEW_DB_NAME);
   const user = textValue(env.ONEVIEW_DB_USER);
-  const password = String(env.POSTGRES_APP_PASSWORD || "");
+  const readOnlyMode = booleanValue(env.ONEVIEW_READ_ONLY_MODE, true);
+  if (readOnlyMode && user && user !== "oneview_vercel_readonly") {
+    const error = new Error("unsafe_database_user");
+    error.code = "unsafe_database_user";
+    throw error;
+  }
+
+  const password = String(env.POSTGRES_READONLY_PASSWORD || "");
   const sslMode = textValue(env.ONEVIEW_DB_SSLMODE, "require").toLowerCase();
 
   if (!host || !database || !user || !password) {
@@ -616,7 +625,6 @@ export function getOneViewDbPool(config = getOneViewDbConfig()) {
       idleTimeoutMillis: 5000,
       connectionTimeoutMillis: config.connectionTimeoutMs,
       query_timeout: config.queryTimeoutMs,
-      statement_timeout: config.queryTimeoutMs,
       ssl: poolSslConfig(config),
       application_name: "oneview-vercel-bff",
     });

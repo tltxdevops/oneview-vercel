@@ -1,12 +1,9 @@
 import { Alert, Client, Severity } from "@/types";
 import { isSsoEnvironmentReady, loginRequest, msalInstance } from "@/lib/auth/msal";
-import { isReadOnlyMode, isSnapshotMode } from "@/lib/demo-mode";
-import { SNAPSHOT_TOTAL_ALERTS, demoAlertMetrics, demoAlerts, demoDataSources } from "@/lib/demo-oneview-data";
+import { isReadOnlyMode } from "@/lib/demo-mode";
 import { getServerAuthToken, serverAuthEnabled } from "@/lib/server-auth";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ||
-  (typeof window !== "undefined" ? `${window.location.origin}/api` : "/api");
+const API_BASE_URL = "/api";
 
 async function authHeaders(): Promise<Record<string, string>> {
   if (serverAuthEnabled()) {
@@ -185,6 +182,8 @@ export interface AlertListResponse extends OneViewResponseMeta {
 }
 
 export interface AlertMetrics extends OneViewResponseMeta {
+  alerts_total?: number;
+  alerts_sample_size?: number;
   active_total: number;
   by_severity: Array<{ severity: string; count: number }>;
   by_status: Array<{ status_internal: string; count: number }>;
@@ -209,18 +208,39 @@ export interface DataSourceListResponse extends OneViewResponseMeta {
   items: Array<Partial<DataSource> & Pick<DataSource, "id" | "name" | "client_name" | "status">>;
 }
 
-function snapshotMeta(): Required<OneViewResponseMeta> {
-  return { data_source: "snapshot", checked_at: new Date().toISOString() };
+export interface OneViewHealthResponse extends OneViewResponseMeta {
+  status: "ok" | string;
+  database_reachable: boolean;
+  counts: {
+    total_alerts: number;
+    active_alerts: number;
+  };
 }
+
+export interface OneViewSyncLog {
+  id: string;
+  datasource: string;
+  data_source_id: string;
+  status: string;
+  fetched: number;
+  upserted: number;
+  detail: string;
+  created_at: string | null;
+}
+
+export interface SyncLogListResponse extends OneViewResponseMeta {
+  items: OneViewSyncLog[];
+}
+
+export const ONEVIEW_READ_ONLY_MESSAGE =
+  "Ações operacionais desabilitadas neste modo de leitura. Nenhum ACK real foi executado.";
 
 function readOnlyMessage(action: string): string {
   return `Modo leitura atual: ${action} está desabilitado.`;
 }
 
 export async function fetchDataSourcesWithMeta(): Promise<{ items: DataSource[] } & OneViewResponseMeta> {
-  const response: DataSourceListResponse = isSnapshotMode
-    ? { items: demoDataSources.map((source) => ({ ...source })), ...snapshotMeta() }
-    : await fetchApi<DataSourceListResponse>("/oneview/data-sources");
+  const response = await fetchApi<DataSourceListResponse>("/oneview/data-sources");
 
   return {
     data_source: response.data_source,
@@ -261,8 +281,8 @@ export async function fetchDataSources(): Promise<DataSource[]> {
 }
 
 export async function requestDataSourceSync(id: string, reason = "manual_ui"): Promise<OutboxResult> {
-  if (isSnapshotMode || isReadOnlyMode) {
-    throw new Error("Modo leitura por snapshot real: o sync permanece exclusivamente no Worker separado.");
+  if (isReadOnlyMode) {
+    throw new Error("Modo leitura: o sync permanece exclusivamente no Worker separado.");
   }
   return fetchApi<OutboxResult>(`/data-sources/${id}/request-sync`, {
     method: "POST",
@@ -282,36 +302,6 @@ export interface FetchAlertsParams {
 }
 
 export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
-  if (isSnapshotMode) {
-    let items = [...demoAlerts];
-    if (params?.clientName) items = items.filter((item) => item.client_name === params.clientName);
-    if (params?.severity) items = items.filter((item) => item.severity === params.severity);
-    if (params?.statusInternal) items = items.filter((item) => item.status_internal === params.statusInternal);
-    if (typeof params?.acknowledged === "boolean") {
-      items = items.filter((item) =>
-        (item.acknowledged_internal || item.acknowledged_source) === params.acknowledged,
-      );
-    }
-    if (params?.host) {
-      const host = params.host.toLocaleLowerCase("pt-BR");
-      items = items.filter((item) => item.host_name?.toLocaleLowerCase("pt-BR").includes(host));
-    }
-    if (params?.service) items = items.filter((item) => item.service_name === params.service);
-
-    const hasFilter = Boolean(
-      params?.clientName ||
-      params?.severity ||
-      params?.statusInternal ||
-      typeof params?.acknowledged === "boolean" ||
-      params?.host ||
-      params?.service,
-    );
-    const total = hasFilter ? items.length : SNAPSHOT_TOTAL_ALERTS;
-    const offset = Math.max(params?.offset ?? 0, 0);
-    const limit = Math.max(params?.limit ?? total, 0);
-    return { items: items.slice(offset, offset + limit), total, ...snapshotMeta() };
-  }
-
   const search = new URLSearchParams();
   if (params?.clientName) search.set("client_name", params.clientName);
   if (params?.severity) search.set("severity", params.severity);
@@ -327,25 +317,27 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
 }
 
 export async function fetchAlert(id: string): Promise<OneViewAlert> {
-  if (isSnapshotMode) {
-    const alert = demoAlerts.find((item) => item.id === id || item.source_event_id === id);
-    if (!alert) throw new Error(`Alerta não encontrado no snapshot OneView: ${id}`);
-    return alert;
-  }
-
-  const response = await fetchAlerts({ limit: 5000 });
+  const response = await fetchAlerts({ limit: 500, offset: 0 });
   const alert = response.items.find((item) => item.id === id || item.source_event_id === id);
   if (!alert) throw new Error(`Alerta não encontrado na visualização atual do OneView: ${id}`);
   return alert;
 }
 
 export async function fetchAlertMetrics(): Promise<AlertMetrics> {
-  if (isSnapshotMode) return { ...demoAlertMetrics, ...snapshotMeta() };
   return fetchApi<AlertMetrics>("/oneview/dashboard-summary");
 }
 
+export async function fetchOneViewHealth(): Promise<OneViewHealthResponse> {
+  return fetchApi<OneViewHealthResponse>("/oneview/health");
+}
+
+export async function fetchSyncLogs(limit = 8): Promise<SyncLogListResponse> {
+  const safeLimit = Math.min(Math.max(Math.floor(limit), 1), 50);
+  return fetchApi<SyncLogListResponse>(`/oneview/sync-logs?limit=${safeLimit}`);
+}
+
 export async function addAlertNote(id: string, message: string, operatorName = "oneview-ui"): Promise<AlertNoteResult> {
-  if (isSnapshotMode || isReadOnlyMode) throw new Error(readOnlyMessage("notas reais"));
+  if (isReadOnlyMode) throw new Error(readOnlyMessage("notas reais"));
   return fetchApi<AlertNoteResult>(`/alerts/${id}/notes`, {
     method: "POST",
     body: JSON.stringify({ message, operator_name: operatorName }),
@@ -353,7 +345,7 @@ export async function addAlertNote(id: string, message: string, operatorName = "
 }
 
 export async function assignAlert(id: string, operatorName = "oneview-ui"): Promise<AlertAssignmentResult> {
-  if (isSnapshotMode || isReadOnlyMode) throw new Error(readOnlyMessage("atribuições reais"));
+  if (isReadOnlyMode) throw new Error(readOnlyMessage("atribuições reais"));
   return fetchApi<AlertAssignmentResult>(`/alerts/${id}/assign`, {
     method: "POST",
     body: JSON.stringify({ operator_name: operatorName }),
@@ -366,7 +358,7 @@ export async function updateAlertStatus(
   message?: string,
   operatorName = "oneview-ui",
 ): Promise<AlertStatusResult> {
-  if (isSnapshotMode || isReadOnlyMode) throw new Error(readOnlyMessage("ACK real"));
+  if (isReadOnlyMode) throw new Error(readOnlyMessage("ACK real"));
   return fetchApi<AlertStatusResult>(`/alerts/${id}/status`, {
     method: "POST",
     body: JSON.stringify({ status, message, operator_name: operatorName }),
@@ -374,8 +366,7 @@ export async function updateAlertStatus(
 }
 
 export async function fetchAllAlerts(params?: Omit<FetchAlertsParams, "limit" | "offset">): Promise<AlertListResponse> {
-  if (isSnapshotMode) return fetchAlerts(params);
-  return fetchAlerts({ ...params, limit: 5000, offset: 0 });
+  return fetchAlerts({ ...params, limit: 500, offset: 0 });
 }
 
 export function dataSourcesToClients(dataSources: DataSource[]): Client[] {

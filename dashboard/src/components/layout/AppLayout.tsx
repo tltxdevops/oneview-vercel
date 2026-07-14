@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { RefreshCcw, Pause, Play, BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isSnapshotMode } from "@/lib/demo-mode";
 
 interface AppLayoutProps {
   title?: string;
@@ -150,7 +149,7 @@ export function AppLayout({
     );
   }, [showRefreshMeta, enableAutoRefresh, isPaused, countdown, formattedLastUpdate]);
 
-  const effectiveDataSource = dataSource ?? (isSnapshotMode ? "snapshot" : null);
+  const effectiveDataSource = dataSource ?? null;
   const checkedAtLabel = useMemo(() => {
     if (!checkedAt) return null;
     const date = new Date(checkedAt);

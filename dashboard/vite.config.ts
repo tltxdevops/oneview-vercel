@@ -6,6 +6,7 @@ import path from "path";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const devPort = Number(process.env.PORT || env.VITE_DEV_SERVER_PORT || 6565);
+  const oneViewApiProxyTarget = env.VITE_ONEVIEW_API_PROXY_TARGET || "http://127.0.0.1:8787";
 
   const rawBase = env.VITE_APP_BASE_PATH?.trim() ?? "";
   const normalizedBase = rawBase
@@ -42,7 +43,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     base,
-    envPrefix: ["VITE_", "NEXT_PUBLIC_"],
+    envPrefix: "VITE_",
     server: {
       host: "::",
       port: devPort,
@@ -50,6 +51,10 @@ export default defineConfig(({ mode }) => {
       origin: env.VITE_DEV_SERVER_ORIGIN || undefined,
       hmr,
       proxy: {
+        "/api/oneview": {
+          target: oneViewApiProxyTarget,
+          changeOrigin: true,
+        },
         "/api": {
           target: env.VITE_API_PROXY_TARGET || "http://localhost:8000",
           changeOrigin: true,

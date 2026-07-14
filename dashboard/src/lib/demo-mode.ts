@@ -21,20 +21,8 @@ function readBooleanFlag(defaultValue: boolean, ...keys: string[]) {
   return defaultValue;
 }
 
-// Auth bypass is intentionally separate from the presentation/snapshot flag.
-// NEXT_PUBLIC_DEMO_MODE=true must not disable SSO in production.
+// Auth bypass is independent from the OneView data source.
 export const isDemoMode = readBooleanFlag(false, "ONEVIEW_AUTH_BYPASS_MODE", "VITE_AUTH_BYPASS_MODE");
-
-// Snapshot/read-only controls data source. Default true for the Vercel presentation:
-// SSO may stay enabled, but UI reads the sanitized OneView snapshot instead of /api data.
-export const isSnapshotMode = readBooleanFlag(
-  true,
-  "ONEVIEW_SNAPSHOT_MODE",
-  "NEXT_PUBLIC_SNAPSHOT_MODE",
-  "VITE_SNAPSHOT_MODE",
-  "NEXT_PUBLIC_DEMO_MODE",
-  "VITE_DEMO_MODE",
-);
 
 export const isReadOnlyMode = readBooleanFlag(
   true,

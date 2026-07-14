@@ -27,7 +27,7 @@ export function parseBody(req) {
 
 export function publicError(error) {
   const message = String(error?.message || "unexpected_error");
-  if (/(ONEVIEW_DB_|POSTGRES_APP_PASSWORD|oneview_db_config)/i.test(message)) return "database_not_configured";
+  if (/(ONEVIEW_DB_|POSTGRES_READONLY_PASSWORD|oneview_db_config)/i.test(message)) return "database_not_configured";
   if (message.includes("PostgreSQL")) return "invalid_database_backend";
   return "request_failed";
 }

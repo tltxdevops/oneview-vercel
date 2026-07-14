@@ -4,7 +4,7 @@ import { ClientSelect } from "@/components/certificados/ClientSelect";
 import { AlertsList } from "@/components/alerts/AlertsList";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Activity, AlertTriangle, Cloud, Database, RefreshCcw, Server, Wifi, Shield, Filter, Loader2 } from "lucide-react";
+import { Activity, AlertTriangle, Database, RefreshCcw, Server, Wifi, Shield, Filter, Loader2 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link } from "react-router-dom";
@@ -12,22 +12,18 @@ import {
   DataSource,
   AlertMetrics,
   OneViewDataSourceKind,
+  OneViewHealthResponse,
+  OneViewSyncLog,
   dataSourcesToClients,
   fetchAlerts,
   fetchAlertMetrics,
   fetchDataSourcesWithMeta,
+  fetchOneViewHealth,
+  fetchSyncLogs,
   oneViewAlertToLegacyAlert,
 } from "@/lib/oneview-api";
 import { Alert, Severity } from "@/types";
 import { toast } from "sonner";
-import { isSnapshotMode as isDemoMode } from "@/lib/demo-mode";
-import {
-  SNAPSHOT_EXPORTED_ALERTS,
-  SNAPSHOT_LAST_UPDATED_AT,
-  SNAPSHOT_SUMMARY,
-  SNAPSHOT_TOTAL_ALERTS,
-  demoSyncLogs,
-} from "@/lib/demo-oneview-data";
 import { cn } from "@/lib/utils";
 
 const SUMMARY_REFRESH_MS = 60_000;
@@ -60,9 +56,13 @@ export default function Index() {
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
+  const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
+  const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
   const [sourcesMeta, setSourcesMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [alertsMeta, setAlertsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [metricsMeta, setMetricsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [healthMeta, setHealthMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [syncMeta, setSyncMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [selectedClient, setSelectedClient] = useState<string | string[]>("all");
   const [isLoading, setIsLoading] = useState(false);
   const pendingLoadsRef = useRef(0);
@@ -86,14 +86,20 @@ export default function Index() {
   const loadSummaryAndSources = useCallback(async () => {
     beginLoad();
     try {
-      const [sourcesResponse, metricsResponse] = await Promise.all([
+      const [healthResponse, sourcesResponse, metricsResponse, syncResponse] = await Promise.all([
+        fetchOneViewHealth(),
         fetchDataSourcesWithMeta(),
         fetchAlertMetrics(),
+        fetchSyncLogs(8),
       ]);
+      setHealth(healthResponse);
+      setHealthMeta({ source: healthResponse.data_source, checkedAt: healthResponse.checked_at });
       setDataSources(sourcesResponse.items);
       setSourcesMeta({ source: sourcesResponse.data_source, checkedAt: sourcesResponse.checked_at });
       setMetrics(metricsResponse);
       setMetricsMeta({ source: metricsResponse.data_source, checkedAt: metricsResponse.checked_at });
+      setSyncLogs(syncResponse.items);
+      setSyncMeta({ source: syncResponse.data_source, checkedAt: syncResponse.checked_at });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erro ao carregar dados reais";
       toast.error(message);
@@ -130,8 +136,20 @@ export default function Index() {
     };
   }, [loadAlerts, loadSummaryAndSources]);
 
-  const currentDataSource = effectiveDataSource(sourcesMeta.source, alertsMeta.source, metricsMeta.source);
-  const lastCheckedAt = latestCheckedAt(sourcesMeta.checkedAt, alertsMeta.checkedAt, metricsMeta.checkedAt);
+  const currentDataSource = effectiveDataSource(
+    healthMeta.source,
+    sourcesMeta.source,
+    alertsMeta.source,
+    metricsMeta.source,
+    syncMeta.source,
+  );
+  const lastCheckedAt = latestCheckedAt(
+    healthMeta.checkedAt,
+    sourcesMeta.checkedAt,
+    alertsMeta.checkedAt,
+    metricsMeta.checkedAt,
+    syncMeta.checkedAt,
+  );
 
   const filteredAlerts = useMemo(() => {
     if (selectedClient === "all" || (Array.isArray(selectedClient) && selectedClient.includes("all"))) {
@@ -229,49 +247,28 @@ export default function Index() {
     const activeTotal = selectedClient === "all" ? metrics?.active_total ?? pendingCount : pendingCount;
     const disasterTotal = selectedClient === "all" ? metricSeverity.disaster ?? criticalCount : criticalCount;
     const highTotal = selectedClient === "all" ? metricSeverity.high ?? highCount : highCount;
-    const unacknowledged = selectedClient === "all"
-      ? metrics?.unacknowledged_total ?? filteredAlerts.filter((alert) => alert.status === "Active").length
-      : filteredAlerts.filter((alert) => alert.status === "Active").length;
     const sourceCount = dataSources.filter((source) => source.sync_enabled && source.status === "active").length;
-    const failedSources = dataSources.filter((source) => source.last_sync_status === "failed" || source.last_sync_status === "test_failed").length;
-    const integrationStatus = `${sourceCount} fonte${sourceCount === 1 ? "" : "s"} ativa${sourceCount === 1 ? "" : "s"}${
-      failedSources > 0 ? `, ${failedSources} pendência${failedSources === 1 ? "" : "s"}` : ""
-    }`;
-
-    if (isDemoMode) {
-      return [
-        { title: "Alertas sincronizados", status: SNAPSHOT_TOTAL_ALERTS.toLocaleString("pt-BR"), icon: <Wifi className="h-5 w-5 text-primary" /> },
-        { title: "Alertas exportados", status: SNAPSHOT_EXPORTED_ALERTS.toLocaleString("pt-BR"), icon: <Database className="h-5 w-5 text-primary" /> },
-        { title: "Alertas ativos", status: String(activeTotal), icon: <Activity className="h-5 w-5 text-primary" /> },
-        { title: "Críticos / Alta", status: String(disasterTotal + highTotal), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
-        {
-          title: "Fontes de dados ativas",
-          status: `${SNAPSHOT_SUMMARY.datasources_active}/${SNAPSHOT_SUMMARY.datasources_total}`,
-          icon: <RefreshCcw className="h-5 w-5 text-primary" />,
-        },
-        {
-          title: "Fontes de dados com erro",
-          status: String(SNAPSHOT_SUMMARY.datasources_error),
-          icon: <Shield className="h-5 w-5 text-primary" />,
-        },
-        { title: "Dados atualizados", status: formatSnapshotDate(SNAPSHOT_LAST_UPDATED_AT), icon: <Server className="h-5 w-5 text-primary" /> },
-      ].map((card) => ({ ...card, scope }));
-    }
+    const failedSources = dataSources.filter((source) => source.status === "error").length;
+    const totalAlerts = health?.counts.total_alerts ?? metrics?.alerts_total ?? activeTotal;
 
     return [
-      { title: "Rede", status: `${activeTotal} alertas ativos`, icon: <Wifi className="h-5 w-5 text-primary" /> },
-      { title: "Nuvem", status: `${disasterTotal} desastres`, icon: <Cloud className="h-5 w-5 text-primary" /> },
-      { title: "Servidores", status: `${highTotal} alta severidade`, icon: <Server className="h-5 w-5 text-primary" /> },
-      { title: "Banco de dados", status: integrationStatus, icon: <Database className="h-5 w-5 text-primary" /> },
+      { title: "Alertas sincronizados", status: totalAlerts.toLocaleString("pt-BR"), icon: <Wifi className="h-5 w-5 text-primary" /> },
+      { title: "Alertas carregados", status: alerts.length.toLocaleString("pt-BR"), icon: <Database className="h-5 w-5 text-primary" /> },
+      { title: "Alertas ativos", status: activeTotal.toLocaleString("pt-BR"), icon: <Activity className="h-5 w-5 text-primary" /> },
+      { title: "Críticos / Alta", status: (disasterTotal + highTotal).toLocaleString("pt-BR"), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
       {
-        title: "Reconhecimento",
-        status: isDemoMode
-          ? `${unacknowledged} pendentes, ACK desabilitado`
-          : `${unacknowledged} pendentes, TMR ${formatMetricDuration(metrics?.avg_ack_time_seconds)}`,
+        title: "Fontes de dados ativas",
+        status: `${sourceCount}/${dataSources.length}`,
+        icon: <RefreshCcw className="h-5 w-5 text-primary" />,
+      },
+      {
+        title: "Fontes de dados com erro",
+        status: String(failedSources),
         icon: <Shield className="h-5 w-5 text-primary" />,
       },
+      { title: "Dados atualizados", status: lastCheckedAt ? formatDateTime(lastCheckedAt) : "consultando...", icon: <Server className="h-5 w-5 text-primary" /> },
     ].map((card) => ({ ...card, scope }));
-  }, [dataSources, filteredAlerts, metrics, selectedClient, selectedClientName]);
+  }, [alerts.length, dataSources, filteredAlerts, health, lastCheckedAt, metrics, selectedClient, selectedClientName]);
 
   const alertCountByDataSource = useMemo(() => {
     return alerts.reduce<Record<string, number>>((acc, alert) => {
@@ -314,7 +311,7 @@ export default function Index() {
       <div className="flex flex-col gap-6">
         <section
           ref={healthRowRef}
-          className={cn("grid grid-cols-1 gap-3", isDemoMode ? "sm:grid-cols-2 xl:grid-cols-7" : "sm:grid-cols-5")}
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-7"
         >
           {healthCards.map((card) => (
             <Card key={card.title} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
@@ -334,9 +331,7 @@ export default function Index() {
             <div>
               <h2 className="text-base font-semibold text-foreground">Clientes Zabbix internos</h2>
               <p className="text-sm text-muted-foreground">
-                {isDemoMode
-                  ? `${SNAPSHOT_TOTAL_ALERTS.toLocaleString("pt-BR")} alertas sincronizados; ${SNAPSHOT_EXPORTED_ALERTS.toLocaleString("pt-BR")} alertas ativos recentes na cópia atualizada.`
-                  : `${metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalização média: ${formatMetricDuration(metrics?.avg_normalization_time_seconds)}.`}
+                {`${metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalização média: ${formatMetricDuration(metrics?.avg_normalization_time_seconds)}.`}
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={loadData} disabled={isLoading}>
@@ -359,11 +354,11 @@ export default function Index() {
               </div>
             ))}
           </div>
-          {isDemoMode ? (
+          {syncLogs.length > 0 ? (
             <div className="mt-4 border-t border-border/60 pt-4">
               <h3 className="mb-2 text-sm font-semibold text-foreground">Últimas sincronizações</h3>
               <div className="grid gap-2 lg:grid-cols-2">
-                {demoSyncLogs.map((log) => (
+                {syncLogs.map((log) => (
                   <div key={log.id} className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold text-foreground">{formatDataSourceName(log.datasource)}</span>
@@ -439,7 +434,7 @@ export default function Index() {
                 </Button>
               </header>
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
-                <p className="font-medium text-foreground">Integração de chamados não disponível na cópia atual.</p>
+                <p className="font-medium text-foreground">Integração de chamados não disponível na visão atual.</p>
                 <p>Este painel consolida os alertas operacionais persistidos pelo OneView.</p>
               </div>
             </div>
@@ -462,7 +457,7 @@ function latestCheckedAt(...values: Array<string | undefined>): string | null {
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
 }
 
-function formatSnapshotDate(value: string): string {
+function formatDateTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? "data indisponível"
