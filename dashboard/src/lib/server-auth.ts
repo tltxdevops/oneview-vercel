@@ -14,6 +14,21 @@ export type ServerAuthUser = {
 const API_BASE = typeof window !== "undefined" ? `${window.location.origin}/api` : "/api";
 const OAUTH_STATE_KEY = "oneview_oauth_state";
 const SESSION_TOKEN_KEY = "oneview_session_token";
+// Versionada para não reaproveitar o marcador de sessão de builds anteriores.
+const SERVER_SESSION_ACTIVE_KEY = "oneview_server_session_active_v2";
+
+export function hasActiveServerSession() {
+  return typeof window !== "undefined" && window.sessionStorage.getItem(SERVER_SESSION_ACTIVE_KEY) === "true";
+}
+
+function setActiveServerSession(active: boolean) {
+  if (typeof window === "undefined") return;
+  if (active) {
+    window.sessionStorage.setItem(SERVER_SESSION_ACTIVE_KEY, "true");
+  } else {
+    window.sessionStorage.removeItem(SERVER_SESSION_ACTIVE_KEY);
+  }
+}
 
 function randomState() {
   if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
@@ -30,6 +45,7 @@ export function serverAuthEnabled() {
 
 export function getServerAuthToken() {
   if (typeof window === "undefined") return "";
+  if (!hasActiveServerSession()) return "";
   return (
     window.localStorage.getItem(SESSION_TOKEN_KEY) ||
     window.sessionStorage.getItem(SESSION_TOKEN_KEY) ||
@@ -72,13 +88,26 @@ function clearCallbackParamsFromUrl() {
 export async function startServerMicrosoftLogin() {
   const state = randomState();
   window.sessionStorage.setItem(OAUTH_STATE_KEY, state);
+  setActiveServerSession(false);
 
   const response = await fetch(`${API_BASE}/auth/microsoft/login?state=${encodeURIComponent(state)}`, {
     credentials: "include",
     cache: "no-store",
   });
 
-  if (!response.ok) throw new Error("Não foi possível iniciar o login Microsoft.");
+  if (!response.ok) {
+    let errorCode = "";
+    try {
+      const body = await response.json() as { error?: unknown };
+      errorCode = typeof body.error === "string" ? body.error : "";
+    } catch {
+      // Mantém mensagem segura quando a API não retorna JSON.
+    }
+    if (errorCode === "microsoft_sso_not_configured") {
+      throw new Error("SSO server-side não configurado. Defina MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET e APP_SESSION_SECRET no ambiente local.");
+    }
+    throw new Error("Não foi possível iniciar o login Microsoft.");
+  }
   const payload = (await response.json()) as { authUrl?: string };
   if (!payload.authUrl) throw new Error("URL de autenticação Microsoft não retornada.");
   window.location.href = payload.authUrl;
@@ -121,6 +150,7 @@ export async function completeServerMicrosoftLoginFromUrl(): Promise<ServerAuthU
     if (!payload.user?.email) throw new Error("Sessão SSO não retornou usuário válido.");
 
     storeServerAuthToken(payload.session?.token);
+    setActiveServerSession(true);
     window.sessionStorage.removeItem(OAUTH_STATE_KEY);
     return payload.user;
   } finally {
@@ -147,6 +177,7 @@ export async function logoutServerAuth() {
     credentials: "include",
   }).catch(() => undefined);
   storeServerAuthToken(undefined);
+  setActiveServerSession(false);
   if (typeof window !== "undefined") window.sessionStorage.removeItem(OAUTH_STATE_KEY);
 }
 

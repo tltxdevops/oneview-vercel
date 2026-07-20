@@ -96,6 +96,11 @@ export const SNAPSHOT_READ_ONLY_MESSAGE =
 
 export const demoAlerts: OneViewAlert[] = snapshot.alerts.map((alert) => ({
   ...alert,
+  enrichment_state: alert.customer_name === "Cliente não classificado"
+    ? "unclassified"
+    : !alert.customer_name
+      ? "legacy"
+      : alert.customer_confidence === "high" ? "complete" : "partial",
   host_name: alert.host_alias ?? "Host protegido",
   host_ip: null,
   payload_normalized: {},

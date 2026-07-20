@@ -13,7 +13,7 @@ async function authHeaders(): Promise<Record<string, string>> {
   if (import.meta.env.VITE_ONEVIEW_API_AUTH_DISABLED === "true") return {};
   if (!msalInstance || !isSsoEnvironmentReady) return {};
 
-  const account = msalInstance.getActiveAccount() ?? msalInstance.getAllAccounts()[0];
+  const account = msalInstance.getActiveAccount();
   if (!account) return {};
 
   try {
@@ -43,8 +43,27 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`API Error: ${response.status} - ${errorText || response.statusText}`);
+    let errorCode = "request_failed";
+    try {
+      const errorBody = await response.json() as { error?: unknown };
+      if (typeof errorBody?.error === "string" && /^[a-z0-9_]+$/i.test(errorBody.error)) errorCode = errorBody.error;
+    } catch {
+      // A resposta de erro nunca é exibida integralmente para evitar vazamento de detalhes internos.
+    }
+    const messages: Record<string, string> = {
+      invalid_query: "Filtros inválidos. Revise os valores informados.",
+      not_found: "Alerta não encontrado.",
+      authentication_required: "Sua sessão expirou. Entre novamente.",
+      database_timeout: "A consulta demorou além do esperado. Tente novamente.",
+      database_unavailable: "O banco OneView está temporariamente indisponível.",
+      insufficient_role: "Seu usuário não possui permissão para solicitar reconhecimento.",
+      ack_request_disabled: "A solicitação de reconhecimento está desabilitada.",
+      datasource_not_allowed: "Esta fonte ainda não permite solicitação de reconhecimento.",
+      alert_already_acknowledged: "Este alerta já foi reconhecido.",
+      invalid_comment: "O comentário deve possuir no máximo 500 caracteres.",
+      actions_database_not_configured: "O canal seguro de solicitações ainda não está configurado.",
+    };
+    throw new Error(messages[errorCode] || `Não foi possível consultar o OneView (${response.status}).`);
   }
 
   const body = (await response.json()) as T;
@@ -71,6 +90,15 @@ export type OneViewDataSourceKind = "database" | "snapshot";
 export interface OneViewResponseMeta {
   data_source?: OneViewDataSourceKind;
   checked_at?: string;
+  fallback_code?: string | null;
+}
+
+export interface AckRequestResponse {
+  request_id: string;
+  status: "pending";
+  idempotent: boolean;
+  execution_enabled: false;
+  message: string;
 }
 
 export interface DataSource {
@@ -141,44 +169,118 @@ export interface OneViewAlert {
   data_source_id: string;
   datasource_name?: string;
   client_name: string;
+  customer_name: string | null;
+  customer_key: string | null;
+  customer_source: string | null;
+  customer_confidence: string | null;
+  enrichment_status: "enriched" | "pending";
+  enrichment_state: "complete" | "partial" | "legacy" | "unclassified";
   source_type: string;
   source_event_id: string;
   source_problem_id: string | null;
   source_trigger_id: string | null;
   source_host_id: string | null;
   host_name: string | null;
+  host_visible_name: string | null;
+  host_technical_name: string | null;
   host_ip: string | null;
   host_group: string | null;
+  host_groups: Array<{ id: string | null; name: string }>;
+  event_tags: Array<{ tag: string; value: string }>;
+  trigger_tags: Array<{ tag: string; value: string }>;
+  host_tags: Array<{ tag: string; value: string }>;
   service_name: string | null;
+  item_name: string | null;
+  item_key: string | null;
+  trigger_description: string | null;
+  operational_data: string | null;
   problem_name: string;
   severity: string;
   status_source: string;
   status_internal: string;
   acknowledged_source: boolean;
   acknowledged_internal: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  ack_request_status?: "pending" | "processing" | null;
+  suppressed: boolean;
+  suppressed_until: string | null;
+  maintenance_status: string | null;
   first_seen_at: string;
   started_at?: string;
   last_seen_at: string;
   resolved_at: string | null;
+  source_recovery_event_id: string | null;
   duration_seconds: number;
-  fingerprint: string;
-  payload_normalized: {
-    eventid?: string;
-    triggerid?: string;
-    severity?: string;
-    opdata?: string;
-    suppressed?: boolean;
-    tags?: Array<{ tag?: string; value?: string }>;
-    acknowledges?: unknown[];
-    suppression_data?: unknown[];
-  };
   created_at: string;
   updated_at: string;
 }
 
+export interface AlertPagination {
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
 export interface AlertListResponse extends OneViewResponseMeta {
   items: OneViewAlert[];
-  total: number;
+  pagination: AlertPagination;
+  snapshot_coverage?: {
+    partial: boolean;
+    total_persisted: number;
+    available_items: number;
+  };
+}
+
+export interface AlertDetailResponse extends OneViewResponseMeta {
+  item: OneViewAlert & {
+    history_count: number;
+    acknowledgement_count: number;
+  };
+}
+
+export interface AlertHistoryItem {
+  id: string;
+  event_type: string;
+  title: string;
+  description: string | null;
+  previous_value: unknown;
+  current_value: unknown;
+  source_event_id: string | null;
+  occurred_at: string;
+  created_at: string;
+  actor_name: string | null;
+  ack_actor_name: string | null;
+  ack_actor_unresolved: boolean;
+  actor_type: string | null;
+  source: string;
+  origin: string;
+  legacy: boolean;
+  comment?: string | null;
+  grouped_event_count?: number;
+  first_occurred_at?: string;
+  last_occurred_at?: string;
+}
+
+export interface AlertHistoryResponse extends OneViewResponseMeta {
+  alert_id: string;
+  items: AlertHistoryItem[];
+  total_items: number;
+  source_total_items?: number;
+  history_available?: boolean;
+  history_partial?: boolean;
+  first_event_at?: string | null;
+  last_event_at?: string | null;
+  has_recovery?: boolean;
+  has_ack?: boolean;
+  acknowledgement_count?: number;
+  first_ack_at?: string | null;
+  latest_ack_at?: string | null;
+  has_ack_comment?: boolean;
+  ack_actor_summary?: string;
 }
 
 export interface AlertMetrics extends OneViewResponseMeta {
@@ -208,6 +310,22 @@ export interface DataSourceListResponse extends OneViewResponseMeta {
   items: Array<Partial<DataSource> & Pick<DataSource, "id" | "name" | "client_name" | "status">>;
 }
 
+export interface OneViewFacetsResponse extends OneViewResponseMeta {
+  customers: Array<{
+    key: string;
+    name: string;
+    alerts_count: number;
+    high_confidence_count: number;
+    low_confidence_count: number;
+    enrichment_status: "enriched" | "pending";
+  }>;
+  datasources: Array<{
+    id: string;
+    name: string;
+    alerts_count: number;
+  }>;
+}
+
 export interface OneViewHealthResponse extends OneViewResponseMeta {
   status: "ok" | string;
   database_reachable: boolean;
@@ -215,6 +333,32 @@ export interface OneViewHealthResponse extends OneViewResponseMeta {
     total_alerts: number;
     active_alerts: number;
   };
+  capabilities?: {
+    acknowledgement: boolean;
+  };
+}
+
+export type OperationalStatus = "healthy" | "warning" | "error" | "stale" | "disabled";
+
+export interface OperationsHealthResponse extends OneViewResponseMeta {
+  status: OperationalStatus;
+  summary: Record<OperationalStatus, number> & { total: number };
+  worker: { status: "healthy" | "stale" | "unknown"; last_activity_at: string | null };
+  items: Array<{
+    id: string;
+    name: string;
+    client_name: string;
+    source_status: "active" | "inactive" | "error";
+    operational_status: OperationalStatus;
+    reason_code: string;
+    sync_enabled: boolean;
+    sync_interval_seconds: number;
+    last_sync_status: string | null;
+    last_sync_at: string | null;
+    last_success_at: string | null;
+    last_activity_at: string | null;
+    failure_count: number;
+  }>;
 }
 
 export interface OneViewSyncLog {
@@ -245,6 +389,7 @@ export async function fetchDataSourcesWithMeta(): Promise<{ items: DataSource[] 
   return {
     data_source: response.data_source,
     checked_at: response.checked_at,
+    fallback_code: response.fallback_code,
     items: response.items.map((source) => ({
     id: source.id,
     name: source.name,
@@ -291,36 +436,74 @@ export async function requestDataSourceSync(id: string, reason = "manual_ui"): P
 }
 
 export interface FetchAlertsParams {
-  clientName?: string;
-  severity?: string;
-  statusInternal?: string;
+  page?: number;
+  pageSize?: number;
+  clients?: string[];
+  customers?: string[];
+  datasources?: string[];
+  customerConfidences?: Array<"high" | "medium" | "low" | "unclassified">;
+  severities?: string[];
+  status?: "active" | "resolved" | "all";
   acknowledged?: boolean;
-  host?: string;
-  service?: string;
-  limit?: number;
-  offset?: number;
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  firstSeenFrom?: string;
+  lastSeenFrom?: string;
+  sort?: "last_seen_at" | "first_seen_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration";
+  order?: "asc" | "desc";
+  signal?: AbortSignal;
 }
 
 export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
   const search = new URLSearchParams();
-  if (params?.clientName) search.set("client_name", params.clientName);
-  if (params?.severity) search.set("severity", params.severity);
-  if (params?.statusInternal) search.set("status_internal", params.statusInternal);
+  search.set("page", String(params?.page ?? 1));
+  search.set("page_size", String(params?.pageSize ?? 50));
+  for (const client of params?.clients ?? []) search.append("client", client);
+  for (const customer of params?.customers ?? []) search.append("customer", customer);
+  for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
+  for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
+  for (const severity of params?.severities ?? []) search.append("severity", severity);
+  if (params?.status) search.set("status", params.status);
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
-  if (params?.host) search.set("host", params.host);
-  if (params?.service) search.set("service", params.service);
-  if (params?.limit) search.set("limit", String(params.limit));
-  if (params?.offset) search.set("offset", String(params.offset));
+  if (params?.search) search.set("search", params.search);
+  if (params?.dateFrom) search.set("date_from", params.dateFrom);
+  if (params?.dateTo) search.set("date_to", params.dateTo);
+  if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);
+  if (params?.lastSeenFrom) search.set("last_seen_from", params.lastSeenFrom);
+  if (params?.sort) search.set("sort", params.sort);
+  if (params?.order) search.set("order", params.order);
 
   const query = search.toString();
-  return fetchApi<AlertListResponse>(`/oneview/alerts${query ? `?${query}` : ""}`);
+  return fetchApi<AlertListResponse>(`/oneview/alerts${query ? `?${query}` : ""}`, { signal: params?.signal });
 }
 
-export async function fetchAlert(id: string): Promise<OneViewAlert> {
-  const response = await fetchAlerts({ limit: 500, offset: 0 });
-  const alert = response.items.find((item) => item.id === id || item.source_event_id === id);
-  if (!alert) throw new Error(`Alerta não encontrado na visualização atual do OneView: ${id}`);
-  return alert;
+export async function fetchAlert(id: string, signal?: AbortSignal): Promise<AlertDetailResponse> {
+  return fetchApi<AlertDetailResponse>(`/oneview/alerts/${encodeURIComponent(id)}`, { signal });
+}
+
+export async function fetchAlertHistory(id: string, signal?: AbortSignal): Promise<AlertHistoryResponse> {
+  return fetchApi<AlertHistoryResponse>(`/oneview/alerts/${encodeURIComponent(id)}/history`, { signal });
+}
+
+export async function requestAlertAcknowledgement(
+  id: string,
+  comment: string,
+  idempotencyKey: string,
+): Promise<AckRequestResponse> {
+  return fetchApi<AckRequestResponse>(`/oneview/alerts/${encodeURIComponent(id)}/ack-request`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ comment }),
+  });
+}
+
+export async function fetchOperationsHealth(signal?: AbortSignal): Promise<OperationsHealthResponse> {
+  return fetchApi<OperationsHealthResponse>("/oneview/operations/health", { signal });
+}
+
+export async function fetchOneViewFacets(signal?: AbortSignal): Promise<OneViewFacetsResponse> {
+  return fetchApi<OneViewFacetsResponse>("/oneview/clients-summary", { signal });
 }
 
 export async function fetchAlertMetrics(): Promise<AlertMetrics> {
@@ -365,8 +548,8 @@ export async function updateAlertStatus(
   });
 }
 
-export async function fetchAllAlerts(params?: Omit<FetchAlertsParams, "limit" | "offset">): Promise<AlertListResponse> {
-  return fetchAlerts({ ...params, limit: 500, offset: 0 });
+export async function fetchAllAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
+  return fetchAlerts({ ...params, page: 1, pageSize: Math.min(params?.pageSize ?? 100, 100) });
 }
 
 export function dataSourcesToClients(dataSources: DataSource[]): Client[] {
@@ -387,10 +570,13 @@ export function severityToUi(value: string): Severity {
     case "high":
       return "High";
     case "average":
-    case "warning":
       return "Average";
+    case "warning":
+    case "information":
+    case "not_classified":
+      return "Low";
     default:
-      return "Info";
+      return "Low";
   }
 }
 
@@ -408,7 +594,7 @@ export function uiSeverityToApi(value: string): string | undefined {
     case "2":
       return "warning";
     case "1":
-    case "Info":
+    case "Low":
       return "information";
     case "0":
       return "not_classified";
@@ -430,16 +616,17 @@ export function oneViewAlertToLegacyAlert(alert: OneViewAlert): Alert {
     id: alert.source_event_id || alert.id,
     time: Number.isNaN(firstSeen.getTime()) ? alert.first_seen_at : firstSeen.toISOString(),
     severity: severityToUi(alert.severity),
-    host: alert.host_name || "-",
+    host: alert.host_visible_name || alert.host_technical_name || alert.host_name || "-",
     problem: alert.problem_name,
-    operationalData: alert.payload_normalized?.opdata || "",
+    operationalData: "",
     duration: formatDurationSeconds(alert.duration_seconds),
     status,
-    tags: (alert.payload_normalized?.tags || [])
-      .map((tag) => `${tag.tag ?? ""}: ${tag.value ?? ""}`.trim())
-      .filter(Boolean),
+    tags: [],
     clientId: alert.data_source_id,
-    clientName: alert.client_name,
+    clientName: alert.customer_name
+      || (alert.datasource_name?.toLowerCase() === "teletex-http"
+        ? "Classificação histórica pendente"
+        : "Dados históricos aguardando classificação"),
   };
 }
 

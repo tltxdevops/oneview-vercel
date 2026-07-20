@@ -12,7 +12,8 @@ function splitCsv(value) {
 }
 
 function authRequired() {
-  return process.env.ONEVIEW_API_AUTH_REQUIRED !== "false";
+  // Dados operacionais nunca são expostos sem uma sessão SSO validada.
+  return true;
 }
 
 function bearerToken(req) {

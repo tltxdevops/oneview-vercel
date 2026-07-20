@@ -67,7 +67,7 @@ export const mockAlerts: Alert[] = [
   {
     id: "ALR-2024-0003",
     time: "08:45:23",
-    severity: "Info",
+    severity: "Low",
     host: "SRV-DB-001",
     problem: "Backup concluído com sucesso",
     operationalData: "Size: 2.3GB",
@@ -106,7 +106,7 @@ export const mockAlerts: Alert[] = [
   {
     id: "ALR-2024-0006",
     time: "07:12:55",
-    severity: "Info",
+    severity: "Low",
     host: "CACHE-01",
     problem: "Cache limpo automaticamente",
     operationalData: "Freed: 512MB",
@@ -145,7 +145,7 @@ export const mockAlerts: Alert[] = [
   {
     id: "ALR-2024-0009",
     time: "04:33:27",
-    severity: "Info",
+    severity: "Low",
     host: "MONITOR-01",
     problem: "Atualização de agente concluída",
     operationalData: "Version: 6.0.25",
@@ -184,7 +184,7 @@ export const mockAlerts: Alert[] = [
   {
     id: "ALR-2024-0012",
     time: "01:22:16",
-    severity: "Info",
+    severity: "Low",
     host: "BACKUP-SRV",
     problem: "Rotação de logs executada",
     operationalData: "Archived: 15 files",
@@ -285,7 +285,7 @@ export const mockChamados: Chamado[] = [
     id: "RITM32942144",
     title: "Ajuste de configuração de cache",
     client: "Teletex",
-    severity: "Info",
+    severity: "Low",
     assignee: "NOC D",
     status: "Aberto",
     updatedAt: "há 4h",

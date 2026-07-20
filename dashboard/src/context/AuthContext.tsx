@@ -14,6 +14,7 @@ import {
 import {
   completeServerMicrosoftLoginFromUrl,
   fetchServerAuthUser,
+  hasActiveServerSession,
   logoutServerAuth,
   serverAuthEnabled,
   startServerMicrosoftLogin,
@@ -108,18 +109,6 @@ function hasAuthResponseInUrl() {
   if (typeof window === "undefined") return false;
   const value = `${window.location.search || ""}${window.location.hash || ""}`;
   return /[?#&](code|error)=/i.test(value);
-}
-
-function readStoredUser(): AuthUser | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as AuthUser;
-  } catch (error) {
-    console.warn("[auth] Falha ao ler usuário armazenado", error);
-    return null;
-  }
 }
 
 function persistUser(user: AuthUser | null) {
@@ -217,7 +206,8 @@ function normalizeUser(account: AccountInfo, profile?: GraphProfile, photo?: str
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  const [user, setUser] = useState<AuthUser | null>(() => readStoredUser());
+  // A identidade só é recuperada após uma ação explícita de login neste navegador.
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const isMountedRef = useRef(true);
@@ -251,7 +241,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     if (!account) {
       if (!isMountedRef.current) return;
-      setUser((currentUser) => currentUser ?? readStoredUser());
+      setUser(null);
+      persistUser(null);
       setIsLoading(false);
       return;
     }
@@ -270,7 +261,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       console.error("[auth] Erro ao adquirir token silencioso", err);
       if (!isMountedRef.current) return;
 
-      const fallbackAccount = msalInstance.getActiveAccount() ?? msalInstance.getAllAccounts()[0];
+      // Não restaura uma conta em cache: o acesso só pode começar após clique explícito no SSO.
+      const fallbackAccount = msalInstance.getActiveAccount();
       if (fallbackAccount) {
         const normalized = normalizeUser(fallbackAccount, undefined, undefined);
         setUser(normalized);
@@ -293,7 +285,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const init = async () => {
       if (serverAuthEnabled()) {
         try {
-          const serverUser = (await completeServerMicrosoftLoginFromUrl()) ?? (await fetchServerAuthUser());
+          const callbackUser = await completeServerMicrosoftLoginFromUrl();
+          const serverUser = callbackUser ?? (hasActiveServerSession() ? await fetchServerAuthUser() : null);
           if (cancelled || !isMountedRef.current) return;
           setUser(serverUser);
           persistUser(serverUser);
@@ -303,6 +296,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           if (!cancelled && isMountedRef.current) {
             setUser(null);
             persistUser(null);
+            setError(err instanceof Error ? err.message : "Não foi possível concluir o SSO.");
           }
         } finally {
           if (!cancelled && isMountedRef.current) {
@@ -407,13 +401,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     persistUser(null);
     setUser(null);
     
-    // Limpa a conta ativa do MSAL localmente, mas não faz logout redirect
+    // Remove o cache local da aplicação; a sessão global Microsoft não recebe logout redirect.
     if (msalInstance && isSsoEnvironmentReady) {
-      const accounts = msalInstance.getAllAccounts();
-      if (accounts.length > 0) {
-        // Remove a conta ativa, mas mantém o cache para login rápido
-        msalInstance.setActiveAccount(null);
-      }
+      msalInstance.setActiveAccount(null);
+      msalInstance.clearCache();
     }
     
     // Redireciona para a página de login sem fazer logout da Microsoft
@@ -424,7 +415,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setIsLoading(true);
     if (serverAuthEnabled()) {
       try {
-        const serverUser = await fetchServerAuthUser();
+        const serverUser = hasActiveServerSession() ? await fetchServerAuthUser() : null;
         if (!isMountedRef.current) return;
         setUser(serverUser);
         persistUser(serverUser);
@@ -444,7 +435,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (!msalInstance || !isSsoEnvironmentReady) {
       return null;
     }
-    const account = msalInstance.getActiveAccount() ?? msalInstance.getAllAccounts()[0];
+    const account = msalInstance.getActiveAccount();
     if (!account) {
       return null;
     }

@@ -12,7 +12,7 @@ const navigation = [
   { name: "Alertas", href: "/alertas", icon: Bell },
   { name: "Banco de Dados", href: "/banco-dados", icon: Database },
   { name: "Certificados", href: "/certificados", icon: ShieldCheck },
-  { name: "Espaços", href: "/workspaces", icon: Monitor },
+  { name: "workspaces", href: "/workspaces", icon: Monitor },
   { name: "KPIs", href: "/kpis", icon: BarChart3 },
   { name: "Chamados", href: "/chamados", icon: Ticket },
   { name: "Relatórios", href: "/relatorios", icon: FileText },

@@ -14,6 +14,7 @@ pnpm-debug.log*
 *.db
 *.sqlite
 dashboard/src/lib/oneview-real-snapshot.safe.json
+dashboard/reports/load/
 
 .vercel
 .env*

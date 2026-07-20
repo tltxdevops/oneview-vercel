@@ -5,30 +5,23 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { isDemoMode } from "@/lib/demo-mode";
 
 const navigation = [
   { name: "Início", href: "/", icon: Home },
   { name: "Alertas", href: "/alertas", icon: Bell },
   { name: "Banco de Dados", href: "/banco-dados", icon: Database },
   { name: "Certificados", href: "/certificados", icon: ShieldCheck },
-  { name: "Espaços", href: "/workspaces", icon: Monitor },
+  { name: "workspaces", href: "/workspaces", icon: Monitor },
   { name: "KPIs", href: "/kpis", icon: BarChart3 },
   { name: "Chamados", href: "/chamados", icon: Ticket },
   { name: "Relatórios", href: "/relatorios", icon: FileText },
   { name: "Configurações", href: "/config", icon: Settings },
 ];
 
-const DEMO_USER = {
-  name: "OneView",
-  email: "snapshot@oneview.local",
-  photo: undefined,
-} as const;
-
 export function Sidebar() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const { user, logout } = useAuth();
-  const displayUser = user ?? (isDemoMode ? DEMO_USER : null);
+  const displayUser = user;
 
   useEffect(() => {
     const isDark = document.documentElement.classList.contains("dark");
@@ -136,7 +129,7 @@ export function Sidebar() {
           <Tooltip>
               <TooltipTrigger asChild>
               <button
-                onClick={isDemoMode ? undefined : logout}
+                onClick={logout}
                 className={cn(
                   "relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/10 text-sm font-semibold uppercase text-white transition hover:opacity-90",
                   !displayUser && "opacity-70 cursor-not-allowed"
@@ -157,7 +150,7 @@ export function Sidebar() {
                   <p className="text-sm font-semibold">{displayUser.name}</p>
                   <p className="text-xs text-muted-foreground/80">{displayUser.email}</p>
                   <button
-                    onClick={isDemoMode ? undefined : logout}
+                    onClick={logout}
                     className="mt-1 text-xs font-medium text-primary hover:underline"
                   >
                     Sair
@@ -174,8 +167,8 @@ export function Sidebar() {
             <span className="text-xs text-white/70 truncate">{displayUser?.email ?? "sso@teletex.com"}</span>
             <button
               type="button"
-              onClick={isDemoMode ? undefined : logout}
-              disabled={!displayUser || isDemoMode}
+              onClick={logout}
+              disabled={!displayUser}
               className="mt-2 w-fit text-xs font-medium text-white/80 hover:text-white underline-offset-2 hover:underline disabled:text-white/40"
             >
               Sair

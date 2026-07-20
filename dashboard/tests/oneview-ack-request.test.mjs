@@ -1,0 +1,265 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { createAckRequestHandler, getAckRequestConfig } from "../api/_lib/oneview-ack-request.js";
+import { getOneViewActionsDbConfig } from "../api/_lib/oneview-actions-db.js";
+
+function responseMock() {
+  return {
+    statusCode: 200,
+    headers: {},
+    body: undefined,
+    status(code) { this.statusCode = code; return this; },
+    setHeader(name, value) { this.headers[name.toLowerCase()] = value; return this; },
+    end(value) { this.body = value ? JSON.parse(value) : undefined; },
+  };
+}
+
+function requestMock(overrides = {}) {
+  return {
+    method: "POST",
+    query: { id: "alert-123" },
+    headers: { "idempotency-key": "ack-click-123456" },
+    body: { comment: "Validado pelo NOC" },
+    ...overrides,
+  };
+}
+
+function enabledConfig(allowed = ["teletex-http"]) {
+  return {
+    requestEnabled: true,
+    executionEnabled: false,
+    allowedDatasources: new Set(allowed),
+  };
+}
+
+function fakeDatabase({ datasource = "teletex-http", acknowledged = false } = {}) {
+  const state = {
+    acknowledgements: 0,
+    outboxes: 0,
+    audits: 0,
+    existingAcknowledgementId: null,
+    queryCount: 0,
+    writes: [],
+  };
+  const client = {
+    async query(text, values = []) {
+      state.queryCount += 1;
+      const sql = text.replace(/\s+/g, " ").trim().toLowerCase();
+      if (sql.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (sql.startsWith("select a.id") && sql.includes("from alerts a")) {
+        return { rows: [{
+          id: "alert-123",
+          data_source_id: "ds-123",
+          source_event_id: "event-123",
+          datasource_name: datasource,
+          acknowledged_source: acknowledged,
+          acknowledged_internal: false,
+        }] };
+      }
+      if (sql.startsWith("select aggregate_id")) {
+        return { rows: state.existingAcknowledgementId ? [{ aggregate_id: state.existingAcknowledgementId }] : [] };
+      }
+      if (sql.startsWith("insert into alert_acknowledgements")) {
+        state.acknowledgements += 1;
+        state.writes.push({ table: "alert_acknowledgements", values });
+        return { rows: [] };
+      }
+      if (sql.startsWith("insert into integration_outbox")) {
+        state.outboxes += 1;
+        state.writes.push({ table: "integration_outbox", values });
+        state.existingAcknowledgementId = values[1];
+        return { rows: [] };
+      }
+      if (sql.startsWith("insert into audit_logs")) {
+        state.audits += 1;
+        state.writes.push({ table: "audit_logs", values });
+        return { rows: [] };
+      }
+      throw new Error(`unexpected_test_query:${sql.slice(0, 40)}`);
+    },
+  };
+  return {
+    state,
+    transaction: async (work) => work(client),
+  };
+}
+
+const operator = { id: "sso-user-123", name: "Operador NOC", email: "operador@example.invalid" };
+
+test("ACK request: sem sessao retorna 401 antes do banco", async () => {
+  let transactionCalled = false;
+  const handler = createAckRequestHandler({
+    authorize: async (_req, res) => { res.status(401).end(JSON.stringify({ error: "authentication_required" })); return null; },
+    transaction: async () => { transactionCalled = true; },
+    configProvider: () => enabledConfig(),
+  });
+  const res = responseMock();
+  await handler(requestMock(), res);
+  assert.equal(res.statusCode, 401);
+  assert.equal(transactionCalled, false);
+});
+
+test("ACK request: usuario sem permissao retorna 403 antes do banco", async () => {
+  let transactionCalled = false;
+  const handler = createAckRequestHandler({
+    authorize: async (_req, res) => { res.status(403).end(JSON.stringify({ error: "insufficient_role" })); return null; },
+    transaction: async () => { transactionCalled = true; },
+    configProvider: () => enabledConfig(),
+  });
+  const res = responseMock();
+  await handler(requestMock(), res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(transactionCalled, false);
+});
+
+test("ACK request: flag de apresentação desabilita antes do banco", async () => {
+  let transactionCalled = false;
+  const handler = createAckRequestHandler({
+    authorize: async () => operator,
+    transaction: async () => { transactionCalled = true; },
+    configProvider: () => ({
+      requestEnabled: false,
+      executionEnabled: false,
+      allowedDatasources: new Set(["teletex-http"]),
+    }),
+  });
+  const res = responseMock();
+  await handler(requestMock(), res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.error, "ack_request_disabled");
+  assert.equal(transactionCalled, false);
+});
+
+test("ACK request: datasource nao permitido retorna 403 sem inserts", async () => {
+  const database = fakeDatabase({ datasource: "zurich" });
+  const handler = createAckRequestHandler({
+    authorize: async () => operator,
+    transaction: database.transaction,
+    configProvider: () => enabledConfig(),
+  });
+  const res = responseMock();
+  await handler(requestMock(), res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.error, "datasource_not_allowed");
+  assert.equal(database.state.acknowledgements, 0);
+  assert.equal(database.state.outboxes, 0);
+  assert.equal(database.state.audits, 0);
+});
+
+test("ACK request: valido cria as tres escritas e retorna pending 202", async () => {
+  const database = fakeDatabase();
+  const logs = [];
+  let sequence = 0;
+  const handler = createAckRequestHandler({
+    authorize: async () => operator,
+    transaction: database.transaction,
+    configProvider: () => enabledConfig(),
+    idFactory: () => `generated-${++sequence}`,
+    logger: (entry) => logs.push(entry),
+  });
+  const res = responseMock();
+  await handler(requestMock(), res);
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.status, "pending");
+  assert.equal(res.body.execution_enabled, false);
+  assert.equal(res.body.idempotent, false);
+  assert.equal(database.state.acknowledgements, 1);
+  assert.equal(database.state.outboxes, 1);
+  assert.equal(database.state.audits, 1);
+  const acknowledgementWrite = database.state.writes.find((write) => write.table === "alert_acknowledgements");
+  const auditWrite = database.state.writes.find((write) => write.table === "audit_logs");
+  assert.equal(acknowledgementWrite.values[5], operator.name);
+  assert.equal(acknowledgementWrite.values[8], operator.id);
+  assert.equal(auditWrite.values[1], operator.name);
+  assert.equal(auditWrite.values[2], operator.id);
+  assert.deepEqual(logs[0], {
+    event: "oneview_ack_request",
+    route: "/api/oneview/alerts/:id/ack-request",
+    status: "pending",
+    idempotent: false,
+    duration_ms: logs[0].duration_ms,
+  });
+});
+
+test("ACK request: repeticao usa idempotencia e nao duplica", async () => {
+  const database = fakeDatabase();
+  let sequence = 0;
+  const handler = createAckRequestHandler({
+    authorize: async () => operator,
+    transaction: database.transaction,
+    configProvider: () => enabledConfig(),
+    idFactory: () => `generated-${++sequence}`,
+    logger: () => undefined,
+  });
+  const first = responseMock();
+  const second = responseMock();
+  await handler(requestMock(), first);
+  await handler(requestMock(), second);
+  assert.equal(first.statusCode, 202);
+  assert.equal(second.statusCode, 202);
+  assert.equal(second.body.idempotent, true);
+  assert.equal(second.body.request_id, first.body.request_id);
+  assert.equal(database.state.acknowledgements, 1);
+  assert.equal(database.state.outboxes, 1);
+  assert.equal(database.state.audits, 1);
+});
+
+test("ACK request: comentario excedente e metodo GET sao recusados", async () => {
+  const database = fakeDatabase();
+  const handler = createAckRequestHandler({
+    authorize: async () => operator,
+    transaction: database.transaction,
+    configProvider: () => enabledConfig(),
+  });
+  const invalidComment = responseMock();
+  await handler(requestMock({ body: { comment: "x".repeat(501) } }), invalidComment);
+  assert.equal(invalidComment.statusCode, 400);
+  assert.equal(invalidComment.body.error, "invalid_comment");
+
+  const getResponse = responseMock();
+  await handler(requestMock({ method: "GET" }), getResponse);
+  assert.equal(getResponse.statusCode, 405);
+  assert.equal(getResponse.headers.allow, "POST");
+});
+
+test("ACK request: logs e resposta nao contem usuario, comentario ou segredo", async () => {
+  const database = fakeDatabase();
+  const logs = [];
+  const secretComment = "segredo-super-sensivel";
+  const handler = createAckRequestHandler({
+    authorize: async () => ({ id: "secret-user-id", name: "Nome Secreto", email: "secret@example.invalid" }),
+    transaction: database.transaction,
+    configProvider: () => enabledConfig(),
+    logger: (entry) => logs.push(entry),
+  });
+  const res = responseMock();
+  await handler(requestMock({ body: { comment: secretComment } }), res);
+  const publicOutput = JSON.stringify({ logs, response: res.body });
+  assert.doesNotMatch(publicOutput, /segredo-super-sensivel|Nome Secreto|secret-user-id|secret@example/i);
+});
+
+test("pool de actions usa role fixa e senha exclusiva", () => {
+  const config = getOneViewActionsDbConfig({
+    ONEVIEW_DB_HOST: "db.example.invalid",
+    ONEVIEW_DB_NAME: "oneview",
+    POSTGRES_ACTIONS_PASSWORD: "actions-secret",
+    POSTGRES_READONLY_PASSWORD: "readonly-secret",
+  });
+  assert.equal(config.user, "oneview_actions");
+  assert.equal(config.password, "actions-secret");
+  assert.equal(config.poolMax, 1);
+  assert.equal(getAckRequestConfig({
+    ONEVIEW_ACK_REQUEST_ENABLED: "true",
+    ONEVIEW_ACK_EXECUTION_ENABLED: "false",
+    ONEVIEW_ACK_ALLOWED_DATASOURCES: "teletex-http",
+  }).allowedDatasources.has("teletex-http"), true);
+});
+
+test("BFF de ACK nao possui chamada Zabbix", () => {
+  const sourcePath = fileURLToPath(new URL("../api/_lib/oneview-ack-request.js", import.meta.url));
+  const source = fs.readFileSync(sourcePath, "utf8");
+  assert.doesNotMatch(source, /event\.acknowledge|api_jsonrpc|\bfetch\s*\(|\baxios\b/i);
+});

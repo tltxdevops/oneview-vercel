@@ -1,4 +1,4 @@
-export type Severity = "Info" | "Average" | "High" | "Critical";
+export type Severity = "Low" | "Average" | "High" | "Critical";
 export type AlertStatus = "Active" | "Acknowledged" | "Resolved";
 export type ChamadoStatus = "Aberto" | "Em andamento" | "Resolvido";
 

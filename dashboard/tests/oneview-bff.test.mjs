@@ -28,7 +28,19 @@ const liveDbWithoutFallbackConfig = () => ({ liveEnabled: true, liveMode: "datab
 const fallback = async () => ({ status: "snapshot-ok" });
 const noLog = () => undefined;
 const noCache = "no-store, no-cache, max-age=0, must-revalidate";
-const routes = ["health", "dashboard-summary", "grafana-summary", "alerts", "clients-summary", "data-sources", "sync-logs"];
+const routes = [
+  "health",
+  "dashboard-summary",
+  "grafana-summary",
+  "alerts",
+  "attention-required",
+  "alert-detail",
+  "alert-history",
+  "operations-health",
+  "clients-summary",
+  "data-sources",
+  "sync-logs",
+];
 const validDbEnv = (overrides = {}) => ({
   ONEVIEW_SNAPSHOT_MODE: "false",
   ONEVIEW_LIVE_DB_ENABLED: "true",
@@ -40,6 +52,20 @@ const validDbEnv = (overrides = {}) => ({
   ONEVIEW_DB_USER: "oneview_vercel_readonly",
   POSTGRES_READONLY_PASSWORD: "primary-test-value",
   ...overrides,
+});
+
+test("auth cannot be disabled by env", async () => {
+  const previous = process.env.ONEVIEW_API_AUTH_REQUIRED;
+  process.env.ONEVIEW_API_AUTH_REQUIRED = "false";
+  try {
+    const res = response();
+    await createOneViewHandler("health", { configProvider: snapshotConfig, fallback })(request(), res);
+    assert.equal(res.statusCode, 401);
+    assert.deepEqual(res.body, { error: "authentication_required" });
+  } finally {
+    if (previous === undefined) delete process.env.ONEVIEW_API_AUTH_REQUIRED;
+    else process.env.ONEVIEW_API_AUTH_REQUIRED = previous;
+  }
 });
 
 test("usuário sem token recebe 401", async () => {
@@ -178,6 +204,28 @@ test("ONEVIEW_SNAPSHOT_MODE=false e LIVE_DB=true selecionam database em runtime"
   assert.equal(config.snapshotMode, false);
   assert.equal(config.liveEnabled, true);
   assert.equal(config.liveMode, "database");
+});
+
+test("capacidade de ACK só é exposta quando solicitação está habilitada e execução permanece bloqueada", () => {
+  const disabled = getOneViewConfig(validDbEnv({
+    ONEVIEW_ACK_REQUEST_ENABLED: "false",
+    ONEVIEW_ACK_EXECUTION_ENABLED: "false",
+  }));
+  assert.equal(disabled.ackRequestEnabled, false);
+  assert.equal(disabled.ackExecutionEnabled, false);
+  assert.equal(disabled.ackEnabled, false);
+
+  const presentationSafe = getOneViewConfig(validDbEnv({
+    ONEVIEW_ACK_REQUEST_ENABLED: "true",
+    ONEVIEW_ACK_EXECUTION_ENABLED: "false",
+  }));
+  assert.equal(presentationSafe.ackEnabled, true);
+
+  const executionEnabled = getOneViewConfig(validDbEnv({
+    ONEVIEW_ACK_REQUEST_ENABLED: "true",
+    ONEVIEW_ACK_EXECUTION_ENABLED: "true",
+  }));
+  assert.equal(executionEnabled.ackEnabled, false);
 });
 
 test("somente POSTGRES_READONLY_PASSWORD e selecionado", () => {

@@ -13,11 +13,16 @@ const oneViewBffPort = Number(process.env.ONEVIEW_LOCAL_BFF_PORT || 8787);
 function loadDotenv(filePath) {
   if (!fs.existsSync(filePath)) return;
   const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  const loadedKeys = new Set();
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
     const [rawKey, ...rawValue] = trimmed.split("=");
     const key = rawKey.trim();
+    if (loadedKeys.has(key)) {
+      throw new Error(`[local-config] Chave duplicada em .env.local: ${key}. Mantenha apenas uma definição.`);
+    }
+    loadedKeys.add(key);
     let value = rawValue.join("=").trim();
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
@@ -118,9 +123,6 @@ const vite = spawn(npmCommand, ["run", "dev:vite"], {
   env: {
     ...process.env,
     VITE_AUTH_MODE: "server",
-    ...(process.env.ONEVIEW_AUTH_BYPASS_MODE
-      ? { VITE_AUTH_BYPASS_MODE: process.env.ONEVIEW_AUTH_BYPASS_MODE }
-      : {}),
     ...(process.env.ONEVIEW_READ_ONLY_MODE
       ? { VITE_ONEVIEW_READ_ONLY_MODE: process.env.ONEVIEW_READ_ONLY_MODE }
       : {}),

@@ -160,7 +160,7 @@ export function AppLayout({
     <div className="flex min-h-screen bg-background antialiased">
       <Sidebar />
       <div className="ml-20 flex min-h-screen flex-1 flex-col">
-        <Topbar clientSection={clientSelect} rightSection={topbarRightSection ?? topbarControls} className={topbarClassName} />
+        <Topbar clientSection={clientSelect} rightSection={topbarRightSection === undefined ? topbarControls : topbarRightSection} className={topbarClassName} />
         <main className="flex-1 overflow-x-hidden">
           <div className={cn("flex flex-col gap-5 p-5", contentClassName)}>
             {headerContent ?? (

@@ -11,5 +11,6 @@ export default function handler(req, res) {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
 
   const user = sessionUserFromRequest(req) || sessionUserFromToken(bearerToken(req));
+  if (!user) return sendJson(res, 401, { error: "authentication_required" });
   return sendJson(res, 200, { user });
 }

@@ -16,7 +16,7 @@ export function AlertsList({ alerts, sampleNeeded = false }: AlertsListProps) {
     const sample = alerts[0] ?? {
       id: "SAMPLE",
       time: "00:00:00",
-      severity: "Info",
+      severity: "Low",
       host: "SAMPLE-HOST",
       problem: "Sample",
       operationalData: "",

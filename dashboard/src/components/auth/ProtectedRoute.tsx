@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { isDemoMode } from "@/lib/demo-mode";
 
 interface ProtectedRouteProps {
   children?: ReactNode;
@@ -10,12 +9,6 @@ interface ProtectedRouteProps {
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
   const location = useLocation();
-  const authGuardDisabled = isDemoMode || import.meta.env.VITE_DISABLE_AUTH_GUARD === "true";
-
-  if (authGuardDisabled) {
-    return children ? <>{children}</> : <Outlet />;
-  }
-
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-foreground">

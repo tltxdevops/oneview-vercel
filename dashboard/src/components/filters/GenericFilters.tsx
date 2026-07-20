@@ -47,7 +47,7 @@ export function GenericFilters({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">Todas</SelectItem>
-              <SelectItem value="Info">Informativa</SelectItem>
+              <SelectItem value="Low">Baixa</SelectItem>
               <SelectItem value="Average">Média</SelectItem>
               <SelectItem value="High">Alta</SelectItem>
               <SelectItem value="Critical">Crítica</SelectItem>
@@ -99,7 +99,7 @@ export function GenericFilters({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">Todas</SelectItem>
-              <SelectItem value="Info">Informativa</SelectItem>
+              <SelectItem value="Low">Baixa</SelectItem>
               <SelectItem value="Average">Média</SelectItem>
               <SelectItem value="High">Alta</SelectItem>
               <SelectItem value="Critical">Crítica</SelectItem>

@@ -13,12 +13,14 @@ import {
   AlertMetrics,
   OneViewDataSourceKind,
   OneViewHealthResponse,
+  OperationsHealthResponse,
   OneViewSyncLog,
   dataSourcesToClients,
   fetchAlerts,
   fetchAlertMetrics,
   fetchDataSourcesWithMeta,
   fetchOneViewHealth,
+  fetchOperationsHealth,
   fetchSyncLogs,
   oneViewAlertToLegacyAlert,
 } from "@/lib/oneview-api";
@@ -28,12 +30,12 @@ import { cn } from "@/lib/utils";
 
 const SUMMARY_REFRESH_MS = 60_000;
 const ALERTS_REFRESH_MS = 120_000;
-const AUTOMATIC_ALERT_LIMIT = 500;
+const AUTOMATIC_ALERT_PAGE_SIZE = 100;
 const SEVERITY_PRIORITY: Record<string, number> = {
   Critical: 1,
   High: 2,
   Average: 3,
-  Info: 4,
+  Low: 4,
 };
 
 function formatMetricDuration(seconds: number | undefined): string {
@@ -52,16 +54,32 @@ function formatDataSourceName(value: string): string {
     .join(" ");
 }
 
+function sourceHealthLabel(source: DataSource, operational?: OperationsHealthResponse["items"][number]): string {
+  const status = operational?.operational_status;
+  if (status === "disabled" || !source.sync_enabled) return "Sem dados disponíveis";
+  if (status === "error" || source.status === "error" || source.last_sync_status === "failed") {
+    return "Dados podem estar desatualizados";
+  }
+  if (status === "stale") return "Dados podem estar desatualizados";
+  if (status === "warning") return "Fonte com sincronização incompleta.";
+  if (status === "healthy" || (source.status === "active" && source.last_sync_status === "success")) {
+    return "Fonte operacional";
+  }
+  return "Saúde da fonte em validação.";
+}
+
 export default function Index() {
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
   const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
+  const [operationsHealth, setOperationsHealth] = useState<OperationsHealthResponse | null>(null);
   const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
   const [sourcesMeta, setSourcesMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [alertsMeta, setAlertsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [metricsMeta, setMetricsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [healthMeta, setHealthMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
+  const [operationsHealthMeta, setOperationsHealthMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [syncMeta, setSyncMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
   const [selectedClient, setSelectedClient] = useState<string | string[]>("all");
   const [isLoading, setIsLoading] = useState(false);
@@ -86,14 +104,17 @@ export default function Index() {
   const loadSummaryAndSources = useCallback(async () => {
     beginLoad();
     try {
-      const [healthResponse, sourcesResponse, metricsResponse, syncResponse] = await Promise.all([
+      const [healthResponse, operationsHealthResponse, sourcesResponse, metricsResponse, syncResponse] = await Promise.all([
         fetchOneViewHealth(),
+        fetchOperationsHealth(),
         fetchDataSourcesWithMeta(),
         fetchAlertMetrics(),
         fetchSyncLogs(8),
       ]);
       setHealth(healthResponse);
       setHealthMeta({ source: healthResponse.data_source, checkedAt: healthResponse.checked_at });
+      setOperationsHealth(operationsHealthResponse);
+      setOperationsHealthMeta({ source: operationsHealthResponse.data_source, checkedAt: operationsHealthResponse.checked_at });
       setDataSources(sourcesResponse.items);
       setSourcesMeta({ source: sourcesResponse.data_source, checkedAt: sourcesResponse.checked_at });
       setMetrics(metricsResponse);
@@ -111,7 +132,7 @@ export default function Index() {
   const loadAlerts = useCallback(async () => {
     beginLoad();
     try {
-      const alertsResponse = await fetchAlerts({ limit: AUTOMATIC_ALERT_LIMIT, offset: 0 });
+      const alertsResponse = await fetchAlerts({ page: 1, pageSize: AUTOMATIC_ALERT_PAGE_SIZE, status: "active" });
       setAlerts(alertsResponse.items.map(oneViewAlertToLegacyAlert));
       setAlertsMeta({ source: alertsResponse.data_source, checkedAt: alertsResponse.checked_at });
     } catch (error) {
@@ -138,6 +159,7 @@ export default function Index() {
 
   const currentDataSource = effectiveDataSource(
     healthMeta.source,
+    operationsHealthMeta.source,
     sourcesMeta.source,
     alertsMeta.source,
     metricsMeta.source,
@@ -145,6 +167,7 @@ export default function Index() {
   );
   const lastCheckedAt = latestCheckedAt(
     healthMeta.checkedAt,
+    operationsHealthMeta.checkedAt,
     sourcesMeta.checkedAt,
     alertsMeta.checkedAt,
     metricsMeta.checkedAt,
@@ -279,19 +302,18 @@ export default function Index() {
   }, [alerts]);
 
   const internalSourceSummaries = useMemo(() => {
+    const operationsByName = new Map(
+      (operationsHealth?.items ?? []).map((source) => [source.name.trim().toLowerCase(), source]),
+    );
     return dataSources
       .filter((source) => source.environment === "internal")
       .sort((a, b) => a.display_order - b.display_order || a.name.localeCompare(b.name))
       .map((source) => ({
         ...source,
         alertCount: source.alerts_count ?? alertCountByDataSource[source.id] ?? 0,
-        syncLabel: source.last_sync_status === "success"
-          ? `sucesso · ${source.alerts_count ?? alertCountByDataSource[source.id] ?? 0} alertas`
-          : source.last_sync_status === "failed"
-            ? `falha · ${source.pending_reason ?? source.last_sync_error ?? source.last_error ?? "pendência registrada"}`
-            : source.last_sync_status === "running" ? "em execução" : source.last_sync_status || "não testado",
+        syncLabel: sourceHealthLabel(source, operationsByName.get(source.name.trim().toLowerCase())),
       }));
-  }, [alertCountByDataSource, dataSources]);
+  }, [alertCountByDataSource, dataSources, operationsHealth?.items]);
 
   return (
     <AppLayout
@@ -392,7 +414,7 @@ export default function Index() {
                     </PopoverTrigger>
                     <PopoverContent align="end" className="w-56">
                       <div className="flex flex-col gap-2">
-                        {(["Critical", "High", "Average", "Info"] as const).map((severity) => (
+                        {(["Critical", "High", "Average", "Low"] as const).map((severity) => (
                           <label key={severity} className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <Checkbox
@@ -405,7 +427,7 @@ export default function Index() {
                                   }
                                 }}
                               />
-                              <span className="text-sm">{severity}</span>
+                              <span className="text-sm">{{ Critical: "Crítico", High: "Alto", Average: "Médio", Low: "Baixo" }[severity]}</span>
                             </div>
                           </label>
                         ))}

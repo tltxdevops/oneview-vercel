@@ -1,4 +1,4 @@
-import { getOneViewDbConfig } from "./oneview-db.js";
+import { getAttentionThresholds, getOneViewDbConfig } from "./oneview-db.js";
 
 const ROUTES = Object.freeze({
   health: Object.freeze({ upstreamPath: "/health", role: "viewer", fallbackSafe: true, query: [] }),
@@ -8,8 +8,34 @@ const ROUTES = Object.freeze({
     upstreamPath: "/alerts",
     role: "viewer",
     fallbackSafe: true,
-    query: ["client_name", "severity", "status_internal", "acknowledged", "host", "service", "limit", "offset"],
+    query: [
+      "page",
+      "page_size",
+      "client",
+      "customer",
+      "datasource",
+      "customer_confidence",
+      "severity",
+      "status",
+      "acknowledged",
+      "search",
+      "date_from",
+      "date_to",
+      "first_seen_from",
+      "last_seen_from",
+      "sort",
+      "order",
+    ],
   }),
+  "attention-required": Object.freeze({
+    upstreamPath: "/attention-required",
+    role: "viewer",
+    fallbackSafe: true,
+    query: ["limit"],
+  }),
+  "alert-detail": Object.freeze({ upstreamPath: "/alerts/:id", role: "viewer", fallbackSafe: true, query: ["id"] }),
+  "alert-history": Object.freeze({ upstreamPath: "/alerts/:id/history", role: "viewer", fallbackSafe: true, query: ["id"] }),
+  "operations-health": Object.freeze({ upstreamPath: "/operations/health", role: "viewer", fallbackSafe: true, query: [] }),
   "clients-summary": Object.freeze({ upstreamPath: "/clients/summary", role: "viewer", fallbackSafe: true, query: [] }),
   "data-sources": Object.freeze({ upstreamPath: "/data-sources", role: "viewer", fallbackSafe: true, query: [] }),
   "sync-logs": Object.freeze({ upstreamPath: "/sync-logs/latest", role: "viewer", fallbackSafe: true, query: ["limit"] }),
@@ -36,6 +62,8 @@ export function getOneViewConfig(env = process.env) {
   const liveMode = liveDbEnabled && !snapshotMode ? "database" : "snapshot";
   const liveEnabled = liveMode === "database";
   const snapshotFallbackEnabled = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, false);
+  const ackRequestEnabled = booleanValue(env.ONEVIEW_ACK_REQUEST_ENABLED, false);
+  const ackExecutionEnabled = booleanValue(env.ONEVIEW_ACK_EXECUTION_ENABLED, false);
   let dbConfig = null;
   let dbConfigErrorCode = null;
 
@@ -55,7 +83,11 @@ export function getOneViewConfig(env = process.env) {
     liveEnabled,
     liveMode,
     snapshotFallbackEnabled,
+    ackRequestEnabled,
+    ackExecutionEnabled,
+    ackEnabled: ackRequestEnabled && !ackExecutionEnabled,
     timeoutMs: timeoutValue(env.ONEVIEW_API_TIMEOUT_MS),
+    attentionThresholds: getAttentionThresholds(env),
     dbConfig,
     dbConfigErrorCode,
   });
@@ -65,10 +97,11 @@ export function allowedQueryString(req, route) {
   const params = new URLSearchParams();
   for (const key of route.query) {
     const raw = req.query?.[key];
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (value === undefined || value === null || value === "") continue;
-    const normalized = String(value).slice(0, 200);
-    params.set(key, normalized);
+    const values = Array.isArray(raw) ? raw : [raw];
+    for (const value of values) {
+      if (value === undefined || value === null || value === "") continue;
+      params.append(key, String(value).slice(0, 200));
+    }
   }
   const query = params.toString();
   return query ? `?${query}` : "";

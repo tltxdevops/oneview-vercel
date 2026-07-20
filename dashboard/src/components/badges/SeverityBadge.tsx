@@ -7,25 +7,25 @@ interface SeverityBadgeProps {
 }
 
 const severityConfig = {
-  Info: {
+  Low: {
     bg: "bg-info/10",
     text: "text-info",
-    label: "BAIXA",
+    label: "BAIXO",
   },
   Average: {
     bg: "bg-warning/10",
     text: "text-warning",
-    label: "MÉDIA",
+    label: "MÉDIO",
   },
   High: {
     bg: "bg-error/10",
     text: "text-error",
-    label: "ALTA",
+    label: "ALTO",
   },
   Critical: {
     bg: "bg-critical/10",
     text: "text-critical",
-    label: "DESASTRE",
+    label: "CRÍTICO",
   },
 };
 

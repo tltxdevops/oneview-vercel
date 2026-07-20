@@ -5,7 +5,7 @@ import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewSnapshotPayload } from "./oneview-fallback.js";
 
 const FORBIDDEN_KEY = /(?:authorization|cookie|token|password|senha|secret|credential|dsn|api_url|payload_raw|payload_normalized)/i;
-const PRIVATE_VALUE = /(?:https?:\/\/[^\s]+|\b(?:localhost|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?\b)/i;
+const PRIVATE_VALUE = /(?:https?:\/\/[^\s]+|\blocalhost\b|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[a-f0-9]{1,4}:){2,7}[a-f0-9]{1,4}\b)/i;
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 
 export function sanitizeOneViewPayload(value) {
@@ -47,10 +47,24 @@ function safeFallbackCode(error) {
   return code.startsWith("database_") ? code : "database_unavailable";
 }
 
+function applicationErrorStatus(error) {
+  if (error?.code === "invalid_query") return 400;
+  if (error?.code === "not_found") return 404;
+  return null;
+}
+
+function routeTemplate(routeName) {
+  if (routeName === "attention-required") return "/api/oneview/attention-required";
+  if (routeName === "alert-detail") return "/api/oneview/alerts/:id";
+  if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
+  if (routeName === "operations-health") return "/api/oneview/operations/health";
+  return `/api/oneview/${routeName}`;
+}
+
 function writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode = null) {
   logger(JSON.stringify({
     event: "oneview_request",
-    route: `/api/oneview/${routeName}`,
+    route: routeTemplate(routeName),
     data_source: source,
     duration_ms: Math.max(Date.now() - startedAt, 0),
     rows: responseRows(payload),
@@ -66,13 +80,13 @@ export function createOneViewHandler(routeName, dependencies = {}) {
   const logger = dependencies.logger || console.info;
 
   return async function oneViewHandler(req, res) {
+    res.setHeader("Cache-Control", NO_CACHE);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
     const startedAt = Date.now();
 
     const route = getOneViewRoute(routeName);
     if (!route) return sendOneViewJson(res, 404, { error: "not_found" });
-    res.setHeader("Cache-Control", NO_CACHE);
-    res.setHeader("X-Content-Type-Options", "nosniff");
     if (!(await authorize(req, res, route.role))) return undefined;
 
     const finish = (status, payload, source, fallbackCode = null) => {
@@ -89,9 +103,11 @@ export function createOneViewHandler(routeName, dependencies = {}) {
 
     if (config.snapshotMode) {
       try {
-        const payload = await fallback(routeName, req);
+        const payload = await fallback(routeName, req, config);
         return finish(200, payload, "snapshot", "snapshot_mode");
-      } catch {
+      } catch (error) {
+        const status = applicationErrorStatus(error);
+        if (status) return finish(status, { error: error.code }, "snapshot", "snapshot_mode");
         return finish(503, { error: "snapshot_unavailable" }, "snapshot", "snapshot_unavailable");
       }
     }
@@ -101,9 +117,11 @@ export function createOneViewHandler(routeName, dependencies = {}) {
         return finish(503, { error: "live_database_disabled" }, "database");
       }
       try {
-        const payload = await fallback(routeName, req);
+        const payload = await fallback(routeName, req, config);
         return finish(200, payload, "snapshot", "live_database_disabled");
-      } catch {
+      } catch (error) {
+        const status = applicationErrorStatus(error);
+        if (status) return finish(status, { error: error.code }, "snapshot", "live_database_disabled");
         return finish(503, { error: "snapshot_unavailable" }, "snapshot", "snapshot_unavailable");
       }
     }
@@ -111,7 +129,7 @@ export function createOneViewHandler(routeName, dependencies = {}) {
     if (config.dbConfigErrorCode === "unsafe_database_user") {
       if (config.snapshotFallbackEnabled && route.fallbackSafe) {
         try {
-          const payload = await fallback(routeName, req);
+          const payload = await fallback(routeName, req, config);
           return finish(200, payload, "snapshot", "unsafe_database_user");
         } catch {
           return finish(503, { error: "snapshot_unavailable" }, "snapshot", "snapshot_unavailable");
@@ -124,12 +142,16 @@ export function createOneViewHandler(routeName, dependencies = {}) {
       const payload = await database(routeName, req, config);
       return finish(200, payload, "database");
     } catch (error) {
+      const applicationStatus = applicationErrorStatus(error);
+      if (applicationStatus) return finish(applicationStatus, { error: error.code }, "database");
       const fallbackCode = safeFallbackCode(error);
       if (config.snapshotFallbackEnabled && route.fallbackSafe) {
         try {
-          const payload = await fallback(routeName, req);
+          const payload = await fallback(routeName, req, config);
           return finish(200, payload, "snapshot", fallbackCode);
-        } catch {
+        } catch (fallbackError) {
+          const fallbackStatus = applicationErrorStatus(fallbackError);
+          if (fallbackStatus) return finish(fallbackStatus, { error: fallbackError.code }, "snapshot", fallbackCode);
           return finish(503, { error: "snapshot_unavailable" }, "snapshot", "snapshot_unavailable");
         }
       }
