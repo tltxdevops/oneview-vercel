@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { buildMicrosoftAuthorizeUrl, microsoftRedirectUri, publicAppOrigin } from "../api/_lib/microsoft-sso.js";
 import { getOneViewConfig } from "../api/_lib/oneview-config.js";
 import { getOneViewDbConfig } from "../api/_lib/oneview-db.js";
 import { createOneViewHandler, sanitizeOneViewPayload } from "../api/_lib/oneview-response.js";
@@ -204,6 +205,61 @@ test("ONEVIEW_SNAPSHOT_MODE=false e LIVE_DB=true selecionam database em runtime"
   assert.equal(config.snapshotMode, false);
   assert.equal(config.liveEnabled, true);
   assert.equal(config.liveMode, "database");
+});
+
+test("SSO mantém o host atual nas origens permitidas", () => {
+  const names = [
+    "ONEVIEW_PUBLIC_ORIGIN",
+    "ONEVIEW_ALLOWED_ORIGINS",
+    "MICROSOFT_REDIRECT_URI",
+    "MICROSOFT_TENANT_ID",
+    "MICROSOFT_CLIENT_ID",
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+
+  try {
+    process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview-vercel.vercel.app";
+    process.env.ONEVIEW_ALLOWED_ORIGINS = [
+      "https://oneview-vercel.vercel.app",
+      "https://oneview.teletexdev.com.br",
+      "https://oneview.teletex.com.br",
+    ].join(",");
+    process.env.MICROSOFT_REDIRECT_URI = "https://oneview-vercel.vercel.app/api/auth/microsoft/callback";
+    process.env.MICROSOFT_TENANT_ID = "tenant-test";
+    process.env.MICROSOFT_CLIENT_ID = "client-test";
+
+    for (const host of [
+      "oneview-vercel.vercel.app",
+      "oneview.teletexdev.com.br",
+      "oneview.teletex.com.br",
+    ]) {
+      const request = {
+        headers: {
+          host,
+          "x-forwarded-proto": "https",
+        },
+      };
+      const expectedOrigin = `https://${host}`;
+      assert.equal(microsoftRedirectUri(request), `${expectedOrigin}/api/auth/microsoft/callback`);
+      assert.equal(publicAppOrigin(request), expectedOrigin);
+
+      const authorizeUrl = new URL(buildMicrosoftAuthorizeUrl(request, "state-test"));
+      assert.equal(authorizeUrl.searchParams.get("redirect_uri"), `${expectedOrigin}/api/auth/microsoft/callback`);
+    }
+
+    const unknownHost = {
+      headers: {
+        host: "unknown.invalid",
+        "x-forwarded-proto": "https",
+      },
+    };
+    assert.equal(publicAppOrigin(unknownHost), "https://oneview-vercel.vercel.app");
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
 });
 
 test("capacidade de ACK só é exposta quando solicitação está habilitada e execução permanece bloqueada", () => {

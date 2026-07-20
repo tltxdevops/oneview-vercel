@@ -1,4 +1,5 @@
 import { methodNotAllowed, sendJson } from "../_lib/http.js";
+import { microsoftRedirectUri, publicAppOrigin } from "../_lib/microsoft-sso.js";
 
 const DEFAULT_TELETEX_TENANT_ID = "9c36f529-164f-47cd-bca0-ba7c0d710407";
 
@@ -54,15 +55,11 @@ export default function handler(req, res) {
     process.env.MICROSOFT_CLIENT_ID,
     process.env.NEXT_PUBLIC_MICROSOFT_CLIENT_ID,
   );
-  const origin = requestOrigin(req);
+  const origin = publicAppOrigin(req) || requestOrigin(req);
   const authority =
     firstAuthValue(process.env.VITE_AZURE_AUTHORITY, process.env.MICROSOFT_AUTHORITY) ||
     (tenantId ? `https://login.microsoftonline.com/${tenantId}` : "");
-  const redirectUri = firstAuthValue(
-    process.env.VITE_AZURE_REDIRECT_URI,
-    process.env.MICROSOFT_REDIRECT_URI,
-    origin ? `${origin}/sso/callback` : "",
-  );
+  const redirectUri = firstAuthValue(microsoftRedirectUri(req), process.env.VITE_AZURE_REDIRECT_URI, origin ? `${origin}/sso/callback` : "");
   const postLogoutUri = firstAuthValue(
     process.env.VITE_AZURE_POST_LOGOUT_URI,
     process.env.MICROSOFT_POST_LOGOUT_URI,

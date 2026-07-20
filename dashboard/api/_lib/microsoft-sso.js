@@ -2,6 +2,7 @@ import { buildClearSessionCookie, buildSessionCookie, createSessionToken, sessio
 
 const DEFAULT_TENANT_ID = "9c36f529-164f-47cd-bca0-ba7c0d710407";
 const DEFAULT_SCOPE = "openid profile email User.Read";
+const MICROSOFT_CALLBACK_PATH = "/api/auth/microsoft/callback";
 
 function clean(value) {
   return String(value || "").trim();
@@ -23,32 +24,60 @@ function scope() {
   return clean(process.env.MICROSOFT_SCOPE || process.env.VITE_AZURE_SCOPES || DEFAULT_SCOPE);
 }
 
+function normalizeOrigin(value) {
+  const candidate = clean(value);
+  if (!candidate) return "";
+  try {
+    const parsed = new URL(candidate);
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    return parsed.origin;
+  } catch {
+    return "";
+  }
+}
+
+function configuredPrimaryOrigin() {
+  const explicit = normalizeOrigin(process.env.ONEVIEW_PUBLIC_ORIGIN || process.env.APP_PUBLIC_ORIGIN);
+  if (explicit) return explicit;
+
+  const redirectUri = clean(process.env.MICROSOFT_REDIRECT_URI);
+  if (redirectUri) {
+    try {
+      return normalizeOrigin(new URL(redirectUri).origin);
+    } catch {
+      // fallback below
+    }
+  }
+  return "";
+}
+
+function allowedOrigins() {
+  const configured = String(process.env.ONEVIEW_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  const primary = configuredPrimaryOrigin();
+  return [...new Set([...configured, primary].filter(Boolean))];
+}
+
 export function requestOrigin(req) {
   const forwardedHost = clean(String(req.headers?.["x-forwarded-host"] || "").split(",")[0]);
   const host = forwardedHost || clean(req.headers?.host);
   const forwardedProto = clean(String(req.headers?.["x-forwarded-proto"] || "").split(",")[0]);
   const proto = forwardedProto || "http";
-  return host ? `${proto}://${host}` : "";
+  const candidate = normalizeOrigin(host ? `${proto}://${host}` : "");
+  const allowed = allowedOrigins();
+  if (!allowed.length) return candidate;
+  return allowed.includes(candidate) ? candidate : (configuredPrimaryOrigin() || candidate);
 }
 
 export function microsoftRedirectUri(req) {
-  return clean(process.env.MICROSOFT_REDIRECT_URI) || `${requestOrigin(req)}/api/auth/microsoft/callback`;
+  const origin = requestOrigin(req);
+  return origin ? `${origin}${MICROSOFT_CALLBACK_PATH}` : clean(process.env.MICROSOFT_REDIRECT_URI);
 }
 
 export function publicAppOrigin(req) {
-  const configured = clean(process.env.ONEVIEW_PUBLIC_ORIGIN || process.env.APP_PUBLIC_ORIGIN);
-  if (configured) return configured.replace(/\/+$/, "");
-
-  const redirectUri = clean(process.env.MICROSOFT_REDIRECT_URI);
-  if (redirectUri) {
-    try {
-      return new URL(redirectUri).origin;
-    } catch {
-      // fallback below
-    }
-  }
-
-  return requestOrigin(req);
+  return requestOrigin(req) || configuredPrimaryOrigin();
 }
 
 export function buildMicrosoftAuthorizeUrl(req, state = "") {
