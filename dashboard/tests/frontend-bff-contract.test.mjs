@@ -139,7 +139,7 @@ test("resumo global e tabela filtrada deixam os escopos explícitos", async () =
   const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /Resumo global do OneView/);
   assert.match(alerts, /Métricas de todo o ambiente; os filtros abaixo se aplicam somente à tabela de alertas\./);
-  assert.match(alerts, /Alertas filtrados por \{tableCustomerScope\}/);
+  assert.match(alerts, /filtrados por \{tableCustomerScope\}/);
   assert.match(alerts, /Escopo desta tabela: filtros de cliente, fonte, status, prioridade, ACK e período selecionados\./);
 });
 
@@ -198,7 +198,11 @@ test("drawer carrega detalhe e histórico em paralelo e solicita ACK com confirm
   assert.match(alerts, /Responsável não resolvido no Zabbix/);
   assert.match(alerts, /item\.ack_actor_name/);
   assert.doesNotMatch(alerts, /actor_id/);
-  assert.match(alerts, /Horário original/);
+  assert.match(alerts, /Horário da origem/);
+  assert.match(alerts, /Registrado no OneView/);
+  assert.match(alerts, /Origem Zabbix/);
+  assert.match(alerts, /Origem OneView/);
+  assert.match(alerts, /Evidência parcial/);
   assert.match(alerts, /Valor anterior/);
   assert.match(alerts, /Valor atual/);
   assert.match(alerts, /groupHistoryItems/);

@@ -124,7 +124,7 @@ test("attention-required GET retorna contrato seguro e POST retorna 405", async 
   assert.equal(getResponse.statusCode, 200);
   assert.equal(getResponse.body.data_source, "database");
   assert.equal(getResponse.body.summary.total, 1);
-  assert.doesNotMatch(JSON.stringify(getResponse.body), /payload_raw|payload_normalized|inventory|api_url|token|password|senha|https?:\/\/|(?:127|10|192\.168)\./i);
+  assert.doesNotMatch(JSON.stringify(getResponse.body), /payload_raw|payload_normalized|inventory|api_url|token|password|senha|https?:\/\/|\b(?:127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2})\b/i);
 
   databaseCalled = false;
   const postResponse = response();
@@ -160,7 +160,7 @@ test("attention-required em snapshot preserva segurança e informa contingência
   assert.ok(payload.items.length <= 200);
   assert.equal(payload.summary.total, payload.summary.disaster + payload.summary.high + payload.summary.average);
   assert.equal(payload.snapshot_coverage.partial, true);
-  assert.doesNotMatch(JSON.stringify(payload), /payload_raw|payload_normalized|inventory|api_url|token|password|senha|https?:\/\/|(?:127|10|192\.168)\./i);
+  assert.doesNotMatch(JSON.stringify(payload), /payload_raw|payload_normalized|inventory|api_url|token|password|senha|https?:\/\/|\b(?:127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2})\b/i);
 });
 
 test("paginação gera páginas distintas e limita page_size a 100", () => {
@@ -171,7 +171,41 @@ test("paginação gera páginas distintas e limita page_size a 100", () => {
   assert.deepEqual([first.page, first.pageSize, first.offset], [1, 50, 0]);
   assert.deepEqual([second.page, second.pageSize, second.offset], [2, 50, 50]);
   assert.deepEqual([capped.page, capped.pageSize, capped.offset], [3, 100, 200]);
-  assert.match(first.whereSql, /status_source = 'active'/);
+  assert.match(first.whereSql, /a\.resolved_at is null/);
+  assert.match(first.whereSql, /status_internal/);
+});
+
+test("status active, resolved e all usam predicados antes da paginacao", () => {
+  const active = buildAlertListQuery(request("GET", { status: "active", page: "2", page_size: "25" }));
+  const resolved = buildAlertListQuery(request("GET", { status: "resolved", page: "3", page_size: "25" }));
+  const all = buildAlertListQuery(request("GET", { status: "all", page: "1", page_size: "25" }));
+
+  assert.match(active.whereSql, /a\.resolved_at is null/);
+  assert.match(active.whereSql, /status_internal/);
+  assert.match(resolved.whereSql, /a\.resolved_at is not null/);
+  assert.match(resolved.whereSql, /'normalized'/);
+  assert.equal(all.whereSql, "");
+  assert.deepEqual([resolved.page, resolved.pageSize, resolved.offset], [3, 25, 50]);
+});
+
+test("resolvidos combinam cliente, datasource, busca e recovery parametrizados", () => {
+  const query = buildAlertListQuery(request("GET", {
+    status: "resolved",
+    customer: "fps",
+    datasource: "teletex-http",
+    search: "link indisponivel",
+    sort: "resolved_at",
+    order: "desc",
+  }));
+
+  assert.equal(query.filters.status, "resolved");
+  assert.deepEqual(query.filters.customers, ["fps"]);
+  assert.deepEqual(query.filters.datasources, ["teletex-http"]);
+  assert.match(query.whereSql, /customer_key/);
+  assert.match(query.whereSql, /d\.name/);
+  assert.match(query.whereSql, /ilike \$\d+/);
+  assert.match(query.orderSql, /^a\.resolved_at DESC nulls last/);
+  assert.equal(query.params.includes("%link indisponivel%"), true);
 });
 
 test("filtros, multisseleção, datas, busca e sort ficam parametrizados", () => {
@@ -273,7 +307,7 @@ test("snapshot fornece detalhe seguro e histórico vazio para ID existente", asy
   assert.equal(history.last_event_at, null);
   assert.equal(history.has_recovery, false);
   assert.equal(history.has_ack, false);
-  assert.doesNotMatch(serialized, /payload_raw|payload_normalized|fingerprint|https?:\/\/|(?:127|10|192\.168)\./i);
+  assert.doesNotMatch(serialized, /payload_raw|payload_normalized|fingerprint|https?:\/\/|\b(?:127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2})\b/i);
 });
 
 test("event_type do histórico recebe nome amigável", () => {
@@ -286,7 +320,7 @@ test("event_type do histórico recebe nome amigável", () => {
     suppressed: "Alerta suprimido",
     unsuppressed: "Supressão encerrada",
     maintenance: "Evento de manutenção",
-    recovered: "Alerta normalizado",
+    recovered: "Alerta resolvido",
     reopened: "Alerta reaberto",
     status_changed: "Status alterado",
   };
@@ -348,6 +382,26 @@ test("ACKs de pessoas diferentes permanecem separados e ordenados por occurred_a
   assert.deepEqual(items.map((item) => item.ack_actor_name), ["Analista B", "Analista A"]);
 });
 
+test("recovery permanece depois da criacao na cronologia e preserva horarios distintos", () => {
+  const items = consolidateAlertHistoryItems([
+    historyFixture({ id: "created", event_type: "problem_created", occurred_at: "2026-07-17T10:00:00.000Z", created_at: "2026-07-17T10:00:03.000Z" }),
+    historyFixture({ id: "recovered", event_type: "recovered", title: "Alerta resolvido", occurred_at: "2026-07-17T12:00:00.000Z", created_at: "2026-07-17T12:00:04.000Z" }),
+  ]);
+
+  assert.deepEqual(items.map((item) => item.id), ["recovered", "created"]);
+  assert.equal(items[0].occurred_at, "2026-07-17T12:00:00.000Z");
+  assert.equal(items[0].created_at, "2026-07-17T12:00:04.000Z");
+});
+
+test("historico legado permanece explicitamente marcado", () => {
+  const [legacy] = consolidateAlertHistoryItems([
+    historyFixture({ id: "legacy", event_type: "created_from_zabbix", legacy: true, source: "Histórico legado", description: null }),
+  ]);
+
+  assert.equal(legacy.legacy, true);
+  assert.equal(legacy.source, "Histórico legado");
+});
+
 test("valor técnico legacy vazio não gera comparação visual", () => {
   for (const value of [null, "", "-", "new", "null", "undefined", { status: "new" }]) {
     assert.equal(historyValueIsMeaningful(value), false);
@@ -395,6 +449,26 @@ test("BFF seleciona enriquecimento seguro e histórico estruturado", async () =>
   assert.match(source, /consolidateAlertHistoryItems\(mappedItems\)/);
   assert.doesNotMatch(source.match(/async function fetchAlertHistoryPayload[\s\S]*?export function classifyOperationalSource/)?.[0] ?? "", /actor_id/);
   assert.doesNotMatch(source.match(/async function fetchAlertDetailPayload[\s\S]*?function historyTitle/)?.[0] ?? "", /payload_raw|payload_normalized|inventory/);
+});
+
+test("timeline usa origem segura, horario da origem e registro no OneView sem descricao sintetica", async () => {
+  const databaseSource = await readFile(new URL("../api/_lib/oneview-db.js", import.meta.url), "utf8");
+  const pageSource = await readFile(new URL("../src/pages/Alerts.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(databaseSource, /O alerta foi registrado pelo Zabbix/);
+  assert.match(databaseSource, /source: historySource\(row\.source, legacy\)/);
+  assert.match(pageSource, /Origem Zabbix/);
+  assert.match(pageSource, /Origem OneView/);
+  assert.match(pageSource, /Hist.rico legado/);
+  assert.match(pageSource, /Hor.rio da origem:/);
+  assert.match(pageSource, /Registrado no OneView:/);
+  assert.match(pageSource, /Evid.ncia parcial/);
+});
+
+test("tela usa status no BFF, nao filtra pagina localmente e oculta ACK em resolvidos", async () => {
+  const pageSource = await readFile(new URL("../src/pages/Alerts.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /status: statusFilter/);
+  assert.match(pageSource, /!isResolved \? <TooltipProvider/);
+  assert.doesNotMatch(pageSource, /alerts\.filter\(/);
 });
 
 test("clients-summary separa clientes internos de datasources", async () => {

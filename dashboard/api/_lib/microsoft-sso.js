@@ -60,6 +60,19 @@ function allowedOrigins() {
   return [...new Set([...configured, primary].filter(Boolean))];
 }
 
+// GETs same-origin normalmente nÃ£o enviam Origin. Quando ele existir, a
+// comparaÃ§Ã£o Ã© estrita, evitando aceitar domÃ­nios por correspondÃªncia parcial.
+export function isAllowedRequestOrigin(req) {
+  const rawOrigin = clean(req.headers?.origin || req.headers?.Origin);
+  if (!rawOrigin) return true;
+
+  const origin = normalizeOrigin(rawOrigin);
+  if (!origin) return false;
+
+  const configured = allowedOrigins();
+  return configured.length > 0 && configured.includes(origin);
+}
+
 export function requestOrigin(req) {
   const forwardedHost = clean(String(req.headers?.["x-forwarded-host"] || "").split(",")[0]);
   const host = forwardedHost || clean(req.headers?.host);

@@ -450,7 +450,7 @@ export interface FetchAlertsParams {
   dateTo?: string;
   firstSeenFrom?: string;
   lastSeenFrom?: string;
-  sort?: "last_seen_at" | "first_seen_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration";
+  sort?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration";
   order?: "asc" | "desc";
   signal?: AbortSignal;
 }

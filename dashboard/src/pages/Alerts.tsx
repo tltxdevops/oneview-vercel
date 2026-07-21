@@ -84,7 +84,7 @@ import {
 
 type AckFilter = "all" | "acknowledged" | "unacknowledged";
 type StatusFilter = "active" | "resolved" | "all";
-type SortField = "last_seen_at" | "first_seen_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration";
+type SortField = "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration";
 type SortOrder = "asc" | "desc";
 type ConfidenceFilter = "all" | "high" | "low" | "unclassified";
 type TimePreset = "all" | "new_15m" | "new_1h" | "new_24h" | "updated_15m" | "updated_1h";
@@ -281,17 +281,7 @@ function historyValueText(value: unknown, depth = 0): string {
   if (value === undefined || value === null || value === "") return "-";
   if (typeof value === "string") return safeDisplayText(value);
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (depth >= 2) return "Detalhe estruturado";
-  if (Array.isArray(value)) {
-    const items = value.slice(0, 8).map((item) => historyValueText(item, depth + 1)).filter((item) => item !== "-");
-    return items.length ? items.join(" · ") : "-";
-  }
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .slice(0, 12)
-      .map(([key, child]) => `${safeDisplayText(key.replaceAll("_", " "), "Campo")}: ${historyValueText(child, depth + 1)}`);
-    return entries.length ? entries.join(" · ") : "-";
-  }
+  if (depth >= 0 && (Array.isArray(value) || typeof value === "object")) return "Evidência estruturada disponível";
   return "-";
 }
 
@@ -329,6 +319,16 @@ function isAcknowledgementEvent(eventType: string) {
 
 function isRecoveryEvent(eventType: string) {
   return /recovered|recovery|resolved|normaliz/i.test(eventType);
+}
+
+function historyOrigin(item: AlertHistoryItem) {
+  if (item.legacy) return "Histórico legado";
+  return safeDisplayText(item.source, "OneView").toLowerCase() === "zabbix" ? "Zabbix" : "OneView";
+}
+
+function historyHasPartialEvidence(item: AlertHistoryItem) {
+  return item.legacy
+    || (!item.description && !item.comment && !historyValueIsMeaningful(item.previous_value) && !historyValueIsMeaningful(item.current_value));
 }
 
 function historyGroupEventCount(group: HistoryGroup) {
@@ -462,8 +462,15 @@ function acknowledged(alert: OneViewAlert) {
   return Boolean(alert.acknowledged_internal || alert.acknowledged_source);
 }
 
+function isResolvedAlert(alert: OneViewAlert | null | undefined) {
+  if (!alert) return false;
+  const sourceStatus = safeDisplayText(alert.status_source, "").toLowerCase();
+  const internalStatus = safeDisplayText(alert.status_internal, "").toLowerCase();
+  return Boolean(alert.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
+}
+
 function ackRequestAllowedFor(alert: OneViewAlert | null | undefined, requestEnabled: boolean) {
-  return requestEnabled && alert?.datasource_name?.trim().toLowerCase() === "teletex-http";
+  return requestEnabled && !isResolvedAlert(alert) && alert?.datasource_name?.trim().toLowerCase() === "teletex-http";
 }
 
 function quickTimeParams(preset: TimePreset) {
@@ -1137,9 +1144,9 @@ export default function AlertsPage() {
         <div className="border-b border-border/70 px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h2 className="text-base font-semibold text-foreground">Alertas filtrados por {tableCustomerScope}</h2>
+              <h2 className="text-base font-semibold text-foreground">{statusFilter === "resolved" ? "Alertas resolvidos" : "Alertas"} filtrados por {tableCustomerScope}</h2>
               <p className="text-xs text-muted-foreground">
-                Exibindo {firstVisible.toLocaleString("pt-BR")}–{lastVisible.toLocaleString("pt-BR")} de {pagination.total_items.toLocaleString("pt-BR")} alertas
+                Exibindo {firstVisible.toLocaleString("pt-BR")}–{lastVisible.toLocaleString("pt-BR")} de {pagination.total_items.toLocaleString("pt-BR")} {statusFilter === "resolved" ? "alertas resolvidos" : "alertas"}
                 {snapshotCoverage?.partial ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos` : ""}
               </p>
               <p className="mt-1 text-[11px] text-muted-foreground">Escopo desta tabela: filtros de cliente, fonte, status, prioridade, ACK e período selecionados.</p>
@@ -1212,7 +1219,7 @@ export default function AlertsPage() {
               <Select value={sortField} onValueChange={(value) => { setSortField(value as SortField); setPage(1); }}>
                 <SelectTrigger className="h-8 w-44 bg-white"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="last_seen_at">Última atualização</SelectItem><SelectItem value="first_seen_at">Criação do alerta</SelectItem>
+                  <SelectItem value="last_seen_at">Última atualização</SelectItem><SelectItem value="first_seen_at">Criação do alerta</SelectItem><SelectItem value="resolved_at">Horário da resolução</SelectItem>
                   <SelectItem value="severity">Prioridade</SelectItem><SelectItem value="client">Cliente</SelectItem>
                   <SelectItem value="datasource">Fonte Zabbix</SelectItem>
                   <SelectItem value="host">Host</SelectItem><SelectItem value="problem">Problema</SelectItem><SelectItem value="duration">Duração</SelectItem>
@@ -1234,6 +1241,15 @@ export default function AlertsPage() {
                   onClick={() => { setSortField("last_seen_at"); setSortOrder("desc"); setPage(1); }}
                 >
                   <ArrowUpDown className="h-3.5 w-3.5" /> Mais recentemente atualizados
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={sortField === "resolved_at" && sortOrder === "desc" ? "default" : "ghost"}
+                  className="h-7 rounded px-2.5 text-xs"
+                  onClick={() => { setSortField("resolved_at"); setSortOrder("desc"); setPage(1); }}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Resolvidos mais recentemente
                 </Button>
                 <Button
                   type="button"
@@ -1284,7 +1300,8 @@ export default function AlertsPage() {
                 <TableRow><TableCell colSpan={tableColumnCount} className="py-16 text-center text-muted-foreground"><CircleAlert className="mx-auto mb-2 h-7 w-7" />Nenhum alerta corresponde aos filtros selecionados.</TableCell></TableRow>
               ) : alerts.map((alert) => {
                 const priority = priorityCatalog[priorityForSeverity(alert.severity)];
-                const isActive = alert.status_source === "active" && !alert.resolved_at;
+                const isResolved = isResolvedAlert(alert);
+                const isActive = !isResolved;
                 const customer = customerPresentation(alert);
                 return (
                   <TableRow
@@ -1322,8 +1339,11 @@ export default function AlertsPage() {
                     <TableCell className="py-3"><Badge className={cn("border text-[10px] hover:bg-inherit", priority.tone)}>{priority.label}</Badge></TableCell>
                     <TableCell className={cn("py-3", !showIpColumn && "min-w-[420px]")}><p className="max-w-xl line-clamp-2 font-medium leading-5" title={safeDisplayText(alert.problem_name, "Alerta sem descrição")}>{safeDisplayText(alert.problem_name, "Alerta sem descrição", 220)}</p></TableCell>
                     <TableCell className={cn("py-3 font-mono text-muted-foreground", !showIpColumn && "min-w-32")}>{formatDurationSeconds(alert.duration_seconds)}</TableCell>
-                    <TableCell className="py-3"><p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p><p className="text-[10px] text-muted-foreground">{formatDateTime(alert.last_seen_at)}</p></TableCell>
-                    <TableCell className="py-3"><Badge className={cn("border text-[10px] hover:bg-inherit", acknowledged(alert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{acknowledged(alert) ? "Reconhecido" : "Pendente"}</Badge></TableCell>
+                    <TableCell className="py-3"><p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p><p className="text-[10px] text-muted-foreground">{isResolved ? `Resolvido em ${formatDateTime(alert.resolved_at)}` : formatDateTime(alert.last_seen_at)}</p></TableCell>
+                    <TableCell className="py-3">
+                      <Badge className={cn("border text-[10px] hover:bg-inherit", acknowledged(alert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{acknowledged(alert) ? "Reconhecido" : "Pendente"}</Badge>
+                      {isResolved && acknowledged(alert) && safeActorName(alert.acknowledged_by) ? <p className="mt-1 line-clamp-2 text-[9px] text-muted-foreground">por {safeActorName(alert.acknowledged_by)}</p> : null}
+                    </TableCell>
                     <TableCell className="py-3">
                       <div className="flex items-center justify-end gap-1">
                         <Button
@@ -1338,7 +1358,7 @@ export default function AlertsPage() {
                         >
                           <Eye className="h-3.5 w-3.5" /> Ver
                         </Button>
-                        <TooltipProvider delayDuration={200}>
+                        {!isResolved ? <TooltipProvider delayDuration={200}>
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <span>
@@ -1367,7 +1387,7 @@ export default function AlertsPage() {
                                   ? "Solicitar reconhecimento do alerta."
                                   : "Reconhecimento indisponível para esta fonte."}</p></TooltipContent>
                           </Tooltip>
-                        </TooltipProvider>
+                        </TooltipProvider> : null}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -1430,7 +1450,7 @@ export default function AlertsPage() {
                             ["Host visível", selectedAlert.host_visible_name || selectedAlert.host_technical_name || selectedAlert.host_name],
                             ["Host técnico", selectedAlert.host_technical_name],
                             ["Prioridade", priorityCatalog[priorityForSeverity(selectedAlert.severity)].label],
-                            ["Status", selectedAlert.status_source === "active" && !selectedAlert.resolved_at ? "Ativo" : "Resolvido"],
+                            ["Status", isResolvedAlert(selectedAlert) ? "Resolvido" : "Ativo"],
                             ["ACK", acknowledged(selectedAlert) ? `Reconhecido${acknowledgedBy ? ` por ${acknowledgedBy}` : " — responsável não resolvido no Zabbix"}${selectedAlert.acknowledged_at ? ` em ${formatDateTime(selectedAlert.acknowledged_at)}` : ""}` : "Pendente"],
                             ["Supressão", selectedAlert.suppressed ? `Ativa${selectedAlert.suppressed_until ? ` até ${formatDateTime(selectedAlert.suppressed_until)}` : ""}` : "Não"],
                             ["Primeira ocorrência", formatDateTime(selectedAlert.first_seen_at)],
@@ -1526,9 +1546,11 @@ export default function AlertsPage() {
                                       <div className="flex flex-wrap items-center gap-2">
                                         <p className="font-semibold">{isSeenGroup ? `Ocorrência atualizada ${groupedEventCount} vezes` : safeDisplayText(item.title, "Atualização do alerta")}</p>
                                         {!isSeenGroup && groupedEventCount > 1 ? <Badge variant="secondary" className="text-[10px]">{groupedEventCount} registros consolidados</Badge> : null}
-                                        {item.legacy ? <Badge variant="outline" className="border-amber-200 bg-amber-50 text-[10px] text-amber-700">Histórico legado</Badge> : null}
+                                        <Badge variant="outline" className={cn("text-[10px]", item.legacy ? "border-amber-200 bg-amber-50 text-amber-700" : historyOrigin(item) === "Zabbix" ? "border-sky-200 bg-sky-50 text-sky-700" : "border-primary/20 bg-primary/5 text-primary")}>
+                                          {historyOrigin(item) === "Zabbix" ? "Origem Zabbix" : historyOrigin(item) === "Histórico legado" ? "Histórico legado" : "Origem OneView"}
+                                        </Badge>
+                                        {historyHasPartialEvidence(item) ? <Badge variant="outline" className="border-amber-200 bg-amber-50 text-[10px] text-amber-700">Evidência parcial</Badge> : null}
                                       </div>
-                                      <p className="text-xs text-muted-foreground">Origem: {safeDisplayText(item.source, "OneView")} · {safeDisplayText(item.origin, item.legacy ? "legacy" : "OneView")}</p>
                                     </div>
                                     <Badge variant="outline" className="text-[10px]">{formatRelative(item.occurred_at)}</Badge>
                                   </div>
@@ -1538,12 +1560,13 @@ export default function AlertsPage() {
                                   {isAckEvent ? (
                                     <div className="mt-3 space-y-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
                                       <p><span className="font-medium">Responsável:</span>{" "}{safeActorName(item.ack_actor_name || item.actor_name) ?? "Responsável não resolvido no Zabbix"}</p>
-                                      <p><span className="font-medium">Data/hora:</span>{" "}{formatDateTime(item.occurred_at)}</p>
+                                      <p><span className="font-medium">Horário da origem:</span>{" "}{formatDateTime(item.occurred_at)}</p>
+                                      <p><span className="font-medium">Registrado no OneView:</span>{" "}{formatDateTime(item.created_at)}</p>
                                       {item.comment ? <p><span className="font-medium">Comentário:</span>{" "}{safeDisplayText(item.comment)}</p> : null}
                                       {previousSeverity || currentSeverity ? (
                                         <p><span className="font-medium">Mudança de severidade:</span>{" "}{previousSeverity ?? "-"} → {currentSeverity ?? "-"}</p>
                                       ) : null}
-                                      <p><span className="font-medium">Origem:</span>{" "}{safeDisplayText(item.source, "OneView")}</p>
+                                      <p><span className="font-medium">Origem:</span>{" "}{historyOrigin(item)}</p>
                                     </div>
                                   ) : null}
 
@@ -1561,7 +1584,9 @@ export default function AlertsPage() {
                                   ) : null}
 
                                   <div className="mt-3 space-y-0.5 text-[11px] text-muted-foreground">
-                                    <p>Horário original: {formatDateTime(item.occurred_at)}</p>
+                                    <p>Horário da origem: {formatDateTime(item.occurred_at)}</p>
+                                    <p>Registrado no OneView: {formatDateTime(item.created_at)}</p>
+                                    {safeActorName(item.actor_name) ? <p>Responsável: {safeActorName(item.actor_name)}</p> : null}
                                     {isSeenGroup ? <><p>Primeira observação: {formatDateTime(firstOccurrence)}</p><p>Última observação: {formatDateTime(lastOccurrence)}</p></> : null}
                                   </div>
 
@@ -1645,8 +1670,8 @@ export default function AlertsPage() {
 
               <div className="border-t border-border/70 px-6 py-4">
                 <TooltipProvider>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <Tooltip><TooltipTrigger asChild><span><Button
+                  <div className={cn("grid grid-cols-1 gap-2", isResolvedAlert(selectedAlert) ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
+                    {!isResolvedAlert(selectedAlert) ? <Tooltip><TooltipTrigger asChild><span><Button
                       type="button"
                       variant="outline"
                       disabled={!selectedAckAllowed || acknowledged(selectedAlert) || selectedAckPending || ackSubmitting}
@@ -1660,7 +1685,7 @@ export default function AlertsPage() {
                         ? "Alerta já reconhecido."
                         : selectedAckAllowed
                           ? "Registrar solicitação de reconhecimento."
-                          : "Reconhecimento indisponível para esta fonte."}</TooltipContent></Tooltip>
+                          : "Reconhecimento indisponível para esta fonte."}</TooltipContent></Tooltip> : null}
                     <Tooltip><TooltipTrigger asChild><span><Button type="button" variant="outline" disabled className="w-full"><UserCheck className="h-4 w-4" />Atribuir</Button></span></TooltipTrigger><TooltipContent>Atribuição operacional em preparação.</TooltipContent></Tooltip>
                     <Tooltip><TooltipTrigger asChild><span><Button type="button" variant="outline" disabled className="w-full"><MessageSquare className="h-4 w-4" />Comentar</Button></span></TooltipTrigger><TooltipContent>{ONEVIEW_READ_ONLY_MESSAGE}</TooltipContent></Tooltip>
                   </div>

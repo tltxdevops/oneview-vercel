@@ -8,6 +8,8 @@ import {
   classifyOperationalSource,
   compareAttentionRequiredEntries,
   getAttentionThresholds,
+  isActiveAlert,
+  isResolvedAlert,
 } from "./oneview-db.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
@@ -189,8 +191,8 @@ function filteredAlerts(snapshot, req) {
     items = items.filter((item) => filters.customerConfidences.includes(item.customer_confidence || "unclassified"));
   }
   if (filters.severities.length) items = items.filter((item) => filters.severities.includes(item.severity));
-  if (filters.status === "active") items = items.filter((item) => item.status_source === "active" && !item.resolved_at);
-  if (filters.status === "resolved") items = items.filter((item) => item.status_source === "resolved" || Boolean(item.resolved_at));
+  if (filters.status === "active") items = items.filter(isActiveAlert);
+  if (filters.status === "resolved") items = items.filter(isResolvedAlert);
   if (filters.acknowledged) {
     const expected = filters.acknowledged === "true";
     items = items.filter((item) => Boolean(item.acknowledged_internal || item.acknowledged_source) === expected);

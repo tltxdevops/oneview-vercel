@@ -196,6 +196,7 @@ const CUSTOMER_CONFIDENCES = new Set(["high", "medium", "low", "unclassified"]);
 const ALERT_SORTS = Object.freeze({
   last_seen_at: "a.last_seen_at",
   first_seen_at: "a.first_seen_at",
+  resolved_at: "a.resolved_at",
   severity: `case a.severity
     when 'disaster' then 5 when 'high' then 4 when 'average' then 3
     when 'warning' then 2 when 'information' then 1 else 0 end`,
@@ -205,6 +206,29 @@ const ALERT_SORTS = Object.freeze({
   problem: "a.problem_name",
   duration: "a.duration_seconds",
 });
+
+const RESOLVED_ALERT_SQL = `(
+  a.resolved_at is not null
+  or lower(coalesce(a.status_source, '')) = 'resolved'
+  or lower(coalesce(a.status_internal, '')) in ('resolved', 'normalized')
+)`;
+
+const ACTIVE_ALERT_SQL = `(
+  a.resolved_at is null
+  and lower(coalesce(a.status_source, 'active')) = 'active'
+  and lower(coalesce(a.status_internal, '')) not in ('resolved', 'normalized')
+)`;
+
+export function isResolvedAlert(alert) {
+  const sourceStatus = textValue(alert?.status_source).toLowerCase();
+  const internalStatus = textValue(alert?.status_internal).toLowerCase();
+  return Boolean(alert?.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
+}
+
+export function isActiveAlert(alert) {
+  return !isResolvedAlert(alert)
+    && textValue(alert?.status_source, "active").toLowerCase() === "active";
+}
 
 function positiveInteger(value, fallback, { maximum } = {}) {
   if (value === "") return fallback;
@@ -230,8 +254,7 @@ export function buildAttentionRequiredQuery(req, thresholds = getAttentionThresh
     thresholds.averageMinutes,
   ];
   const whereSql = `
-    a.status_source = 'active'
-    and a.resolved_at is null
+    ${ACTIVE_ALERT_SQL}
     and coalesce(a.acknowledged_source, false) = false
     and a.first_seen_at is not null
     and (
@@ -255,7 +278,7 @@ export function buildAttentionRequiredQuery(req, thresholds = getAttentionThresh
 export function attentionRequiredState(alert, thresholds = getAttentionThresholds(), now = Date.now()) {
   const severity = textValue(alert?.severity).toLowerCase();
   const firstSeenAt = Date.parse(alert?.first_seen_at || alert?.started_at || "");
-  const active = textValue(alert?.status_source, "active").toLowerCase() === "active" && !alert?.resolved_at;
+  const active = isActiveAlert(alert);
   const acknowledgedAtOrigin = Boolean(alert?.acknowledged_source);
   const threshold = severity === "disaster"
     ? thresholds.disasterMinutes
@@ -328,8 +351,8 @@ export function buildAlertListQuery(req) {
     push("coalesce(a.customer_confidence, 'unclassified') = any(?::text[])", customerConfidences);
   }
   if (severities.length) push("a.severity = any(?::text[])", severities);
-  if (status === "active") clauses.push("a.status_source = 'active' and a.resolved_at is null");
-  if (status === "resolved") clauses.push("(a.status_source = 'resolved' or a.resolved_at is not null)");
+  if (status === "active") clauses.push(ACTIVE_ALERT_SQL);
+  if (status === "resolved") clauses.push(RESOLVED_ALERT_SQL);
   if (acknowledged) {
     push(
       "(coalesce(a.acknowledged_source, false) or coalesce(a.acknowledged_internal, false)) = ?",
@@ -356,7 +379,7 @@ export function buildAlertListQuery(req) {
     offset,
     params,
     whereSql: clauses.length ? `where ${clauses.join(" and ")}` : "",
-    orderSql: `${ALERT_SORTS[sort]} ${direction}, a.last_seen_at desc, a.id desc`,
+    orderSql: `${ALERT_SORTS[sort]} ${direction}${sort === "resolved_at" ? " nulls last" : ""}, a.last_seen_at desc, a.id desc`,
     filters: {
       clients,
       customers,
@@ -564,6 +587,7 @@ async function fetchAlertList(req, config) {
           a.acknowledged_source,
           a.acknowledged_internal,
           a.acknowledged_at,
+          a.acknowledged_by,
           (select ack.status
              from alert_acknowledgements ack
             where ack.alert_id = a.id and ack.status in ('pending','processing')
@@ -779,7 +803,7 @@ const HISTORY_TITLES = Object.freeze({
   suppressed: "Alerta suprimido",
   unsuppressed: "Supressão encerrada",
   maintenance: "Evento de manutenção",
-  recovered: "Alerta normalizado",
+  recovered: "Alerta resolvido",
   reopened: "Alerta reaberto",
   status_changed: "Status alterado",
 });
@@ -788,9 +812,9 @@ export function historyTitle(eventType) {
   const normalized = textValue(eventType).toLowerCase();
   if (HISTORY_TITLES[normalized]) return HISTORY_TITLES[normalized];
   if (normalized === "created_from_zabbix") return "Alerta identificado";
-  if (normalized === "resolved_by_reconciliation") return "Alerta normalizado";
+  if (normalized === "resolved_by_reconciliation") return "Alerta resolvido";
   if (normalized.includes("severity")) return "Severidade alterada";
-  if (normalized.includes("recovery") || normalized.includes("resolved")) return "Alerta normalizado";
+  if (normalized.includes("recovery") || normalized.includes("resolved")) return "Alerta resolvido";
   if (normalized.includes("ack")) return "Alerta reconhecido";
   if (normalized.includes("status")) return "Status alterado";
   return "Atualização do alerta";
@@ -809,12 +833,8 @@ function historyHasAcknowledgement(eventType) {
   return normalized === "acknowledged" || normalized === "ack_message" || normalized.includes("ack");
 }
 
-function historyDescription(eventType, value) {
-  const description = nullableText(sanitizeText(value, "", 500));
-  if (description) return description;
-  return textValue(eventType).toLowerCase() === "problem_created"
-    ? "O alerta foi registrado pelo Zabbix."
-    : null;
+function historyDescription(_eventType, value) {
+  return nullableText(sanitizeText(value, "", 500));
 }
 
 export function historyValueIsMeaningful(value) {
@@ -925,11 +945,10 @@ function historySummary(items) {
   };
 }
 
-function historySource(value) {
+function historySource(value, legacy = false) {
+  if (legacy) return "Histórico legado";
   const normalized = textValue(value).toLowerCase();
   if (normalized.includes("zabbix")) return "Zabbix";
-  if (normalized.includes("worker") || normalized.includes("reconciliation")) return "Worker";
-  if (normalized.includes("operator") || normalized.includes("manual")) return "Operador";
   return "OneView";
 }
 
@@ -1014,7 +1033,7 @@ async function fetchAlertHistoryPayload(req, config) {
       ].some((value) => isNumericIdentifier(value)),
       acknowledge_id: nullableText(sanitizeText(row.acknowledge_id, "", 120)),
       actor_type: nullableText(sanitizeText(row.actor_type, "", 40)),
-      source: historySource(row.source),
+      source: historySource(row.source, legacy),
       origin: sanitizeText(row.action_source, "legacy", 120),
       legacy,
     };

@@ -1,6 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { sendJson } from "./http.js";
-import { sessionUserFromRequest, sessionUserFromToken } from "./microsoft-sso.js";
+import { isAllowedRequestOrigin, sessionUserFromRequest, sessionUserFromToken } from "./microsoft-sso.js";
 
 let jwks;
 
@@ -9,6 +9,25 @@ function splitCsv(value) {
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeDomain(value) {
+  const domain = String(value || "").trim().toLowerCase();
+  if (!domain || domain.startsWith("@") || domain.includes("/") || domain.includes(":") || domain.includes("@")) {
+    return "";
+  }
+  return domain;
+}
+
+function deny(res, error) {
+  // Runtime diagnostic intentionally contains only a stable reason.
+  console.warn(JSON.stringify({ event: "oneview_auth_denied", reason: error }));
+  sendJson(res, 403, { error });
+  return null;
 }
 
 function authRequired() {
@@ -39,16 +58,28 @@ function getJwks() {
 }
 
 function emailFromPayload(payload) {
-  return String(payload.preferred_username || payload.email || payload.upn || "").toLowerCase();
+  return normalizeEmail(payload.preferred_username || payload.email || payload.upn);
 }
 
-function isAllowedViewer(email) {
+function viewerAccess(email) {
   const allowedEmails = splitCsv(process.env.ONEVIEW_ALLOWED_EMAILS);
-  const allowedDomains = splitCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS);
-  if (allowedEmails.length && allowedEmails.includes(email)) return true;
-  const domain = email.split("@")[1] || "";
-  if (allowedDomains.length && allowedDomains.includes(domain)) return true;
-  return allowedEmails.length === 0 && allowedDomains.length === 0;
+  const operatorEmails = splitCsv(process.env.ONEVIEW_OPERATOR_EMAILS);
+  const adminEmails = splitCsv(process.env.ONEVIEW_ADMIN_EMAILS);
+  const configuredDomainValues = splitCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS);
+  const configuredDomains = configuredDomainValues.map(normalizeDomain).filter(Boolean);
+  const normalizedEmail = normalizeEmail(email);
+  const directlyAllowed = new Set([...allowedEmails, ...operatorEmails, ...adminEmails]);
+
+  if (directlyAllowed.has(normalizedEmail)) return { allowed: true, reason: null };
+  const domain = normalizedEmail.slice(normalizedEmail.lastIndexOf("@") + 1);
+  if (configuredDomains.includes(domain)) return { allowed: true, reason: null };
+
+  // Lista vazia nunca libera acesso por acidente. Uma lista vazia isolada nÃ£o
+  // bloqueia outra regra vÃ¡lida, como o domÃ­nio corporativo configurado.
+  return {
+    allowed: false,
+    reason: configuredDomains.length > 0 ? "domain_not_allowed" : "email_not_allowed",
+  };
 }
 
 function rolesFor(email) {
@@ -89,6 +120,29 @@ async function verifyAzureToken(token) {
   return payload;
 }
 
+function authorizeIdentity(req, res, identity, role, source) {
+  const email = normalizeEmail(identity?.email);
+  if (!email) return deny(res, "email_not_allowed");
+
+  const viewer = viewerAccess(email);
+  if (!viewer.allowed) return deny(res, viewer.reason);
+  if (!isAllowedRequestOrigin(req)) return deny(res, "origin_not_allowed");
+
+  const roles = rolesFor(email);
+  for (const roleName of identity?.roles || []) roles.add(roleName);
+  if (!hasRole(roles, role)) return deny(res, role === "operator" || role === "admin" ? "operator_required" : "email_not_allowed");
+
+  const auth = {
+    id: String(identity?.id || email),
+    email,
+    name: String(identity?.name || email),
+    roles: [...roles],
+    source,
+  };
+  req.oneviewAuth = auth;
+  return auth;
+}
+
 export async function requireAuth(req, res, { role = "viewer" } = {}) {
   if (!authRequired()) {
     const localAuth = {
@@ -105,28 +159,7 @@ export async function requireAuth(req, res, { role = "viewer" } = {}) {
   const token = bearerToken(req);
   const sessionUser = sessionUserFromRequest(req) || sessionUserFromToken(token);
   if (sessionUser?.email) {
-    const email = String(sessionUser.email).toLowerCase();
-    if (!isAllowedViewer(email)) {
-      sendJson(res, 403, { error: "user_not_allowed" });
-      return null;
-    }
-
-    const roles = rolesFor(email);
-    for (const roleName of sessionUser.roles || []) roles.add(roleName);
-    if (!hasRole(roles, role)) {
-      sendJson(res, 403, { error: "insufficient_role" });
-      return null;
-    }
-
-    const auth = {
-      id: String(sessionUser.id || email),
-      email,
-      name: String(sessionUser.name || email),
-      roles: [...roles],
-      source: "session",
-    };
-    req.oneviewAuth = auth;
-    return auth;
+    return authorizeIdentity(req, res, sessionUser, role, "session");
   }
 
   if (!token) {
@@ -137,26 +170,12 @@ export async function requireAuth(req, res, { role = "viewer" } = {}) {
   try {
     const payload = await verifyAzureToken(token);
     const email = emailFromPayload(payload);
-    if (!email || !isAllowedViewer(email)) {
-      sendJson(res, 403, { error: "user_not_allowed" });
-      return null;
-    }
-
-    const roles = rolesFor(email);
-    if (!hasRole(roles, role)) {
-      sendJson(res, 403, { error: "insufficient_role" });
-      return null;
-    }
-
-    const auth = {
+    return authorizeIdentity(req, res, {
       id: String(payload.oid || payload.sub || ""),
       email,
       name: String(payload.name || email),
-      roles: [...roles],
-      tenant_id: String(payload.tid || ""),
-    };
-    req.oneviewAuth = auth;
-    return auth;
+      roles: [],
+    }, role, "bearer");
   } catch (error) {
     console.error("[api-auth]", error?.message || "invalid_token");
     sendJson(res, 401, { error: "invalid_token" });

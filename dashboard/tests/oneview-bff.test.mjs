@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { requireAuth } from "../api/_lib/auth.js";
 import { buildMicrosoftAuthorizeUrl, microsoftRedirectUri, publicAppOrigin } from "../api/_lib/microsoft-sso.js";
 import { getOneViewConfig } from "../api/_lib/oneview-config.js";
 import { getOneViewDbConfig } from "../api/_lib/oneview-db.js";
 import { createOneViewHandler, sanitizeOneViewPayload } from "../api/_lib/oneview-response.js";
 import { fetchOneViewUpstream } from "../api/_lib/oneview-upstream.js";
+import { createSessionToken } from "../api/_lib/session.js";
+import authMeHandler from "../api/auth/me.js";
 
 function request(method = "GET", query = {}, headers = {}) {
   return { method, query, headers };
@@ -20,6 +23,11 @@ function response() {
     setHeader(name, value) { this.headers[name.toLowerCase()] = value; return this; },
     end(value) { this.body = value ? JSON.parse(value) : undefined; return this; },
   };
+}
+
+function authenticatedSessionRequest(email, headers = {}) {
+  const token = createSessionToken({ id: email, email, name: email, roles: ["viewer"] }).token;
+  return request("GET", {}, { cookie: `oneview_session=${encodeURIComponent(token)}`, ...headers });
 }
 
 const authenticated = async () => ({ roles: ["viewer"] });
@@ -205,6 +213,151 @@ test("ONEVIEW_SNAPSHOT_MODE=false e LIVE_DB=true selecionam database em runtime"
   assert.equal(config.snapshotMode, false);
   assert.equal(config.liveEnabled, true);
   assert.equal(config.liveMode, "database");
+});
+
+test("domínio corporativo autoriza vários usuários e bloqueia externo antes do banco", async () => {
+  const names = [
+    "APP_SESSION_SECRET",
+    "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
+    "ONEVIEW_ALLOWED_EMAILS",
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const previousWarn = console.warn;
+
+  try {
+    process.env.APP_SESSION_SECRET = "unit-test-session-secret";
+    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = " TELETEX.COM.BR ";
+    process.env.ONEVIEW_ALLOWED_EMAILS = "";
+
+    let databaseCalls = 0;
+    const handler = createOneViewHandler("health", {
+      configProvider: liveDbConfig,
+      database: async () => {
+        databaseCalls += 1;
+        return { status: "ok" };
+      },
+      fallback,
+      logger: noLog,
+    });
+
+    for (const email of ["ana@teletex.com.br", "carlos@TELETEX.COM.BR", "noc@teletex.com.br"]) {
+      const res = response();
+      await handler(authenticatedSessionRequest(email), res);
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.data_source, "database");
+    }
+
+    let deniedReason = "";
+    console.warn = (line) => { deniedReason = String(line); };
+    const external = response();
+    await handler(authenticatedSessionRequest("externo@example.com"), external);
+    assert.equal(external.statusCode, 403);
+    assert.deepEqual(external.body, { error: "domain_not_allowed" });
+    assert.match(deniedReason, /oneview_auth_denied/);
+    assert.match(deniedReason, /domain_not_allowed/);
+    assert.doesNotMatch(deniedReason, /externo|@|secret|token/i);
+    assert.equal(databaseCalls, 3);
+  } finally {
+    console.warn = previousWarn;
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
+test("política de acesso vazia não libera usuário autenticado", async () => {
+  const names = ["APP_SESSION_SECRET", "ONEVIEW_ALLOWED_EMAIL_DOMAINS", "ONEVIEW_ALLOWED_EMAILS"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const previousWarn = console.warn;
+
+  try {
+    process.env.APP_SESSION_SECRET = "unit-test-session-secret";
+    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "";
+    process.env.ONEVIEW_ALLOWED_EMAILS = "";
+    console.warn = () => undefined;
+    const res = response();
+    const auth = await requireAuth(authenticatedSessionRequest("sem-politica@teletex.com.br"), res, { role: "viewer" });
+    assert.equal(auth, null);
+    assert.equal(res.statusCode, 403);
+    assert.deepEqual(res.body, { error: "email_not_allowed" });
+  } finally {
+    console.warn = previousWarn;
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
+test("leitura aceita dominio, operadores e administradores sem credencial de acoes", async () => {
+  const names = [
+    "APP_SESSION_SECRET",
+    "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
+    "ONEVIEW_ALLOWED_EMAILS",
+    "ONEVIEW_OPERATOR_EMAILS",
+    "ONEVIEW_ADMIN_EMAILS",
+    "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS",
+    "ONEVIEW_PUBLIC_ORIGIN",
+    "ONEVIEW_ALLOWED_ORIGINS",
+    "POSTGRES_ACTIONS_PASSWORD",
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+
+  try {
+    process.env.APP_SESSION_SECRET = "unit-test-session-secret";
+    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = " teletex.com.br ";
+    process.env.ONEVIEW_ALLOWED_EMAILS = "";
+    process.env.ONEVIEW_OPERATOR_EMAILS = " operador@noc.example ";
+    process.env.ONEVIEW_ADMIN_EMAILS = " admin@noc.example ";
+    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "false";
+    process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview.teletexdev.com.br/";
+    process.env.ONEVIEW_ALLOWED_ORIGINS = "https://oneview.teletexdev.com.br/, https://oneview-vercel.vercel.app";
+    delete process.env.POSTGRES_ACTIONS_PASSWORD;
+
+    let databaseCalls = 0;
+    const handler = createOneViewHandler("health", {
+      configProvider: liveDbConfig,
+      database: async () => { databaseCalls += 1; return { status: "ok" }; },
+      fallback,
+      logger: noLog,
+    });
+
+    const domainRequest = authenticatedSessionRequest("leitura@TELETEX.COM.BR", { origin: "https://oneview.teletexdev.com.br/" });
+    const me = response();
+    authMeHandler(domainRequest, me);
+    assert.equal(me.statusCode, 200);
+    assert.equal(me.body.user.email, "leitura@teletex.com.br");
+
+    for (const email of ["leitura@TELETEX.COM.BR", "operador@noc.example", "admin@noc.example"]) {
+      const res = response();
+      await handler(authenticatedSessionRequest(email, { origin: "https://oneview.teletexdev.com.br/" }), res);
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.headers["x-oneview-data-source"], "database");
+    }
+
+    const actionRole = response();
+    const actionAuth = await requireAuth(authenticatedSessionRequest("leitura@teletex.com.br"), actionRole, { role: "operator" });
+    assert.equal(actionAuth, null);
+    assert.equal(actionRole.statusCode, 403);
+    assert.deepEqual(actionRole.body, { error: "operator_required" });
+
+    const foreignOrigin = response();
+    await handler(authenticatedSessionRequest("leitura@teletex.com.br", { origin: "https://oneview.teletexdev.com.br.attacker.invalid" }), foreignOrigin);
+    assert.equal(foreignOrigin.statusCode, 403);
+    assert.deepEqual(foreignOrigin.body, { error: "origin_not_allowed" });
+
+    const external = response();
+    await handler(authenticatedSessionRequest("externo@example.invalid", { origin: "https://oneview.teletexdev.com.br" }), external);
+    assert.equal(external.statusCode, 403);
+    assert.deepEqual(external.body, { error: "domain_not_allowed" });
+    assert.equal(databaseCalls, 3);
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
 });
 
 test("SSO mantém o host atual nas origens permitidas", () => {
