@@ -197,6 +197,14 @@ function filteredAlerts(snapshot, req) {
     const expected = filters.acknowledged === "true";
     items = items.filter((item) => Boolean(item.acknowledged_internal || item.acknowledged_source) === expected);
   }
+  if (filters.acknowledgedSource) {
+    const expected = filters.acknowledgedSource === "true";
+    items = items.filter((item) => Boolean(item.acknowledged_source) === expected);
+  }
+  if (filters.acknowledgedInternal) {
+    const expected = filters.acknowledgedInternal === "true";
+    items = items.filter((item) => Boolean(item.acknowledged_internal) === expected);
+  }
   if (filters.search) {
     const search = filters.search.toLocaleLowerCase("pt-BR");
     items = items.filter((item) => [
@@ -211,6 +219,15 @@ function filteredAlerts(snapshot, req) {
     ]
       .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(search)));
   }
+  if (filters.hostSearch) {
+    const hostSearch = filters.hostSearch.toLocaleLowerCase("pt-BR");
+    items = items.filter((item) => [item.host_visible_name, item.host_technical_name, item.host_name]
+      .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(hostSearch)));
+  }
+  if (filters.problemSearch) {
+    const problemSearch = filters.problemSearch.toLocaleLowerCase("pt-BR");
+    items = items.filter((item) => String(item.problem_name || "").toLocaleLowerCase("pt-BR").includes(problemSearch));
+  }
   if (filters.dateFrom) items = items.filter((item) => Date.parse(item.last_seen_at) >= Date.parse(filters.dateFrom));
   if (filters.dateTo) items = items.filter((item) => Date.parse(item.last_seen_at) <= Date.parse(filters.dateTo));
   if (filters.firstSeenFrom) items = items.filter((item) => Date.parse(item.first_seen_at) >= Date.parse(filters.firstSeenFrom));
@@ -224,6 +241,8 @@ function filteredAlerts(snapshot, req) {
     if (filters.sort === "host") return item.host_name;
     if (filters.sort === "problem") return item.problem_name;
     if (filters.sort === "duration") return item.duration_seconds;
+    if (filters.sort === "status") return isResolvedAlert(item) ? 1 : 0;
+    if (filters.sort === "acknowledged_source") return item.acknowledged_source ? 1 : 0;
     return Date.parse(item[filters.sort] || item.last_seen_at) || 0;
   };
   items.sort((left, right) => {
@@ -317,6 +336,15 @@ function dashboardSummaryPayload(snapshot) {
     alerts_total: alertsTotal,
     alerts_sample_size: Math.max(0, Number(snapshot.exported_alerts_count) || alerts.length),
     active_total: activeTotal,
+    resolved_today: alerts.filter((alert) => {
+      if (!alert.resolved_at) return false;
+      const resolved = new Date(alert.resolved_at);
+      const now = new Date();
+      return !Number.isNaN(resolved.getTime())
+        && resolved.getFullYear() === now.getFullYear()
+        && resolved.getMonth() === now.getMonth()
+        && resolved.getDate() === now.getDate();
+    }).length,
     resolved_total: Math.max(alertsTotal - activeTotal, 0),
     by_severity: countBy(active, (alert) => alert.severity, (severity, count) => ({ severity, count })),
     by_status: countBy(active, (alert) => alert.status_internal, (status_internal, count) => ({ status_internal, count })),
@@ -525,6 +553,7 @@ export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
           active_alerts: Math.max(0, Number(snapshot.summary?.active_alerts) || alerts.length),
         },
         capabilities: { acknowledgement: false },
+        thresholds: { alert_stale_minutes: Number(config.alertStaleMinutes) || 15 },
       };
     case "dashboard-summary":
       return dashboardSummaryPayload(snapshot);

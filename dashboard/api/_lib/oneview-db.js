@@ -205,6 +205,11 @@ const ALERT_SORTS = Object.freeze({
   host: "a.host_name",
   problem: "a.problem_name",
   duration: "a.duration_seconds",
+  status: `case
+    when a.resolved_at is not null or lower(coalesce(a.status_source, '')) = 'resolved'
+      or lower(coalesce(a.status_internal, '')) in ('resolved', 'normalized') then 1
+    else 0 end`,
+  acknowledged_source: "coalesce(a.acknowledged_source, false)",
 });
 
 const RESOLVED_ALERT_SQL = `(
@@ -327,7 +332,11 @@ export function buildAlertListQuery(req) {
   const severities = queryValues(req, "severity").map((value) => value.toLowerCase());
   const status = (oneQueryValue(req, "status") || "active").toLowerCase();
   const acknowledged = oneQueryValue(req, "acknowledged").toLowerCase();
+  const acknowledgedSource = oneQueryValue(req, "acknowledged_source").toLowerCase();
+  const acknowledgedInternal = oneQueryValue(req, "acknowledged_internal").toLowerCase();
   const search = oneQueryValue(req, "search").slice(0, 200);
+  const hostSearch = oneQueryValue(req, "host_search").slice(0, 200);
+  const problemSearch = oneQueryValue(req, "problem_search").slice(0, 200);
   const dateFrom = isoFilterDate(oneQueryValue(req, "date_from"));
   const dateTo = isoFilterDate(oneQueryValue(req, "date_to"));
   const firstSeenFrom = isoFilterDate(oneQueryValue(req, "first_seen_from"));
@@ -339,6 +348,8 @@ export function buildAlertListQuery(req) {
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
   if (!["active", "resolved", "all"].includes(status)) throw requestError("invalid_query");
   if (acknowledged && !["true", "false"].includes(acknowledged)) throw requestError("invalid_query");
+  if (acknowledgedSource && !["true", "false"].includes(acknowledgedSource)) throw requestError("invalid_query");
+  if (acknowledgedInternal && !["true", "false"].includes(acknowledgedInternal)) throw requestError("invalid_query");
   if (!Object.hasOwn(ALERT_SORTS, sort) || !["asc", "desc"].includes(order)) throw requestError("invalid_query");
   if (dateFrom && dateTo && Date.parse(dateFrom) > Date.parse(dateTo)) throw requestError("invalid_query");
   const offset = (page - 1) * pageSize;
@@ -359,6 +370,8 @@ export function buildAlertListQuery(req) {
       acknowledged === "true",
     );
   }
+  if (acknowledgedSource) push("coalesce(a.acknowledged_source, false) = ?", acknowledgedSource === "true");
+  if (acknowledgedInternal) push("coalesce(a.acknowledged_internal, false) = ?", acknowledgedInternal === "true");
   if (search) {
     push(
       "(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ? or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, a.client_name, '') ilike $CURRENT or coalesce(d.name, '') ilike $CURRENT)",
@@ -366,6 +379,15 @@ export function buildAlertListQuery(req) {
     );
     const current = `$${params.length}`;
     clauses[clauses.length - 1] = clauses[clauses.length - 1].replaceAll("$CURRENT", current);
+  }
+  if (hostSearch) {
+    push(
+      "coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ?",
+      `%${hostSearch}%`,
+    );
+  }
+  if (problemSearch) {
+    push("coalesce(a.problem_name, '') ilike ?", `%${problemSearch}%`);
   }
   if (dateFrom) push("a.last_seen_at >= ?", dateFrom);
   if (dateTo) push("a.last_seen_at <= ?", dateTo);
@@ -388,7 +410,11 @@ export function buildAlertListQuery(req) {
       severities,
       status,
       acknowledged,
+      acknowledgedSource,
+      acknowledgedInternal,
       search,
+      hostSearch,
+      problemSearch,
       dateFrom,
       dateTo,
       firstSeenFrom,
@@ -798,7 +824,8 @@ const HISTORY_TITLES = Object.freeze({
   problem_created: "Alerta identificado",
   problem_seen: "Ocorrência atualizada",
   severity_changed: "Severidade alterada",
-  acknowledged: "Alerta reconhecido",
+  acknowledged: "Alerta reconhecido na origem",
+  internal_acknowledged: "Reconhecido no OneView",
   ack_message: "Comentário adicionado ao reconhecimento",
   suppressed: "Alerta suprimido",
   unsuppressed: "Supressão encerrada",
@@ -815,7 +842,8 @@ export function historyTitle(eventType) {
   if (normalized === "resolved_by_reconciliation") return "Alerta resolvido";
   if (normalized.includes("severity")) return "Severidade alterada";
   if (normalized.includes("recovery") || normalized.includes("resolved")) return "Alerta resolvido";
-  if (normalized.includes("ack")) return "Alerta reconhecido";
+  if (normalized === "internal_acknowledged") return "Reconhecido no OneView";
+  if (normalized.includes("ack")) return "Alerta reconhecido na origem";
   if (normalized.includes("status")) return "Status alterado";
   return "Atualização do alerta";
 }
@@ -849,9 +877,10 @@ export function historyValueIsMeaningful(value) {
 }
 
 function acknowledgementGroupKey(item) {
-  if (item.acknowledge_id) return `acknowledge:${item.acknowledge_id}`;
+  const scope = textValue(item.event_type).toLowerCase() === "internal_acknowledged" ? "internal" : "source";
+  if (item.acknowledge_id) return `${scope}:acknowledge:${item.acknowledge_id}`;
   return [
-    "acknowledge-fallback",
+    `${scope}:acknowledge-fallback`,
     item.source_event_id || "event",
     item.occurred_at,
     item.ack_actor_name || (item.ack_actor_unresolved ? "unresolved" : "unknown"),
@@ -897,8 +926,10 @@ export function consolidateAlertHistoryItems(sourceItems) {
     const key = acknowledgementGroupKey(item);
     const existing = acknowledgements.get(key);
     if (!existing) {
-      item.event_type = "acknowledged";
-      item.title = HISTORY_TITLES.acknowledged;
+      item.event_type = textValue(item.event_type).toLowerCase() === "internal_acknowledged"
+        ? "internal_acknowledged"
+        : "acknowledged";
+      item.title = HISTORY_TITLES[item.event_type];
       item.description = null;
       acknowledgements.set(key, item);
       consolidated.push(item);
@@ -1236,7 +1267,7 @@ async function fetchSyncLogsPayload(req, config) {
   };
 }
 
-async function fetchHealthPayload(config, acknowledgementEnabled = false) {
+async function fetchHealthPayload(config, acknowledgementEnabled = false, alertStaleMinutes = 15) {
   const [reachableRow, countsRow] = await Promise.all([
     queryRow(config, "select 1 as reachable"),
     queryRow(
@@ -1259,6 +1290,9 @@ async function fetchHealthPayload(config, acknowledgementEnabled = false) {
     capabilities: {
       acknowledgement: acknowledgementEnabled === true,
     },
+    thresholds: {
+      alert_stale_minutes: integerValue(alertStaleMinutes, 15, { min: 1, max: 1440 }),
+    },
   };
 }
 
@@ -1266,6 +1300,7 @@ async function fetchDashboardSummaryPayload(config) {
   const [
     totalAlertsRow,
     activeAlertsRow,
+    resolvedTodayRow,
     severityRows,
     statusRows,
     clientRows,
@@ -1278,6 +1313,13 @@ async function fetchDashboardSummaryPayload(config) {
   ] = await Promise.all([
     queryRow(config, "select count(*)::int as value from alerts"),
     queryRow(config, "select count(*)::int as value from v_active_alerts"),
+    queryRow(
+      config,
+      `select count(*)::int as value
+         from alerts
+        where resolved_at >= date_trunc('day', now())
+          and resolved_at < date_trunc('day', now()) + interval '1 day'`,
+    ),
     queryRows(config, "select severity, count(*)::int as count from v_active_alerts group by severity order by count desc, severity asc"),
     queryRows(config, "select status_internal, count(*)::int as count from v_active_alerts group by status_internal order by count desc, status_internal asc"),
     queryRows(
@@ -1316,6 +1358,7 @@ async function fetchDashboardSummaryPayload(config) {
     alerts_total: alertsTotal,
     alerts_sample_size: activeTotal,
     active_total: activeTotal,
+    resolved_today: integerValue(resolvedTodayRow?.value, 0),
     resolved_total: Math.max(alertsTotal - activeTotal, 0),
     by_severity: severityRows.map((row) => ({
       severity: textValue(row.severity, "not_classified"),
@@ -1538,7 +1581,7 @@ export async function fetchOneViewDatabase(routeName, req, config) {
   try {
     switch (routeName) {
       case "health":
-        return fetchHealthPayload(dbConfig, config?.ackEnabled);
+        return fetchHealthPayload(dbConfig, config?.ackEnabled, config?.alertStaleMinutes);
       case "dashboard-summary":
         return fetchDashboardSummaryPayload(dbConfig);
       case "grafana-summary":

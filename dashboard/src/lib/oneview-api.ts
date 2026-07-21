@@ -59,7 +59,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       insufficient_role: "Seu usuário não possui permissão para solicitar reconhecimento.",
       ack_request_disabled: "A solicitação de reconhecimento está desabilitada.",
       datasource_not_allowed: "Esta fonte ainda não permite solicitação de reconhecimento.",
-      alert_already_acknowledged: "Este alerta já foi reconhecido.",
+      alert_already_recognized: "Este alerta já foi reconhecido no OneView.",
       invalid_comment: "O comentário deve possuir no máximo 500 caracteres.",
       actions_database_not_configured: "O canal seguro de solicitações ainda não está configurado.",
     };
@@ -95,9 +95,10 @@ export interface OneViewResponseMeta {
 
 export interface AckRequestResponse {
   request_id: string;
-  status: "pending";
+  status: "recorded";
   idempotent: boolean;
   execution_enabled: false;
+  actor_name: string;
   message: string;
 }
 
@@ -287,6 +288,7 @@ export interface AlertMetrics extends OneViewResponseMeta {
   alerts_total?: number;
   alerts_sample_size?: number;
   active_total: number;
+  resolved_today?: number;
   by_severity: Array<{ severity: string; count: number }>;
   by_status: Array<{ status_internal: string; count: number }>;
   by_client: Array<{ client_name: string; count: number }>;
@@ -336,6 +338,38 @@ export interface OneViewHealthResponse extends OneViewResponseMeta {
   capabilities?: {
     acknowledgement: boolean;
   };
+  thresholds?: {
+    alert_stale_minutes: number;
+  };
+}
+
+export interface AttentionRequiredResponse extends OneViewResponseMeta {
+  summary: {
+    total: number;
+    disaster: number;
+    high: number;
+    average: number;
+    by_customer: Array<{ customer_name: string; count: number }>;
+    by_datasource: Array<{ datasource_name: string; count: number }>;
+  };
+  thresholds: {
+    disaster_minutes: number;
+    high_minutes: number;
+    average_minutes: number;
+  };
+  items: Array<{
+    id: string;
+    customer_name: string | null;
+    customer_confidence: string;
+    datasource_name: string;
+    host_visible_name: string;
+    problem: string;
+    severity: string;
+    first_seen_at: string;
+    last_seen_at: string;
+    unacknowledged_minutes: number;
+    acknowledged: false;
+  }>;
 }
 
 export type OperationalStatus = "healthy" | "warning" | "error" | "stale" | "disabled";
@@ -445,12 +479,16 @@ export interface FetchAlertsParams {
   severities?: string[];
   status?: "active" | "resolved" | "all";
   acknowledged?: boolean;
+  acknowledgedSource?: boolean;
+  acknowledgedInternal?: boolean;
   search?: string;
+  hostSearch?: string;
+  problemSearch?: string;
   dateFrom?: string;
   dateTo?: string;
   firstSeenFrom?: string;
   lastSeenFrom?: string;
-  sort?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration";
+  sort?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source";
   order?: "asc" | "desc";
   signal?: AbortSignal;
 }
@@ -466,7 +504,11 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   for (const severity of params?.severities ?? []) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
+  if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
+  if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
   if (params?.search) search.set("search", params.search);
+  if (params?.hostSearch) search.set("host_search", params.hostSearch);
+  if (params?.problemSearch) search.set("problem_search", params.problemSearch);
   if (params?.dateFrom) search.set("date_from", params.dateFrom);
   if (params?.dateTo) search.set("date_to", params.dateTo);
   if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);
@@ -508,6 +550,11 @@ export async function fetchOneViewFacets(signal?: AbortSignal): Promise<OneViewF
 
 export async function fetchAlertMetrics(): Promise<AlertMetrics> {
   return fetchApi<AlertMetrics>("/oneview/dashboard-summary");
+}
+
+export async function fetchAttentionRequired(limit = 100): Promise<AttentionRequiredResponse> {
+  const safeLimit = Math.min(Math.max(Math.floor(limit), 1), 200);
+  return fetchApi<AttentionRequiredResponse>(`/oneview/attention-required?limit=${safeLimit}`);
 }
 
 export async function fetchOneViewHealth(): Promise<OneViewHealthResponse> {

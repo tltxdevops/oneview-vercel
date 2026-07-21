@@ -215,7 +215,7 @@ test("ONEVIEW_SNAPSHOT_MODE=false e LIVE_DB=true selecionam database em runtime"
   assert.equal(config.liveMode, "database");
 });
 
-test("domínio corporativo autoriza vários usuários e bloqueia externo antes do banco", async () => {
+test("sessão SSO válida autoriza leitura sem allowlist individual ou de domínio", async () => {
   const names = [
     "APP_SESSION_SECRET",
     "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
@@ -240,22 +240,12 @@ test("domínio corporativo autoriza vários usuários e bloqueia externo antes d
       logger: noLog,
     });
 
-    for (const email of ["ana@teletex.com.br", "carlos@TELETEX.COM.BR", "noc@teletex.com.br"]) {
+    for (const email of ["ana@teletex.com.br", "guilherme.franco@teletex.com", "externo@example.com"]) {
       const res = response();
       await handler(authenticatedSessionRequest(email), res);
       assert.equal(res.statusCode, 200);
       assert.equal(res.body.data_source, "database");
     }
-
-    let deniedReason = "";
-    console.warn = (line) => { deniedReason = String(line); };
-    const external = response();
-    await handler(authenticatedSessionRequest("externo@example.com"), external);
-    assert.equal(external.statusCode, 403);
-    assert.deepEqual(external.body, { error: "domain_not_allowed" });
-    assert.match(deniedReason, /oneview_auth_denied/);
-    assert.match(deniedReason, /domain_not_allowed/);
-    assert.doesNotMatch(deniedReason, /externo|@|secret|token/i);
     assert.equal(databaseCalls, 3);
   } finally {
     console.warn = previousWarn;
@@ -266,7 +256,7 @@ test("domínio corporativo autoriza vários usuários e bloqueia externo antes d
   }
 });
 
-test("política de acesso vazia não libera usuário autenticado", async () => {
+test("política de e-mail vazia não bloqueia sessão SSO válida", async () => {
   const names = ["APP_SESSION_SECRET", "ONEVIEW_ALLOWED_EMAIL_DOMAINS", "ONEVIEW_ALLOWED_EMAILS"];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const previousWarn = console.warn;
@@ -277,10 +267,9 @@ test("política de acesso vazia não libera usuário autenticado", async () => {
     process.env.ONEVIEW_ALLOWED_EMAILS = "";
     console.warn = () => undefined;
     const res = response();
-    const auth = await requireAuth(authenticatedSessionRequest("sem-politica@teletex.com.br"), res, { role: "viewer" });
-    assert.equal(auth, null);
-    assert.equal(res.statusCode, 403);
-    assert.deepEqual(res.body, { error: "email_not_allowed" });
+    const auth = await requireAuth(authenticatedSessionRequest("sem-politica@teletex.com"), res, { role: "viewer" });
+    assert.equal(auth?.email, "sem-politica@teletex.com");
+    assert.equal(res.statusCode, 200);
   } finally {
     console.warn = previousWarn;
     for (const name of names) {
@@ -290,7 +279,7 @@ test("política de acesso vazia não libera usuário autenticado", async () => {
   }
 });
 
-test("leitura aceita dominio, operadores e administradores sem credencial de acoes", async () => {
+test("leitura depende somente da sessão SSO; ações ainda exigem role", async () => {
   const names = [
     "APP_SESSION_SECRET",
     "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
@@ -349,9 +338,9 @@ test("leitura aceita dominio, operadores e administradores sem credencial de aco
 
     const external = response();
     await handler(authenticatedSessionRequest("externo@example.invalid", { origin: "https://oneview.teletexdev.com.br" }), external);
-    assert.equal(external.statusCode, 403);
-    assert.deepEqual(external.body, { error: "domain_not_allowed" });
-    assert.equal(databaseCalls, 3);
+    assert.equal(external.statusCode, 200);
+    assert.equal(external.body.data_source, "database");
+    assert.equal(databaseCalls, 4);
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name];

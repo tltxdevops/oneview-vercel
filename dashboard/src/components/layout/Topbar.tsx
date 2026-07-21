@@ -15,7 +15,7 @@ export function Topbar({ clientSection, rightSection, className }: TopbarProps) 
   return (
     <section
       className={cn(
-        "sticky top-0 z-30 flex min-h-[80px] flex-col justify-center border-b border-border/60 bg-white/95 px-5 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/80",
+        "sticky top-0 z-30 flex min-h-[80px] flex-col justify-center border-b border-border/60 bg-background/95 px-5 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80",
         className
       )}
     >

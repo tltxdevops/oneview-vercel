@@ -137,6 +137,24 @@ All colors MUST be HSL.
 }
 
 @layer utilities {
+  /* Compatibilidade dos módulos legados com superfícies que ainda usam branco fixo. */
+  .dark .bg-white {
+    background-color: hsl(var(--card));
+  }
+
+  .dark .hover\:bg-white:hover {
+    background-color: hsl(var(--card));
+  }
+
+  .dark .text-black {
+    color: hsl(var(--foreground));
+  }
+
+  .dark .border-black,
+  .dark .hover\:border-black:hover {
+    border-color: hsl(var(--foreground));
+  }
+
   .animate-fade-in {
     animation: fade-in 0.15s ease-out;
   }

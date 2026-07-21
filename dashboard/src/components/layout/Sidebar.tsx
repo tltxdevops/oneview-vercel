@@ -1,4 +1,4 @@
-import { Home, Bell, BarChart3, Ticket, FileText, Settings, ShieldCheck, Database, Monitor } from "lucide-react";
+import { Home, Bell, BarChart3, Ticket, FileText, Settings, ShieldCheck, Database, Monitor, Moon, Sun } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -19,19 +19,23 @@ const navigation = [
 ];
 
 export function Sidebar() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof window === "undefined") return "light";
+    const storedTheme = window.localStorage.getItem("oneview-theme");
+    if (storedTheme === "light" || storedTheme === "dark") return storedTheme;
+    return "light";
+  });
   const { user, logout } = useAuth();
   const displayUser = user;
 
   useEffect(() => {
-    const isDark = document.documentElement.classList.contains("dark");
-    setTheme(isDark ? "dark" : "light");
-  }, []);
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem("oneview-theme", theme);
+  }, [theme]);
 
   const toggleTheme = () => {
-    const newTheme = theme === "light" ? "dark" : "light";
-    setTheme(newTheme);
-    document.documentElement.classList.toggle("dark");
+    setTheme((current) => current === "light" ? "dark" : "light");
   };
 
   const initials = useMemo(() => {
@@ -66,7 +70,7 @@ export function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-6 flex flex-col gap-4 items-start overflow-y-auto overflow-x-hidden px-4">
+      <nav className="min-h-0 flex-1 py-4 flex flex-col gap-2 items-start overflow-y-auto overflow-x-hidden px-4">
         {navigation.map((item) => {
           const Icon = item.icon;
           return (
@@ -121,10 +125,30 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Theme toggle moved to Settings page */}
+      {/* Theme */}
+      <div className="shrink-0 p-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="group/theme relative flex h-10 w-10 items-center justify-center rounded-full text-white/70 transition-colors hover:bg-sidebar-accent hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+              aria-label={theme === "light" ? "Ativar modo escuro" : "Ativar modo claro"}
+            >
+              {theme === "light" ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+              <span className="absolute left-14 hidden whitespace-nowrap text-sm text-white/80 group-hover:inline-block">
+                {theme === "light" ? "Modo escuro" : "Modo claro"}
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="group-hover:hidden">
+            <p>{theme === "light" ? "Ativar modo escuro" : "Ativar modo claro"}</p>
+          </TooltipContent>
+        </Tooltip>
+      </div>
 
       {/* User */}
-      <div className="p-3 border-t border-sidebar-border">
+      <div className="p-3">
         <div className="flex items-center gap-3 justify-start pl-1">
           <Tooltip>
               <TooltipTrigger asChild>

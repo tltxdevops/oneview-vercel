@@ -106,7 +106,7 @@ export function createAckRequestHandler({
 
     const body = bodyValue(req);
     const comment = safeComment(body.comment);
-    if (comment === null) return sendJson(res, 400, { error: "invalid_comment" });
+    if (comment === null || !comment) return sendJson(res, 400, { error: "invalid_comment" });
 
     const actorId = String(auth.id || "").slice(0, 120);
     const actorName = String(auth.name || auth.email || "Usuário SSO").slice(0, 120);
@@ -136,23 +136,22 @@ export function createAckRequestHandler({
 
         const datasource = String(alert.datasource_name || "").trim().toLowerCase();
         if (!config.allowedDatasources.has(datasource)) return { error: "datasource_not_allowed", status: 403 };
-        if (alert.acknowledged_source || alert.acknowledged_internal) {
-          return { error: "alert_already_acknowledged", status: 409 };
-        }
 
         const existing = await client.query(
-          `select aggregate_id
-             from integration_outbox
-            where idempotency_key = $1 and action_type = 'ack_request'
+          `select id
+             from alert_acknowledgements
+            where idempotency_key = $1 and acknowledgement_type = 'internal_acknowledgement'
             limit 1`,
           [key],
         );
         if (existing.rows[0]) {
-          return { acknowledgementId: existing.rows[0].aggregate_id, idempotent: true };
+          return { acknowledgementId: existing.rows[0].id, idempotent: true };
+        }
+        if (alert.acknowledged_internal) {
+          return { error: "alert_already_recognized", status: 409 };
         }
 
         const acknowledgementId = idFactory();
-        const outboxId = idFactory();
         const auditId = idFactory();
         const createdAt = now();
 
@@ -161,30 +160,24 @@ export function createAckRequestHandler({
              id, alert_id, data_source_id, acknowledgement_type, status,
              source_event_id, message, operator_name, correlation_id, request_id,
              actor_type, actor_id, idempotency_key, attempts, requested_at, created_at, updated_at
-           ) values ($1,$2,$3,'external_request','pending',$4,$5,$6,$7,$8,'sso_user',$9,$10,0,$11,$11,$11)`,
-          [acknowledgementId, alert.id, alert.data_source_id, alert.source_event_id, comment || null,
+           ) values ($1,$2,$3,'internal_acknowledgement','recorded',$4,$5,$6,$7,$8,'sso_user',$9,$10,0,$11,$11,$11)`,
+          [acknowledgementId, alert.id, alert.data_source_id, alert.source_event_id, comment,
             actorName, currentCorrelationId, currentRequestId, actorId, key, createdAt],
         );
 
         await client.query(
-          `insert into integration_outbox (
-             id, aggregate_type, aggregate_id, data_source_id, alert_id, action_type,
-             status, priority, payload, attempts, max_attempts, available_at, next_attempt_at,
-             idempotency_key, correlation_id, request_id, created_by, created_at, updated_at
-           ) values ($1,'alert_acknowledgement',$2,$3,$4,'ack_request','pending',20,$5,0,3,$6,$6,$7,$8,$9,$10,$6,$6)`,
-          [outboxId, acknowledgementId, alert.data_source_id, alert.id,
-            JSON.stringify({ acknowledgement_id: acknowledgementId, alert_id: alert.id, source_event_id: alert.source_event_id }),
-            createdAt, key, currentCorrelationId, currentRequestId, actorId],
+          "update alerts set acknowledged_internal = true where id = $1",
+          [alert.id],
         );
 
         await client.query(
           `insert into audit_logs (
              id, actor_name, actor_type, actor_id, action, action_source, entity_type, entity_id,
              data_source_id, alert_id, correlation_id, request_id, after_data, metadata, created_at
-           ) values ($1,$2,'sso_user',$3,'alert_ack_requested','vercel_api','alert',$4,$5,$4,$6,$7,$8,$9,$10)`,
+           ) values ($1,$2,'sso_user',$3,'alert_internal_acknowledged','vercel_api','alert',$4,$5,$4,$6,$7,$8,$9,$10)`,
           [auditId, actorName, actorId, alert.id, alert.data_source_id, currentCorrelationId, currentRequestId,
-            JSON.stringify({ status: "pending" }),
-            JSON.stringify({ acknowledgement_id: acknowledgementId, outbox_id: outboxId, execution_enabled: false }),
+            JSON.stringify({ status: "recorded" }),
+            JSON.stringify({ acknowledgement_id: acknowledgementId, acknowledgement_type: "internal_acknowledgement", actor_email: String(auth.email || "").slice(0, 254), execution_enabled: false }),
             createdAt],
         );
 
@@ -195,16 +188,17 @@ export function createAckRequestHandler({
       logger({
         event: "oneview_ack_request",
         route: "/api/oneview/alerts/:id/ack-request",
-        status: "pending",
+        status: "recorded",
         idempotent: result.idempotent,
         duration_ms: Date.now() - startedAt,
       });
       return sendJson(res, 202, {
         request_id: result.acknowledgementId,
-        status: "pending",
+        status: "recorded",
         idempotent: result.idempotent,
         execution_enabled: false,
-        message: "Solicitação registrada. A execução aguarda processamento operacional.",
+        actor_name: actorName,
+        message: "Reconhecimento interno registrado no OneView. Nenhuma ação foi enviada ao Zabbix.",
       });
     } catch (error) {
       logger({
@@ -220,4 +214,3 @@ export function createAckRequestHandler({
 }
 
 export default createAckRequestHandler();
-

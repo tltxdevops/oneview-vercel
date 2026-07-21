@@ -1,470 +1,109 @@
-import { useMemo, useState, useLayoutEffect, useRef, useCallback, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { ClientSelect } from "@/components/certificados/ClientSelect";
-import { AlertsList } from "@/components/alerts/AlertsList";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Activity, AlertTriangle, Database, RefreshCcw, Server, Wifi, Shield, Filter, Loader2 } from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Checkbox } from "@/components/ui/checkbox";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatDistanceToNow } from "date-fns";
+import { ptBR } from "date-fns/locale";
 import { Link } from "react-router-dom";
 import {
-  DataSource,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Clock3,
+  Database,
+  Eye,
+  HeartPulse,
+  Loader2,
+  RefreshCcw,
+  Server,
+  ShieldAlert,
+  Siren,
+  UserCheck,
+  WifiOff,
+} from "lucide-react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { ClientSelect } from "@/components/certificados/ClientSelect";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+import {
   AlertMetrics,
+  AttentionRequiredResponse,
+  DataSource,
+  OneViewAlert,
   OneViewDataSourceKind,
+  OneViewFacetsResponse,
   OneViewHealthResponse,
-  OperationsHealthResponse,
   OneViewSyncLog,
-  dataSourcesToClients,
-  fetchAlerts,
+  OperationsHealthResponse,
   fetchAlertMetrics,
+  fetchAlerts,
+  fetchAttentionRequired,
   fetchDataSourcesWithMeta,
+  fetchOneViewFacets,
   fetchOneViewHealth,
   fetchOperationsHealth,
   fetchSyncLogs,
-  oneViewAlertToLegacyAlert,
+  formatDurationSeconds,
 } from "@/lib/oneview-api";
-import { Alert, Severity } from "@/types";
+import { Client } from "@/types";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
 
 const SUMMARY_REFRESH_MS = 60_000;
-const ALERTS_REFRESH_MS = 120_000;
-const AUTOMATIC_ALERT_PAGE_SIZE = 100;
-const SEVERITY_PRIORITY: Record<string, number> = {
-  Critical: 1,
-  High: 2,
-  Average: 3,
-  Low: 4,
-};
+const RECENT_REFRESH_MS = 120_000;
+const RECENT_LIMIT = 8;
 
-function formatMetricDuration(seconds: number | undefined): string {
-  const value = Math.max(Math.floor(seconds || 0), 0);
-  if (value < 60) return `${value}s`;
-  if (value < 3600) return `${Math.floor(value / 60)}m`;
-  if (value < 86400) return `${Math.floor(value / 3600)}h`;
-  return `${Math.floor(value / 86400)}d`;
+type ResourceMeta = { source?: OneViewDataSourceKind; checkedAt?: string };
+
+const customerLogos: Array<{ aliases: string[]; src: string }> = [
+  { aliases: ["castrolanda"], src: "/tltx/clientes/logos/castrolanda-logo.png" },
+  { aliases: ["fps"], src: "/tltx/clientes/logos/fps-logo.png" },
+  { aliases: ["fraport"], src: "/tltx/clientes/logos/fraport-logo.png" },
+  { aliases: ["havan"], src: "/tltx/clientes/logos/havan-logo.png" },
+  { aliases: ["osasco"], src: "/tltx/clientes/logos/osasco-logo.png" },
+  { aliases: ["teletex"], src: "/tltx/clientes/logos/teletex-logo.png" },
+  { aliases: ["tuper"], src: "/tltx/clientes/logos/tuper-logo.png" },
+  { aliases: ["zurich"], src: "/tltx/clientes/logos/zurich-logo.png" },
+];
+
+function normalized(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-function formatDataSourceName(value: string): string {
-  return value
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((word) => word.length <= 3 ? word.toUpperCase() : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`)
-    .join(" ");
+function logoForCustomer(key: string, name: string) {
+  const value = normalized(`${key} ${name}`);
+  return customerLogos.find((item) => item.aliases.some((alias) => value.includes(alias)))?.src ?? "";
 }
 
-function sourceHealthLabel(source: DataSource, operational?: OperationsHealthResponse["items"][number]): string {
-  const status = operational?.operational_status;
-  if (status === "disabled" || !source.sync_enabled) return "Sem dados disponíveis";
-  if (status === "error" || source.status === "error" || source.last_sync_status === "failed") {
-    return "Dados podem estar desatualizados";
-  }
-  if (status === "stale") return "Dados podem estar desatualizados";
-  if (status === "warning") return "Fonte com sincronização incompleta.";
-  if (status === "healthy" || (source.status === "active" && source.last_sync_status === "success")) {
-    return "Fonte operacional";
-  }
-  return "Saúde da fonte em validação.";
+function safeCustomerName(value?: string | null) {
+  const name = String(value || "").trim();
+  return name && normalized(name) !== "cliente nao classificado" ? name : "Cliente não identificado";
 }
 
-export default function Index() {
-  const [dataSources, setDataSources] = useState<DataSource[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
-  const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
-  const [operationsHealth, setOperationsHealth] = useState<OperationsHealthResponse | null>(null);
-  const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
-  const [sourcesMeta, setSourcesMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
-  const [alertsMeta, setAlertsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
-  const [metricsMeta, setMetricsMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
-  const [healthMeta, setHealthMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
-  const [operationsHealthMeta, setOperationsHealthMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
-  const [syncMeta, setSyncMeta] = useState<{ source?: OneViewDataSourceKind; checkedAt?: string }>({});
-  const [selectedClient, setSelectedClient] = useState<string | string[]>("all");
-  const [isLoading, setIsLoading] = useState(false);
-  const pendingLoadsRef = useRef(0);
-  const alertsContainerRef = useRef<HTMLDivElement | null>(null);
-  const [visibleAlertCount, setVisibleAlertCount] = useState<number | null>(null);
-  const healthRowRef = useRef<HTMLDivElement | null>(null);
-  const sourceSummaryRef = useRef<HTMLDivElement | null>(null);
+function formatDateTime(value?: string | null) {
+  if (!value) return "Aguardando consulta";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Aguardando consulta" : date.toLocaleString("pt-BR");
+}
 
-  const clients = useMemo(() => dataSourcesToClients(dataSources), [dataSources]);
+function relativeTime(value?: string | null) {
+  if (!value) return "horário indisponível";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "horário indisponível"
+    : formatDistanceToNow(date, { addSuffix: true, locale: ptBR });
+}
 
-  const beginLoad = useCallback(() => {
-    pendingLoadsRef.current += 1;
-    setIsLoading(true);
-  }, []);
+function severityLabel(value: string) {
+  if (value === "disaster") return "Crítico";
+  if (value === "high") return "Alto";
+  if (value === "average") return "Médio";
+  return "Baixo";
+}
 
-  const endLoad = useCallback(() => {
-    pendingLoadsRef.current = Math.max(pendingLoadsRef.current - 1, 0);
-    setIsLoading(pendingLoadsRef.current > 0);
-  }, []);
-
-  const loadSummaryAndSources = useCallback(async () => {
-    beginLoad();
-    try {
-      const [healthResponse, operationsHealthResponse, sourcesResponse, metricsResponse, syncResponse] = await Promise.all([
-        fetchOneViewHealth(),
-        fetchOperationsHealth(),
-        fetchDataSourcesWithMeta(),
-        fetchAlertMetrics(),
-        fetchSyncLogs(8),
-      ]);
-      setHealth(healthResponse);
-      setHealthMeta({ source: healthResponse.data_source, checkedAt: healthResponse.checked_at });
-      setOperationsHealth(operationsHealthResponse);
-      setOperationsHealthMeta({ source: operationsHealthResponse.data_source, checkedAt: operationsHealthResponse.checked_at });
-      setDataSources(sourcesResponse.items);
-      setSourcesMeta({ source: sourcesResponse.data_source, checkedAt: sourcesResponse.checked_at });
-      setMetrics(metricsResponse);
-      setMetricsMeta({ source: metricsResponse.data_source, checkedAt: metricsResponse.checked_at });
-      setSyncLogs(syncResponse.items);
-      setSyncMeta({ source: syncResponse.data_source, checkedAt: syncResponse.checked_at });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Erro ao carregar dados reais";
-      toast.error(message);
-    } finally {
-      endLoad();
-    }
-  }, [beginLoad, endLoad]);
-
-  const loadAlerts = useCallback(async () => {
-    beginLoad();
-    try {
-      const alertsResponse = await fetchAlerts({ page: 1, pageSize: AUTOMATIC_ALERT_PAGE_SIZE, status: "active" });
-      setAlerts(alertsResponse.items.map(oneViewAlertToLegacyAlert));
-      setAlertsMeta({ source: alertsResponse.data_source, checkedAt: alertsResponse.checked_at });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Erro ao carregar alertas";
-      toast.error(message);
-    } finally {
-      endLoad();
-    }
-  }, [beginLoad, endLoad]);
-
-  const loadData = useCallback(async () => {
-    await Promise.all([loadSummaryAndSources(), loadAlerts()]);
-  }, [loadAlerts, loadSummaryAndSources]);
-
-  useEffect(() => {
-    const summaryTimer = window.setInterval(() => void loadSummaryAndSources(), SUMMARY_REFRESH_MS);
-    const alertsTimer = window.setInterval(() => void loadAlerts(), ALERTS_REFRESH_MS);
-
-    return () => {
-      window.clearInterval(summaryTimer);
-      window.clearInterval(alertsTimer);
-    };
-  }, [loadAlerts, loadSummaryAndSources]);
-
-  const currentDataSource = effectiveDataSource(
-    healthMeta.source,
-    operationsHealthMeta.source,
-    sourcesMeta.source,
-    alertsMeta.source,
-    metricsMeta.source,
-    syncMeta.source,
-  );
-  const lastCheckedAt = latestCheckedAt(
-    healthMeta.checkedAt,
-    operationsHealthMeta.checkedAt,
-    sourcesMeta.checkedAt,
-    alertsMeta.checkedAt,
-    metricsMeta.checkedAt,
-    syncMeta.checkedAt,
-  );
-
-  const filteredAlerts = useMemo(() => {
-    if (selectedClient === "all" || (Array.isArray(selectedClient) && selectedClient.includes("all"))) {
-      return alerts;
-    }
-
-    const sel = Array.isArray(selectedClient) ? selectedClient : [selectedClient];
-    return alerts.filter((alert) => alert.clientId && sel.includes(alert.clientId));
-  }, [alerts, selectedClient]);
-
-  const selectedClientName = useMemo(() => {
-    if (selectedClient === "all") return "Todos os clientes";
-    const sel = Array.isArray(selectedClient) ? selectedClient : [selectedClient];
-    const names = sel
-      .map((id) => clients.find((client) => client.id === id)?.name ?? id)
-      .filter(Boolean);
-    return names.length === 1 ? names[0] : `${names[0]} (+${names.length - 1})`;
-  }, [clients, selectedClient]);
-
-  const dashboardAlerts = useMemo(() => {
-    const nonResolved = filteredAlerts.filter((alert) => alert.status !== "Resolved");
-    return nonResolved.length > 0 ? nonResolved : filteredAlerts;
-  }, [filteredAlerts]);
-
-  const [visibleSeverities, setVisibleSeverities] = useState<Severity[]>(["Critical", "High", "Average"]);
-
-  const dashboardAlertsFiltered = useMemo(() => {
-    const filtered = dashboardAlerts.filter((alert) => visibleSeverities.includes(alert.severity));
-    return filtered.sort((a, b) => (SEVERITY_PRIORITY[a.severity] ?? 99) - (SEVERITY_PRIORITY[b.severity] ?? 99));
-  }, [dashboardAlerts, visibleSeverities]);
-
-  useLayoutEffect(() => {
-    if (typeof window === "undefined") return;
-    const container = alertsContainerRef.current;
-    if (!container) return;
-
-    setVisibleAlertCount(null);
-
-    let attempts = 0;
-    const maxAttempts = 5;
-    let frameId = 0;
-
-    const doMeasure = () => {
-      attempts += 1;
-      const list = container.querySelector("ul");
-      const firstItem = list?.querySelector("li");
-      const topbarEl = document.querySelector("section.sticky");
-      const topbarH = topbarEl ? topbarEl.getBoundingClientRect().height : 0;
-      const healthH = healthRowRef.current ? healthRowRef.current.getBoundingClientRect().height : 0;
-      const summaryH = sourceSummaryRef.current ? sourceSummaryRef.current.getBoundingClientRect().height : 0;
-      const available = Math.max(0, window.innerHeight - topbarH - healthH - summaryH - 48);
-      const itemHeight = firstItem?.getBoundingClientRect().height ?? 0;
-
-      if (list && firstItem && available > 0 && itemHeight > 0) {
-        const listStyles = window.getComputedStyle(list);
-        const gapValue = parseFloat(listStyles.rowGap || listStyles.gap || "0") || 0;
-        const maxByHeight = Math.floor((available - 4 + gapValue) / (itemHeight + gapValue));
-        const boundedCount = Math.max(1, Number.isFinite(maxByHeight) ? maxByHeight : 1);
-        setVisibleAlertCount(Math.min(dashboardAlertsFiltered.length, boundedCount));
-        return true;
-      }
-
-      if (attempts < maxAttempts) {
-        frameId = window.requestAnimationFrame(doMeasure);
-        return false;
-      }
-
-      setVisibleAlertCount((prev) => prev ?? Math.max(1, dashboardAlertsFiltered.length));
-      return true;
-    };
-
-    frameId = window.requestAnimationFrame(() => {
-      doMeasure();
-    });
-
-    return () => {
-      if (frameId) window.cancelAnimationFrame(frameId);
-    };
-  }, [dashboardAlertsFiltered.length]);
-
-  const alertsToRender = useMemo(() => {
-    if (visibleAlertCount === null) return dashboardAlertsFiltered;
-    return dashboardAlertsFiltered.slice(0, visibleAlertCount);
-  }, [dashboardAlertsFiltered, visibleAlertCount]);
-
-  const healthCards = useMemo(() => {
-    const scope = selectedClient === "all" ? "Geral" : selectedClientName;
-    const criticalCount = filteredAlerts.filter((alert) => alert.severity === "Critical").length;
-    const highCount = filteredAlerts.filter((alert) => alert.severity === "High").length;
-    const pendingCount = filteredAlerts.filter((alert) => alert.status === "Active").length;
-    const metricSeverity = metrics?.by_severity.reduce<Record<string, number>>((acc, item) => {
-      acc[item.severity] = item.count;
-      return acc;
-    }, {}) ?? {};
-    const activeTotal = selectedClient === "all" ? metrics?.active_total ?? pendingCount : pendingCount;
-    const disasterTotal = selectedClient === "all" ? metricSeverity.disaster ?? criticalCount : criticalCount;
-    const highTotal = selectedClient === "all" ? metricSeverity.high ?? highCount : highCount;
-    const sourceCount = dataSources.filter((source) => source.sync_enabled && source.status === "active").length;
-    const failedSources = dataSources.filter((source) => source.status === "error").length;
-    const totalAlerts = health?.counts.total_alerts ?? metrics?.alerts_total ?? activeTotal;
-
-    return [
-      { title: "Alertas sincronizados", status: totalAlerts.toLocaleString("pt-BR"), icon: <Wifi className="h-5 w-5 text-primary" /> },
-      { title: "Alertas carregados", status: alerts.length.toLocaleString("pt-BR"), icon: <Database className="h-5 w-5 text-primary" /> },
-      { title: "Alertas ativos", status: activeTotal.toLocaleString("pt-BR"), icon: <Activity className="h-5 w-5 text-primary" /> },
-      { title: "Críticos / Alta", status: (disasterTotal + highTotal).toLocaleString("pt-BR"), icon: <AlertTriangle className="h-5 w-5 text-primary" /> },
-      {
-        title: "Fontes de dados ativas",
-        status: `${sourceCount}/${dataSources.length}`,
-        icon: <RefreshCcw className="h-5 w-5 text-primary" />,
-      },
-      {
-        title: "Fontes de dados com erro",
-        status: String(failedSources),
-        icon: <Shield className="h-5 w-5 text-primary" />,
-      },
-      { title: "Dados atualizados", status: lastCheckedAt ? formatDateTime(lastCheckedAt) : "consultando...", icon: <Server className="h-5 w-5 text-primary" /> },
-    ].map((card) => ({ ...card, scope }));
-  }, [alerts.length, dataSources, filteredAlerts, health, lastCheckedAt, metrics, selectedClient, selectedClientName]);
-
-  const alertCountByDataSource = useMemo(() => {
-    return alerts.reduce<Record<string, number>>((acc, alert) => {
-      if (!alert.clientId) return acc;
-      acc[alert.clientId] = (acc[alert.clientId] ?? 0) + 1;
-      return acc;
-    }, {});
-  }, [alerts]);
-
-  const internalSourceSummaries = useMemo(() => {
-    const operationsByName = new Map(
-      (operationsHealth?.items ?? []).map((source) => [source.name.trim().toLowerCase(), source]),
-    );
-    return dataSources
-      .filter((source) => source.environment === "internal")
-      .sort((a, b) => a.display_order - b.display_order || a.name.localeCompare(b.name))
-      .map((source) => ({
-        ...source,
-        alertCount: source.alerts_count ?? alertCountByDataSource[source.id] ?? 0,
-        syncLabel: sourceHealthLabel(source, operationsByName.get(source.name.trim().toLowerCase())),
-      }));
-  }, [alertCountByDataSource, dataSources, operationsHealth?.items]);
-
-  return (
-    <AppLayout
-      clientSelect={
-        <ClientSelect
-          clients={clients}
-          selectedClient={selectedClient}
-          onClientChange={setSelectedClient}
-        />
-      }
-      onRefresh={loadData}
-      enableAutoRefresh={false}
-      showRefreshMeta={false}
-      dataSource={currentDataSource}
-      checkedAt={lastCheckedAt}
-    >
-      <div className="flex flex-col gap-6">
-        <section
-          ref={healthRowRef}
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-7"
-        >
-          {healthCards.map((card) => (
-            <Card key={card.title} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground">{card.title}</h3>
-                  <p className="text-sm text-muted-foreground/90">{card.status}</p>
-                </div>
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">{card.icon}</div>
-              </div>
-            </Card>
-          ))}
-        </section>
-
-        <Card ref={sourceSummaryRef} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-foreground">Clientes Zabbix internos</h2>
-              <p className="text-sm text-muted-foreground">
-                {`${metrics?.active_total ?? alerts.length} alertas ativos no OneView. Normalização média: ${formatMetricDuration(metrics?.avg_normalization_time_seconds)}.`}
-              </p>
-            </div>
-            <Button variant="outline" size="sm" onClick={loadData} disabled={isLoading}>
-              {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Recarregar visualização
-            </Button>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {internalSourceSummaries.map((source) => (
-              <div
-                key={source.id}
-                className="min-w-[130px] rounded-md border border-border/70 bg-muted/30 px-3 py-2"
-                title={source.last_sync_error || undefined}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="truncate text-sm font-medium text-foreground">{formatDataSourceName(source.name)}</span>
-                  <span className="text-base font-semibold text-primary">{source.alertCount}</span>
-                </div>
-                <p className="truncate text-xs text-muted-foreground">{source.syncLabel}</p>
-              </div>
-            ))}
-          </div>
-          {syncLogs.length > 0 ? (
-            <div className="mt-4 border-t border-border/60 pt-4">
-              <h3 className="mb-2 text-sm font-semibold text-foreground">Últimas sincronizações</h3>
-              <div className="grid gap-2 lg:grid-cols-2">
-                {syncLogs.map((log) => (
-                  <div key={log.id} className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold text-foreground">{formatDataSourceName(log.datasource)}</span>
-                      <span className={log.status === "success" ? "text-emerald-700" : "text-red-700"}>{log.status === "success" ? "sucesso" : log.status === "failed" ? "falha" : log.status}</span>
-                      {log.fetched !== null ? <span>obtidos={log.fetched}</span> : null}
-                      {log.upserted !== null ? <span>gravados={log.upserted}</span> : null}
-                    </div>
-                    <p className="mt-1 text-muted-foreground">{log.detail}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </Card>
-
-        <div className="flex flex-col gap-6 lg:flex-row lg:min-h-[360px]">
-          <div className="flex w-full flex-col gap-6 lg:w-2/3 lg:min-h-0">
-            <div className="flex min-h-0 flex-1 flex-col rounded-[10px] p-4">
-              <header className="mb-4 flex items-center justify-between">
-                <h2 className="text-xl font-semibold">Alertas</h2>
-                <div className="flex items-center gap-2">
-                  {isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                  <Button variant="ghost" size="sm" asChild>
-                    <Link to="/alertas" className="text-sm font-medium">Ver todos</Link>
-                  </Button>
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" size="sm" className="flex items-center gap-2">
-                        <Filter className="h-4 w-4" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent align="end" className="w-56">
-                      <div className="flex flex-col gap-2">
-                        {(["Critical", "High", "Average", "Low"] as const).map((severity) => (
-                          <label key={severity} className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <Checkbox
-                                checked={visibleSeverities.includes(severity)}
-                                onCheckedChange={(checked) => {
-                                  if (checked) {
-                                    setVisibleSeverities((prev) => Array.from(new Set([...prev, severity])));
-                                  } else {
-                                    setVisibleSeverities((prev) => prev.filter((item) => item !== severity));
-                                  }
-                                }}
-                              />
-                              <span className="text-sm">{{ Critical: "Crítico", High: "Alto", Average: "Médio", Low: "Baixo" }[severity]}</span>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                </div>
-              </header>
-              <div ref={alertsContainerRef} className="min-h-0 flex-1">
-                <AlertsList
-                  alerts={visibleAlertCount === null ? dashboardAlertsFiltered.slice(0, 0) : alertsToRender}
-                  sampleNeeded={visibleAlertCount === null}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="hidden items-center lg:flex"><div className="h-full w-px rounded-full bg-border/60" aria-hidden /></div>
-
-          <div className="flex w-full flex-col gap-6 lg:w-1/3 lg:min-h-0">
-            <div className="flex min-h-0 flex-1 flex-col rounded-[10px] p-4">
-              <header className="flex items-center justify-between pb-4">
-                <h2 className="text-xl font-semibold">Chamados</h2>
-                <Button variant="ghost" size="sm" disabled>
-                  Ver todos
-                </Button>
-              </header>
-              <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
-                <p className="font-medium text-foreground">Integração de chamados não disponível na visão atual.</p>
-                <p>Este painel consolida os alertas operacionais persistidos pelo OneView.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </AppLayout>
-  );
+function severityTone(value: string) {
+  if (value === "disaster") return "border-red-500 bg-red-100 text-red-950";
+  if (value === "high") return "border-red-200 bg-red-50 text-red-700";
+  if (value === "average") return "border-amber-200 bg-amber-50 text-amber-700";
+  return "border-emerald-200 bg-emerald-50 text-emerald-700";
 }
 
 function effectiveDataSource(...sources: Array<OneViewDataSourceKind | undefined>): OneViewDataSourceKind | null {
@@ -473,15 +112,324 @@ function effectiveDataSource(...sources: Array<OneViewDataSourceKind | undefined
   return null;
 }
 
-function latestCheckedAt(...values: Array<string | undefined>): string | null {
-  return values
-    .filter((value): value is string => Boolean(value))
+function latestCheckedAt(...values: Array<string | undefined>) {
+  return values.filter((value): value is string => Boolean(value))
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
 }
 
-function formatDateTime(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "data indisponível"
-    : date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+export default function Index() {
+  const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
+  const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
+  const [operations, setOperations] = useState<OperationsHealthResponse | null>(null);
+  const [attention, setAttention] = useState<AttentionRequiredResponse | null>(null);
+  const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
+  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
+  const [recentAlerts, setRecentAlerts] = useState<OneViewAlert[]>([]);
+  const [selectedClient, setSelectedClient] = useState<string | string[]>("all");
+  const [isSummaryLoading, setIsSummaryLoading] = useState(true);
+  const [isRecentLoading, setIsRecentLoading] = useState(true);
+  const [metas, setMetas] = useState<ResourceMeta[]>([]);
+  const [recentMeta, setRecentMeta] = useState<ResourceMeta>({});
+  const summaryInFlight = useRef<Promise<void> | null>(null);
+  const recentRequest = useRef<AbortController | null>(null);
+
+  const selectedCustomerKeys = useMemo(() => {
+    const values = Array.isArray(selectedClient) ? selectedClient : [selectedClient];
+    return values.filter((value) => value !== "all");
+  }, [selectedClient]);
+
+  const clients = useMemo<Client[]>(() => [
+    { id: "all", name: "TODOS", logo: "" },
+    ...(facets?.customers ?? []).map((customer) => {
+      const name = customer.key === "unclassified" ? "Não identificado" : safeCustomerName(customer.name);
+      return { id: customer.key, name, logo: logoForCustomer(customer.key, name) };
+    }),
+  ], [facets?.customers]);
+
+  const selectedClientLabel = useMemo(() => {
+    if (!selectedCustomerKeys.length) return "Todos os clientes";
+    const names = selectedCustomerKeys.map((key) => clients.find((client) => client.id === key)?.name ?? key);
+    return names.length === 1 ? names[0] : `${names.length} clientes`;
+  }, [clients, selectedCustomerKeys]);
+
+  const loadSummary = useCallback(() => {
+    if (summaryInFlight.current) return summaryInFlight.current;
+    setIsSummaryLoading(true);
+    const request = (async () => {
+      const [healthResponse, operationsResponse, sourcesResponse, metricsResponse, syncResponse, facetsResponse, attentionResponse] = await Promise.all([
+        fetchOneViewHealth(),
+        fetchOperationsHealth(),
+        fetchDataSourcesWithMeta(),
+        fetchAlertMetrics(),
+        fetchSyncLogs(20),
+        fetchOneViewFacets(),
+        fetchAttentionRequired(100),
+      ]);
+      setHealth(healthResponse);
+      setOperations(operationsResponse);
+      setDataSources(sourcesResponse.items);
+      setMetrics(metricsResponse);
+      setSyncLogs(syncResponse.items);
+      setFacets(facetsResponse);
+      setAttention(attentionResponse);
+      setMetas([
+        { source: healthResponse.data_source, checkedAt: healthResponse.checked_at },
+        { source: operationsResponse.data_source, checkedAt: operationsResponse.checked_at },
+        { source: sourcesResponse.data_source, checkedAt: sourcesResponse.checked_at },
+        { source: metricsResponse.data_source, checkedAt: metricsResponse.checked_at },
+        { source: syncResponse.data_source, checkedAt: syncResponse.checked_at },
+        { source: facetsResponse.data_source, checkedAt: facetsResponse.checked_at },
+        { source: attentionResponse.data_source, checkedAt: attentionResponse.checked_at },
+      ]);
+    })().catch((error) => {
+      toast.error(error instanceof Error ? error.message : "Não foi possível atualizar a visão operacional.");
+    }).finally(() => {
+      setIsSummaryLoading(false);
+      summaryInFlight.current = null;
+    });
+    summaryInFlight.current = request;
+    return request;
+  }, []);
+
+  const loadRecent = useCallback(async () => {
+    recentRequest.current?.abort();
+    const controller = new AbortController();
+    recentRequest.current = controller;
+    setIsRecentLoading(true);
+    try {
+      const response = await fetchAlerts({
+        page: 1,
+        pageSize: RECENT_LIMIT,
+        status: "active",
+        customers: selectedCustomerKeys,
+        severities: ["disaster", "high"],
+        sort: "first_seen_at",
+        order: "desc",
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) {
+        setRecentAlerts(response.items);
+        setRecentMeta({ source: response.data_source, checkedAt: response.checked_at });
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : "Não foi possível carregar alertas recentes.");
+    } finally {
+      if (!controller.signal.aborted) setIsRecentLoading(false);
+    }
+  }, [selectedCustomerKeys]);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadSummary(), loadRecent()]);
+  }, [loadRecent, loadSummary]);
+
+  useEffect(() => { void loadSummary(); }, [loadSummary]);
+  useEffect(() => {
+    void loadRecent();
+    return () => recentRequest.current?.abort();
+  }, [loadRecent]);
+  useEffect(() => {
+    const summaryTimer = window.setInterval(() => { if (!document.hidden) void loadSummary(); }, SUMMARY_REFRESH_MS);
+    const recentTimer = window.setInterval(() => { if (!document.hidden) void loadRecent(); }, RECENT_REFRESH_MS);
+    return () => {
+      window.clearInterval(summaryTimer);
+      window.clearInterval(recentTimer);
+    };
+  }, [loadRecent, loadSummary]);
+
+  const severityCounts = Object.fromEntries((metrics?.by_severity ?? []).map((item) => [item.severity, item.count]));
+  const criticalHigh = (severityCounts.disaster ?? 0) + (severityCounts.high ?? 0);
+  const operationalSources = operations?.summary.healthy ?? 0;
+  const errorSources = (operations?.summary.error ?? 0) + (operations?.summary.stale ?? 0);
+  const lastCheckedAt = latestCheckedAt(...metas.map((meta) => meta.checkedAt), recentMeta.checkedAt);
+  const currentDataSource = effectiveDataSource(...metas.map((meta) => meta.source), recentMeta.source);
+  const staleMinutes = health?.thresholds?.alert_stale_minutes ?? 15;
+  const operationsBySource = new Map((operations?.items ?? []).map((item) => [item.name.toLowerCase(), item]));
+
+  const operationalCards = [
+    { label: "Alertas ativos", value: metrics?.active_total ?? health?.counts.active_alerts ?? 0, icon: Activity, tone: "bg-amber-100 text-amber-700" },
+    { label: "Críticos / Altos", value: criticalHigh, icon: ShieldAlert, tone: "bg-red-100 text-red-800" },
+    { label: "Não reconhecidos na origem", value: metrics?.unacknowledged_total ?? 0, icon: AlertTriangle, tone: "bg-yellow-100 text-yellow-700" },
+    { label: "Resolvidos hoje", value: metrics?.resolved_today ?? 0, icon: CheckCircle2, tone: "bg-emerald-100 text-emerald-700" },
+    { label: "Atenção necessária", value: attention?.summary.total ?? 0, icon: Siren, tone: "bg-red-50 text-red-700" },
+  ];
+
+  const healthCards = [
+    { label: "Banco em tempo real", value: currentDataSource === "database" && health?.database_reachable ? "Operacional" : "Cópia de contingência", icon: Database },
+    { label: "Worker", value: operations?.worker.status === "healthy" ? "Operacional" : operations?.worker.status === "stale" ? "Sem atividade recente" : "Em validação", icon: Server },
+    { label: "Fontes operacionais", value: `${operationalSources}/${operations?.summary.total ?? dataSources.length}`, icon: HeartPulse },
+    { label: "Fontes com erro", value: String(errorSources), icon: WifiOff },
+    { label: "Última atualização", value: formatDateTime(lastCheckedAt), icon: RefreshCcw },
+  ];
+
+  const topCustomers = (facets?.customers ?? []).slice(0, 4);
+  const newestSyncBySource = [...syncLogs]
+    .sort((left, right) => Date.parse(right.created_at || "") - Date.parse(left.created_at || ""))
+    .filter((log, index, list) => list.findIndex((item) => item.datasource === log.datasource) === index);
+
+  const freshnessFor = (alert: OneViewAlert) => {
+    if (alert.resolved_at || alert.status_source === "resolved") return { label: "Resolvido", tone: "text-emerald-700" };
+    const source = operationsBySource.get((alert.datasource_name || "").toLowerCase());
+    if (source?.operational_status === "error" || source?.operational_status === "stale") {
+      return { label: "Dados possivelmente desatualizados", tone: "text-red-700" };
+    }
+    const lastSeen = Date.parse(alert.last_seen_at || "");
+    const minutes = Number.isNaN(lastSeen) ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor((Date.now() - lastSeen) / 60_000));
+    return minutes <= staleMinutes
+      ? { label: "Ativo e confirmado recentemente", tone: "text-emerald-700" }
+      : { label: "Ativo, mas sem confirmação recente", tone: "text-amber-700" };
+  };
+
+  return (
+    <AppLayout
+      clientSelect={<ClientSelect clients={clients} selectedClient={selectedClient} onClientChange={setSelectedClient} />}
+      onRefresh={refreshAll}
+      enableAutoRefresh={false}
+      showRefreshMeta={false}
+    >
+      <div className="space-y-4">
+        <header className="flex items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground">Visão operacional</h1>
+            <p className="text-sm text-muted-foreground">Estado atual do ambiente OneView</p>
+          </div>
+          {(isSummaryLoading || isRecentLoading) ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+        </header>
+
+        <section aria-label="Linha operacional" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {operationalCards.map(({ label, value, icon: Icon, tone }) => (
+            <Card key={label} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-2xl font-semibold">{Number(value).toLocaleString("pt-BR")}</p></div>
+                <span className={cn("flex h-9 w-9 items-center justify-center rounded-full", tone)}><Icon className="h-4 w-4" /></span>
+              </div>
+            </Card>
+          ))}
+        </section>
+
+        <section aria-label="Saúde operacional" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {healthCards.map(({ label, value, icon: Icon }) => (
+            <Card key={label} className="rounded-[10px] border border-border/70 bg-white px-4 py-3 shadow-sm">
+              <div className="flex items-center gap-3"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Icon className="h-4 w-4" /></span><div className="min-w-0"><p className="text-[11px] text-muted-foreground">{label}</p><p className="truncate text-sm font-semibold">{value}</p></div></div>
+            </Card>
+          ))}
+        </section>
+
+        <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+          <div className="text-center">
+            <h2 className="text-base font-semibold">Últimas sincronizações</h2>
+            <p className="text-xs text-muted-foreground">Situação mais recente por fonte</p>
+          </div>
+          <div className="mt-3 flex flex-wrap justify-center gap-2">
+            {newestSyncBySource.map((log) => (
+              <div key={log.id} className="w-full min-w-44 max-w-64 rounded-[10px] border border-border/70 bg-muted/15 px-3 py-2 sm:w-auto sm:flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-sm font-semibold">{log.datasource}</p>
+                  <Badge variant="outline" className={cn("text-[10px]", log.status === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700")}>
+                    {log.status === "success" ? "Sucesso" : "Falha"}
+                  </Badge>
+                </div>
+                <p className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground"><Clock3 className="h-3 w-3" />{relativeTime(log.created_at)}</p>
+              </div>
+            ))}
+            {!newestSyncBySource.length ? <p className="py-3 text-sm text-muted-foreground">Aguardando sincronizações.</p> : null}
+          </div>
+        </Card>
+
+        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.75fr)]">
+          <Card className="rounded-[10px] border border-border/70 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold">Alertas recentes</h2>
+                <p className="text-xs text-muted-foreground">Novos críticos e altos por primeira ocorrência · {selectedClientLabel}</p>
+              </div>
+              <Button variant="ghost" size="sm" asChild><Link to="/alertas">Ver todos</Link></Button>
+            </div>
+            <div className="mt-3 divide-y divide-border/60">
+              {recentAlerts.map((alert) => {
+                const freshness = freshnessFor(alert);
+                const ackAvailable = health?.capabilities?.acknowledgement === true
+                  && normalized(alert.datasource_name || "") === "teletex-http"
+                  && !alert.acknowledged_internal;
+                const alertHref = `/alertas?alert=${encodeURIComponent(alert.id)}`;
+                return (
+                  <div key={alert.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className={cn("text-[10px]", severityTone(alert.severity))}>{severityLabel(alert.severity)}</Badge>
+                        <span className="text-xs font-semibold">{safeCustomerName(alert.customer_name)}</span>
+                        <span className="text-[11px] text-muted-foreground">{alert.datasource_name || "Fonte não identificada"}</span>
+                        <span className="text-[11px] text-muted-foreground">{relativeTime(alert.first_seen_at)}</span>
+                      </div>
+                      <p className="mt-1 truncate text-sm font-semibold">{alert.host_visible_name || alert.host_technical_name || "Host não identificado"}</p>
+                      <p className="truncate text-xs text-muted-foreground">{alert.problem_name}</p>
+                      <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
+                        <span>Duração: {formatDurationSeconds(alert.duration_seconds)}</span>
+                        <span>Atualizado: {relativeTime(alert.last_seen_at)}</span>
+                        <span className={cn("font-medium", freshness.tone)}>{freshness.label}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-1.5">
+                      <Button variant="ghost" size="icon" className="h-8 w-8" asChild title="Ver detalhes do alerta">
+                        <Link to={alertHref} aria-label="Ver detalhes do alerta"><Eye className="h-4 w-4" /></Link>
+                      </Button>
+                      {ackAvailable ? (
+                        <Button variant="outline" size="sm" className="h-8 px-2.5 text-xs" asChild title="Reconhecer no OneView">
+                          <Link to={alertHref}>ACK</Link>
+                        </Button>
+                      ) : (
+                        <Button variant="outline" size="sm" className="h-8 px-2.5 text-xs" disabled title="Aguardando liberação operacional.">ACK</Button>
+                      )}
+                      <Button variant="outline" size="icon" className="h-8 w-8" disabled title="Atribuição operacional em preparação." aria-label="Atribuir alerta">
+                        <UserCheck className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+              {!recentAlerts.length && !isRecentLoading ? <p className="py-8 text-center text-sm text-muted-foreground">Nenhum alerta crítico ou alto novo para o escopo selecionado.</p> : null}
+            </div>
+          </Card>
+
+          <div className="space-y-4">
+            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-700"><Siren className="h-5 w-5" /></span>
+                <div><h2 className="text-base font-semibold">Atenção necessária</h2><p className="text-xs text-muted-foreground">Ativos sem ACK na origem acima do limite.</p></div>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {[
+                  ["Crítico", attention?.summary.disaster ?? 0, attention?.thresholds.disaster_minutes ?? 5, "border-red-300 bg-red-50 text-red-800"],
+                  ["Alto", attention?.summary.high ?? 0, attention?.thresholds.high_minutes ?? 15, "border-red-200 bg-red-50 text-red-700"],
+                  ["Médio", attention?.summary.average ?? 0, attention?.thresholds.average_minutes ?? 30, "border-amber-200 bg-amber-50 text-amber-700"],
+                ].map(([label, count, minutes, tone]) => (
+                  <div key={String(label)} className={cn("rounded-[10px] border px-2.5 py-2", tone)}>
+                    <p className="text-[9px] font-semibold uppercase">{label}</p>
+                    <p className="text-lg font-semibold">{Number(count).toLocaleString("pt-BR")}</p>
+                    <p className="text-[9px]">+ {minutes} min</p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 grid gap-2">
+                <div className="rounded-[10px] border border-border/70 bg-muted/20 p-2.5"><p className="text-xs font-semibold">Fontes com erro</p><p className="text-xs text-muted-foreground">{operations?.summary.error ? `${operations.summary.error} fonte(s) exigem verificação.` : "Nenhuma fonte em erro."}</p></div>
+                <div className="rounded-[10px] border border-border/70 bg-muted/20 p-2.5"><p className="text-xs font-semibold">Dados potencialmente desatualizados</p><p className="text-xs text-muted-foreground">{operations?.summary.stale ? `${operations.summary.stale} fonte(s) sem atividade recente.` : "Nenhuma fonte sem atividade recente."}</p></div>
+              </div>
+            </Card>
+
+            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+              <h2 className="text-base font-semibold">Clientes com mais alertas</h2>
+              <div className="mt-3 space-y-3">
+                {topCustomers.map((customer, index) => {
+                  const name = customer.key === "unclassified" ? "Cliente não identificado" : safeCustomerName(customer.name);
+                  const maximum = Math.max(topCustomers[0]?.alerts_count ?? 1, 1);
+                  return <div key={customer.key} className="space-y-1"><div className="flex items-center justify-between gap-3 text-sm"><span className="flex min-w-0 items-center gap-2"><span className="text-xs text-muted-foreground">{index + 1}</span>{logoForCustomer(customer.key, name) ? <img src={logoForCustomer(customer.key, name)} alt="" className="h-6 w-6 rounded border border-border/50 bg-white object-contain p-0.5" /> : null}<span className="truncate font-medium">{name}</span></span><span className="font-semibold">{customer.alerts_count.toLocaleString("pt-BR")}</span></div><div className="h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(4, (customer.alerts_count / maximum) * 100)}%` }} /></div></div>;
+                })}
+                {!topCustomers.length ? <p className="text-sm text-muted-foreground">Aguardando dados dos clientes.</p> : null}
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </AppLayout>
+  );
 }

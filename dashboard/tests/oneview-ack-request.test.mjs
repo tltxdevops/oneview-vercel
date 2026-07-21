@@ -59,18 +59,17 @@ function fakeDatabase({ datasource = "teletex-http", acknowledged = false } = {}
           acknowledged_internal: false,
         }] };
       }
-      if (sql.startsWith("select aggregate_id")) {
-        return { rows: state.existingAcknowledgementId ? [{ aggregate_id: state.existingAcknowledgementId }] : [] };
+      if (sql.startsWith("select id") && sql.includes("from alert_acknowledgements")) {
+        return { rows: state.existingAcknowledgementId ? [{ id: state.existingAcknowledgementId }] : [] };
       }
       if (sql.startsWith("insert into alert_acknowledgements")) {
         state.acknowledgements += 1;
         state.writes.push({ table: "alert_acknowledgements", values });
+        state.existingAcknowledgementId = values[0];
         return { rows: [] };
       }
-      if (sql.startsWith("insert into integration_outbox")) {
-        state.outboxes += 1;
-        state.writes.push({ table: "integration_outbox", values });
-        state.existingAcknowledgementId = values[1];
+      if (sql.startsWith("update alerts set acknowledged_internal = true")) {
+        state.writes.push({ table: "alerts", values });
         return { rows: [] };
       }
       if (sql.startsWith("insert into audit_logs")) {
@@ -149,7 +148,7 @@ test("ACK request: datasource nao permitido retorna 403 sem inserts", async () =
   assert.equal(database.state.audits, 0);
 });
 
-test("ACK request: valido cria as tres escritas e retorna pending 202", async () => {
+test("ACK request: válido registra reconhecimento interno sem outbox e retorna 202", async () => {
   const database = fakeDatabase();
   const logs = [];
   let sequence = 0;
@@ -163,11 +162,11 @@ test("ACK request: valido cria as tres escritas e retorna pending 202", async ()
   const res = responseMock();
   await handler(requestMock(), res);
   assert.equal(res.statusCode, 202);
-  assert.equal(res.body.status, "pending");
+  assert.equal(res.body.status, "recorded");
   assert.equal(res.body.execution_enabled, false);
   assert.equal(res.body.idempotent, false);
   assert.equal(database.state.acknowledgements, 1);
-  assert.equal(database.state.outboxes, 1);
+  assert.equal(database.state.outboxes, 0);
   assert.equal(database.state.audits, 1);
   const acknowledgementWrite = database.state.writes.find((write) => write.table === "alert_acknowledgements");
   const auditWrite = database.state.writes.find((write) => write.table === "audit_logs");
@@ -178,10 +177,25 @@ test("ACK request: valido cria as tres escritas e retorna pending 202", async ()
   assert.deepEqual(logs[0], {
     event: "oneview_ack_request",
     route: "/api/oneview/alerts/:id/ack-request",
-    status: "pending",
+    status: "recorded",
     idempotent: false,
     duration_ms: logs[0].duration_ms,
   });
+});
+
+test("ACK na origem não impede o reconhecimento interno no OneView", async () => {
+  const database = fakeDatabase({ acknowledged: true });
+  const handler = createAckRequestHandler({
+    authorize: async () => operator,
+    transaction: database.transaction,
+    configProvider: () => enabledConfig(),
+    logger: () => undefined,
+  });
+  const res = responseMock();
+  await handler(requestMock(), res);
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.status, "recorded");
+  assert.equal(database.state.acknowledgements, 1);
 });
 
 test("ACK request: repeticao usa idempotencia e nao duplica", async () => {
@@ -203,11 +217,11 @@ test("ACK request: repeticao usa idempotencia e nao duplica", async () => {
   assert.equal(second.body.idempotent, true);
   assert.equal(second.body.request_id, first.body.request_id);
   assert.equal(database.state.acknowledgements, 1);
-  assert.equal(database.state.outboxes, 1);
+  assert.equal(database.state.outboxes, 0);
   assert.equal(database.state.audits, 1);
 });
 
-test("ACK request: comentario excedente e metodo GET sao recusados", async () => {
+test("ACK request: comentário obrigatório, excedente e método GET são recusados", async () => {
   const database = fakeDatabase();
   const handler = createAckRequestHandler({
     authorize: async () => operator,
@@ -219,13 +233,18 @@ test("ACK request: comentario excedente e metodo GET sao recusados", async () =>
   assert.equal(invalidComment.statusCode, 400);
   assert.equal(invalidComment.body.error, "invalid_comment");
 
+  const missingComment = responseMock();
+  await handler(requestMock({ body: { comment: "   " } }), missingComment);
+  assert.equal(missingComment.statusCode, 400);
+  assert.equal(missingComment.body.error, "invalid_comment");
+
   const getResponse = responseMock();
   await handler(requestMock({ method: "GET" }), getResponse);
   assert.equal(getResponse.statusCode, 405);
   assert.equal(getResponse.headers.allow, "POST");
 });
 
-test("ACK request: logs e resposta nao contem usuario, comentario ou segredo", async () => {
+test("ACK request: log não contém usuário ou segredo e resposta expõe somente nome nominal", async () => {
   const database = fakeDatabase();
   const logs = [];
   const secretComment = "segredo-super-sensivel";
@@ -237,8 +256,9 @@ test("ACK request: logs e resposta nao contem usuario, comentario ou segredo", a
   });
   const res = responseMock();
   await handler(requestMock({ body: { comment: secretComment } }), res);
-  const publicOutput = JSON.stringify({ logs, response: res.body });
-  assert.doesNotMatch(publicOutput, /segredo-super-sensivel|Nome Secreto|secret-user-id|secret@example/i);
+  assert.doesNotMatch(JSON.stringify(logs), /segredo-super-sensivel|Nome Secreto|secret-user-id|secret@example/i);
+  assert.equal(res.body.actor_name, "Nome Secreto");
+  assert.doesNotMatch(JSON.stringify(res.body), /segredo-super-sensivel|secret-user-id|secret@example/i);
 });
 
 test("pool de actions usa role fixa e senha exclusiva", () => {
@@ -262,4 +282,5 @@ test("BFF de ACK nao possui chamada Zabbix", () => {
   const sourcePath = fileURLToPath(new URL("../api/_lib/oneview-ack-request.js", import.meta.url));
   const source = fs.readFileSync(sourcePath, "utf8");
   assert.doesNotMatch(source, /event\.acknowledge|api_jsonrpc|\bfetch\s*\(|\baxios\b/i);
+  assert.doesNotMatch(source, /insert into integration_outbox/i);
 });

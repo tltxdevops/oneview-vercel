@@ -188,6 +188,18 @@ test("status active, resolved e all usam predicados antes da paginacao", () => {
   assert.deepEqual([resolved.page, resolved.pageSize, resolved.offset], [3, 25, 50]);
 });
 
+test("ACK da origem e reconhecimento interno usam filtros independentes no BFF", () => {
+  const query = buildAlertListQuery(request("GET", {
+    acknowledged_source: "true",
+    acknowledged_internal: "false",
+  }));
+  assert.equal(query.filters.acknowledgedSource, "true");
+  assert.equal(query.filters.acknowledgedInternal, "false");
+  assert.match(query.whereSql, /acknowledged_source/);
+  assert.match(query.whereSql, /acknowledged_internal/);
+  assert.deepEqual(query.params, [true, false]);
+});
+
 test("resolvidos combinam cliente, datasource, busca e recovery parametrizados", () => {
   const query = buildAlertListQuery(request("GET", {
     status: "resolved",
@@ -219,6 +231,8 @@ test("filtros, multisseleção, datas, busca e sort ficam parametrizados", () =>
     status: "resolved",
     acknowledged: "false",
     search: injection,
+    host_search: "core-switch",
+    problem_search: "latência alta",
     date_from: "2026-07-01T00:00:00.000Z",
     date_to: "2026-07-14T23:59:59.999Z",
     first_seen_from: "2026-07-14T22:00:00.000Z",
@@ -234,6 +248,8 @@ test("filtros, multisseleção, datas, busca e sort ficam parametrizados", () =>
   assert.deepEqual(query.filters.severities, ["high", "disaster"]);
   assert.equal(query.filters.status, "resolved");
   assert.equal(query.filters.acknowledged, "false");
+  assert.equal(query.filters.hostSearch, "core-switch");
+  assert.equal(query.filters.problemSearch, "latência alta");
   assert.equal(query.filters.firstSeenFrom, "2026-07-14T22:00:00.000Z");
   assert.equal(query.filters.lastSeenFrom, "2026-07-14T23:00:00.000Z");
   assert.match(query.whereSql, /a\.client_name = any\(\$\d+::text\[\]\)/);
@@ -243,9 +259,13 @@ test("filtros, multisseleção, datas, busca e sort ficam parametrizados", () =>
   assert.match(query.whereSql, /a\.severity = any\(\$\d+::text\[\]\)/);
   assert.match(query.whereSql, /a\.first_seen_at >= \$\d+/);
   assert.match(query.whereSql, /a\.last_seen_at >= \$\d+/);
+  assert.match(query.whereSql, /host_visible_name/);
+  assert.match(query.whereSql, /problem_name/);
   assert.match(query.orderSql, /^coalesce\(a\.customer_name, a\.client_name\) ASC/);
   assert.doesNotMatch(`${query.whereSql}\n${query.orderSql}`, /OR 1=1/);
   assert.equal(query.params.includes(`%${injection}%`), true);
+  assert.equal(query.params.includes("%core-switch%"), true);
+  assert.equal(query.params.includes("%latência alta%"), true);
 });
 
 test("ordena explicitamente por criação ou última atualização", () => {
@@ -315,7 +335,8 @@ test("event_type do histórico recebe nome amigável", () => {
     problem_created: "Alerta identificado",
     problem_seen: "Ocorrência atualizada",
     severity_changed: "Severidade alterada",
-    acknowledged: "Alerta reconhecido",
+    acknowledged: "Alerta reconhecido na origem",
+    internal_acknowledged: "Reconhecido no OneView",
     ack_message: "Comentário adicionado ao reconhecimento",
     suppressed: "Alerta suprimido",
     unsuppressed: "Supressão encerrada",
@@ -380,6 +401,16 @@ test("ACKs de pessoas diferentes permanecem separados e ordenados por occurred_a
 
   assert.equal(items.length, 2);
   assert.deepEqual(items.map((item) => item.ack_actor_name), ["Analista B", "Analista A"]);
+});
+
+test("reconhecimento interno não é consolidado com ACK da origem", () => {
+  const items = consolidateAlertHistoryItems([
+    historyFixture({ id: "source-ack", event_type: "acknowledged", acknowledge_id: "ack-1" }),
+    historyFixture({ id: "internal-ack", event_type: "internal_acknowledged", acknowledge_id: "ack-1" }),
+  ]);
+  assert.equal(items.length, 2);
+  assert.equal(items.some((item) => item.event_type === "acknowledged"), true);
+  assert.equal(items.some((item) => item.event_type === "internal_acknowledged"), true);
 });
 
 test("recovery permanece depois da criacao na cronologia e preserva horarios distintos", () => {

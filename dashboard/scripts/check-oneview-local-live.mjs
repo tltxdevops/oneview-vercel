@@ -1,3 +1,11 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createSessionToken } from "../api/_lib/session.js";
+import { loadLocalEnv } from "./_lib/local-env.mjs";
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+loadLocalEnv(path.join(rootDir, ".env.local"));
+
 const baseUrl = process.env.ONEVIEW_LOCAL_BFF_URL || "http://127.0.0.1:8787";
 const expectedSource = process.env.ONEVIEW_EXPECT_DATA_SOURCE || "database";
 const parsedBaseUrl = new URL(baseUrl);
@@ -24,6 +32,29 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function firstCsv(value) {
+  return String(value || "").split(",").map((item) => item.trim()).find(Boolean) || "";
+}
+
+function controlledAuthHeaders() {
+  const supplied = String(process.env.ONEVIEW_LOCAL_TEST_BEARER_TOKEN || "").trim();
+  if (supplied) return { Authorization: `Bearer ${supplied}` };
+  if (!process.env.APP_SESSION_SECRET && !process.env.ONEVIEW_SESSION_SECRET) {
+    throw new Error("Sessão local de teste indisponível");
+  }
+  const allowedEmail = firstCsv(process.env.ONEVIEW_ALLOWED_EMAILS).toLowerCase();
+  const domain = firstCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS).toLowerCase() || "teletex.com.br";
+  const token = createSessionToken({
+    id: "oneview-local-readonly-check",
+    email: allowedEmail || `oneview-local-readonly-check@${domain}`,
+    name: "OneView Local Read-only Check",
+    roles: ["viewer"],
+  });
+  return { Authorization: `Bearer ${token.token}` };
+}
+
+const authHeaders = controlledAuthHeaders();
+
 function countRows(body) {
   if (Array.isArray(body?.items)) return body.items.length;
   if (Array.isArray(body?.clients)) return body.clients.length;
@@ -40,7 +71,7 @@ function totals(body) {
 }
 
 async function checkRoute(name, path) {
-  const response = await fetch(`${baseUrl}${path}`, { cache: "no-store", redirect: "error" });
+  const response = await fetch(`${baseUrl}${path}`, { cache: "no-store", redirect: "error", headers: authHeaders });
   const raw = await response.text();
   assert(response.status === 200, `${name}: HTTP ${response.status}`);
   for (const pattern of forbidden) assert(!pattern.test(raw), `${name}: conteúdo sensível detectado`);
@@ -61,7 +92,7 @@ async function checkRoute(name, path) {
 }
 
 async function checkExpectedError(name, path, expectedStatus, expectedCode) {
-  const response = await fetch(`${baseUrl}${path}`, { cache: "no-store", redirect: "error" });
+  const response = await fetch(`${baseUrl}${path}`, { cache: "no-store", redirect: "error", headers: authHeaders });
   const raw = await response.text();
   for (const pattern of forbidden) assert(!pattern.test(raw), `${name}: conteúdo sensível detectado`);
   const body = JSON.parse(raw);
@@ -109,7 +140,7 @@ try {
     "/api/oneview/operations/health",
     "/api/oneview/attention-required",
   ]) {
-    const post = await fetch(`${baseUrl}${path}`, { method: "POST", cache: "no-store" });
+    const post = await fetch(`${baseUrl}${path}`, { method: "POST", cache: "no-store", headers: authHeaders });
     assert(post.status === 405, `POST ${path}: HTTP ${post.status}; esperado 405`);
   }
 

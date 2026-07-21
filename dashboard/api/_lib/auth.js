@@ -15,14 +15,6 @@ function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function normalizeDomain(value) {
-  const domain = String(value || "").trim().toLowerCase();
-  if (!domain || domain.startsWith("@") || domain.includes("/") || domain.includes(":") || domain.includes("@")) {
-    return "";
-  }
-  return domain;
-}
-
 function deny(res, error) {
   // Runtime diagnostic intentionally contains only a stable reason.
   console.warn(JSON.stringify({ event: "oneview_auth_denied", reason: error }));
@@ -42,11 +34,11 @@ function bearerToken(req) {
 }
 
 function tenantId() {
-  return process.env.AZURE_TENANT_ID || process.env.VITE_AZURE_TENANT_ID || "";
+  return process.env.MICROSOFT_TENANT_ID || process.env.AZURE_TENANT_ID || process.env.VITE_AZURE_TENANT_ID || "";
 }
 
 function clientId() {
-  return process.env.AZURE_CLIENT_ID || process.env.VITE_AZURE_CLIENT_ID || "";
+  return process.env.MICROSOFT_CLIENT_ID || process.env.AZURE_CLIENT_ID || process.env.VITE_AZURE_CLIENT_ID || "";
 }
 
 function getJwks() {
@@ -59,27 +51,6 @@ function getJwks() {
 
 function emailFromPayload(payload) {
   return normalizeEmail(payload.preferred_username || payload.email || payload.upn);
-}
-
-function viewerAccess(email) {
-  const allowedEmails = splitCsv(process.env.ONEVIEW_ALLOWED_EMAILS);
-  const operatorEmails = splitCsv(process.env.ONEVIEW_OPERATOR_EMAILS);
-  const adminEmails = splitCsv(process.env.ONEVIEW_ADMIN_EMAILS);
-  const configuredDomainValues = splitCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS);
-  const configuredDomains = configuredDomainValues.map(normalizeDomain).filter(Boolean);
-  const normalizedEmail = normalizeEmail(email);
-  const directlyAllowed = new Set([...allowedEmails, ...operatorEmails, ...adminEmails]);
-
-  if (directlyAllowed.has(normalizedEmail)) return { allowed: true, reason: null };
-  const domain = normalizedEmail.slice(normalizedEmail.lastIndexOf("@") + 1);
-  if (configuredDomains.includes(domain)) return { allowed: true, reason: null };
-
-  // Lista vazia nunca libera acesso por acidente. Uma lista vazia isolada nÃ£o
-  // bloqueia outra regra vÃ¡lida, como o domÃ­nio corporativo configurado.
-  return {
-    allowed: false,
-    reason: configuredDomains.length > 0 ? "domain_not_allowed" : "email_not_allowed",
-  };
 }
 
 function rolesFor(email) {
@@ -124,8 +95,8 @@ function authorizeIdentity(req, res, identity, role, source) {
   const email = normalizeEmail(identity?.email);
   if (!email) return deny(res, "email_not_allowed");
 
-  const viewer = viewerAccess(email);
-  if (!viewer.allowed) return deny(res, viewer.reason);
+  // A sessão server-side só é emitida depois do SSO no tenant configurado.
+  // Para leitura, a sessão Microsoft válida é a barreira de identidade.
   if (!isAllowedRequestOrigin(req)) return deny(res, "origin_not_allowed");
 
   const roles = rolesFor(email);

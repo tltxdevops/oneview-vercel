@@ -18,7 +18,11 @@ const ROUTES = Object.freeze({
       "severity",
       "status",
       "acknowledged",
+      "acknowledged_source",
+      "acknowledged_internal",
       "search",
+      "host_search",
+      "problem_search",
       "date_from",
       "date_to",
       "first_seen_from",
@@ -50,6 +54,12 @@ function timeoutValue(value) {
   const parsed = Number.parseInt(String(value || "8000"), 10);
   if (!Number.isFinite(parsed)) return 8000;
   return Math.min(Math.max(parsed, 1000), 30000);
+}
+
+function alertStaleMinutes(value) {
+  const parsed = Number.parseInt(String(value || "15"), 10);
+  if (!Number.isFinite(parsed)) return 15;
+  return Math.min(Math.max(parsed, 1), 1440);
 }
 
 export function getOneViewRoute(name) {
@@ -88,6 +98,7 @@ export function getOneViewConfig(env = process.env) {
     ackEnabled: ackRequestEnabled && !ackExecutionEnabled,
     timeoutMs: timeoutValue(env.ONEVIEW_API_TIMEOUT_MS),
     attentionThresholds: getAttentionThresholds(env),
+    alertStaleMinutes: alertStaleMinutes(env.ONEVIEW_ALERT_STALE_MINUTES),
     dbConfig,
     dbConfigErrorCode,
   });

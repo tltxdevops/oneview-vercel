@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateRange } from "react-day-picker";
 import { endOfDay, format, formatDistanceToNow, startOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import {
   AlertDialog,
@@ -16,7 +17,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card } from "@/components/ui/card";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -26,7 +26,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
@@ -41,6 +40,7 @@ import {
   OneViewDataSourceKind,
   OneViewHealthResponse,
   OneViewFacetsResponse,
+  OperationsHealthResponse,
   fetchAlert,
   fetchAlertHistory,
   fetchAlertMetrics,
@@ -48,24 +48,22 @@ import {
   fetchDataSourcesWithMeta,
   fetchOneViewHealth,
   fetchOneViewFacets,
+  fetchOperationsHealth,
   formatDurationSeconds,
   requestAlertAcknowledgement,
 } from "@/lib/oneview-api";
 import {
   Activity,
-  ArrowDownAZ,
   ArrowUpDown,
   CalendarRange,
   Check,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
   ChevronsUpDown,
   Database,
   Eye,
-  Filter,
   History,
   Info,
   Loader2,
@@ -80,11 +78,13 @@ import {
   TriangleAlert,
   UserCheck,
   WifiOff,
+  X,
 } from "lucide-react";
+import { toast } from "sonner";
 
-type AckFilter = "all" | "acknowledged" | "unacknowledged";
+type RecognitionFilter = "all" | "acknowledged" | "unacknowledged";
 type StatusFilter = "active" | "resolved" | "all";
-type SortField = "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration";
+type SortField = "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source";
 type SortOrder = "asc" | "desc";
 type ConfidenceFilter = "all" | "high" | "low" | "unclassified";
 type TimePreset = "all" | "new_15m" | "new_1h" | "new_24h" | "updated_15m" | "updated_1h";
@@ -92,10 +92,10 @@ type NewTimePreset = Extract<TimePreset, "all" | `new_${string}`>;
 type UpdatedTimePreset = Extract<TimePreset, "all" | `updated_${string}`>;
 type HistoryFilter = "all" | "acknowledgements" | "changes" | "recovery" | "legacy";
 type MetaState = { source?: OneViewDataSourceKind; checkedAt?: string; fallbackCode?: string | null };
+type SummaryFilter = "total" | "active" | "acknowledged" | "pending" | "high" | "critical";
 
 const SUMMARY_REFRESH_MS = 60_000;
 const ALERTS_REFRESH_MS = 120_000;
-const FILTERS_STORAGE_KEY = "oneview.alerts.filtersCollapsed";
 
 const emptyPagination: AlertPagination = {
   page: 1,
@@ -331,6 +331,57 @@ function historyHasPartialEvidence(item: AlertHistoryItem) {
     || (!item.description && !item.comment && !historyValueIsMeaningful(item.previous_value) && !historyValueIsMeaningful(item.current_value));
 }
 
+type HistoryQuality = {
+  kind: "complete" | "partial" | "legacy" | "unavailable";
+  title: string;
+  description: string;
+};
+
+function historyRecordCount(items: AlertHistoryItem[]) {
+  return items.reduce((total, item) => total + Math.max(1, item.grouped_event_count ?? 1), 0);
+}
+
+function historyQualityFor(items: AlertHistoryItem[], markedPartial = false): HistoryQuality {
+  if (!items.length) {
+    return {
+      kind: "unavailable",
+      title: "Histórico indisponível",
+      description: "Nenhum evento estruturado foi encontrado para este alerta. O estado atual do alerta continua disponível no resumo.",
+    };
+  }
+
+  const legacyItems = items.filter((item) => item.legacy);
+  const structuredItems = items.filter((item) => !item.legacy);
+  const legacyRecords = historyRecordCount(legacyItems);
+  const structuredRecords = historyRecordCount(structuredItems);
+
+  if (!structuredItems.length) {
+    return {
+      kind: "legacy",
+      title: "Histórico legado",
+      description: "Este alerta possui registros anteriores à estrutura atual do OneView. Somente informações confirmadas pela origem são exibidas.",
+    };
+  }
+
+  const hasPartialEvidence = markedPartial || legacyItems.length > 0 || structuredItems.some(historyHasPartialEvidence);
+  if (hasPartialEvidence) {
+    const counts = legacyRecords > 0
+      ? `Há ${structuredRecords} ${structuredRecords === 1 ? "evento estruturado" : "eventos estruturados"} e ${legacyRecords} ${legacyRecords === 1 ? "registro legado" : "registros legados"}.`
+      : `Há ${structuredRecords} ${structuredRecords === 1 ? "evento estruturado" : "eventos estruturados"} com evidência parcial.`;
+    return {
+      kind: "partial",
+      title: "Histórico parcial",
+      description: `${counts} Datas e ações confirmadas foram preservadas; campos ausentes não foram inferidos.`,
+    };
+  }
+
+  return {
+    kind: "complete",
+    title: "Histórico completo",
+    description: "Os eventos principais possuem horário, origem e contexto operacional estruturado.",
+  };
+}
+
 function historyGroupEventCount(group: HistoryGroup) {
   return group.items.reduce((total, item) => total + Math.max(1, item.grouped_event_count ?? 1), 0);
 }
@@ -410,8 +461,8 @@ const enrichmentExplanations: Record<OneViewAlert["enrichment_state"], string> =
 function customerPresentation(alert: OneViewAlert) {
   if (alert.enrichment_state === "unclassified" || alert.customer_name === "Cliente não classificado") {
     return {
-      name: "Cliente não classificado",
-      hint: "A origem não possui evidências suficientes para identificação automática.",
+      name: "Cliente não identificado",
+      hint: "A origem não possui evidências suficientes para identificar automaticamente o cliente.",
       enrichment: "unclassified" as const,
     };
   }
@@ -462,6 +513,14 @@ function acknowledged(alert: OneViewAlert) {
   return Boolean(alert.acknowledged_internal || alert.acknowledged_source);
 }
 
+function sourceAcknowledged(alert: OneViewAlert | null | undefined) {
+  return Boolean(alert?.acknowledged_source);
+}
+
+function internallyRecognized(alert: OneViewAlert | null | undefined) {
+  return Boolean(alert?.acknowledged_internal);
+}
+
 function isResolvedAlert(alert: OneViewAlert | null | undefined) {
   if (!alert) return false;
   const sourceStatus = safeDisplayText(alert.status_source, "").toLowerCase();
@@ -495,10 +554,13 @@ function historyEventIcon(eventType: string) {
 }
 
 export default function AlertsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedAlertId = searchParams.get("alert");
   const [alerts, setAlerts] = useState<OneViewAlert[]>([]);
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
   const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
+  const [operationsHealth, setOperationsHealth] = useState<OperationsHealthResponse | null>(null);
   const [pagination, setPagination] = useState<AlertPagination>(emptyPagination);
   const [snapshotCoverage, setSnapshotCoverage] = useState<{ partial: boolean; total_persisted: number; available_items: number } | null>(null);
 
@@ -508,19 +570,19 @@ export default function AlertsPage() {
   const [selectedDatasources, setSelectedDatasources] = useState<string[]>([]);
   const [confidenceFilter, setConfidenceFilter] = useState<ConfidenceFilter>("all");
   const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([]);
-  const [ackFilter, setAckFilter] = useState<AckFilter>("all");
+  const [sourceAckFilter, setSourceAckFilter] = useState<RecognitionFilter>("all");
+  const [internalRecognitionFilter, setInternalRecognitionFilter] = useState<RecognitionFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [sortField, setSortField] = useState<SortField>("last_seen_at");
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [hostSearch, setHostSearch] = useState("");
+  const [problemSearch, setProblemSearch] = useState("");
+  const [debouncedHostSearch, setDebouncedHostSearch] = useState("");
+  const [debouncedProblemSearch, setDebouncedProblemSearch] = useState("");
+  const [datasourceSearch, setDatasourceSearch] = useState("");
   const [timeRange, setTimeRange] = useState<DateRange>();
   const [timePreset, setTimePreset] = useState<TimePreset>("all");
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
-  const [filtersCollapsed, setFiltersCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(FILTERS_STORAGE_KEY) === "true";
-  });
 
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
@@ -548,6 +610,7 @@ export default function AlertsPage() {
   const [healthMeta, setHealthMeta] = useState<MetaState>({});
   const [sourcesMeta, setSourcesMeta] = useState<MetaState>({});
   const [facetsMeta, setFacetsMeta] = useState<MetaState>({});
+  const [operationsMeta, setOperationsMeta] = useState<MetaState>({});
   const [detailMeta, setDetailMeta] = useState<MetaState>({});
   const [historyMeta, setHistoryMeta] = useState<MetaState>({});
 
@@ -569,13 +632,12 @@ export default function AlertsPage() {
   const updatedTimePreset: UpdatedTimePreset = timePreset.startsWith("updated_") ? timePreset as UpdatedTimePreset : "all";
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedSearch(searchTerm.trim()), 400);
+    const timer = window.setTimeout(() => {
+      setDebouncedHostSearch(hostSearch.trim());
+      setDebouncedProblemSearch(problemSearch.trim());
+    }, 400);
     return () => window.clearTimeout(timer);
-  }, [searchTerm]);
-
-  useEffect(() => {
-    window.localStorage.setItem(FILTERS_STORAGE_KEY, String(filtersCollapsed));
-  }, [filtersCollapsed]);
+  }, [hostSearch, problemSearch]);
 
   const loadAlerts = useCallback(async () => {
     alertsRequestRef.current?.abort();
@@ -594,8 +656,10 @@ export default function AlertsPage() {
         customerConfidences: confidenceFilter === "all" ? undefined : [confidenceFilter],
         severities: selectedRawSeverities,
         status: statusFilter,
-        acknowledged: ackFilter === "all" ? undefined : ackFilter === "acknowledged",
-        search: debouncedSearch || undefined,
+        acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+        acknowledgedInternal: internalRecognitionFilter === "all" ? undefined : internalRecognitionFilter === "acknowledged",
+        hostSearch: debouncedHostSearch || undefined,
+        problemSearch: debouncedProblemSearch || undefined,
         dateFrom,
         dateTo,
         ...quickTime,
@@ -617,7 +681,7 @@ export default function AlertsPage() {
     } finally {
       if (requestId === alertsRequestIdRef.current) setIsAlertsLoading(false);
     }
-  }, [ackFilter, confidenceFilter, dateFrom, dateTo, debouncedSearch, page, pageSize, selectedCustomerKeys, selectedDatasources, selectedRawSeverities, sortField, sortOrder, statusFilter, timePreset]);
+  }, [confidenceFilter, dateFrom, dateTo, debouncedHostSearch, debouncedProblemSearch, internalRecognitionFilter, page, pageSize, selectedCustomerKeys, selectedDatasources, selectedRawSeverities, sortField, sortOrder, sourceAckFilter, statusFilter, timePreset]);
 
   const loadSummaryResources = useCallback(() => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -629,6 +693,7 @@ export default function AlertsPage() {
         fetchAlertMetrics(),
         fetchDataSourcesWithMeta(),
         fetchOneViewFacets(),
+        fetchOperationsHealth(),
       ]);
 
       if (results[0].status === "fulfilled") {
@@ -645,6 +710,10 @@ export default function AlertsPage() {
       if (results[3].status === "fulfilled") {
         setFacets(results[3].value);
         setFacetsMeta(metaOf(results[3].value));
+      }
+      if (results[4].status === "fulfilled") {
+        setOperationsHealth(results[4].value);
+        setOperationsMeta(metaOf(results[4].value));
       }
       const rejected = results.find((result) => result.status === "rejected");
       if (rejected?.status === "rejected") {
@@ -686,6 +755,18 @@ export default function AlertsPage() {
     setIsDetailLoading(false);
   }, []);
 
+  useEffect(() => {
+    if (!requestedAlertId || requestedAlertId === selectedAlertId) return;
+    setSelectedAlertId(requestedAlertId);
+    setSelectedPreview(null);
+    setDetail(null);
+    setHistory(null);
+    setHistoryFilter("all");
+    setDetailMeta({});
+    setHistoryMeta({});
+    void loadSelectedAlert(requestedAlertId);
+  }, [loadSelectedAlert, requestedAlertId, selectedAlertId]);
+
   const refreshAll = useCallback(async () => {
     await Promise.all([loadSummaryResources(), loadAlerts()]);
     if (selectedAlertId) await loadSelectedAlert(selectedAlertId);
@@ -722,13 +803,9 @@ export default function AlertsPage() {
     detailRequestRef.current?.abort();
   }, []);
 
-  const baseMetas = [alertsMeta, metricsMeta, healthMeta, sourcesMeta, facetsMeta];
+  const baseMetas = [alertsMeta, metricsMeta, healthMeta, sourcesMeta, facetsMeta, operationsMeta];
   const hasSnapshot = baseMetas.some((meta) => meta.source === "snapshot")
     || (selectedAlertId !== null && [detailMeta, historyMeta].some((meta) => meta.source === "snapshot"));
-  const allBaseResourcesLoaded = baseMetas.every((meta) => meta.source === "database" || meta.source === "snapshot");
-  const currentDataSource: OneViewDataSourceKind | null = hasSnapshot
-    ? "snapshot"
-    : allBaseResourcesLoaded && baseMetas.every((meta) => meta.source === "database") ? "database" : null;
   const lastCheckedAt = latestCheckedAt(...baseMetas.map((meta) => meta.checkedAt), detailMeta.checkedAt, historyMeta.checkedAt);
   const fallbackCode = [...baseMetas, detailMeta, historyMeta].find((meta) => meta.source === "snapshot" && meta.fallbackCode)?.fallbackCode;
 
@@ -736,17 +813,19 @@ export default function AlertsPage() {
   const activeTotal = metrics?.active_total ?? health?.counts.active_alerts ?? 0;
   const pendingTotal = metrics?.unacknowledged_total ?? 0;
   const summaryCards = [
-    { title: "Total persistido", value: health?.counts.total_alerts ?? metrics?.alerts_total ?? 0, description: "Alertas registrados no OneView", icon: Database, tone: "bg-primary/10 text-primary" },
-    { title: "Alertas ativos", value: activeTotal, description: "Ocorrências em acompanhamento", icon: Activity, tone: "bg-amber-100 text-amber-700" },
-    { title: "Reconhecidos", value: Math.max(activeTotal - pendingTotal, 0), description: "Reconhecidos na origem", icon: UserCheck, tone: "bg-emerald-100 text-emerald-700" },
-    { title: "Pendentes", value: pendingTotal, description: "Aguardando tratamento", icon: TriangleAlert, tone: "bg-yellow-100 text-yellow-700" },
-    { title: "Alto", value: severityCounts.high ?? 0, description: "Prioridade elevada", icon: ShieldAlert, tone: "bg-red-50 text-red-700" },
-    { title: "Crítico", value: severityCounts.disaster ?? 0, description: "Incidentes críticos", icon: Siren, tone: "bg-red-100 text-red-950" },
+    { filter: "total" as const, title: "Total persistido", value: health?.counts.total_alerts ?? metrics?.alerts_total ?? 0, description: "Alertas registrados no OneView", icon: Database, tone: "bg-primary/10 text-primary" },
+    { filter: "active" as const, title: "Alertas ativos", value: activeTotal, description: "Ocorrências em acompanhamento", icon: Activity, tone: "bg-amber-100 text-amber-700" },
+    { filter: "acknowledged" as const, title: "Reconhecidos", value: Math.max(activeTotal - pendingTotal, 0), description: "Reconhecidos na origem", icon: UserCheck, tone: "bg-emerald-100 text-emerald-700" },
+    { filter: "pending" as const, title: "Pendentes", value: pendingTotal, description: "Aguardando tratamento", icon: TriangleAlert, tone: "bg-yellow-100 text-yellow-700" },
+    { filter: "high" as const, title: "Alto", value: severityCounts.high ?? 0, description: "Prioridade elevada", icon: ShieldAlert, tone: "bg-red-50 text-red-700" },
+    { filter: "critical" as const, title: "Crítico", value: severityCounts.disaster ?? 0, description: "Incidentes críticos", icon: Siren, tone: "bg-red-100 text-red-950" },
   ];
 
   const customerCards = useMemo(() => [
     { key: "all", name: "Todos", alerts_count: metrics?.active_total ?? health?.counts.active_alerts ?? 0, enrichment_status: "enriched" as const },
-    ...(facets?.customers ?? []),
+    ...(facets?.customers ?? []).map((customer) => customer.key === "unclassified"
+      ? { ...customer, name: "Não identificado" }
+      : customer),
   ], [facets?.customers, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
@@ -761,12 +840,19 @@ export default function AlertsPage() {
     return safeDisplayText(selected?.name, "cliente selecionado");
   }, [customerCards, selectedCustomerKeys]);
 
-  const activeFilterCount = selectedCustomerKeys.length + selectedDatasources.length + selectedPriorities.length
-    + (confidenceFilter === "all" ? 0 : 1)
-    + (ackFilter === "all" ? 0 : 1) + (statusFilter === "active" ? 0 : 1)
-    + (debouncedSearch ? 1 : 0) + (timeRange?.from || timeRange?.to ? 1 : 0)
-    + (timePreset === "all" ? 0 : 1)
-    + (sortField === "last_seen_at" && sortOrder === "desc" ? 0 : 1);
+  const activeFilterChips = [
+    selectedCustomerKeys.length ? { label: `${selectedCustomerKeys.length} cliente(s)`, remove: () => setSelectedCustomerKeys([]) } : null,
+    selectedDatasources.length ? { label: `${selectedDatasources.length} fonte(s)`, remove: () => setSelectedDatasources([]) } : null,
+    confidenceFilter !== "all" ? { label: `Confiança: ${confidenceLabel(confidenceFilter)}`, remove: () => setConfidenceFilter("all") } : null,
+    ...selectedPriorities.map((priority) => ({ label: priorityCatalog[priority].label, remove: () => setSelectedPriorities((current) => current.filter((item) => item !== priority)) })),
+    statusFilter !== "active" ? { label: `Status: ${statusFilter === "resolved" ? "Resolvidos" : "Todos"}`, remove: () => setStatusFilter("active") } : null,
+    sourceAckFilter !== "all" ? { label: `ACK origem: ${sourceAckFilter === "acknowledged" ? "Reconhecido" : "Pendente"}`, remove: () => setSourceAckFilter("all") } : null,
+    internalRecognitionFilter !== "all" ? { label: `OneView: ${internalRecognitionFilter === "acknowledged" ? "Reconhecido" : "Pendente"}`, remove: () => setInternalRecognitionFilter("all") } : null,
+    timePreset !== "all" ? { label: timePreset.startsWith("new_") ? "Novos recentes" : "Atualizados recentemente", remove: () => setTimePreset("all") } : null,
+    timeRange?.from || timeRange?.to ? { label: "Intervalo de atualização", remove: () => setTimeRange(undefined) } : null,
+    debouncedHostSearch ? { label: `Host: ${debouncedHostSearch}`, remove: () => setHostSearch("") } : null,
+    debouncedProblemSearch ? { label: `Problema: ${debouncedProblemSearch}`, remove: () => setProblemSearch("") } : null,
+  ].filter((chip): chip is { label: string; remove: () => void } => Boolean(chip));
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + alerts.length - 1, pagination.total_items);
@@ -799,29 +885,77 @@ export default function AlertsPage() {
     : acknowledgementActors.length > 1
       ? "Mais de um responsável"
       : acknowledgementActors[0] || (historyHasAck ? "Responsável não resolvido" : "Sem ACK");
-  const historyIsPartial = history?.history_partial ?? (history?.items ?? []).some((item) => item.legacy);
+  const historyQuality = useMemo(
+    () => historyQualityFor(history?.items ?? [], history?.history_partial === true),
+    [history?.history_partial, history?.items],
+  );
   const isRefreshing = isAlertsLoading || isSummaryLoading;
   const ackRequestsEnabled = health?.capabilities?.acknowledgement === true;
   const showIpColumn = useMemo(() => alerts.some((alert) => safeHostIp(alert.host_ip) !== null), [alerts]);
   const tableColumnCount = showIpColumn ? 10 : 9;
   const selectedAckPending = selectedAlert
-    ? Boolean(pendingAckRequests[selectedAlert.id] || ["pending", "processing"].includes(selectedAlert.ack_request_status || ""))
+    ? Boolean(pendingAckRequests[selectedAlert.id] || ["pending", "processing", "recorded"].includes(selectedAlert.ack_request_status || ""))
     : false;
   const selectedAckAllowed = ackRequestAllowedFor(selectedAlert, ackRequestsEnabled);
+  const selectedSourceHealth = selectedAlert
+    ? operationsHealth?.items.find((item) => item.name.trim().toLowerCase() === selectedAlert.datasource_name?.trim().toLowerCase())
+    : undefined;
+  const staleThresholdMinutes = health?.thresholds?.alert_stale_minutes ?? 15;
+  const selectedLastSeenAt = selectedAlert ? Date.parse(selectedAlert.last_seen_at || "") : Number.NaN;
+  const minutesWithoutConfirmation = Number.isNaN(selectedLastSeenAt)
+    ? null
+    : Math.max(0, Math.floor((Date.now() - selectedLastSeenAt) / 60_000));
+  const freshnessState = !selectedAlert
+    ? "Informação indisponível"
+    : isResolvedAlert(selectedAlert)
+      ? "Resolvido"
+      : selectedSourceHealth?.operational_status === "error" || selectedSourceHealth?.operational_status === "stale"
+        ? "Dados possivelmente desatualizados"
+        : minutesWithoutConfirmation !== null && minutesWithoutConfirmation <= staleThresholdMinutes
+          ? "Ativo e confirmado recentemente"
+          : "Ativo, mas sem confirmação recente";
 
   const clearFilters = () => {
     setSelectedCustomerKeys([]);
     setSelectedDatasources([]);
     setConfidenceFilter("all");
     setSelectedPriorities([]);
-    setAckFilter("all");
+    setSourceAckFilter("all");
+    setInternalRecognitionFilter("all");
     setStatusFilter("active");
     setSortField("last_seen_at");
     setSortOrder("desc");
-    setSearchTerm("");
+    setHostSearch("");
+    setProblemSearch("");
+    setDatasourceSearch("");
     setTimeRange(undefined);
     setTimePreset("all");
     setPage(1);
+  };
+
+  const applySummaryFilter = (filter: SummaryFilter) => {
+    setConfidenceFilter("all");
+    setSelectedPriorities(filter === "high" ? ["high"] : filter === "critical" ? ["critical"] : []);
+    setSourceAckFilter(filter === "acknowledged" ? "acknowledged" : filter === "pending" ? "unacknowledged" : "all");
+    setInternalRecognitionFilter("all");
+    setStatusFilter(filter === "total" ? "all" : "active");
+    setSortField("last_seen_at");
+    setSortOrder("desc");
+    setHostSearch("");
+    setProblemSearch("");
+    setTimeRange(undefined);
+    setTimePreset("all");
+    setPage(1);
+  };
+
+  const summaryFilterIsActive = (filter: SummaryFilter) => {
+    if (internalRecognitionFilter !== "all" || selectedPriorities.length > 1) return false;
+    if (filter === "total") return statusFilter === "all" && sourceAckFilter === "all" && selectedPriorities.length === 0;
+    if (filter === "active") return statusFilter === "active" && sourceAckFilter === "all" && selectedPriorities.length === 0;
+    if (filter === "acknowledged") return statusFilter === "active" && sourceAckFilter === "acknowledged" && selectedPriorities.length === 0;
+    if (filter === "pending") return statusFilter === "active" && sourceAckFilter === "unacknowledged" && selectedPriorities.length === 0;
+    if (filter === "high") return statusFilter === "active" && sourceAckFilter === "all" && selectedPriorities[0] === "high";
+    return statusFilter === "active" && sourceAckFilter === "all" && selectedPriorities[0] === "critical";
   };
 
   const toggleCustomer = (key: string) => {
@@ -840,6 +974,9 @@ export default function AlertsPage() {
   };
 
   const openAlert = (alert: OneViewAlert) => {
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.set("alert", alert.id);
+    setSearchParams(nextSearchParams, { replace: true });
     setSelectedAlertId(alert.id);
     setSelectedPreview(alert);
     setDetail(null);
@@ -851,6 +988,9 @@ export default function AlertsPage() {
   };
 
   const closeAlert = () => {
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete("alert");
+    setSearchParams(nextSearchParams, { replace: true });
     detailRequestRef.current?.abort();
     setSelectedAlertId(null);
     setSelectedPreview(null);
@@ -867,7 +1007,7 @@ export default function AlertsPage() {
   };
 
   const openAckRequest = (alert: OneViewAlert) => {
-    if (!ackRequestAllowedFor(alert, ackRequestsEnabled) || acknowledged(alert) || pendingAckRequests[alert.id] || ["pending", "processing"].includes(alert.ack_request_status || "")) return;
+    if (!ackRequestAllowedFor(alert, ackRequestsEnabled) || internallyRecognized(alert) || pendingAckRequests[alert.id] || ["pending", "processing", "recorded"].includes(alert.ack_request_status || "")) return;
     if (selectedAlertId !== alert.id) openAlert(alert);
     setAckComment("");
     setAckError(null);
@@ -884,6 +1024,7 @@ export default function AlertsPage() {
       setPendingAckRequests((current) => ({ ...current, [selectedAlert.id]: response.request_id }));
       setAckDialogOpen(false);
       setAckComment("");
+      toast.success(`O alerta foi reconhecido internamente por ${response.actor_name}. O ACK da origem não foi alterado.`);
     } catch (error) {
       setAckError(error instanceof Error ? error.message : "Não foi possível registrar a solicitação.");
     } finally {
@@ -932,6 +1073,29 @@ export default function AlertsPage() {
     </div>
   );
 
+  const toggleColumnSort = (field: SortField) => {
+    setSortOrder((current) => sortField === field && current === "asc" ? "desc" : "asc");
+    setSortField(field);
+    setPage(1);
+  };
+
+  const sortableHeader = (label: string, field: SortField) => (
+    <button
+      type="button"
+      className="group inline-flex min-w-0 items-center justify-center gap-1 font-semibold text-foreground transition-colors hover:text-primary"
+      onClick={() => toggleColumnSort(field)}
+      title={`Ordenar ${label}: ${sortField === field && sortOrder === "asc" ? "Z–A" : "A–Z"}`}
+    >
+      <span className="truncate">{label}</span>
+      <ArrowUpDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/60 group-hover:text-primary", sortField === field && "text-primary")} />
+      {sortField === field ? <span className="sr-only">{sortOrder === "asc" ? "ordem crescente" : "ordem decrescente"}</span> : null}
+    </button>
+  );
+
+  const visibleDatasourceOptions = (facets?.datasources ?? []).filter((source) =>
+    source.name.toLocaleLowerCase("pt-BR").includes(datasourceSearch.trim().toLocaleLowerCase("pt-BR")),
+  );
+
   const clientSelector = (
     <Popover open={customerFilterOpen} onOpenChange={setCustomerFilterOpen}>
       <PopoverTrigger asChild>
@@ -940,7 +1104,7 @@ export default function AlertsPage() {
           variant="outline"
           role="combobox"
           aria-expanded={customerFilterOpen}
-          className="h-14 min-w-64 justify-between rounded-[10px] border-[1.5px] border-border/60 bg-white px-4 shadow-sm hover:border-black hover:bg-white"
+          className="h-12 min-w-56 justify-between rounded-[10px] border-[1.5px] border-border/60 bg-white px-3 shadow-sm hover:border-black hover:bg-white"
         >
           <span className="flex min-w-0 items-center gap-3 text-left">
             <CustomerLogo
@@ -982,7 +1146,7 @@ export default function AlertsPage() {
                   >
                     <CustomerLogo customer={customer} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{safeDisplayText(customer.name, "Cliente não classificado")}</span>
+                      <span className="block truncate text-sm font-medium">{safeDisplayText(customer.name, "Cliente não identificado")}</span>
                       <span className="text-[10px] text-muted-foreground">{customer.alerts_count.toLocaleString("pt-BR")} alertas</span>
                     </span>
                     <Check className={cn("h-4 w-4 text-primary", selected ? "opacity-100" : "opacity-0")} />
@@ -998,16 +1162,12 @@ export default function AlertsPage() {
 
   return (
     <AppLayout
-      clientSelect={clientSelector}
       enableAutoRefresh={false}
       showRefreshMeta={false}
+      clientSelect={clientSelector}
       topbarRightSection={topbarControls}
-      dataSource={currentDataSource}
-      checkedAt={lastCheckedAt}
-      contentClassName="gap-5 p-5"
+      contentClassName="gap-3 px-3 py-3 lg:px-4"
       title="Alertas"
-      description="Eventos Zabbix persistidos no OneView"
-      headerAside={<p className="text-xs text-muted-foreground">Última consulta: {lastCheckedAt ? formatDateTime(lastCheckedAt) : "aguardando primeira resposta"}</p>}
     >
       {hasSnapshot ? (
         <Card className="rounded-[10px] border border-amber-300 bg-amber-50 p-4 shadow-sm">
@@ -1033,112 +1193,38 @@ export default function AlertsPage() {
         <div className="rounded-[10px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{summaryError}</div>
       ) : null}
 
-      <section aria-labelledby="global-summary-title" className="space-y-2">
-        <div>
-          <h2 id="global-summary-title" className="text-base font-semibold text-foreground">Resumo global do OneView</h2>
-          <p className="text-xs text-muted-foreground">Métricas de todo o ambiente; os filtros abaixo se aplicam somente à tabela de alertas.</p>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      <section aria-label="Filtros rápidos por indicadores">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
           {summaryCards.map((card) => {
             const Icon = card.icon;
+            const selected = summaryFilterIsActive(card.filter);
             return (
-              <Card key={card.title} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+              <button
+                key={card.title}
+                type="button"
+                aria-pressed={selected}
+                aria-label={`Filtrar alertas: ${card.title}`}
+                onClick={() => applySummaryFilter(card.filter)}
+                className={cn(
+                  "rounded-[10px] border border-border/70 bg-card p-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-foreground/30 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  selected && "border-foreground/50 ring-1 ring-foreground/20",
+                )}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="text-sm font-semibold text-foreground">{card.title}</h3>
                     {isSummaryLoading && !health && !metrics ? <Skeleton className="mt-2 h-7 w-20" /> : (
-                      <p className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{card.value.toLocaleString("pt-BR")}</p>
+                      <p className="mt-0.5 text-xl font-semibold tabular-nums text-foreground">{card.value.toLocaleString("pt-BR")}</p>
                     )}
                     <p className="text-xs text-muted-foreground">{card.description}</p>
                   </div>
                   <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-full", card.tone)}><Icon className="h-4 w-4" /></div>
                 </div>
-              </Card>
+              </button>
             );
           })}
         </div>
       </section>
-
-      <Collapsible open={!filtersCollapsed} onOpenChange={(open) => setFiltersCollapsed(!open)}>
-        <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Filter className="h-4 w-4 text-primary" />
-                <h2 className="text-base font-semibold text-foreground">Filtros de alertas</h2>
-                {activeFilterCount > 0 ? <Badge variant="secondary">{activeFilterCount} ativos</Badge> : null}
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {selectedCustomerKeys.length ? `${selectedCustomerKeys.length} cliente(s) selecionado(s)` : "Todos os clientes"} · {selectedDatasources.length ? `${selectedDatasources.length} fonte(s)` : "Todas as fontes"} · Status {statusFilter === "active" ? "ativo" : statusFilter === "resolved" ? "resolvido" : "todos"}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              {activeFilterCount > 0 ? <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>Limpar filtros</Button> : null}
-              <CollapsibleTrigger asChild>
-                <Button type="button" variant="outline" size="sm">
-                  <ChevronDown className={cn("h-4 w-4 transition-transform", !filtersCollapsed && "rotate-180")} />
-                  {filtersCollapsed ? "Mostrar filtros" : "Ocultar filtros"}
-                </Button>
-              </CollapsibleTrigger>
-            </div>
-          </div>
-
-          <CollapsibleContent className="pt-4">
-            <div className="mb-4">
-              <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><ServerCog className="h-4 w-4" /> Fonte Zabbix</div>
-              <ToggleGroup type="multiple" value={selectedDatasources} onValueChange={(values) => { setSelectedDatasources(values); setPage(1); }} className="flex flex-wrap justify-start gap-2">
-                {(facets?.datasources ?? []).map((source) => (
-                  <ToggleGroupItem key={source.id} value={source.name} className="h-8 rounded-full border border-border bg-white px-3 text-xs data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
-                    {safeDisplayText(source.name, "Fonte")} · {source.alerts_count.toLocaleString("pt-BR")}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(220px,1fr)]">
-              <label className="flex flex-col gap-1.5 text-xs font-medium text-muted-foreground">
-                Buscar alerta
-                <span className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input value={searchTerm} onChange={(event) => { setSearchTerm(event.target.value); setPage(1); }} placeholder="Host, problema, serviço ou cliente" className="h-9 pl-9" />
-                </span>
-              </label>
-              <label className="flex flex-col gap-1.5 text-xs font-medium text-muted-foreground">
-                Confiança da classificação
-                <Select value={confidenceFilter} onValueChange={(value) => { setConfidenceFilter(value as ConfidenceFilter); setPage(1); }}>
-                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todas</SelectItem>
-                    <SelectItem value="high">Alta confiança</SelectItem>
-                    <SelectItem value="low">Baixa confiança</SelectItem>
-                    <SelectItem value="unclassified">Enriquecimento pendente</SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-              <span className="text-xs font-medium text-muted-foreground">Prioridade</span>
-              <ToggleGroup type="multiple" value={selectedPriorities} onValueChange={(values) => { setSelectedPriorities(values as Priority[]); setPage(1); }} className="flex flex-wrap justify-start gap-1.5">
-                {priorityOrder.map((priority) => (
-                  <ToggleGroupItem
-                    key={priority}
-                    value={priority}
-                    className={cn(
-                      "h-8 rounded-full border px-3 text-[10px] font-semibold",
-                      priorityCatalog[priority].tone,
-                      "data-[state=on]:ring-2 data-[state=on]:ring-primary/40",
-                    )}
-                  >
-                    {priorityCatalog[priority].short} · {priorityCatalog[priority].label}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-              <span className="text-[10px] text-muted-foreground">Baixo reúne avisos, informativos e não classificados recebidos do Zabbix.</span>
-            </div>
-          </CollapsibleContent>
-        </Card>
-      </Collapsible>
 
       <Card className="overflow-hidden rounded-[10px] border border-border/70 bg-white shadow-sm">
         <div className="border-b border-border/70 px-4 py-3">
@@ -1149,133 +1235,103 @@ export default function AlertsPage() {
                 Exibindo {firstVisible.toLocaleString("pt-BR")}–{lastVisible.toLocaleString("pt-BR")} de {pagination.total_items.toLocaleString("pt-BR")} {statusFilter === "resolved" ? "alertas resolvidos" : "alertas"}
                 {snapshotCoverage?.partial ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos` : ""}
               </p>
-              <p className="mt-1 text-[11px] text-muted-foreground">Escopo desta tabela: filtros de cliente, fonte, status, prioridade, ACK e período selecionados.</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                Status
-                <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}>
-                  <SelectTrigger className="h-8 w-28 bg-white"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="active">Ativos</SelectItem><SelectItem value="resolved">Resolvidos</SelectItem><SelectItem value="all">Todos</SelectItem></SelectContent>
-                </Select>
-              </label>
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                ACK
-                <Select value={ackFilter} onValueChange={(value) => { setAckFilter(value as AckFilter); setPage(1); }}>
-                  <SelectTrigger className="h-8 w-36 bg-white"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="acknowledged">Reconhecidos</SelectItem><SelectItem value="unacknowledged">Pendentes</SelectItem></SelectContent>
-                </Select>
-              </label>
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                Novos
-                <Select value={newTimePreset} onValueChange={(value) => applyTimePreset(value as NewTimePreset)}>
-                  <SelectTrigger className="h-8 w-44 bg-white"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="new_15m">Últimos 15 minutos</SelectItem>
-                    <SelectItem value="new_1h">Última hora</SelectItem>
-                    <SelectItem value="new_24h">Últimas 24 horas</SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                Atualizados
-                <Select value={updatedTimePreset} onValueChange={(value) => applyTimePreset(value as UpdatedTimePreset)}>
-                  <SelectTrigger className="h-8 w-40 bg-white"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="updated_15m">Últimos 15 minutos</SelectItem>
-                    <SelectItem value="updated_1h">Última hora</SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button type="button" size="sm" variant="outline" className="h-8">
-                    <CalendarRange className="h-4 w-4" />
-                    {timeRange?.from ? `${format(timeRange.from, "dd/MM/yyyy")}${timeRange.to ? ` – ${format(timeRange.to, "dd/MM/yyyy")}` : ""}` : "Intervalo da última atualização"}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-auto p-0">
-                  <Calendar
-                    mode="range"
-                    numberOfMonths={1}
-                    locale={ptBR}
-                    selected={timeRange}
-                    onSelect={(range) => {
-                      setTimeRange(range);
-                      setTimePreset("all");
-                      setPage(1);
-                    }}
-                  />
-                </PopoverContent>
-              </Popover>
             </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-border/60 bg-muted/20 p-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Ordenar</span>
-              <Select value={sortField} onValueChange={(value) => { setSortField(value as SortField); setPage(1); }}>
-                <SelectTrigger className="h-8 w-44 bg-white"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="last_seen_at">Última atualização</SelectItem><SelectItem value="first_seen_at">Criação do alerta</SelectItem><SelectItem value="resolved_at">Horário da resolução</SelectItem>
-                  <SelectItem value="severity">Prioridade</SelectItem><SelectItem value="client">Cliente</SelectItem>
-                  <SelectItem value="datasource">Fonte Zabbix</SelectItem>
-                  <SelectItem value="host">Host</SelectItem><SelectItem value="problem">Problema</SelectItem><SelectItem value="duration">Duração</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={sortOrder} onValueChange={(value) => { setSortOrder(value as SortOrder); setPage(1); }}>
-                <SelectTrigger className="h-8 w-44 bg-white"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="desc">{sortField === "severity" ? "Crítico → baixo" : "Decrescente"}</SelectItem>
-                  <SelectItem value="asc">{sortField === "severity" ? "Baixo → crítico" : "Crescente"}</SelectItem>
-                </SelectContent>
-              </Select>
-              <div className="flex items-center rounded-md border border-border/70 bg-white p-0.5">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {activeFilterChips.map((chip) => (
                 <Button
+                  key={chip.label}
                   type="button"
+                  variant="secondary"
                   size="sm"
-                  variant={sortField === "last_seen_at" && sortOrder === "desc" ? "default" : "ghost"}
-                  className="h-7 rounded px-2.5 text-xs"
-                  onClick={() => { setSortField("last_seen_at"); setSortOrder("desc"); setPage(1); }}
+                  className="h-7 rounded-full px-2.5 text-[11px]"
+                  onClick={() => { chip.remove(); setPage(1); }}
                 >
-                  <ArrowUpDown className="h-3.5 w-3.5" /> Mais recentemente atualizados
+                  {chip.label}<X className="h-3 w-3" />
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={sortField === "resolved_at" && sortOrder === "desc" ? "default" : "ghost"}
-                  className="h-7 rounded px-2.5 text-xs"
-                  onClick={() => { setSortField("resolved_at"); setSortOrder("desc"); setPage(1); }}
-                >
-                  <CheckCircle2 className="h-3.5 w-3.5" /> Resolvidos mais recentemente
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={sortField === "first_seen_at" && sortOrder === "desc" ? "default" : "ghost"}
-                  className="h-7 rounded px-2.5 text-xs"
-                  onClick={() => { setSortField("first_seen_at"); setSortOrder("desc"); setPage(1); }}
-                >
-                  <Activity className="h-3.5 w-3.5" /> Mais novos
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={sortField === "first_seen_at" && sortOrder === "asc" ? "default" : "ghost"}
-                  className="h-7 rounded px-2.5 text-xs"
-                  onClick={() => { setSortField("first_seen_at"); setSortOrder("asc"); setPage(1); }}
-                >
-                  <ArrowDownAZ className="h-3.5 w-3.5" /> Mais antigos
-                </Button>
-              </div>
+              ))}
+              {activeFilterChips.length === 0 ? (
+                <span className="text-[11px] text-muted-foreground">Clique nos títulos das colunas para ordenar. Use as lupas para filtrar.</span>
+              ) : null}
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">Itens por página</span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" className="h-8 px-2.5 text-xs">
+                    <CalendarRange className="h-3.5 w-3.5" /> Período
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-80 space-y-3 p-3">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                    Novos
+                    <Select value={newTimePreset} onValueChange={(value) => applyTimePreset(value as NewTimePreset)}>
+                      <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos</SelectItem>
+                        <SelectItem value="new_15m">Últimos 15 minutos</SelectItem>
+                        <SelectItem value="new_1h">Última hora</SelectItem>
+                        <SelectItem value="new_24h">Últimas 24 horas</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                    Atualizados
+                    <Select value={updatedTimePreset} onValueChange={(value) => applyTimePreset(value as UpdatedTimePreset)}>
+                      <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos</SelectItem>
+                        <SelectItem value="updated_15m">Últimos 15 minutos</SelectItem>
+                        <SelectItem value="updated_1h">Última hora</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <div className="space-y-1 text-xs font-medium text-muted-foreground">
+                    Intervalo da última atualização
+                    <Calendar
+                      mode="range"
+                      numberOfMonths={1}
+                      locale={ptBR}
+                      selected={timeRange}
+                      onSelect={(range) => { setTimeRange(range); setTimePreset("all"); setPage(1); }}
+                    />
+                  </div>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                    Reconhecimento no OneView
+                    <Select value={internalRecognitionFilter} onValueChange={(value) => { setInternalRecognitionFilter(value as RecognitionFilter); setPage(1); }}>
+                      <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos</SelectItem>
+                        <SelectItem value="acknowledged">Reconhecido</SelectItem>
+                        <SelectItem value="unacknowledged">Pendente</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                    Confiança da classificação
+                    <Select value={confidenceFilter} onValueChange={(value) => { setConfidenceFilter(value as ConfidenceFilter); setPage(1); }}>
+                      <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas</SelectItem>
+                        <SelectItem value="high">Alta confiança</SelectItem>
+                        <SelectItem value="low">Baixa confiança</SelectItem>
+                        <SelectItem value="unclassified">Enriquecimento pendente</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                </PopoverContent>
+              </Popover>
+              {activeFilterChips.length > 0 ? (
+                <Button type="button" variant="ghost" size="sm" className="h-8 px-2.5 text-xs" onClick={clearFilters}>Limpar</Button>
+              ) : null}
               <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}>
-                <SelectTrigger className="h-8 w-20 bg-white"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent>
+                <SelectTrigger className="h-8 w-[76px] bg-white" aria-label="Itens por página"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                </SelectContent>
               </Select>
             </div>
           </div>
@@ -1283,14 +1339,177 @@ export default function AlertsPage() {
 
         {alertsError ? <div className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{alertsError}</div> : null}
 
-        <div className="relative max-h-[68vh] overflow-auto" aria-busy={isAlertsLoading}>
+        <div className="relative min-h-[360px] max-h-[calc(100vh-22rem)] overflow-auto" aria-busy={isAlertsLoading}>
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
-          <Table className={cn(showIpColumn ? "min-w-[1320px]" : "min-w-[1220px]", "text-xs")}>
+          <Table className={cn(showIpColumn ? "min-w-[1320px]" : "min-w-[1240px]", "w-full table-fixed text-[11px]")}>
+            <colgroup>
+              <col className="w-[10%]" />
+              <col className="w-[7%]" />
+              <col className="w-[12%]" />
+              {showIpColumn ? <col className="w-[6%]" /> : null}
+              <col className="w-[7%]" />
+              <col className={showIpColumn ? "w-[24%]" : "w-[30%]"} />
+              <col className="w-[6%]" />
+              <col className="w-[8%]" />
+              <col className="w-[8%]" />
+              <col className="w-[12%]" />
+            </colgroup>
             <TableHeader className="sticky top-0 z-10">
-              <TableRow className="border-border/70 bg-muted/70 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-muted/70">
-                <TableHead className="w-44">Cliente</TableHead><TableHead className="w-32">Fonte</TableHead><TableHead className="w-52">Host</TableHead>{showIpColumn ? <TableHead className="w-24">IP</TableHead> : null}
-                <TableHead className="w-28">Prioridade</TableHead><TableHead className={cn(!showIpColumn && "min-w-[420px]")}>Problema</TableHead><TableHead className={cn(showIpColumn ? "w-24" : "w-32")}>Duração</TableHead>
-                <TableHead className="w-32">Status</TableHead><TableHead className="w-24">ACK</TableHead><TableHead className="w-32 text-right">Ações</TableHead>
+              <TableRow className="border-border/70 bg-muted/80 text-[10px] text-muted-foreground hover:bg-muted/80">
+                <TableHead className="px-3 text-center">{sortableHeader("Cliente", "client")}</TableHead>
+                <TableHead className="px-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {sortableHeader("Fonte", "datasource")}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", selectedDatasources.length > 0 && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar fonte">
+                          <Search className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-64 p-2">
+                        <Input value={datasourceSearch} onChange={(event) => setDatasourceSearch(event.target.value)} placeholder="Buscar fonte..." className="h-8" />
+                        <div className="mt-2 max-h-52 space-y-1 overflow-auto">
+                          {visibleDatasourceOptions.map((source) => {
+                            const selected = selectedDatasources.includes(source.name);
+                            return (
+                              <Button
+                                key={source.id}
+                                type="button"
+                                variant={selected ? "default" : "ghost"}
+                                size="sm"
+                                className="h-8 w-full justify-between px-2 text-xs"
+                                onClick={() => {
+                                  setSelectedDatasources((current) => selected ? current.filter((item) => item !== source.name) : [...current, source.name]);
+                                  setPage(1);
+                                }}
+                              >
+                                <span className="truncate">{safeDisplayText(source.name, "Fonte")}</span>
+                                <span className="ml-2 tabular-nums opacity-70">{source.alerts_count.toLocaleString("pt-BR")}</span>
+                              </Button>
+                            );
+                          })}
+                          {visibleDatasourceOptions.length === 0 ? <p className="p-2 text-xs text-muted-foreground">Nenhuma fonte encontrada.</p> : null}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TableHead>
+                <TableHead className="px-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {sortableHeader("Host", "host")}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", debouncedHostSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar host">
+                          <Search className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-72 p-3">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Pesquisar somente em host
+                          <Input autoFocus value={hostSearch} onChange={(event) => { setHostSearch(event.target.value); setPage(1); }} placeholder="Nome visível ou técnico" className="mt-1 h-8" />
+                        </label>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TableHead>
+                {showIpColumn ? <TableHead className="px-3 text-center">IP</TableHead> : null}
+                <TableHead className="px-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {sortableHeader("Prioridade", "severity")}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", selectedPriorities.length > 0 && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar prioridade">
+                          <Search className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-56 space-y-1 p-2">
+                        {priorityOrder.map((priority) => {
+                          const selected = selectedPriorities.includes(priority);
+                          return (
+                            <Button
+                              key={priority}
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className={cn("h-8 w-full justify-start border px-2 text-xs", priorityCatalog[priority].tone, selected && "ring-2 ring-primary/40")}
+                              onClick={() => {
+                                setSelectedPriorities((current) => selected ? current.filter((item) => item !== priority) : [...current, priority]);
+                                setPage(1);
+                              }}
+                            >
+                              {priorityCatalog[priority].short} · {priorityCatalog[priority].label}
+                              {selected ? <Check className="ml-auto h-3.5 w-3.5" /> : null}
+                            </Button>
+                          );
+                        })}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TableHead>
+                <TableHead className="px-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {sortableHeader("Problema", "problem")}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", debouncedProblemSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar problema">
+                          <Search className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-80 p-3">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Pesquisar somente em problema
+                          <Input autoFocus value={problemSearch} onChange={(event) => { setProblemSearch(event.target.value); setPage(1); }} placeholder="Descrição do problema" className="mt-1 h-8" />
+                        </label>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TableHead>
+                <TableHead className="px-3 text-center">{sortableHeader("Duração", "duration")}</TableHead>
+                <TableHead className="px-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {sortableHeader("Status", "status")}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", statusFilter !== "active" && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar status">
+                          <Search className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-52 p-2">
+                        <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}>
+                          <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="active">Ativos</SelectItem>
+                            <SelectItem value="resolved">Resolvidos</SelectItem>
+                            <SelectItem value="all">Todos</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TableHead>
+                <TableHead className="px-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {sortableHeader("ACK origem", "acknowledged_source")}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", sourceAckFilter !== "all" && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar ACK da origem">
+                          <Search className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-52 p-2">
+                        <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}>
+                          <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">Todos</SelectItem>
+                            <SelectItem value="acknowledged">Reconhecido</SelectItem>
+                            <SelectItem value="unacknowledged">Pendente</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TableHead>
+                <TableHead className="px-3 text-center">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1313,50 +1532,55 @@ export default function AlertsPage() {
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openAlert(alert); } }}
                     className={cn("cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60", selectedAlertId === alert.id && "bg-muted/60")}
                   >
-                    <TableCell className="py-3">
-                      <div className="flex items-start gap-2">
-                        <CustomerLogo customer={{ key: alert.customer_key, name: alert.customer_name }} />
-                        <div className="min-w-0">
-                          <p className="font-semibold leading-4">{customer.name}</p>
-                          {customer.hint ? <p className="mt-1 text-[9px] leading-3 text-muted-foreground">{customer.hint}</p> : null}
+                    <TableCell className="align-middle px-3 py-2.5">
+                      <div className="flex flex-col items-center text-center">
+                        <div className="flex items-center justify-center gap-2 text-left">
+                          <CustomerLogo customer={{ key: alert.customer_key, name: alert.customer_name }} />
+                          <div className="min-w-0">
+                            <p className="font-semibold leading-4">{customer.name}</p>
+                            {customer.hint ? <p className="mt-1 text-[9px] leading-3 text-muted-foreground">{customer.hint}</p> : null}
+                          </div>
                         </div>
+                        {alert.customer_confidence === "low" ? <Badge variant="outline" className="mt-1 border-amber-200 bg-amber-50 text-[9px] text-amber-700">Baixa confiança</Badge> : null}
+                        {customer.enrichment !== "complete" ? (
+                          <div className="mt-1">
+                            <TooltipProvider delayDuration={200}>
+                              <Tooltip>
+                                <TooltipTrigger asChild><Badge variant="outline" className="border-border bg-muted text-[9px]">{enrichmentLabels[customer.enrichment]}</Badge></TooltipTrigger>
+                                <TooltipContent side="right" className="max-w-xs"><p>{enrichmentExplanations[customer.enrichment]}</p></TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          </div>
+                        ) : null}
                       </div>
-                      {alert.customer_confidence === "low" ? <Badge variant="outline" className="mt-1 border-amber-200 bg-amber-50 text-[9px] text-amber-700">Baixa confiança</Badge> : null}
-                      {customer.enrichment !== "complete" ? (
-                        <div className="mt-1">
-                          <TooltipProvider delayDuration={200}>
-                            <Tooltip>
-                              <TooltipTrigger asChild><Badge variant="outline" className="border-border bg-muted text-[9px]">{enrichmentLabels[customer.enrichment]}</Badge></TooltipTrigger>
-                              <TooltipContent side="right" className="max-w-xs"><p>{enrichmentExplanations[customer.enrichment]}</p></TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        </div>
-                      ) : null}
                     </TableCell>
-                    <TableCell className="py-3 font-medium">{safeDisplayText(alert.datasource_name, "Fonte não identificada")}</TableCell>
-                    <TableCell className="py-3"><p className="truncate font-semibold" title={safeDisplayText(alert.host_visible_name || alert.host_technical_name || alert.host_name)}>{safeDisplayText(alert.host_visible_name || alert.host_technical_name || alert.host_name)}</p>{alert.host_visible_name && alert.host_technical_name ? <p className="truncate font-mono text-[9px] text-muted-foreground">{safeDisplayText(alert.host_technical_name)}</p> : null}<p className="font-mono text-[10px] text-muted-foreground">#{safeDisplayText(alert.source_event_id, "-", 48)}</p></TableCell>
-                    {showIpColumn ? <TableCell className="py-3 font-mono text-muted-foreground">{safeHostIp(alert.host_ip) ?? "-"}</TableCell> : null}
-                    <TableCell className="py-3"><Badge className={cn("border text-[10px] hover:bg-inherit", priority.tone)}>{priority.label}</Badge></TableCell>
-                    <TableCell className={cn("py-3", !showIpColumn && "min-w-[420px]")}><p className="max-w-xl line-clamp-2 font-medium leading-5" title={safeDisplayText(alert.problem_name, "Alerta sem descrição")}>{safeDisplayText(alert.problem_name, "Alerta sem descrição", 220)}</p></TableCell>
-                    <TableCell className={cn("py-3 font-mono text-muted-foreground", !showIpColumn && "min-w-32")}>{formatDurationSeconds(alert.duration_seconds)}</TableCell>
-                    <TableCell className="py-3"><p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p><p className="text-[10px] text-muted-foreground">{isResolved ? `Resolvido em ${formatDateTime(alert.resolved_at)}` : formatDateTime(alert.last_seen_at)}</p></TableCell>
-                    <TableCell className="py-3">
-                      <Badge className={cn("border text-[10px] hover:bg-inherit", acknowledged(alert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{acknowledged(alert) ? "Reconhecido" : "Pendente"}</Badge>
-                      {isResolved && acknowledged(alert) && safeActorName(alert.acknowledged_by) ? <p className="mt-1 line-clamp-2 text-[9px] text-muted-foreground">por {safeActorName(alert.acknowledged_by)}</p> : null}
+                    <TableCell className="align-middle px-3 py-2.5 text-center font-medium">{safeDisplayText(alert.datasource_name, "Fonte não identificada")}</TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center"><p className="truncate font-semibold" title={safeDisplayText(alert.host_visible_name || alert.host_technical_name || alert.host_name)}>{safeDisplayText(alert.host_visible_name || alert.host_technical_name || alert.host_name)}</p>{alert.host_visible_name && alert.host_technical_name ? <p className="truncate font-mono text-[9px] text-muted-foreground">{safeDisplayText(alert.host_technical_name)}</p> : null}</TableCell>
+                    {showIpColumn ? <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">{safeHostIp(alert.host_ip) ?? "-"}</TableCell> : null}
+                    <TableCell className="align-middle px-3 py-2.5 text-center"><Badge className={cn("border text-[10px] hover:bg-inherit", priority.tone)}>{priority.label}</Badge></TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center"><p className="line-clamp-2 font-medium leading-4" title={safeDisplayText(alert.problem_name, "Alerta sem descrição")}>{safeDisplayText(alert.problem_name, "Alerta sem descrição", 220)}</p></TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">{formatDurationSeconds(alert.duration_seconds)}</TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center"><p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p><p className="text-[9px] text-muted-foreground">{isResolved ? `Resolvido em ${formatDateTime(alert.resolved_at)}` : formatDateTime(alert.last_seen_at)}</p></TableCell>
+                    <TableCell className="overflow-hidden align-middle px-3 py-2.5 text-center">
+                      <Badge className={cn("max-w-full whitespace-nowrap border text-[10px] hover:bg-inherit", sourceAcknowledged(alert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{sourceAcknowledged(alert) ? "Reconhecido" : "Pendente"}</Badge>
+                      {sourceAcknowledged(alert) && safeActorName(alert.acknowledged_by) ? <p className="mt-1 line-clamp-2 text-[9px] text-muted-foreground">por {safeActorName(alert.acknowledged_by)}</p> : null}
                     </TableCell>
-                    <TableCell className="py-3">
-                      <div className="flex items-center justify-end gap-1">
+                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                      <div className="flex items-center justify-center gap-1 whitespace-nowrap">
                         <Button
                           type="button"
                           variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-[10px]"
+                          size="icon"
+                          className="h-7 w-7"
+                          aria-label="Ver detalhes do alerta"
+                          title="Ver detalhes do alerta"
                           onClick={(event) => {
                             event.stopPropagation();
                             openAlert(alert);
                           }}
                         >
-                          <Eye className="h-3.5 w-3.5" /> Ver
+                          <Eye className="h-3.5 w-3.5" />
+                          <span className="sr-only">Ver detalhes do alerta</span>
                         </Button>
                         {!isResolved ? <TooltipProvider delayDuration={200}>
                           <Tooltip>
@@ -1367,7 +1591,7 @@ export default function AlertsPage() {
                                   variant="outline"
                                   size="sm"
                                   className="h-7 px-2 text-[10px]"
-                                  disabled={!ackRequestAllowedFor(alert, ackRequestsEnabled) || acknowledged(alert) || Boolean(pendingAckRequests[alert.id]) || ["pending", "processing"].includes(alert.ack_request_status || "")}
+                                  disabled={!ackRequestAllowedFor(alert, ackRequestsEnabled) || internallyRecognized(alert) || Boolean(pendingAckRequests[alert.id]) || ["pending", "processing", "recorded"].includes(alert.ack_request_status || "")}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     openAckRequest(alert);
@@ -1379,12 +1603,12 @@ export default function AlertsPage() {
                             </TooltipTrigger>
                             <TooltipContent side="left"><p>{!ackRequestsEnabled
                               ? "Aguardando liberação operacional."
-                              : pendingAckRequests[alert.id] || ["pending", "processing"].includes(alert.ack_request_status || "")
-                              ? "Solicitação pendente de processamento."
-                              : acknowledged(alert)
-                                ? "Alerta já reconhecido."
+                              : pendingAckRequests[alert.id] || ["pending", "processing", "recorded"].includes(alert.ack_request_status || "")
+                              ? "Reconhecimento interno já registrado."
+                              : internallyRecognized(alert)
+                                ? "Alerta já foi reconhecido no OneView."
                                 : ackRequestAllowedFor(alert, ackRequestsEnabled)
-                                  ? "Solicitar reconhecimento do alerta."
+                                  ? "Registrar o tratamento interno no OneView."
                                   : "Reconhecimento indisponível para esta fonte."}</p></TooltipContent>
                           </Tooltip>
                         </TooltipProvider> : null}
@@ -1410,10 +1634,10 @@ export default function AlertsPage() {
         <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-2xl">
           {selectedAlert ? (
             <div className="flex h-full flex-col">
-              <SheetHeader className="border-b border-border/70 px-6 py-5 text-left">
-                <div className="flex items-start justify-between gap-3">
-                  <div><SheetTitle className="text-xl">Detalhes do alerta</SheetTitle><SheetDescription>Informações operacionais seguras e histórico do OneView.</SheetDescription></div>
-                  <Badge className={cn("border hover:bg-inherit", acknowledged(selectedAlert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{acknowledged(selectedAlert) ? "Reconhecido" : selectedAckPending ? "Solicitação pendente" : "Pendente"}</Badge>
+              <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0"><SheetTitle className="text-xl">Detalhes do alerta</SheetTitle><SheetDescription>Informações operacionais seguras e histórico do OneView.</SheetDescription></div>
+                  <Badge className={cn("shrink-0 whitespace-nowrap border hover:bg-inherit", isResolvedAlert(selectedAlert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{isResolvedAlert(selectedAlert) ? "Resolvido" : "Em acompanhamento"}</Badge>
                 </div>
               </SheetHeader>
 
@@ -1432,33 +1656,79 @@ export default function AlertsPage() {
                       <>
                         <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Problema</p><p className="mt-2 text-base font-semibold leading-6">{safeDisplayText(selectedAlert.problem_name, "Alerta sem descrição")}</p></Card>
                         {selectedCustomer?.hint ? <div className="rounded-[10px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{selectedCustomer.hint}</div> : null}
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Cliente</p><p className="mt-1 break-words font-semibold">{selectedCustomer?.name}</p></Card>
-                          <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                            <p className="text-[11px] text-muted-foreground">Enriquecimento</p>
-                            <TooltipProvider delayDuration={200}>
-                              <Tooltip>
-                                <TooltipTrigger asChild><p className="mt-1 cursor-help break-words font-semibold">{selectedCustomer ? enrichmentLabels[selectedCustomer.enrichment] : "-"}</p></TooltipTrigger>
-                                <TooltipContent side="bottom" className="max-w-xs"><p>{selectedCustomer ? enrichmentExplanations[selectedCustomer.enrichment] : "Informação ainda não disponível."}</p></TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                          </Card>
-                        </div>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          {[
-                            ["Fonte Zabbix", selectedAlert.datasource_name],
-                            ["Host visível", selectedAlert.host_visible_name || selectedAlert.host_technical_name || selectedAlert.host_name],
-                            ["Host técnico", selectedAlert.host_technical_name],
-                            ["Prioridade", priorityCatalog[priorityForSeverity(selectedAlert.severity)].label],
-                            ["Status", isResolvedAlert(selectedAlert) ? "Resolvido" : "Ativo"],
-                            ["ACK", acknowledged(selectedAlert) ? `Reconhecido${acknowledgedBy ? ` por ${acknowledgedBy}` : " — responsável não resolvido no Zabbix"}${selectedAlert.acknowledged_at ? ` em ${formatDateTime(selectedAlert.acknowledged_at)}` : ""}` : "Pendente"],
-                            ["Supressão", selectedAlert.suppressed ? `Ativa${selectedAlert.suppressed_until ? ` até ${formatDateTime(selectedAlert.suppressed_until)}` : ""}` : "Não"],
-                            ["Primeira ocorrência", formatDateTime(selectedAlert.first_seen_at)],
-                            ["Última ocorrência", formatDateTime(selectedAlert.last_seen_at)],
-                            ["Recovery", selectedAlert.resolved_at ? formatDateTime(selectedAlert.resolved_at) : "Ainda ativo"],
-                            ["Duração", formatDurationSeconds(selectedAlert.duration_seconds)],
-                          ].map(([label, value]) => <Card key={label} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 break-words font-semibold">{safeDisplayText(value)}</p></Card>)}
-                        </div>
+                        <section aria-label="Estado atual" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Estado atual</h3>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {[
+                              ["Status", isResolvedAlert(selectedAlert) ? "Resolvido" : "Ativo"],
+                              ["Prioridade", priorityCatalog[priorityForSeverity(selectedAlert.severity)].label],
+                              ["Supressão", selectedAlert.suppressed ? `Ativa${selectedAlert.suppressed_until ? ` até ${formatDateTime(selectedAlert.suppressed_until)}` : ""}` : "Sem supressão"],
+                              ["Recovery", selectedAlert.resolved_at ? `Resolvido em ${formatDateTime(selectedAlert.resolved_at)}` : "Alerta ainda ativo"],
+                            ].map(([label, value]) => <Card key={label} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 break-words font-semibold">{safeDisplayText(value, "Informação indisponível")}</p></Card>)}
+                          </div>
+                        </section>
+                        <section aria-label="Identificação" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Identificação</h3>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Cliente</p><p className="mt-1 break-words font-semibold">{selectedCustomer?.name ?? "Cliente não identificado"}</p></Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Fonte Zabbix</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Host</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.host_visible_name || selectedAlert.host_technical_name || selectedAlert.host_name, "Host não identificado")}</p></Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                              <p className="text-[11px] text-muted-foreground">Enriquecimento</p>
+                              <TooltipProvider delayDuration={200}><Tooltip><TooltipTrigger asChild><p className="mt-1 cursor-help break-words font-semibold">{selectedCustomer ? enrichmentLabels[selectedCustomer.enrichment] : "Não classificado"}</p></TooltipTrigger><TooltipContent side="bottom" className="max-w-xs"><p>{selectedCustomer ? enrichmentExplanations[selectedCustomer.enrichment] : "A origem não possui evidências suficientes para identificar automaticamente o cliente."}</p></TooltipContent></Tooltip></TooltipProvider>
+                            </Card>
+                          </div>
+                        </section>
+                        <section aria-label="Linha do tempo essencial" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Linha do tempo essencial</h3>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {[
+                              ["Primeira ocorrência", formatDateTime(selectedAlert.first_seen_at)],
+                              ["Última ocorrência", formatDateTime(selectedAlert.last_seen_at)],
+                              ["Duração", formatDurationSeconds(selectedAlert.duration_seconds)],
+                              ["Persistido no OneView", formatDateTime(selectedAlert.created_at)],
+                            ].map(([label, value]) => <Card key={label} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 break-words font-semibold">{safeDisplayText(value, "Informação indisponível")}</p></Card>)}
+                          </div>
+                        </section>
+                        <section aria-label="Tratamento" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Tratamento</h3>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">ACK na origem</p><p className="mt-1 break-words font-semibold">{sourceAcknowledged(selectedAlert) ? `Reconhecido${acknowledgedBy ? ` por ${acknowledgedBy}` : " na origem"}${selectedAlert.acknowledged_at ? ` em ${formatDateTime(selectedAlert.acknowledged_at)}` : ""}` : "Não reconhecido na origem"}</p></Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Reconhecimento no OneView</p><p className="mt-1 break-words font-semibold">{internallyRecognized(selectedAlert) || selectedAckPending ? "Tratamento interno registrado" : "Sem reconhecimento interno"}</p></Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Atribuição interna</p><p className="mt-1 break-words font-semibold">Sem atribuição interna registrada</p></Card>
+                          </div>
+                        </section>
+                        <section aria-label="Frescor do dado" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Frescor do dado</h3>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                              <p className="text-[11px] text-muted-foreground">Estado de confirmação</p>
+                              <p className={cn(
+                                "mt-1 break-words font-semibold",
+                                freshnessState === "Ativo e confirmado recentemente" && "text-emerald-700",
+                                freshnessState === "Ativo, mas sem confirmação recente" && "text-amber-700",
+                                freshnessState === "Dados possivelmente desatualizados" && "text-red-700",
+                              )}>{freshnessState}</p>
+                            </Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                              <p className="text-[11px] text-muted-foreground">Última atualização</p>
+                              <p className="mt-1 break-words font-semibold">{formatDateTime(selectedAlert.last_seen_at)}</p>
+                            </Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                              <p className="text-[11px] text-muted-foreground">Tempo sem confirmação</p>
+                              <p className="mt-1 break-words font-semibold">{isResolvedAlert(selectedAlert)
+                                ? "Alerta encerrado"
+                                : minutesWithoutConfirmation === null
+                                  ? "Horário indisponível"
+                                  : formatDurationSeconds(minutesWithoutConfirmation * 60)}</p>
+                            </Card>
+                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                              <p className="text-[11px] text-muted-foreground">Duração do alerta</p>
+                              <p className="mt-1 break-words font-semibold">{formatDurationSeconds(selectedAlert.duration_seconds)}</p>
+                              <p className="mt-1 text-[10px] text-muted-foreground">Duração longa não indica falha de sincronização.</p>
+                            </Card>
+                          </div>
+                        </section>
                       </>
                     )}
                   </TabsContent>
@@ -1491,11 +1761,17 @@ export default function AlertsPage() {
                           ))}
                         </section>
 
-                        {historyIsPartial ? (
-                          <div className="rounded-[10px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                            Eventos anteriores ao enriquecimento podem possuir menos detalhes.
-                          </div>
-                        ) : null}
+                        <section aria-label="Qualidade do histórico" className={cn(
+                          "rounded-[10px] border p-4 shadow-sm",
+                          historyQuality.kind === "complete" && "border-border/70 bg-white",
+                          historyQuality.kind === "partial" && "border-amber-200 bg-amber-50",
+                          historyQuality.kind === "legacy" && "border-orange-200 bg-orange-50",
+                          historyQuality.kind === "unavailable" && "border-border/70 bg-muted/20",
+                        )}>
+                          <p className="text-xs font-medium text-muted-foreground">Qualidade do histórico</p>
+                          <h3 className="mt-1 text-sm font-semibold">{historyQuality.title}</h3>
+                          <p className="mt-1 text-sm text-muted-foreground">{historyQuality.description}</p>
+                        </section>
 
                         <div className="flex flex-wrap gap-2" aria-label="Filtros rápidos do histórico">
                           {[
@@ -1614,55 +1890,35 @@ export default function AlertsPage() {
                         )}
                       </>
                     ) : (
-                      <Card className="rounded-[10px] border border-border/70 bg-white p-8 text-center shadow-sm">
+                      <section aria-label="Qualidade do histórico" className="rounded-[10px] border border-border/70 bg-muted/20 p-6 text-center shadow-sm">
                         <History className="mx-auto h-8 w-8 text-muted-foreground" />
-                        <p className="mt-3 font-semibold">Nenhum evento histórico estruturado disponível.</p>
-                      </Card>
+                        <p className="mt-3 text-xs font-medium text-muted-foreground">Qualidade do histórico</p>
+                        <h3 className="mt-1 font-semibold">{historyQuality.title}</h3>
+                        <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{historyQuality.description}</p>
+                      </section>
                     )}
                   </TabsContent>
 
                   <TabsContent value="technical" className="mt-4 space-y-3">
                     <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                      <summary className="cursor-pointer text-sm font-semibold">Exibir informações técnicas</summary>
-                      <div className="mt-4 space-y-3">
-                    <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                      <h3 className="text-sm font-semibold">Classificação e identificadores</h3>
-                      <dl className="mt-3 space-y-3 text-sm">
-                        <div><dt className="text-xs text-muted-foreground">Cliente interno</dt><dd className="font-semibold">{selectedCustomer?.name}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Enriquecimento</dt><dd>{selectedCustomer ? enrichmentLabels[selectedCustomer.enrichment] : "-"}</dd></div>
-                        {selectedCustomer?.enrichment === "legacy" ? <div><dt className="text-xs text-muted-foreground">Referência legada</dt><dd>{safeDisplayText(selectedAlert.client_name)}</dd></div> : null}
-                        <div><dt className="text-xs text-muted-foreground">Origem da classificação</dt><dd>{customerSourceLabel(selectedAlert.customer_source)}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Confiança</dt><dd>{confidenceLabel(selectedAlert.customer_confidence)}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Source event ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_event_id)}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Trigger ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_trigger_id)}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Descrição do trigger</dt><dd>{safeDisplayText(selectedAlert.trigger_description)}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Item</dt><dd>{safeDisplayText(selectedAlert.item_name)}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Chave do item</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.item_key)}</dd></div>
-                      </dl>
-                    </Card>
-                    <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                      <h3 className="text-sm font-semibold">Grupos do host</h3>
-                      <div className="mt-3 flex flex-wrap gap-2">{selectedAlert.host_groups?.length ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? "group"}-${index}`} variant="outline">{safeDisplayText(group.name)}</Badge>) : <span className="text-sm text-muted-foreground">Nenhum grupo enriquecido.</span>}</div>
-                    </Card>
-                    <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                      <h3 className="text-sm font-semibold">Tags seguras</h3>
-                      <div className="mt-3 space-y-3">
-                        {[
-                          ["Evento", selectedAlert.event_tags],
-                          ["Trigger", selectedAlert.trigger_tags],
-                          ["Host", selectedAlert.host_tags],
-                        ].map(([label, tags]) => (
-                          <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><div className="mt-1 flex flex-wrap gap-1.5">{Array.isArray(tags) && tags.length ? tags.map((tag, index) => <Badge key={`${tag.tag}-${index}`} variant="secondary">{safeDisplayText(tag.tag)}: {safeDisplayText(tag.value)}</Badge>) : <span className="text-xs text-muted-foreground">Sem tags.</span>}</div></div>
-                        ))}
-                      </div>
-                    </Card>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-xs text-muted-foreground">Primeira ocorrência</p><p className="mt-1 font-semibold">{formatDateTime(selectedAlert.first_seen_at)}</p></Card>
-                      <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-xs text-muted-foreground">Persistido no OneView</p><p className="mt-1 font-semibold">{formatDateTime(selectedAlert.created_at)}</p></Card>
-                      <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-xs text-muted-foreground">Eventos históricos</p><p className="mt-1 text-xl font-semibold">{detail?.item.history_count ?? history?.total_items ?? 0}</p></Card>
-                      <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-xs text-muted-foreground">Reconhecimentos</p><p className="mt-1 text-xl font-semibold">{detail?.item.acknowledgement_count ?? 0}</p></Card>
-                    </div>
-                      </div>
+                      <summary className="cursor-pointer text-sm font-semibold">Origem</summary>
+                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Fonte Zabbix</dt><dd>{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</dd></div><div><dt className="text-xs text-muted-foreground">Evento de origem</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_event_id, "Não informado")}</dd></div></dl>
+                    </details>
+                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                      <summary className="cursor-pointer text-sm font-semibold">Host</summary>
+                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Nome visível</dt><dd>{safeDisplayText(selectedAlert.host_visible_name || selectedAlert.host_name, "Host não identificado")}</dd></div><div><dt className="text-xs text-muted-foreground">Nome técnico</dt><dd>{safeDisplayText(selectedAlert.host_technical_name, "Não informado")}</dd></div><div><dt className="text-xs text-muted-foreground">Grupos</dt><dd className="mt-1 flex flex-wrap gap-2">{selectedAlert.host_groups?.length ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? "group"}-${index}`} variant="outline">{safeDisplayText(group.name)}</Badge>) : <span className="text-muted-foreground">Nenhum grupo enriquecido.</span>}</dd></div></dl>
+                    </details>
+                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                      <summary className="cursor-pointer text-sm font-semibold">Trigger e item</summary>
+                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Descrição do trigger</dt><dd>{safeDisplayText(selectedAlert.trigger_description, "Não informada")}</dd></div><div><dt className="text-xs text-muted-foreground">Item</dt><dd>{safeDisplayText(selectedAlert.item_name, "Não informado")}</dd></div><div><dt className="text-xs text-muted-foreground">Chave do item</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.item_key, "Não informada")}</dd></div></dl>
+                    </details>
+                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                      <summary className="cursor-pointer text-sm font-semibold">Classificação</summary>
+                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Cliente interno</dt><dd className="font-semibold">{selectedCustomer?.name ?? "Cliente não identificado"}</dd></div><div><dt className="text-xs text-muted-foreground">Enriquecimento</dt><dd>{selectedCustomer ? enrichmentLabels[selectedCustomer.enrichment] : "Não classificado"}</dd></div><div><dt className="text-xs text-muted-foreground">Origem da classificação</dt><dd>{customerSourceLabel(selectedAlert.customer_source)}</dd></div><div><dt className="text-xs text-muted-foreground">Confiança</dt><dd>{confidenceLabel(selectedAlert.customer_confidence)}</dd></div><div><dt className="text-xs text-muted-foreground">Tags seguras</dt><dd className="mt-1 space-y-2">{[["Evento", selectedAlert.event_tags], ["Trigger", selectedAlert.trigger_tags], ["Host", selectedAlert.host_tags]].map(([label, tags]) => <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><div className="mt-1 flex flex-wrap gap-1.5">{Array.isArray(tags) && tags.length ? tags.map((tag, index) => <Badge key={`${tag.tag}-${index}`} variant="secondary">{safeDisplayText(tag.tag)}: {safeDisplayText(tag.value)}</Badge>) : <span className="text-xs text-muted-foreground">Sem tags.</span>}</div></div>)}</dd></div></dl>
+                    </details>
+                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                      <summary className="cursor-pointer text-sm font-semibold">Auditoria temporal</summary>
+                      <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">Primeira ocorrência</dt><dd>{formatDateTime(selectedAlert.first_seen_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Última ocorrência</dt><dd>{formatDateTime(selectedAlert.last_seen_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Persistido no OneView</dt><dd>{formatDateTime(selectedAlert.created_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Eventos históricos</dt><dd>{detail?.item.history_count ?? history?.total_items ?? 0}</dd></div></dl>
                     </details>
                   </TabsContent>
                 </div>
@@ -1674,17 +1930,17 @@ export default function AlertsPage() {
                     {!isResolvedAlert(selectedAlert) ? <Tooltip><TooltipTrigger asChild><span><Button
                       type="button"
                       variant="outline"
-                      disabled={!selectedAckAllowed || acknowledged(selectedAlert) || selectedAckPending || ackSubmitting}
+                      disabled={!selectedAckAllowed || internallyRecognized(selectedAlert) || selectedAckPending || ackSubmitting}
                       className="w-full"
                       onClick={() => openAckRequest(selectedAlert)}
-                    ><CheckCircle2 className="h-4 w-4" />{selectedAckPending ? "Solicitação pendente" : "ACK"}</Button></span></TooltipTrigger><TooltipContent>{!ackRequestsEnabled
+                    ><CheckCircle2 className="h-4 w-4" />{selectedAckPending ? "Reconhecimento registrado" : "Reconhecer no OneView"}</Button></span></TooltipTrigger><TooltipContent>{!ackRequestsEnabled
                       ? "Aguardando liberação operacional."
                       : selectedAckPending
-                      ? "A execução aguarda processamento operacional."
-                      : acknowledged(selectedAlert)
-                        ? "Alerta já reconhecido."
+                      ? "Reconhecimento interno já registrado."
+                      : internallyRecognized(selectedAlert)
+                        ? "Alerta já foi reconhecido no OneView."
                         : selectedAckAllowed
-                          ? "Registrar solicitação de reconhecimento."
+                          ? "Esta ação registra o tratamento interno no OneView. Nenhuma ação será enviada ao Zabbix."
                           : "Reconhecimento indisponível para esta fonte."}</TooltipContent></Tooltip> : null}
                     <Tooltip><TooltipTrigger asChild><span><Button type="button" variant="outline" disabled className="w-full"><UserCheck className="h-4 w-4" />Atribuir</Button></span></TooltipTrigger><TooltipContent>Atribuição operacional em preparação.</TooltipContent></Tooltip>
                     <Tooltip><TooltipTrigger asChild><span><Button type="button" variant="outline" disabled className="w-full"><MessageSquare className="h-4 w-4" />Comentar</Button></span></TooltipTrigger><TooltipContent>{ONEVIEW_READ_ONLY_MESSAGE}</TooltipContent></Tooltip>
@@ -1705,9 +1961,9 @@ export default function AlertsPage() {
       }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Confirmar solicitação de reconhecimento</AlertDialogTitle>
+            <AlertDialogTitle>Confirmar reconhecimento no OneView</AlertDialogTitle>
             <AlertDialogDescription>
-              A solicitação será registrada para processamento. Nenhuma chamada ao Zabbix é executada por esta tela.
+              Esta ação registra o tratamento interno no OneView. Nenhuma ação será enviada ao Zabbix.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-3">
@@ -1716,14 +1972,14 @@ export default function AlertsPage() {
               <p className="mt-1 text-xs text-muted-foreground">Fonte: {safeDisplayText(selectedAlert?.datasource_name)}</p>
             </div>
             <div>
-              <label htmlFor="ack-comment" className="text-sm font-medium">Comentário</label>
+              <label htmlFor="ack-comment" className="text-sm font-medium">Comentário obrigatório</label>
               <Textarea
                 id="ack-comment"
                 value={ackComment}
                 onChange={(event) => setAckComment(event.target.value)}
                 maxLength={500}
                 disabled={ackSubmitting}
-                placeholder="Contexto operacional para o reconhecimento (opcional)"
+                placeholder="Descreva o tratamento interno realizado"
                 className="mt-2 min-h-24 resize-none"
               />
               <p className="mt-1 text-right text-xs text-muted-foreground">{ackComment.length}/500</p>
@@ -1732,9 +1988,9 @@ export default function AlertsPage() {
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={ackSubmitting}>Cancelar</AlertDialogCancel>
-            <Button type="button" onClick={() => void submitAckRequest()} disabled={ackSubmitting || !selectedAlert || !ackRequestsEnabled}>
+            <Button type="button" onClick={() => void submitAckRequest()} disabled={ackSubmitting || !selectedAlert || !ackRequestsEnabled || ackComment.trim().length === 0}>
               {ackSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
-              {ackSubmitting ? "Registrando..." : "Confirmar solicitação"}
+              {ackSubmitting ? "Registrando..." : "Confirmar reconhecimento"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
