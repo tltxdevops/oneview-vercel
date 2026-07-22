@@ -7,6 +7,7 @@ import Index from "./pages/Index";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import AlertsPage from "@/pages/Alerts";
+import HistoricoPage from "@/pages/Historico";
 import ChamadosPage from "@/pages/Chamados";
 import CertificadosPage from "@/pages/Certificados";
 import BancoDadosPage from "@/pages/BancoDados";
@@ -31,6 +32,7 @@ const App = () => (
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<Index />} />
             <Route path="/alertas" element={<AlertsPage />} />
+            <Route path="/historico" element={<HistoricoPage />} />
             <Route path="/banco-dados" element={<BancoDadosPage />} />
             <Route path="/certificados" element={<CertificadosPage />} />
             <Route path="/chamados" element={<ChamadosPage />} />

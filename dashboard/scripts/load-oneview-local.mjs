@@ -65,9 +65,7 @@ function firstCsv(value) {
 function controlledSessionEmail() {
   const explicit = String(process.env.ONEVIEW_LOAD_TEST_EMAIL || "").trim().toLowerCase();
   if (explicit) return explicit;
-  const allowedEmail = firstCsv(process.env.ONEVIEW_ALLOWED_EMAILS).toLowerCase();
-  if (allowedEmail) return allowedEmail;
-  const allowedDomain = firstCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS).toLowerCase() || "teletex.com.br";
+  const allowedDomain = firstCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS).toLowerCase().replace(/^@+/, "") || "teletex.com.br";
   return `oneview-load-test@${allowedDomain}`;
 }
 

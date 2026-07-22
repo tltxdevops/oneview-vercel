@@ -42,23 +42,16 @@ function emailFromPayload(payload) {
 }
 
 function isAllowedViewer(email) {
-  const allowedEmails = splitCsv(process.env.ONEVIEW_ALLOWED_EMAILS);
-  const allowedDomains = splitCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS);
-  if (allowedEmails.length && allowedEmails.includes(email)) return true;
+  const allowedDomains = splitCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS)
+    .map((domain) => domain.replace(/^@+/, ""))
+    .filter(Boolean);
   const domain = email.split("@")[1] || "";
-  if (allowedDomains.length && allowedDomains.includes(domain)) return true;
-  return allowedEmails.length === 0 && allowedDomains.length === 0;
+  return Boolean(domain) && allowedDomains.includes(domain);
 }
 
-function rolesFor(email) {
-  const adminEmails = splitCsv(process.env.ONEVIEW_ADMIN_EMAILS);
-  const operatorEmails = splitCsv(process.env.ONEVIEW_OPERATOR_EMAILS);
+function rolesFor() {
   const roles = new Set(["viewer"]);
-  if (adminEmails.includes(email)) {
-    roles.add("operator");
-    roles.add("admin");
-  }
-  if (operatorEmails.includes(email) || process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS === "true") {
+  if (String(process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS || "").trim().toLowerCase() === "true") {
     roles.add("operator");
   }
   return roles;
@@ -110,8 +103,7 @@ export async function requireAuth(req, res, { role = "viewer" } = {}) {
       return null;
     }
 
-    const roles = rolesFor(email);
-    for (const roleName of sessionUser.roles || []) roles.add(roleName);
+    const roles = rolesFor();
     if (!hasRole(roles, role)) {
       sendJson(res, 403, { error: "insufficient_role" });
       return null;
@@ -141,7 +133,7 @@ export async function requireAuth(req, res, { role = "viewer" } = {}) {
       return null;
     }
 
-    const roles = rolesFor(email);
+    const roles = rolesFor();
     if (!hasRole(roles, role)) {
       sendJson(res, 403, { error: "insufficient_role" });
       return null;

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { createAckRequestHandler, getAckRequestConfig } from "../api/_lib/oneview-ack-request.js";
 import { getOneViewActionsDbConfig } from "../api/_lib/oneview-actions-db.js";
+import { createSessionToken } from "../api/_lib/session.js";
 
 function responseMock() {
   return {
@@ -29,6 +30,7 @@ function requestMock(overrides = {}) {
 
 function enabledConfig(allowed = ["teletex-http"]) {
   return {
+    allowAllAuthenticatedActions: true,
     requestEnabled: true,
     executionEnabled: false,
     allowedDatasources: new Set(allowed),
@@ -56,7 +58,6 @@ function fakeDatabase({ datasource = "teletex-http", acknowledged = false } = {}
           source_event_id: "event-123",
           datasource_name: datasource,
           acknowledged_source: acknowledged,
-          acknowledged_internal: false,
         }] };
       }
       if (sql.startsWith("select id") && sql.includes("from alert_acknowledgements")) {
@@ -66,10 +67,6 @@ function fakeDatabase({ datasource = "teletex-http", acknowledged = false } = {}
         state.acknowledgements += 1;
         state.writes.push({ table: "alert_acknowledgements", values });
         state.existingAcknowledgementId = values[0];
-        return { rows: [] };
-      }
-      if (sql.startsWith("update alerts set acknowledged_internal = true")) {
-        state.writes.push({ table: "alerts", values });
         return { rows: [] };
       }
       if (sql.startsWith("insert into audit_logs")) {
@@ -114,12 +111,57 @@ test("ACK request: usuario sem permissao retorna 403 antes do banco", async () =
   assert.equal(transactionCalled, false);
 });
 
+test("ACK request: sessão corporativa usa flag geral sem lista individual", async () => {
+  const names = [
+    "APP_SESSION_SECRET",
+    "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
+    "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS",
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const database = fakeDatabase();
+  try {
+    process.env.APP_SESSION_SECRET = "ack-session-test-secret";
+    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "teletex.com.br";
+    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "true";
+    const session = createSessionToken({
+      id: "entra-object-test",
+      name: "Pessoa Autenticada",
+      email: "pessoa.autenticada@teletex.com.br",
+      roles: ["viewer"],
+    });
+    const handler = createAckRequestHandler({
+      transaction: database.transaction,
+      configProvider: () => enabledConfig(),
+      logger: () => undefined,
+    });
+    const res = responseMock();
+    await handler(requestMock({
+      headers: {
+        cookie: `oneview_session=${encodeURIComponent(session.token)}`,
+        "idempotency-key": "authenticated-action-123",
+      },
+    }), res);
+    assert.equal(res.statusCode, 202);
+    assert.equal(database.state.acknowledgements, 1);
+    const audit = database.state.writes.find((write) => write.table === "audit_logs");
+    assert.equal(audit.values[1], "Pessoa Autenticada");
+    assert.equal(audit.values[2], "entra-object-test");
+    assert.equal(JSON.parse(audit.values[8]).actor_email, "pessoa.autenticada@teletex.com.br");
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
 test("ACK request: flag de apresentação desabilita antes do banco", async () => {
   let transactionCalled = false;
   const handler = createAckRequestHandler({
     authorize: async () => operator,
     transaction: async () => { transactionCalled = true; },
     configProvider: () => ({
+      allowAllAuthenticatedActions: true,
       requestEnabled: false,
       executionEnabled: false,
       allowedDatasources: new Set(["teletex-http"]),
@@ -152,11 +194,13 @@ test("ACK request: válido registra reconhecimento interno sem outbox e retorna 
   const database = fakeDatabase();
   const logs = [];
   let sequence = 0;
+  let summaryInvalidations = 0;
   const handler = createAckRequestHandler({
     authorize: async () => operator,
     transaction: database.transaction,
     configProvider: () => enabledConfig(),
     idFactory: () => `generated-${++sequence}`,
+    invalidateSummary: () => { summaryInvalidations += 1; },
     logger: (entry) => logs.push(entry),
   });
   const res = responseMock();
@@ -168,12 +212,15 @@ test("ACK request: válido registra reconhecimento interno sem outbox e retorna 
   assert.equal(database.state.acknowledgements, 1);
   assert.equal(database.state.outboxes, 0);
   assert.equal(database.state.audits, 1);
+  assert.equal(summaryInvalidations, 1);
+  assert.equal(database.state.writes.some((write) => write.table === "alerts"), false);
   const acknowledgementWrite = database.state.writes.find((write) => write.table === "alert_acknowledgements");
   const auditWrite = database.state.writes.find((write) => write.table === "audit_logs");
   assert.equal(acknowledgementWrite.values[5], operator.name);
   assert.equal(acknowledgementWrite.values[8], operator.id);
   assert.equal(auditWrite.values[1], operator.name);
   assert.equal(auditWrite.values[2], operator.id);
+  assert.equal(JSON.parse(auditWrite.values[8]).actor_email, operator.email);
   assert.deepEqual(logs[0], {
     event: "oneview_ack_request",
     route: "/api/oneview/alerts/:id/ack-request",
@@ -272,10 +319,35 @@ test("pool de actions usa role fixa e senha exclusiva", () => {
   assert.equal(config.password, "actions-secret");
   assert.equal(config.poolMax, 1);
   assert.equal(getAckRequestConfig({
+    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",
     ONEVIEW_ACK_EXECUTION_ENABLED: "false",
     ONEVIEW_ACK_ALLOWED_DATASOURCES: "teletex-http",
   }).allowedDatasources.has("teletex-http"), true);
+  assert.equal(getAckRequestConfig({
+    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
+  }).allowAllAuthenticatedActions, true);
+});
+
+test("ACK request: flag geral desabilitada falha fechado antes do banco", async () => {
+  let transactionCalled = false;
+  const handler = createAckRequestHandler({
+    authorize: async () => operator,
+    transaction: async () => { transactionCalled = true; },
+    configProvider: () => ({ ...enabledConfig(), allowAllAuthenticatedActions: false }),
+  });
+  const res = responseMock();
+  await handler(requestMock(), res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.error, "authenticated_actions_disabled");
+  assert.equal(transactionCalled, false);
+});
+
+test("pool de actions sem senha exclusiva falha fechado", () => {
+  assert.throws(
+    () => getOneViewActionsDbConfig({ ONEVIEW_DB_HOST: "db.example.invalid", ONEVIEW_DB_NAME: "oneview" }),
+    (error) => error?.code === "actions_database_not_configured",
+  );
 });
 
 test("BFF de ACK nao possui chamada Zabbix", () => {
@@ -283,4 +355,5 @@ test("BFF de ACK nao possui chamada Zabbix", () => {
   const source = fs.readFileSync(sourcePath, "utf8");
   assert.doesNotMatch(source, /event\.acknowledge|api_jsonrpc|\bfetch\s*\(|\baxios\b/i);
   assert.doesNotMatch(source, /insert into integration_outbox/i);
+  assert.doesNotMatch(source, /update\s+alerts\b/i);
 });

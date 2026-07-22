@@ -1,8 +1,8 @@
-import { getAttentionThresholds, getOneViewDbConfig } from "./oneview-db.js";
+import { getAttentionThresholds, getOneViewDbConfig, operationalTimezone } from "./oneview-db.js";
 
 const ROUTES = Object.freeze({
   health: Object.freeze({ upstreamPath: "/health", role: "viewer", fallbackSafe: true, query: [] }),
-  "dashboard-summary": Object.freeze({ upstreamPath: "/dashboard/summary", role: "viewer", fallbackSafe: true, query: [] }),
+  "dashboard-summary": Object.freeze({ upstreamPath: "/dashboard/summary", role: "viewer", fallbackSafe: true, query: ["refresh"] }),
   "grafana-summary": Object.freeze({ upstreamPath: "/dashboard/grafana-summary", role: "viewer", fallbackSafe: true, query: [] }),
   alerts: Object.freeze({
     upstreamPath: "/alerts",
@@ -26,7 +26,13 @@ const ROUTES = Object.freeze({
       "date_from",
       "date_to",
       "first_seen_from",
+      "first_seen_to",
       "last_seen_from",
+      "last_seen_to",
+      "resolved_from",
+      "resolved_to",
+      "acknowledged_from",
+      "acknowledged_to",
       "sort",
       "order",
     ],
@@ -74,6 +80,8 @@ export function getOneViewConfig(env = process.env) {
   const snapshotFallbackEnabled = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, false);
   const ackRequestEnabled = booleanValue(env.ONEVIEW_ACK_REQUEST_ENABLED, false);
   const ackExecutionEnabled = booleanValue(env.ONEVIEW_ACK_EXECUTION_ENABLED, false);
+  const authenticatedActionsEnabled = booleanValue(env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS, false);
+  const actionsDatabaseConfigured = Boolean(String(env.POSTGRES_ACTIONS_PASSWORD || "").trim());
   let dbConfig = null;
   let dbConfigErrorCode = null;
 
@@ -95,9 +103,10 @@ export function getOneViewConfig(env = process.env) {
     snapshotFallbackEnabled,
     ackRequestEnabled,
     ackExecutionEnabled,
-    ackEnabled: ackRequestEnabled && !ackExecutionEnabled,
+    ackEnabled: authenticatedActionsEnabled && ackRequestEnabled && !ackExecutionEnabled && actionsDatabaseConfigured,
     timeoutMs: timeoutValue(env.ONEVIEW_API_TIMEOUT_MS),
     attentionThresholds: getAttentionThresholds(env),
+    operationalTimezone: operationalTimezone(env.ONEVIEW_OPERATIONAL_TIMEZONE),
     alertStaleMinutes: alertStaleMinutes(env.ONEVIEW_ALERT_STALE_MINUTES),
     dbConfig,
     dbConfigErrorCode,

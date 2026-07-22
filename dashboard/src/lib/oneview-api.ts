@@ -87,6 +87,55 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type OneViewDataSourceKind = "database" | "snapshot";
 
+export const ONEVIEW_SEVERITY_CATALOG = {
+  disaster: { label: "Desastre", rank: 7 },
+  critical: { label: "Crítico", rank: 6 },
+  high: { label: "Alto", rank: 5 },
+  average: { label: "Médio", rank: 4 },
+  warning: { label: "Aviso", rank: 3 },
+  information: { label: "Informação", rank: 2 },
+  not_classified: { label: "Não classificado", rank: 1 },
+} as const;
+
+export type OneViewSeverity = keyof typeof ONEVIEW_SEVERITY_CATALOG;
+
+/** Severidades usadas nos filtros da V1 (Zabbix). `critical` só entra quando existir no dado. */
+export const ONEVIEW_V1_FILTER_SEVERITIES: OneViewSeverity[] = [
+  "disaster",
+  "high",
+  "average",
+  "warning",
+  "information",
+  "not_classified",
+];
+
+export function isOneViewSeverity(value: string): value is OneViewSeverity {
+  return Object.prototype.hasOwnProperty.call(ONEVIEW_SEVERITY_CATALOG, value);
+}
+
+export function normalizeOneViewSeverity(value?: string | null): OneViewSeverity {
+  const normalized = String(value || "").trim().toLowerCase();
+  return isOneViewSeverity(normalized) ? normalized : "not_classified";
+}
+
+/** Valores canônicos aceitos pelo BFF — nunca labels PT-BR. */
+export function canonicalizeSeveritiesForApi(values: string[]): OneViewSeverity[] {
+  const seen = new Set<OneViewSeverity>();
+  for (const value of values) {
+    const severity = normalizeOneViewSeverity(value);
+    if (!isOneViewSeverity(String(value || "").trim().toLowerCase())) continue;
+    seen.add(severity);
+  }
+  return [...seen];
+}
+
+/** Severidades do card/link Desastre: disaster + critical só se houver contagem real. */
+export function disasterFamilySeverities(counts?: Record<string, number>): OneViewSeverity[] {
+  const severities: OneViewSeverity[] = ["disaster"];
+  if (Number(counts?.critical ?? 0) > 0) severities.push("critical");
+  return severities;
+}
+
 export interface OneViewResponseMeta {
   data_source?: OneViewDataSourceKind;
   checked_at?: string;
@@ -201,6 +250,11 @@ export interface OneViewAlert {
   status_internal: string;
   acknowledged_source: boolean;
   acknowledged_internal: boolean;
+  acknowledged_source_at?: string | null;
+  acknowledged_source_by?: string | null;
+  acknowledged_internal_at?: string | null;
+  acknowledged_internal_by?: string | null;
+  acknowledged_internal_comment?: string | null;
   acknowledged_at: string | null;
   acknowledged_by: string | null;
   ack_request_status?: "pending" | "processing" | null;
@@ -229,6 +283,19 @@ export interface AlertPagination {
 export interface AlertListResponse extends OneViewResponseMeta {
   items: OneViewAlert[];
   pagination: AlertPagination;
+  filtered_summary?: {
+    total: number;
+    active: number;
+    resolved: number;
+    acknowledged_source: number;
+    unacknowledged_source: number;
+    by_severity: { disaster: number; high: number; average: number; low: number };
+  };
+  temporal_counts?: {
+    created: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
+    updated: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
+    resolved: Record<"15m" | "1h" | "6h" | "24h" | "7d" | "30d", number>;
+  };
   snapshot_coverage?: {
     partial: boolean;
     total_persisted: number;
@@ -240,6 +307,14 @@ export interface AlertDetailResponse extends OneViewResponseMeta {
   item: OneViewAlert & {
     history_count: number;
     acknowledgement_count: number;
+    source_ack?: {
+      acknowledged: boolean;
+      actor_name: string | null;
+      acknowledged_at: string | null;
+      comment: string | null;
+      acknowledge_id: string | null;
+      history_available: boolean;
+    };
   };
 }
 
@@ -289,6 +364,13 @@ export interface AlertMetrics extends OneViewResponseMeta {
   alerts_sample_size?: number;
   active_total: number;
   resolved_today?: number;
+  source_acknowledgements_today?: number;
+  oneview_acknowledgements_today?: number;
+  operational_day?: {
+    timezone: string;
+    from: string;
+    to: string;
+  };
   by_severity: Array<{ severity: string; count: number }>;
   by_status: Array<{ status_internal: string; count: number }>;
   by_client: Array<{ client_name: string; count: number }>;
@@ -347,8 +429,10 @@ export interface AttentionRequiredResponse extends OneViewResponseMeta {
   summary: {
     total: number;
     disaster: number;
+    critical?: number;
     high: number;
     average: number;
+    low?: number;
     by_customer: Array<{ customer_name: string; count: number }>;
     by_datasource: Array<{ datasource_name: string; count: number }>;
   };
@@ -356,6 +440,7 @@ export interface AttentionRequiredResponse extends OneViewResponseMeta {
     disaster_minutes: number;
     high_minutes: number;
     average_minutes: number;
+    low_minutes?: number;
   };
   items: Array<{
     id: string;
@@ -487,7 +572,13 @@ export interface FetchAlertsParams {
   dateFrom?: string;
   dateTo?: string;
   firstSeenFrom?: string;
+  firstSeenTo?: string;
   lastSeenFrom?: string;
+  lastSeenTo?: string;
+  resolvedFrom?: string;
+  resolvedTo?: string;
+  acknowledgedFrom?: string;
+  acknowledgedTo?: string;
   sort?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source";
   order?: "asc" | "desc";
   signal?: AbortSignal;
@@ -501,7 +592,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   for (const customer of params?.customers ?? []) search.append("customer", customer);
   for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
-  for (const severity of params?.severities ?? []) search.append("severity", severity);
+  for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
   if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
@@ -512,7 +603,13 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   if (params?.dateFrom) search.set("date_from", params.dateFrom);
   if (params?.dateTo) search.set("date_to", params.dateTo);
   if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);
+  if (params?.firstSeenTo) search.set("first_seen_to", params.firstSeenTo);
   if (params?.lastSeenFrom) search.set("last_seen_from", params.lastSeenFrom);
+  if (params?.lastSeenTo) search.set("last_seen_to", params.lastSeenTo);
+  if (params?.resolvedFrom) search.set("resolved_from", params.resolvedFrom);
+  if (params?.resolvedTo) search.set("resolved_to", params.resolvedTo);
+  if (params?.acknowledgedFrom) search.set("acknowledged_from", params.acknowledgedFrom);
+  if (params?.acknowledgedTo) search.set("acknowledged_to", params.acknowledgedTo);
   if (params?.sort) search.set("sort", params.sort);
   if (params?.order) search.set("order", params.order);
 
@@ -548,8 +645,8 @@ export async function fetchOneViewFacets(signal?: AbortSignal): Promise<OneViewF
   return fetchApi<OneViewFacetsResponse>("/oneview/clients-summary", { signal });
 }
 
-export async function fetchAlertMetrics(): Promise<AlertMetrics> {
-  return fetchApi<AlertMetrics>("/oneview/dashboard-summary");
+export async function fetchAlertMetrics(options: { refresh?: boolean } = {}): Promise<AlertMetrics> {
+  return fetchApi<AlertMetrics>(`/oneview/dashboard-summary${options.refresh ? "?refresh=1" : ""}`);
 }
 
 export async function fetchAttentionRequired(limit = 100): Promise<AttentionRequiredResponse> {
@@ -613,6 +710,7 @@ export function dataSourcesToClients(dataSources: DataSource[]): Client[] {
 export function severityToUi(value: string): Severity {
   switch (value) {
     case "disaster":
+    case "critical":
       return "Critical";
     case "high":
       return "High";
@@ -670,10 +768,11 @@ export function oneViewAlertToLegacyAlert(alert: OneViewAlert): Alert {
     status,
     tags: [],
     clientId: alert.data_source_id,
-    clientName: alert.customer_name
-      || (alert.datasource_name?.toLowerCase() === "teletex-http"
-        ? "Classificação histórica pendente"
-        : "Dados históricos aguardando classificação"),
+    clientName: alert.customer_source === "datasource_fallback"
+      || alert.customer_key === "unclassified"
+      || !alert.customer_name
+      ? "Cliente não identificado"
+      : alert.customer_name,
   };
 }
 

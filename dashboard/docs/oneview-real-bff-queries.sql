@@ -142,7 +142,7 @@ EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) EXECUTE oneview_operations_health;
 
 -- ================================================================
 -- attention-required
--- $1 = minutos Desastre; $2 = Alta; $3 = Média; $4 = limite (máximo 200).
+-- $1 = minutos Crítico (disaster); $2 = Alta; $3 = Média; $4 = limite (máximo 200).
 -- O endpoint usa o mesmo predicado nas quatro consultas abaixo.
 -- ================================================================
 

@@ -9,10 +9,14 @@ import {
   classifyOperationalSource,
   compareAttentionRequiredEntries,
   consolidateAlertHistoryItems,
+  countDailyOperationalMetrics,
+  dailyOperationalMetricQueries,
   getAttentionThresholds,
   historyTitle,
   historyValueIsMeaningful,
   resolveAckActorName,
+  resolveSourceAck,
+  safeCustomerIdentity,
 } from "../api/_lib/oneview-db.js";
 import { getOneViewSnapshotPayload } from "../api/_lib/oneview-fallback.js";
 import { createOneViewHandler } from "../api/_lib/oneview-response.js";
@@ -40,6 +44,49 @@ const liveConfig = () => ({
   dbConfig: {},
 });
 
+test("métricas diárias separam resolução, ACK da origem e reconhecimento OneView", () => {
+  const queries = dailyOperationalMetricQueries("America/Sao_Paulo", new Date("2026-07-22T02:30:00.000Z"));
+  assert.equal(queries.day.from, "2026-07-21T03:00:00.000Z");
+  assert.equal(queries.day.to, "2026-07-22T03:00:00.000Z");
+  assert.match(queries.resolved.text, /resolved_at >= \$1::timestamptz/);
+  assert.doesNotMatch(queries.resolved.text, /acknowledged/);
+  assert.match(queries.sourceAcknowledged.text, /acknowledged_source = true/);
+  assert.match(queries.sourceAcknowledged.text, /acknowledged_at >= \$1::timestamptz/);
+  assert.doesNotMatch(queries.sourceAcknowledged.text, /alert_acknowledgements/);
+  assert.match(queries.oneViewAcknowledged.text, /from alert_acknowledgements/);
+  assert.match(queries.oneViewAcknowledged.text, /requested_at >= \$1::timestamptz/);
+  assert.deepEqual(queries.oneViewAcknowledged.values[2], ["internal"]);
+  assert.equal(queries.oneViewAcknowledged.values[3].includes("failed"), false);
+  assert.equal(queries.oneViewAcknowledged.values[3].includes("cancelled"), false);
+});
+
+test("virada do dia operacional não usa meia-noite UTC", () => {
+  const beforeMidnight = dailyOperationalMetricQueries("America/Sao_Paulo", new Date("2026-07-22T02:59:59.000Z"));
+  const afterMidnight = dailyOperationalMetricQueries("America/Sao_Paulo", new Date("2026-07-22T03:00:01.000Z"));
+  assert.equal(beforeMidnight.day.from, "2026-07-21T03:00:00.000Z");
+  assert.equal(afterMidnight.day.from, "2026-07-22T03:00:00.000Z");
+});
+
+test("eventos de hoje contam apenas em sua própria métrica e ontem fica fora", () => {
+  const metrics = countDailyOperationalMetrics({
+    alerts: [
+      { resolved_at: "2026-07-22T12:00:00.000Z", acknowledged_source: false },
+      { resolved_at: null, acknowledged_source: true, acknowledged_at: "2026-07-22T13:00:00.000Z" },
+      { resolved_at: "2026-07-21T02:59:59.000Z", acknowledged_source: true, acknowledged_at: "2026-07-21T02:59:59.000Z" },
+    ],
+    acknowledgements: [
+      { acknowledgement_type: "internal", status: "recorded", requested_at: "2026-07-22T14:00:00.000Z" },
+      { acknowledgement_type: "internal", status: "failed", requested_at: "2026-07-22T15:00:00.000Z" },
+      { acknowledgement_type: "internal", status: "recorded", requested_at: "2026-07-22T02:59:59.000Z" },
+    ],
+  }, "America/Sao_Paulo", new Date("2026-07-22T16:00:00.000Z"));
+  assert.deepEqual({
+    resolved_today: metrics.resolved_today,
+    source_acknowledgements_today: metrics.source_acknowledgements_today,
+    oneview_acknowledgements_today: metrics.oneview_acknowledgements_today,
+  }, { resolved_today: 1, source_acknowledgements_today: 1, oneview_acknowledgements_today: 1 });
+});
+
 test("fila de atenção usa first_seen_at, reconhecimento da origem e limites por severidade", () => {
   const now = Date.parse("2026-07-16T12:00:00.000Z");
   const alert = (severity, minutes, overrides = {}) => ({
@@ -56,8 +103,11 @@ test("fila de atenção usa first_seen_at, reconhecimento da origem e limites po
   assert.equal(attentionRequiredState(alert("disaster", 4), undefined, now).matches, false);
   assert.equal(attentionRequiredState(alert("disaster", 5), undefined, now).matches, false);
   assert.equal(attentionRequiredState(alert("disaster", 5.1), undefined, now).matches, true);
+  assert.equal(attentionRequiredState(alert("critical", 6), undefined, now).matches, true);
   assert.equal(attentionRequiredState(alert("high", 16), undefined, now).matches, true);
   assert.equal(attentionRequiredState(alert("average", 31), undefined, now).matches, true);
+  assert.equal(attentionRequiredState(alert("warning", 61), undefined, now).matches, true);
+  assert.equal(attentionRequiredState(alert("warning", 59), undefined, now).matches, false);
   assert.equal(attentionRequiredState(alert("disaster", 60, { acknowledged_source: true }), undefined, now).matches, false);
   assert.equal(attentionRequiredState(alert("disaster", 60, { resolved_at: "2026-07-16T11:59:00.000Z" }), undefined, now).matches, false);
 });
@@ -81,13 +131,16 @@ test("fila de atenção usa defaults seguros, limita 200 e neutraliza entrada in
     disasterMinutes: 5,
     highMinutes: 15,
     averageMinutes: 30,
+    lowMinutes: 60,
   });
   const query = buildAttentionRequiredQuery(request("GET", { limit: "5000" }), getAttentionThresholds({}));
   assert.equal(query.limit, 200);
-  assert.deepEqual(query.values, [5, 15, 30]);
+  assert.deepEqual(query.values, [5, 15, 30, 60]);
   assert.match(query.whereSql, /a\.first_seen_at < now\(\)/);
+  assert.match(query.whereSql, /severity in \('disaster', 'critical'\)/);
+  assert.match(query.whereSql, /severity in \('warning', 'information', 'not_classified'\)/);
   assert.doesNotMatch(query.whereSql, /last_seen_at/);
-  assert.match(query.orderSql, /when 'disaster' then 1 when 'high' then 2 when 'average' then 3/);
+  assert.match(query.orderSql, /when 'disaster' then 1 when 'critical' then 1/);
   assert.throws(
     () => buildAttentionRequiredQuery(request("GET", { limit: "100; select * from alerts" })),
     (error) => error?.code === "invalid_query",
@@ -158,7 +211,7 @@ test("attention-required em snapshot preserva segurança e informa contingência
     { attentionThresholds: getAttentionThresholds({}) },
   );
   assert.ok(payload.items.length <= 200);
-  assert.equal(payload.summary.total, payload.summary.disaster + payload.summary.high + payload.summary.average);
+  assert.equal(payload.summary.total, payload.summary.disaster + payload.summary.critical + payload.summary.high + payload.summary.average + payload.summary.low);
   assert.equal(payload.snapshot_coverage.partial, true);
   assert.doesNotMatch(JSON.stringify(payload), /payload_raw|payload_normalized|inventory|api_url|token|password|senha|https?:\/\/|\b(?:127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2})\b/i);
 });
@@ -236,7 +289,13 @@ test("filtros, multisseleção, datas, busca e sort ficam parametrizados", () =>
     date_from: "2026-07-01T00:00:00.000Z",
     date_to: "2026-07-14T23:59:59.999Z",
     first_seen_from: "2026-07-14T22:00:00.000Z",
+    first_seen_to: "2026-07-14T22:30:00.000Z",
     last_seen_from: "2026-07-14T23:00:00.000Z",
+    last_seen_to: "2026-07-14T23:30:00.000Z",
+    resolved_from: "2026-07-14T20:00:00.000Z",
+    resolved_to: "2026-07-14T21:00:00.000Z",
+    acknowledged_from: "2026-07-14T18:00:00.000Z",
+    acknowledged_to: "2026-07-14T19:00:00.000Z",
     sort: "client",
     order: "asc",
   }));
@@ -251,17 +310,31 @@ test("filtros, multisseleção, datas, busca e sort ficam parametrizados", () =>
   assert.equal(query.filters.hostSearch, "core-switch");
   assert.equal(query.filters.problemSearch, "latência alta");
   assert.equal(query.filters.firstSeenFrom, "2026-07-14T22:00:00.000Z");
+  assert.equal(query.filters.firstSeenTo, "2026-07-14T22:30:00.000Z");
   assert.equal(query.filters.lastSeenFrom, "2026-07-14T23:00:00.000Z");
+  assert.equal(query.filters.lastSeenTo, "2026-07-14T23:30:00.000Z");
+  assert.equal(query.filters.resolvedFrom, "2026-07-14T20:00:00.000Z");
+  assert.equal(query.filters.resolvedTo, "2026-07-14T21:00:00.000Z");
+  assert.equal(query.filters.acknowledgedFrom, "2026-07-14T18:00:00.000Z");
+  assert.equal(query.filters.acknowledgedTo, "2026-07-14T19:00:00.000Z");
   assert.match(query.whereSql, /a\.client_name = any\(\$\d+::text\[\]\)/);
-  assert.match(query.whereSql, /coalesce\(a\.customer_key, 'unclassified'\) = any\(\$\d+::text\[\]\)/);
+  assert.match(query.whereSql, /a\.customer_key = any\(\$\d+::text\[\]\)/);
   assert.match(query.whereSql, /d\.name = any\(\$\d+::text\[\]\)/);
   assert.match(query.whereSql, /coalesce\(a\.customer_confidence, 'unclassified'\) = any\(\$\d+::text\[\]\)/);
   assert.match(query.whereSql, /a\.severity = any\(\$\d+::text\[\]\)/);
   assert.match(query.whereSql, /a\.first_seen_at >= \$\d+/);
+  assert.match(query.whereSql, /a\.first_seen_at <= \$\d+/);
   assert.match(query.whereSql, /a\.last_seen_at >= \$\d+/);
+  assert.match(query.whereSql, /a\.last_seen_at <= \$\d+/);
+  assert.match(query.whereSql, /a\.resolved_at >= \$\d+/);
+  assert.match(query.whereSql, /a\.resolved_at <= \$\d+/);
+  assert.match(query.whereSql, /a\.acknowledged_at >= \$\d+/);
+  assert.match(query.whereSql, /a\.acknowledged_at <= \$\d+/);
+  assert.doesNotMatch(query.baseWhereSql, /first_seen_at|last_seen_at|resolved_at >=|resolved_at <=|acknowledged_at/);
+  assert.match(query.baseWhereSql, /customer_key/);
   assert.match(query.whereSql, /host_visible_name/);
   assert.match(query.whereSql, /problem_name/);
-  assert.match(query.orderSql, /^coalesce\(a\.customer_name, a\.client_name\) ASC/);
+  assert.match(query.orderSql, /^case[\s\S]+Cliente não identificado[\s\S]+a\.customer_name[\s\S]+end ASC/);
   assert.doesNotMatch(`${query.whereSql}\n${query.orderSql}`, /OR 1=1/);
   assert.equal(query.params.includes(`%${injection}%`), true);
   assert.equal(query.params.includes("%core-switch%"), true);
@@ -275,18 +348,73 @@ test("ordena explicitamente por criação ou última atualização", () => {
   assert.match(mostRecent.orderSql, /^a\.last_seen_at DESC/);
 });
 
+test("filtros canônicos não convertem disaster em high nem high em critical", () => {
+  const query = buildAlertListQuery(request("GET", {
+    status: "active",
+    severity: ["disaster"],
+    sort: "severity",
+    order: "desc",
+    page_size: "15",
+  }));
+  const high = buildAlertListQuery(request("GET", { severity: ["high"] }));
+  const critical = buildAlertListQuery(request("GET", { severity: ["critical"] }));
+  assert.deepEqual(query.filters.severities, ["disaster"]);
+  assert.deepEqual(high.filters.severities, ["high"]);
+  assert.deepEqual(critical.filters.severities, ["critical"]);
+  assert.equal(query.pageSize, 15);
+  assert.match(query.orderSql, /when 'disaster' then 7 when 'critical' then 6 when 'high' then 5/);
+  assert.match(query.orderSql, /DESC, a\.first_seen_at desc, a\.last_seen_at desc/);
+});
+
+test("atalho da Home (desastre sem ACK) gera filtro válido sem 400", () => {
+  const query = buildAlertListQuery(request("GET", {
+    status: "active",
+    severity: ["disaster"],
+    acknowledged_source: "false",
+    sort: "first_seen_at",
+    order: "desc",
+    first_seen_from: "2026-07-22",
+  }));
+  assert.deepEqual(query.filters.severities, ["disaster"]);
+  assert.equal(query.filters.status, "active");
+  assert.equal(query.filters.acknowledgedSource, "false");
+  assert.match(query.filters.firstSeenFrom, /^2026-07-22/);
+  assert.doesNotMatch(JSON.stringify(query.filters.severities), /high|critical/);
+});
+
+test("labels PT-BR de prioridade são rejeitados pelo BFF", () => {
+  for (const severity of ["Desastre", "Crítico", "Alto", "Médio", "Aviso"]) {
+    assert.throws(
+      () => buildAlertListQuery(request("GET", { severity: [severity] })),
+      (error) => error?.code === "invalid_query" && error?.status === 400,
+    );
+  }
+});
+
+test("família desastre + alto ficam separados nos filtros", () => {
+  const combined = buildAlertListQuery(request("GET", { severity: ["disaster", "high"] }));
+  assert.deepEqual(combined.filters.severities, ["disaster", "high"]);
+  assert.ok(!combined.filters.severities.includes("critical"));
+});
+
 for (const query of [
   { page: "0" },
   { page: String(Number.MAX_SAFE_INTEGER), page_size: "100" },
   { status: "closed" },
   { acknowledged: "yes" },
-  { severity: "critical" },
+  { severity: "catastrophic" },
   { customer_confidence: "certain" },
   { sort: "select * from alerts" },
   { order: "sideways" },
   { date_from: "2026-07-14", date_to: "2026-07-01" },
   { first_seen_from: "ontem" },
+  { first_seen_from: "2026-07-15", first_seen_to: "2026-07-14" },
   { last_seen_from: "agora" },
+  { last_seen_from: "2026-07-15", last_seen_to: "2026-07-14" },
+  { resolved_from: "ontem" },
+  { resolved_from: "2026-07-15", resolved_to: "2026-07-14" },
+  { acknowledged_from: "ontem" },
+  { acknowledged_from: "2026-07-15", acknowledged_to: "2026-07-14" },
 ]) {
   test(`entrada inválida retorna invalid_query: ${JSON.stringify(query)}`, () => {
     assert.throws(() => buildAlertListQuery(request("GET", query)), (error) => error?.code === "invalid_query" && error?.status === 400);
@@ -305,6 +433,10 @@ test("snapshot aplica paginação, filtros e informa cobertura parcial", async (
   assert.equal(first.snapshot_coverage.partial, true);
   assert.equal(first.snapshot_coverage.available_items, 3000);
   assert.ok(first.snapshot_coverage.total_persisted > first.snapshot_coverage.available_items);
+  assert.equal(first.filtered_summary.total, first.pagination.total_items);
+  assert.deepEqual(Object.keys(first.temporal_counts.created), ["15m", "1h", "6h", "24h", "7d"]);
+  assert.deepEqual(Object.keys(first.temporal_counts.updated), ["15m", "1h", "6h", "24h", "7d"]);
+  assert.deepEqual(Object.keys(first.temporal_counts.resolved), ["15m", "1h", "6h", "24h", "7d", "30d"]);
 });
 
 test("snapshot fornece detalhe seguro e histórico vazio para ID existente", async () => {
@@ -382,8 +514,8 @@ function historyFixture(overrides = {}) {
 
 test("ACK e comentário do mesmo update são consolidados em um único card", () => {
   const items = consolidateAlertHistoryItems([
-    historyFixture({ id: "ack", event_type: "acknowledged", title: "Alerta reconhecido", ack_actor_name: "Analista NOC", actor_name: "Analista NOC" }),
-    historyFixture({ id: "message", event_type: "ack_message", title: "Comentário adicionado ao reconhecimento", description: "Em tratamento", ack_actor_name: "Analista NOC", actor_name: "Analista NOC" }),
+    historyFixture({ id: "ack", event_type: "acknowledged", title: "Alerta reconhecido", acknowledge_id: "42", ack_actor_name: "Analista NOC", actor_name: "Analista NOC" }),
+    historyFixture({ id: "message", event_type: "ack_message", title: "Comentário adicionado ao reconhecimento", description: "Em tratamento", acknowledge_id: "42", ack_actor_name: "Analista NOC", actor_name: "Analista NOC" }),
   ]);
 
   assert.equal(items.length, 1);
@@ -391,6 +523,93 @@ test("ACK e comentário do mesmo update são consolidados em um único card", ()
   assert.equal(items[0].grouped_event_count, 2);
   assert.equal(items[0].comment, "Em tratamento");
   assert.equal(items[0].ack_actor_name, "Analista NOC");
+  assert.equal(items[0].acknowledge_id, "42");
+});
+
+test("resolveSourceAck monta comentário, ator e horário a partir do histórico", () => {
+  const sourceAck = resolveSourceAck(
+    {
+      acknowledged_source: true,
+      acknowledged_by: "99999",
+      acknowledged_at: "2025-10-14T11:24:34.000Z",
+    },
+    [
+      historyFixture({
+        id: "ack",
+        event_type: "acknowledged",
+        acknowledge_id: "1001",
+        occurred_at: "2025-10-14T11:24:34.000Z",
+        ack_actor_name: "Richard Malaga",
+        actor_name: "Richard Malaga",
+      }),
+      historyFixture({
+        id: "message",
+        event_type: "ack_message",
+        acknowledge_id: "1001",
+        description: "Em análise no NOC",
+        occurred_at: "2025-10-14T11:24:34.000Z",
+        ack_actor_name: "Richard Malaga",
+        actor_name: "Richard Malaga",
+      }),
+    ],
+  );
+
+  assert.equal(sourceAck.acknowledged, true);
+  assert.equal(sourceAck.actor_name, "Richard Malaga");
+  assert.equal(sourceAck.comment, "Em análise no NOC");
+  assert.equal(sourceAck.acknowledge_id, "1001");
+  assert.equal(sourceAck.history_available, true);
+  assert.equal(sourceAck.acknowledged_at, "2025-10-14T11:24:34.000Z");
+});
+
+test("resolveSourceAck sem comentário preserva ator e marca histórico disponível", () => {
+  const sourceAck = resolveSourceAck(
+    { acknowledged_source: true, acknowledged_by: "Richard Malaga", acknowledged_at: "2025-10-14T11:24:34.000Z" },
+    [
+      historyFixture({
+        id: "ack",
+        event_type: "acknowledged",
+        acknowledge_id: "1002",
+        occurred_at: "2025-10-14T11:24:34.000Z",
+        ack_actor_name: "Richard Malaga",
+        actor_name: "Richard Malaga",
+      }),
+    ],
+  );
+  assert.equal(sourceAck.comment, null);
+  assert.equal(sourceAck.actor_name, "Richard Malaga");
+  assert.equal(sourceAck.history_available, true);
+});
+
+test("resolveSourceAck sem histórico usa estado atual e não inventa comentário", () => {
+  const sourceAck = resolveSourceAck({
+    acknowledged_source: true,
+    acknowledged_source_by: "Richard Malaga",
+    acknowledged_source_at: "2025-10-14T11:24:34.000Z",
+  }, []);
+  assert.equal(sourceAck.acknowledged, true);
+  assert.equal(sourceAck.actor_name, "Richard Malaga");
+  assert.equal(sourceAck.comment, null);
+  assert.equal(sourceAck.acknowledge_id, null);
+  assert.equal(sourceAck.history_available, false);
+});
+
+test("resolveSourceAck nunca devolve ID numérico como responsável", () => {
+  const sourceAck = resolveSourceAck(
+    { acknowledged_source: true, acknowledged_by: "12345", acknowledged_at: "2025-10-14T11:24:34.000Z" },
+    [
+      historyFixture({
+        id: "ack",
+        event_type: "acknowledged",
+        acknowledge_id: "77",
+        ack_actor_name: null,
+        actor_name: null,
+        ack_actor_unresolved: true,
+      }),
+    ],
+  );
+  assert.equal(sourceAck.actor_name, null);
+  assert.doesNotMatch(String(sourceAck.actor_name || ""), /^\d+$/);
 });
 
 test("ACKs de pessoas diferentes permanecem separados e ordenados por occurred_at", () => {
@@ -445,6 +664,24 @@ test("enriquecimento diferencia completo, parcial, legado e não classificado", 
   assert.equal(classifyAlertEnrichment({ customer_name: "Cliente Real", customer_confidence: "low" }), "partial");
   assert.equal(classifyAlertEnrichment({ customer_name: null, customer_confidence: null }), "legacy");
   assert.equal(classifyAlertEnrichment({ customer_name: "Cliente não classificado", customer_confidence: "low" }), "unclassified");
+  assert.equal(classifyAlertEnrichment({ customer_name: "teletex-http", customer_source: "datasource_fallback", customer_confidence: "high" }), "unclassified");
+});
+
+test("datasource_fallback nunca vira nome de cliente", () => {
+  assert.deepEqual(safeCustomerIdentity({
+    customer_name: "teletex-http",
+    customer_key: "teletex-http",
+    customer_source: "datasource_fallback",
+  }), {
+    customerName: null,
+    customerKey: "unclassified",
+    unidentified: true,
+  });
+
+  const query = buildAlertListQuery(request("GET", { customer: "unclassified" }));
+  assert.match(query.whereSql, /customer_source[\s\S]+datasource_fallback/);
+  assert.match(query.whereSql, /customer_key[\s\S]+unclassified/);
+  assert.doesNotMatch(query.whereSql, /client_name =/);
 });
 
 test("BFF seleciona enriquecimento seguro e histórico estruturado", async () => {
@@ -468,7 +705,8 @@ test("BFF seleciona enriquecimento seguro e histórico estruturado", async () =>
   ]) {
     assert.match(source, new RegExp(`\\b${field}\\b`));
   }
-  assert.match(source, /order by h\.occurred_at desc nulls last/);
+  assert.match(source, /order by occurred_at desc nulls last, created_at desc, id desc/);
+  assert.match(source, /'internal_acknowledged'::text as event_type/);
   assert.match(source, /\.sort\(\(left, right\) => Date\.parse\(right\.occurred_at\) - Date\.parse\(left\.occurred_at\)\)/);
   assert.match(source, /history_partial: items\.some/);
   assert.match(source, /first_event_at: items\.at\(-1\)/);
@@ -487,18 +725,18 @@ test("timeline usa origem segura, horario da origem e registro no OneView sem de
   const pageSource = await readFile(new URL("../src/pages/Alerts.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(databaseSource, /O alerta foi registrado pelo Zabbix/);
   assert.match(databaseSource, /source: historySource\(row\.source, legacy\)/);
-  assert.match(pageSource, /Origem Zabbix/);
-  assert.match(pageSource, /Origem OneView/);
+  assert.match(pageSource, /historyOrigin/);
+  assert.match(pageSource, /Fonte Zabbix/);
   assert.match(pageSource, /Hist.rico legado/);
   assert.match(pageSource, /Hor.rio da origem:/);
   assert.match(pageSource, /Registrado no OneView:/);
-  assert.match(pageSource, /Evid.ncia parcial/);
+  assert.match(pageSource, /Integridade do hist.rico/);
 });
 
 test("tela usa status no BFF, nao filtra pagina localmente e oculta ACK em resolvidos", async () => {
   const pageSource = await readFile(new URL("../src/pages/Alerts.tsx", import.meta.url), "utf8");
   assert.match(pageSource, /status: statusFilter/);
-  assert.match(pageSource, /!isResolved \? <TooltipProvider/);
+  assert.doesNotMatch(pageSource, /Reconhecer no OneView|<UserCheck className="h-3\.5 w-3\.5" \/> ACK<\/Button>/);
   assert.doesNotMatch(pageSource, /alerts\.filter\(/);
 });
 

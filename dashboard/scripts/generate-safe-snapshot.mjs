@@ -99,7 +99,8 @@ function normalizeSeverity(value) {
   if (Number.isFinite(numeric)) {
     return ["not_classified", "information", "warning", "average", "high", "disaster"][Math.max(0, Math.min(5, numeric))];
   }
-  if (["disaster", "critical", "critico", "crítico"].includes(raw)) return "disaster";
+  if (raw === "disaster") return "disaster";
+  if (["critical", "critico", "crítico"].includes(raw)) return "critical";
   if (["high", "alta", "alto"].includes(raw)) return "high";
   if (["average", "media", "média", "medium"].includes(raw)) return "average";
   if (["warning", "aviso", "warn"].includes(raw)) return "warning";

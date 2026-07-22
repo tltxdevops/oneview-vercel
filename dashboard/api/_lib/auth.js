@@ -53,15 +53,15 @@ function emailFromPayload(payload) {
   return normalizeEmail(payload.preferred_username || payload.email || payload.upn);
 }
 
-function rolesFor(email) {
-  const adminEmails = splitCsv(process.env.ONEVIEW_ADMIN_EMAILS);
-  const operatorEmails = splitCsv(process.env.ONEVIEW_OPERATOR_EMAILS);
+function allowedEmailDomains() {
+  return splitCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS)
+    .map((domain) => domain.replace(/^@+/, ""))
+    .filter(Boolean);
+}
+
+function rolesFor() {
   const roles = new Set(["viewer"]);
-  if (adminEmails.includes(email)) {
-    roles.add("operator");
-    roles.add("admin");
-  }
-  if (operatorEmails.includes(email) || process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS === "true") {
+  if (String(process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS || "").trim().toLowerCase() === "true") {
     roles.add("operator");
   }
   return roles;
@@ -95,12 +95,16 @@ function authorizeIdentity(req, res, identity, role, source) {
   const email = normalizeEmail(identity?.email);
   if (!email) return deny(res, "email_not_allowed");
 
-  // A sessão server-side só é emitida depois do SSO no tenant configurado.
-  // Para leitura, a sessão Microsoft válida é a barreira de identidade.
+  const domain = email.includes("@") ? email.slice(email.lastIndexOf("@") + 1) : "";
+  if (!domain || !allowedEmailDomains().includes(domain)) return deny(res, "domain_not_allowed");
+
+  // A sessão server-side só é emitida depois do SSO no tenant configurado;
+  // o Microsoft Entra aplica a atribuição ao aplicativo durante esse login.
   if (!isAllowedRequestOrigin(req)) return deny(res, "origin_not_allowed");
 
-  const roles = rolesFor(email);
-  for (const roleName of identity?.roles || []) roles.add(roleName);
+  // Cookies antigos não concedem permissão operacional. A liberação
+  // de ações vem exclusivamente da flag geral server-side.
+  const roles = rolesFor();
   if (!hasRole(roles, role)) return deny(res, role === "operator" || role === "admin" ? "operator_required" : "email_not_allowed");
 
   const auth = {

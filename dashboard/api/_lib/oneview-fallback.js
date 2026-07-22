@@ -10,6 +10,8 @@ import {
   getAttentionThresholds,
   isActiveAlert,
   isResolvedAlert,
+  operationalDayBounds,
+  safeCustomerIdentity,
 } from "./oneview-db.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
@@ -47,15 +49,18 @@ function snapshotAlert(alert, generatedAt) {
   const hostDigest = createHash("sha256").update(hostSeed).digest("hex").slice(0, 8).toUpperCase();
   const enrichmentState = classifyAlertEnrichment({
     customer_name: alert.customer_name,
+    customer_key: alert.customer_key,
+    customer_source: alert.customer_source,
     customer_confidence: alert.customer_confidence,
   });
+  const customerIdentity = safeCustomerIdentity(alert);
   return {
     id: String(alert.id || ""),
     data_source_id: String(alert.data_source_id || ""),
     datasource_name: String(alert.datasource_name || alert.client_name || "Datasource OneView"),
     client_name: String(alert.client_name || "Cliente OneView"),
-    customer_name: alert.customer_name ? String(alert.customer_name) : null,
-    customer_key: alert.customer_key ? String(alert.customer_key) : null,
+    customer_name: customerIdentity.customerName,
+    customer_key: customerIdentity.customerKey,
     customer_source: alert.customer_source ? String(alert.customer_source) : null,
     customer_confidence: alert.customer_confidence ? String(alert.customer_confidence) : null,
     enrichment_status: ["complete", "partial"].includes(enrichmentState) ? "enriched" : "pending",
@@ -85,6 +90,11 @@ function snapshotAlert(alert, generatedAt) {
     status_internal: String(alert.status_internal || "new"),
     acknowledged_source: Boolean(alert.acknowledged_source),
     acknowledged_internal: Boolean(alert.acknowledged_internal),
+    acknowledged_source_at: alert.acknowledged_source_at || alert.acknowledged_at || null,
+    acknowledged_source_by: alert.acknowledged_source_by || alert.acknowledged_by || null,
+    acknowledged_internal_at: alert.acknowledged_internal_at || null,
+    acknowledged_internal_by: alert.acknowledged_internal_by || null,
+    acknowledged_internal_comment: alert.acknowledged_internal_comment || null,
     acknowledged_at: alert.acknowledged_at || null,
     acknowledged_by: null,
     ack_request_status: null,
@@ -121,16 +131,20 @@ function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresh
     (value, count) => ({ [label]: value, count }),
   ).sort((left, right) => right.count - left.count || String(left[label]).localeCompare(String(right[label]), "pt-BR"));
   const disaster = matching.filter(({ alert }) => alert.severity === "disaster").length;
+  const critical = matching.filter(({ alert }) => alert.severity === "critical").length;
   const high = matching.filter(({ alert }) => alert.severity === "high").length;
   const average = matching.filter(({ alert }) => alert.severity === "average").length;
+  const low = matching.filter(({ alert }) => ["warning", "information", "not_classified"].includes(alert.severity)).length;
 
   return {
     generated_at: snapshot.generated_at,
     summary: {
       total: matching.length,
       disaster,
+      critical,
       high,
       average,
+      low,
       by_customer: countByValue(
         (alert) => alert.customer_name || "Sem classificação",
         "customer_name",
@@ -144,6 +158,7 @@ function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresh
       disaster_minutes: thresholds.disasterMinutes,
       high_minutes: thresholds.highMinutes,
       average_minutes: thresholds.averageMinutes,
+      low_minutes: thresholds.lowMinutes,
     },
     items: matching.slice(0, limit).map(({ alert, unacknowledgedMinutes }) => ({
       id: alert.id,
@@ -228,12 +243,30 @@ function filteredAlerts(snapshot, req) {
     const problemSearch = filters.problemSearch.toLocaleLowerCase("pt-BR");
     items = items.filter((item) => String(item.problem_name || "").toLocaleLowerCase("pt-BR").includes(problemSearch));
   }
+
+  const baseItems = [...items];
   if (filters.dateFrom) items = items.filter((item) => Date.parse(item.last_seen_at) >= Date.parse(filters.dateFrom));
   if (filters.dateTo) items = items.filter((item) => Date.parse(item.last_seen_at) <= Date.parse(filters.dateTo));
   if (filters.firstSeenFrom) items = items.filter((item) => Date.parse(item.first_seen_at) >= Date.parse(filters.firstSeenFrom));
+  if (filters.firstSeenTo) items = items.filter((item) => Date.parse(item.first_seen_at) <= Date.parse(filters.firstSeenTo));
   if (filters.lastSeenFrom) items = items.filter((item) => Date.parse(item.last_seen_at) >= Date.parse(filters.lastSeenFrom));
+  if (filters.lastSeenTo) items = items.filter((item) => Date.parse(item.last_seen_at) <= Date.parse(filters.lastSeenTo));
+  if (filters.resolvedFrom) items = items.filter((item) => item.resolved_at && Date.parse(item.resolved_at) >= Date.parse(filters.resolvedFrom));
+  if (filters.resolvedTo) items = items.filter((item) => item.resolved_at && Date.parse(item.resolved_at) <= Date.parse(filters.resolvedTo));
+  if (filters.acknowledgedFrom) {
+    items = items.filter((item) => {
+      const acknowledgedAt = item.acknowledged_source_at || item.acknowledged_at;
+      return acknowledgedAt && Date.parse(acknowledgedAt) >= Date.parse(filters.acknowledgedFrom);
+    });
+  }
+  if (filters.acknowledgedTo) {
+    items = items.filter((item) => {
+      const acknowledgedAt = item.acknowledged_source_at || item.acknowledged_at;
+      return acknowledgedAt && Date.parse(acknowledgedAt) <= Date.parse(filters.acknowledgedTo);
+    });
+  }
 
-  const severityRank = { disaster: 5, high: 4, average: 3, warning: 2, information: 1, not_classified: 0 };
+  const severityRank = { disaster: 7, critical: 6, high: 5, average: 4, warning: 3, information: 2, not_classified: 1 };
   const valueOf = (item) => {
     if (filters.sort === "severity") return severityRank[item.severity] ?? 0;
     if (filters.sort === "client") return item.customer_name || item.client_name;
@@ -256,10 +289,41 @@ function filteredAlerts(snapshot, req) {
 
   const filteredTotal = items.length;
   const totalPages = filteredTotal === 0 ? 0 : Math.ceil(filteredTotal / pageSize);
+  const countSince = (source, field, milliseconds) => {
+    const threshold = Date.now() - milliseconds;
+    return source.filter((item) => item[field] && Date.parse(item[field]) >= threshold).length;
+  };
+  const temporalGroup = (field, include30Days = false) => ({
+    "15m": countSince(baseItems, field, 15 * 60_000),
+    "1h": countSince(baseItems, field, 60 * 60_000),
+    "6h": countSince(baseItems, field, 6 * 60 * 60_000),
+    "24h": countSince(baseItems, field, 24 * 60 * 60_000),
+    "7d": countSince(baseItems, field, 7 * 24 * 60 * 60_000),
+    ...(include30Days ? { "30d": countSince(baseItems, field, 30 * 24 * 60 * 60_000) } : {}),
+  });
+  const filteredSummary = {
+    total: filteredTotal,
+    active: items.filter(isActiveAlert).length,
+    resolved: items.filter(isResolvedAlert).length,
+    acknowledged_source: items.filter((item) => Boolean(item.acknowledged_source)).length,
+    unacknowledged_source: items.filter((item) => !item.acknowledged_source).length,
+    by_severity: {
+      disaster: items.filter((item) => item.severity === "disaster").length,
+      high: items.filter((item) => item.severity === "high").length,
+      average: items.filter((item) => item.severity === "average").length,
+      low: items.filter((item) => ["warning", "information", "not_classified"].includes(item.severity)).length,
+    },
+  };
 
   return {
     generated_at: snapshot.generated_at,
     items: items.slice(offset, offset + pageSize),
+    filtered_summary: filteredSummary,
+    temporal_counts: {
+      created: temporalGroup("first_seen_at"),
+      updated: temporalGroup("last_seen_at"),
+      resolved: temporalGroup("resolved_at", true),
+    },
     pagination: {
       page,
       page_size: pageSize,
@@ -325,26 +389,33 @@ function syncLogsPayload(snapshot, req) {
   };
 }
 
-function dashboardSummaryPayload(snapshot) {
+function isWithinDay(value, day) {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp)
+    && timestamp >= Date.parse(day.from)
+    && timestamp < Date.parse(day.to);
+}
+
+function dashboardSummaryPayload(snapshot, timeZone) {
   const alerts = snapshotAlerts(snapshot);
   const active = alerts.filter((alert) => alert.status_source === "active" && !alert.resolved_at);
   const alertsTotal = Math.max(0, Number(snapshot.summary?.total_alerts ?? snapshot.alerts_count) || alerts.length);
   const activeTotal = Math.max(0, Number(snapshot.summary?.active_alerts) || active.length);
+  const day = operationalDayBounds(timeZone);
 
   return {
     generated_at: snapshot.generated_at,
     alerts_total: alertsTotal,
     alerts_sample_size: Math.max(0, Number(snapshot.exported_alerts_count) || alerts.length),
     active_total: activeTotal,
-    resolved_today: alerts.filter((alert) => {
-      if (!alert.resolved_at) return false;
-      const resolved = new Date(alert.resolved_at);
-      const now = new Date();
-      return !Number.isNaN(resolved.getTime())
-        && resolved.getFullYear() === now.getFullYear()
-        && resolved.getMonth() === now.getMonth()
-        && resolved.getDate() === now.getDate();
-    }).length,
+    resolved_today: alerts.filter((alert) => isWithinDay(alert.resolved_at, day)).length,
+    source_acknowledgements_today: alerts.filter((alert) => (
+      alert.acknowledged_source && isWithinDay(alert.acknowledged_source_at ?? alert.acknowledged_at, day)
+    )).length,
+    oneview_acknowledgements_today: alerts.filter((alert) => (
+      alert.acknowledged_internal && isWithinDay(alert.acknowledged_internal_at, day)
+    )).length,
+    operational_day: { timezone: day.timeZone, from: day.from, to: day.to },
     resolved_total: Math.max(alertsTotal - activeTotal, 0),
     by_severity: countBy(active, (alert) => alert.severity, (severity, count) => ({ severity, count })),
     by_status: countBy(active, (alert) => alert.status_internal, (status_internal, count) => ({ status_internal, count })),
@@ -424,7 +495,7 @@ function clientsSummaryPayload(snapshot) {
         const item = alerts.find((alert) => (alert.customer_key || "unclassified") === key);
         return {
           key,
-          name: item?.customer_name || "Cliente não classificado",
+          name: item?.customer_name || "Cliente não identificado",
           alerts_count: count,
           high_confidence_count: alerts.filter((alert) => (alert.customer_key || "unclassified") === key && alert.customer_confidence === "high").length,
           low_confidence_count: alerts.filter((alert) => (alert.customer_key || "unclassified") === key && alert.customer_confidence === "low").length,
@@ -461,14 +532,31 @@ function requestedAlert(snapshot, req) {
 
 function alertDetailPayload(snapshot, req) {
   const item = requestedAlert(snapshot, req);
+  const source_ack = {
+    acknowledged: Boolean(item.acknowledged_source),
+    actor_name: item.acknowledged_source_by || item.acknowledged_by || null,
+    acknowledged_at: item.acknowledged_source_at || item.acknowledged_at || null,
+    comment: null,
+    acknowledge_id: null,
+    history_available: false,
+  };
+  if (source_ack.actor_name && /^\d+$/.test(String(source_ack.actor_name).trim())) {
+    source_ack.actor_name = null;
+  }
   return {
     generated_at: snapshot.generated_at,
-    item: { ...item, history_count: 0, acknowledgement_count: 0 },
+    item: {
+      ...item,
+      history_count: 0,
+      acknowledgement_count: 0,
+      source_ack,
+    },
   };
 }
 
 function alertHistoryPayload(snapshot, req) {
   const item = requestedAlert(snapshot, req);
+  const acknowledgedSource = Boolean(item.acknowledged_source);
   return {
     generated_at: snapshot.generated_at,
     alert_id: item.id,
@@ -480,12 +568,12 @@ function alertHistoryPayload(snapshot, req) {
     first_event_at: null,
     last_event_at: null,
     has_recovery: false,
-    has_ack: false,
+    has_ack: acknowledgedSource,
     acknowledgement_count: 0,
     first_ack_at: null,
     latest_ack_at: null,
     has_ack_comment: false,
-    ack_actor_summary: "Sem ACK",
+    ack_actor_summary: acknowledgedSource ? "ACK atual confirmado pela origem" : "Sem ACK",
   };
 }
 
@@ -556,7 +644,7 @@ export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
         thresholds: { alert_stale_minutes: Number(config.alertStaleMinutes) || 15 },
       };
     case "dashboard-summary":
-      return dashboardSummaryPayload(snapshot);
+      return dashboardSummaryPayload(snapshot, config.operationalTimezone);
     case "grafana-summary":
       return grafanaSummaryPayload(snapshot);
     case "alerts":

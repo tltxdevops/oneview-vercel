@@ -96,11 +96,24 @@ export const SNAPSHOT_READ_ONLY_MESSAGE =
 
 export const demoAlerts: OneViewAlert[] = snapshot.alerts.map((alert) => ({
   ...alert,
-  enrichment_state: alert.customer_name === "Cliente não classificado"
+  enrichment_state: alert.customer_source === "datasource_fallback"
+    || alert.customer_key === "unclassified"
+    || alert.customer_name === "Cliente não classificado"
+    || alert.customer_name === "Cliente não identificado"
     ? "unclassified"
     : !alert.customer_name
       ? "legacy"
       : alert.customer_confidence === "high" ? "complete" : "partial",
+  customer_name: alert.customer_source === "datasource_fallback"
+    || alert.customer_key === "unclassified"
+    || alert.customer_name === "Cliente não classificado"
+    || alert.customer_name === "Cliente não identificado"
+    ? null
+    : alert.customer_name,
+  customer_key: alert.customer_source === "datasource_fallback"
+    || alert.customer_key === "unclassified"
+    ? "unclassified"
+    : alert.customer_key,
   host_name: alert.host_alias ?? "Host protegido",
   host_ip: null,
   payload_normalized: {},

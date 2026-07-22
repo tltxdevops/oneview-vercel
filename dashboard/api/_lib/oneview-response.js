@@ -3,6 +3,7 @@ import { getOneViewConfig, getOneViewRoute } from "./oneview-config.js";
 import { fetchOneViewDatabase } from "./oneview-db.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewSnapshotPayload } from "./oneview-fallback.js";
+import { invalidateOneViewSummaryCache, withOneViewSummaryCache } from "./oneview-runtime-cache.js";
 
 const FORBIDDEN_KEY = /(?:authorization|cookie|token|password|senha|secret|credential|dsn|api_url|payload_raw|payload_normalized)/i;
 const PRIVATE_VALUE = /(?:https?:\/\/[^\s]+|\blocalhost\b|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[a-f0-9]{1,4}:){2,7}[a-f0-9]{1,4}\b)/i;
@@ -78,6 +79,7 @@ export function createOneViewHandler(routeName, dependencies = {}) {
   const database = dependencies.database || fetchOneViewDatabase;
   const fallback = dependencies.fallback || getOneViewSnapshotPayload;
   const logger = dependencies.logger || console.info;
+  const runtimeSummaryCacheEnabled = dependencies.database === undefined;
 
   return async function oneViewHandler(req, res) {
     res.setHeader("Cache-Control", NO_CACHE);
@@ -139,7 +141,12 @@ export function createOneViewHandler(routeName, dependencies = {}) {
     }
 
     try {
-      const payload = await database(routeName, req, config);
+      const forceSummaryRefresh = routeName === "dashboard-summary"
+        && String(Array.isArray(req.query?.refresh) ? req.query.refresh[0] : req.query?.refresh || "") === "1";
+      if (forceSummaryRefresh) invalidateOneViewSummaryCache();
+      const payload = routeName === "dashboard-summary" && runtimeSummaryCacheEnabled
+        ? await withOneViewSummaryCache(() => database(routeName, req, config), { bypass: forceSummaryRefresh })
+        : await database(routeName, req, config);
       return finish(200, payload, "database");
     } catch (error) {
       const applicationStatus = applicationErrorStatus(error);

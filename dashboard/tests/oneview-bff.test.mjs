@@ -6,6 +6,7 @@ import { buildMicrosoftAuthorizeUrl, microsoftRedirectUri, publicAppOrigin } fro
 import { getOneViewConfig } from "../api/_lib/oneview-config.js";
 import { getOneViewDbConfig } from "../api/_lib/oneview-db.js";
 import { createOneViewHandler, sanitizeOneViewPayload } from "../api/_lib/oneview-response.js";
+import { invalidateOneViewSummaryCache, resetOneViewRuntimeCacheForTests, withOneViewSummaryCache } from "../api/_lib/oneview-runtime-cache.js";
 import { fetchOneViewUpstream } from "../api/_lib/oneview-upstream.js";
 import { createSessionToken } from "../api/_lib/session.js";
 import authMeHandler from "../api/auth/me.js";
@@ -215,94 +216,38 @@ test("ONEVIEW_SNAPSHOT_MODE=false e LIVE_DB=true selecionam database em runtime"
   assert.equal(config.liveMode, "database");
 });
 
-test("sessão SSO válida autoriza leitura sem allowlist individual ou de domínio", async () => {
+test("cache do resumo é invalidado sem cachear falhas", async () => {
+  resetOneViewRuntimeCacheForTests();
+  let calls = 0;
+  const loader = async () => ({ version: ++calls });
+  assert.equal((await withOneViewSummaryCache(loader)).version, 1);
+  assert.equal((await withOneViewSummaryCache(loader)).version, 1);
+  invalidateOneViewSummaryCache();
+  assert.equal((await withOneViewSummaryCache(loader)).version, 2);
+  invalidateOneViewSummaryCache();
+  await assert.rejects(() => withOneViewSummaryCache(async () => { throw new Error("expected"); }));
+  assert.equal((await withOneViewSummaryCache(loader)).version, 3);
+  resetOneViewRuntimeCacheForTests();
+});
+
+test("sessão do tenant e domínio permitido autoriza leitura sem lista individual", async () => {
   const names = [
     "APP_SESSION_SECRET",
     "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
-    "ONEVIEW_ALLOWED_EMAILS",
-  ];
-  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-  const previousWarn = console.warn;
-
-  try {
-    process.env.APP_SESSION_SECRET = "unit-test-session-secret";
-    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = " TELETEX.COM.BR ";
-    process.env.ONEVIEW_ALLOWED_EMAILS = "";
-
-    let databaseCalls = 0;
-    const handler = createOneViewHandler("health", {
-      configProvider: liveDbConfig,
-      database: async () => {
-        databaseCalls += 1;
-        return { status: "ok" };
-      },
-      fallback,
-      logger: noLog,
-    });
-
-    for (const email of ["ana@teletex.com.br", "guilherme.franco@teletex.com", "externo@example.com"]) {
-      const res = response();
-      await handler(authenticatedSessionRequest(email), res);
-      assert.equal(res.statusCode, 200);
-      assert.equal(res.body.data_source, "database");
-    }
-    assert.equal(databaseCalls, 3);
-  } finally {
-    console.warn = previousWarn;
-    for (const name of names) {
-      if (previous[name] === undefined) delete process.env[name];
-      else process.env[name] = previous[name];
-    }
-  }
-});
-
-test("política de e-mail vazia não bloqueia sessão SSO válida", async () => {
-  const names = ["APP_SESSION_SECRET", "ONEVIEW_ALLOWED_EMAIL_DOMAINS", "ONEVIEW_ALLOWED_EMAILS"];
-  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-  const previousWarn = console.warn;
-
-  try {
-    process.env.APP_SESSION_SECRET = "unit-test-session-secret";
-    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "";
-    process.env.ONEVIEW_ALLOWED_EMAILS = "";
-    console.warn = () => undefined;
-    const res = response();
-    const auth = await requireAuth(authenticatedSessionRequest("sem-politica@teletex.com"), res, { role: "viewer" });
-    assert.equal(auth?.email, "sem-politica@teletex.com");
-    assert.equal(res.statusCode, 200);
-  } finally {
-    console.warn = previousWarn;
-    for (const name of names) {
-      if (previous[name] === undefined) delete process.env[name];
-      else process.env[name] = previous[name];
-    }
-  }
-});
-
-test("leitura depende somente da sessão SSO; ações ainda exigem role", async () => {
-  const names = [
-    "APP_SESSION_SECRET",
-    "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
-    "ONEVIEW_ALLOWED_EMAILS",
-    "ONEVIEW_OPERATOR_EMAILS",
-    "ONEVIEW_ADMIN_EMAILS",
     "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS",
     "ONEVIEW_PUBLIC_ORIGIN",
     "ONEVIEW_ALLOWED_ORIGINS",
-    "POSTGRES_ACTIONS_PASSWORD",
   ];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const previousWarn = console.warn;
 
   try {
     process.env.APP_SESSION_SECRET = "unit-test-session-secret";
-    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = " teletex.com.br ";
-    process.env.ONEVIEW_ALLOWED_EMAILS = "";
-    process.env.ONEVIEW_OPERATOR_EMAILS = " operador@noc.example ";
-    process.env.ONEVIEW_ADMIN_EMAILS = " admin@noc.example ";
+    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = " @TELETEX.COM.BR, teletex.com ";
     process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "false";
     process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview.teletexdev.com.br/";
     process.env.ONEVIEW_ALLOWED_ORIGINS = "https://oneview.teletexdev.com.br/, https://oneview-vercel.vercel.app";
-    delete process.env.POSTGRES_ACTIONS_PASSWORD;
+    console.warn = () => undefined;
 
     let databaseCalls = 0;
     const handler = createOneViewHandler("health", {
@@ -318,7 +263,7 @@ test("leitura depende somente da sessão SSO; ações ainda exigem role", async 
     assert.equal(me.statusCode, 200);
     assert.equal(me.body.user.email, "leitura@teletex.com.br");
 
-    for (const email of ["leitura@TELETEX.COM.BR", "operador@noc.example", "admin@noc.example"]) {
+    for (const email of ["leitura@TELETEX.COM.BR", "guilherme.franco@teletex.com"]) {
       const res = response();
       await handler(authenticatedSessionRequest(email, { origin: "https://oneview.teletexdev.com.br/" }), res);
       assert.equal(res.statusCode, 200);
@@ -338,9 +283,51 @@ test("leitura depende somente da sessão SSO; ações ainda exigem role", async 
 
     const external = response();
     await handler(authenticatedSessionRequest("externo@example.invalid", { origin: "https://oneview.teletexdev.com.br" }), external);
-    assert.equal(external.statusCode, 200);
-    assert.equal(external.body.data_source, "database");
-    assert.equal(databaseCalls, 4);
+    assert.equal(external.statusCode, 403);
+    assert.deepEqual(external.body, { error: "domain_not_allowed" });
+    assert.equal(databaseCalls, 2);
+  } finally {
+    console.warn = previousWarn;
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
+test("domínio permitido ausente falha fechado", async () => {
+  const names = ["APP_SESSION_SECRET", "ONEVIEW_ALLOWED_EMAIL_DOMAINS"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const previousWarn = console.warn;
+  try {
+    process.env.APP_SESSION_SECRET = "unit-test-session-secret";
+    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "";
+    console.warn = () => undefined;
+    const res = response();
+    const auth = await requireAuth(authenticatedSessionRequest("usuario@teletex.com.br"), res, { role: "viewer" });
+    assert.equal(auth, null);
+    assert.equal(res.statusCode, 403);
+    assert.deepEqual(res.body, { error: "domain_not_allowed" });
+  } finally {
+    console.warn = previousWarn;
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
+test("flag geral concede ação ao usuário autenticado sem lista individual", async () => {
+  const names = ["APP_SESSION_SECRET", "ONEVIEW_ALLOWED_EMAIL_DOMAINS", "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    process.env.APP_SESSION_SECRET = "unit-test-session-secret";
+    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "teletex.com.br";
+    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "true";
+    const res = response();
+    const auth = await requireAuth(authenticatedSessionRequest("qualquer.usuario@teletex.com.br"), res, { role: "operator" });
+    assert.equal(auth?.email, "qualquer.usuario@teletex.com.br");
+    assert.equal(auth?.roles.includes("operator"), true);
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name];
@@ -414,14 +401,18 @@ test("capacidade de ACK só é exposta quando solicitação está habilitada e e
   assert.equal(disabled.ackEnabled, false);
 
   const presentationSafe = getOneViewConfig(validDbEnv({
+    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",
     ONEVIEW_ACK_EXECUTION_ENABLED: "false",
+    POSTGRES_ACTIONS_PASSWORD: "actions-test-value",
   }));
   assert.equal(presentationSafe.ackEnabled, true);
 
   const executionEnabled = getOneViewConfig(validDbEnv({
+    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",
     ONEVIEW_ACK_EXECUTION_ENABLED: "true",
+    POSTGRES_ACTIONS_PASSWORD: "actions-test-value",
   }));
   assert.equal(executionEnabled.ackEnabled, false);
 });

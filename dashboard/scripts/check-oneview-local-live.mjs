@@ -42,11 +42,10 @@ function controlledAuthHeaders() {
   if (!process.env.APP_SESSION_SECRET && !process.env.ONEVIEW_SESSION_SECRET) {
     throw new Error("Sessão local de teste indisponível");
   }
-  const allowedEmail = firstCsv(process.env.ONEVIEW_ALLOWED_EMAILS).toLowerCase();
-  const domain = firstCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS).toLowerCase() || "teletex.com.br";
+  const domain = firstCsv(process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS).toLowerCase().replace(/^@+/, "") || "teletex.com.br";
   const token = createSessionToken({
     id: "oneview-local-readonly-check",
-    email: allowedEmail || `oneview-local-readonly-check@${domain}`,
+    email: `oneview-local-readonly-check@${domain}`,
     name: "OneView Local Read-only Check",
     roles: ["viewer"],
   });

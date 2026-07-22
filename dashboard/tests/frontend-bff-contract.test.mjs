@@ -23,22 +23,31 @@ test("frontend sempre consulta BFF com no-store e token preservado", async () =>
   assert.match(api, /\/oneview\/alerts\/\$\{encodeURIComponent\(id\)\}\/history/);
   assert.match(api, /"\/oneview\/operations\/health"/);
   assert.match(api, /search\.set\("first_seen_from", params\.firstSeenFrom\)/);
+  assert.match(api, /search\.set\("first_seen_to", params\.firstSeenTo\)/);
   assert.match(api, /search\.set\("last_seen_from", params\.lastSeenFrom\)/);
+  assert.match(api, /search\.set\("last_seen_to", params\.lastSeenTo\)/);
+  assert.match(api, /search\.set\("resolved_from", params\.resolvedFrom\)/);
+  assert.match(api, /search\.set\("resolved_to", params\.resolvedTo\)/);
+  assert.match(api, /search\.set\("acknowledged_from", params\.acknowledgedFrom\)/);
+  assert.match(api, /search\.set\("acknowledged_to", params\.acknowledgedTo\)/);
   assert.match(api, /search\.set\("host_search", params\.hostSearch\)/);
   assert.match(api, /search\.set\("problem_search", params\.problemSearch\)/);
-  assert.match(index, /pageSize: RECENT_LIMIT/);
+  assert.match(index, /pageSize: PRIORITY_PAGE_SIZE/);
   assert.match(index, /status: "active"/);
-  assert.match(index, /severities: \["disaster", "high"\]/);
+  assert.match(index, /severities: \[\.\.\.PRIORITY_SEVERITIES\]/);
+  assert.match(index, /sort: "severity"/);
   assert.match(index, /sort: "first_seen_at"/);
   assert.match(index, /customers: selectedCustomerKeys/);
+  assert.match(api, /canonicalizeSeveritiesForApi/);
+  assert.match(api, /disasterFamilySeverities/);
   assert.match(alerts, /setPagination\(normalized\.pagination\)/);
   assert.match(alerts, /Array\.isArray\(runtimeResponse\.items\)/);
 });
 
 test("alertas usa paginação BFF, debounce e cancelamento", async () => {
   const [api, alerts] = await Promise.all([read("src/lib/oneview-api.ts"), read("src/pages/Alerts.tsx")]);
-  assert.match(alerts, /useState\(50\)/);
-  assert.match(alerts, /useState<StatusFilter>\("active"\)/);
+  assert.match(alerts, /const \[pageSize, setPageSize\] = useState/);
+  assert.match(alerts, /const \[statusFilter, setStatusFilter\] = useState<StatusFilter>/);
   assert.match(alerts, /window\.setTimeout\(\(\) => \{/);
   assert.match(alerts, /setDebouncedHostSearch\(hostSearch\.trim\(\)\)/);
   assert.match(alerts, /setDebouncedProblemSearch\(problemSearch\.trim\(\)\)/);
@@ -48,7 +57,8 @@ test("alertas usa paginação BFF, debounce e cancelamento", async () => {
   assert.match(alerts, /<SelectItem value="25">25<\/SelectItem>/);
   assert.match(alerts, /<SelectItem value="50">50<\/SelectItem>/);
   assert.match(alerts, /<SelectItem value="100">100<\/SelectItem>/);
-  assert.match(alerts, /Exibindo \{firstVisible\.toLocaleString/);
+  assert.match(alerts, /Exibindo \$\{firstVisible\.toLocaleString\("pt-BR"\)\}–\$\{lastVisible\.toLocaleString\("pt-BR"\)\} de \$\{listTotal\.toLocaleString\("pt-BR"\)\}/);
+  assert.match(alerts, /Aplicando filtro de período/);
   assert.match(api, /Math\.min\(params\?\.pageSize \?\? 100, 100\)/);
   assert.doesNotMatch(`${api}\n${alerts}`, /limit:\s*(?:250|500|5000)|offset:\s*0/);
 });
@@ -93,15 +103,17 @@ test("filtros ficam nos cabeçalhos e continuam server-side", async () => {
   assert.doesNotMatch(alerts, /Filtros de alertas|Ocultar filtros|Mostrar filtros|FILTERS_STORAGE_KEY/);
   assert.match(alerts, /selectedCustomerKeys/);
   assert.match(alerts, /selectedDatasources/);
-  assert.match(alerts, /confidenceFilter/);
+  assert.doesNotMatch(alerts, /confidenceFilter|Baixa confiança/);
   assert.match(alerts, /<CommandInput placeholder="Buscar cliente\.\.\."/);
-  assert.match(alerts, /Novos\s*<Select value=\{newTimePreset\}/);
-  assert.match(alerts, /Atualizados\s*<Select value=\{updatedTimePreset\}/);
-  assert.match(alerts, /<SelectItem value="new_15m">Últimos 15 minutos<\/SelectItem>/);
-  assert.match(alerts, /<SelectItem value="new_1h">Última hora<\/SelectItem>/);
-  assert.match(alerts, /<SelectItem value="new_24h">Últimas 24 horas<\/SelectItem>/);
-  assert.match(alerts, /<SelectItem value="updated_15m">Últimos 15 minutos<\/SelectItem>/);
-  assert.match(alerts, /<SelectItem value="updated_1h">Última hora<\/SelectItem>/);
+  assert.match(alerts, /<TabsTrigger value="created"[\s\S]*Criados/);
+  assert.match(alerts, /<TabsTrigger value="updated"[\s\S]*Atualizados/);
+  assert.match(alerts, /<TabsTrigger value="resolved"[\s\S]*Resolvidos/);
+  assert.match(alerts, /<Select value=\{createdPreset\}/);
+  assert.match(alerts, /<Select value=\{updatedPreset\}/);
+  assert.match(alerts, /<Select value=\{resolvedPreset\}/);
+  assert.match(alerts, /\["15m", "1h", "6h", "24h", "7d"\]/);
+  assert.match(alerts, /\["15m", "1h", "6h", "24h", "7d", "30d"\]/);
+  assert.match(alerts, /no período personalizado/);
   assert.match(alerts, /toggleColumnSort/);
   assert.match(alerts, /sortableHeader\("Host", "host"\)/);
   assert.match(alerts, /sortableHeader\("Prioridade", "severity"\)/);
@@ -114,41 +126,208 @@ test("filtros ficam nos cabeçalhos e continuam server-side", async () => {
   assert.doesNotMatch(alerts, /localStorage\.(?:setItem|getItem)/);
 });
 
-test("início apresenta saúde operacional das fontes sem mover o painel para alertas", async () => {
+test("filtros temporais são independentes, persistem na URL e atualizam os cards", async () => {
+  const [alerts, index, api] = await Promise.all([
+    read("src/pages/Alerts.tsx"),
+    read("src/pages/Index.tsx"),
+    read("src/lib/oneview-api.ts"),
+  ]);
+
+  assert.match(alerts, /firstSeenFrom: createdBounds\.from/);
+  assert.match(alerts, /firstSeenTo: createdBounds\.to/);
+  assert.match(alerts, /lastSeenFrom: updatedBounds\.from/);
+  assert.match(alerts, /lastSeenTo: updatedBounds\.to/);
+  assert.match(alerts, /resolvedFrom: resolvedBounds\.from/);
+  assert.match(alerts, /resolvedTo: resolvedBounds\.to/);
+  assert.match(alerts, /const requestTime = Date\.now\(\)/);
+  assert.match(alerts, /temporalBounds\(createdPreset, createdRange, requestTime\)/);
+  assert.match(alerts, /temporalBounds\(updatedPreset, updatedRange, requestTime\)/);
+  assert.match(alerts, /temporalBounds\(resolvedPreset, resolvedRange, requestTime\)/);
+  assert.doesNotMatch(alerts, /firstSeenFrom:\s*updatedBounds|lastSeenFrom:\s*createdBounds/);
+  assert.match(alerts, /next\.set\(prefix, preset\)/);
+  assert.match(alerts, /setSearchParams\(next, \{ replace: true \}\)/);
+  assert.match(alerts, /setCreatedPreset\("all"\)/);
+  assert.match(alerts, /setUpdatedPreset\("all"\)/);
+  assert.match(alerts, /setResolvedPreset\("all"\)/);
+  assert.match(alerts, /setFilteredSummary\(safeResponse\.filtered_summary\)/);
+  assert.match(alerts, /setTemporalCounts\(safeResponse\.temporal_counts\)/);
+  assert.match(alerts, /temporalFilterActive/);
+  assert.match(alerts, /if \(preset === "custom"\) return Boolean\(range\?\.from \|\| range\?\.to\)/);
+  assert.match(alerts, /hasTemporalFilter/);
+  assert.doesNotMatch(alerts, /Sem ACK(?! no Zabbix)|Nunca tratado|Reconhecimentos OneView hoje/);
+  assert.match(alerts, /setAlerts\(normalized\.items\)/);
+  assert.match(alerts, /hasTemporalFilter[\s\S]*\? \(filteredSummary \? filteredSummary\.total/);
+  assert.match(alerts, /listTotal\.toLocaleString\("pt-BR"\)/);
+  assert.match(alerts, /Aplicando filtro de período/);
+  assert.match(alerts, /Criados \$\{temporalLabels\[createdPreset\]\}/);
+  assert.match(alerts, /setPage\(1\)/);
+  assert.match(api, /filtered_summary\?:/);
+  assert.match(api, /temporal_counts\?:/);
+
+  const config = await read("api/_lib/oneview-config.js");
+  assert.match(config, /"first_seen_to"/);
+  assert.match(config, /"last_seen_to"/);
+  assert.match(config, /"resolved_from"/);
+  assert.match(config, /"resolved_to"/);
+  assert.match(config, /"acknowledged_from"/);
+  assert.match(config, /"acknowledged_to"/);
+
+  assert.match(index, /params\.set\("status", options\.status\)/);
+  assert.match(index, /params\.append\("severity", severity\)/);
+  assert.match(index, /params\.set\("source_ack", options\.sourceAck\)/);
+  assert.match(index, /params\.set\("sort", options\.sort\)/);
+  assert.match(index, /selectedCustomerKeys\.forEach\(\(customer\) => params\.append\("customer", customer\)\)/);
+  assert.match(index, /alertHref\(selectedAlert\.id, priorityAlertsQuery\)/);
+  assert.match(index, /onOpen=\{openAlert\}/);
+  assert.match(index, /defaultValue="history"/);
+  assert.match(index, /topbarRightSection=\{topbarControls\}/);
+});
+
+test("V1 filtra somente ACK real da origem e mantém reconhecimento interno fora da interface", async () => {
+  const [alerts, api] = await Promise.all([
+    read("src/pages/Alerts.tsx"),
+    read("src/lib/oneview-api.ts"),
+  ]);
+
+  assert.match(alerts, /acknowledgedSource: sourceAckFilter === "all" \? undefined : sourceAckFilter === "acknowledged"/);
+  assert.match(alerts, /Reconhecidos na origem/);
+  assert.match(alerts, /Pendentes na origem/);
+  assert.match(alerts, /Estado confirmado pelo Zabbix/);
+  assert.doesNotMatch(alerts, /internalRecognitionFilter|Reconhecidos no OneView|Pendentes no OneView|Reconhecer no OneView/);
+  assert.match(api, /search\.set\("acknowledged_source", String\(params\.acknowledgedSource\)\)/);
+  // Contrato interno permanece disponível no cliente, mas não é usado pela V1.
+  assert.match(api, /search\.set\("acknowledged_internal", String\(params\.acknowledgedInternal\)\)/);
+});
+
+test("início apresenta syncs e saúde das fontes no topbar sem mover o painel para alertas", async () => {
   const [index, alerts] = await Promise.all([
     read("src/pages/Index.tsx"),
     read("src/pages/Alerts.tsx"),
   ]);
   assert.match(index, /fetchOperationsHealth\(\)/);
-  assert.match(index, /Dados possivelmente desatualizados/);
-  assert.match(index, /Fontes com erro/);
-  assert.match(index, /Fontes operacionais/);
+  assert.match(index, /buildSyncRows/);
+  assert.match(index, /buildBancoSyncRow/);
+  assert.match(index, /buildWorkerSyncRow/);
+  assert.match(index, /name: "Banco"/);
+  assert.match(index, /name: "Worker"/);
+  assert.match(index, /operations\?\.items \?\? \[\]/);
+  assert.match(index, /Última atualização:/);
+  assert.match(index, /topbarRightSection=\{topbarControls\}/);
+  assert.ok(index.indexOf('name: "Banco"') < index.indexOf('name: "Worker"'));
+  assert.doesNotMatch(index, /Saúde operacional|Fontes operacionais|Fontes com erro/);
+  assert.doesNotMatch(index, /disponibilidade\s*100%|uptime\s*100%/i);
   assert.doesNotMatch(alerts, /Saúde operacional/);
 });
 
-test("Home operacional usa criação real, atenção, clientes e sincronizações compactas", async () => {
-  const index = await read("src/pages/Index.tsx");
-  assert.match(index, /Alertas ativos/);
-  assert.match(index, /Críticos \/ Altos/);
-  assert.match(index, /Não reconhecidos na origem/);
-  assert.match(index, /Resolvidos hoje/);
-  assert.match(index, /Atenção necessária/);
-  assert.match(index, /Clientes com mais alertas/);
+test("Home prioriza desastres e altos com ACK real e KPIs separados", async () => {
+  const [index, app, sidebar, historico] = await Promise.all([
+    read("src/pages/Index.tsx"),
+    read("src/App.tsx"),
+    read("src/components/layout/Sidebar.tsx"),
+    read("src/pages/Historico.tsx"),
+  ]);
+  assert.match(index, /Desastres ativos/);
+  assert.match(index, /Altos ativos/);
+  assert.match(index, /Não reconhecidos/);
+  assert.match(index, /title: "Reconhecidos"/);
+  assert.match(index, /source_acknowledgements_today/);
+  assert.match(index, /acksTodayHref/);
+  assert.match(index, /todayOnly/);
+  assert.match(index, /setTodayOnly/);
+  assert.match(index, /Alertas prioritários/);
   assert.match(index, /Alertas recentes/);
-  assert.match(index, /Novos críticos e altos por primeira ocorrência/);
+  assert.match(index, /Atenção operacional/);
+  assert.match(index, /Integração ServiceNow em preparação\./);
+  assert.match(index, /Atualizando\.\.\./);
+  assert.match(index, /Clientes com mais alertas/);
+  assert.match(index, /Collapsible/);
+  assert.match(index, /clientsOpen/);
+  assert.match(index, /PRIORITY_PAGE_SIZE = 15/);
+  assert.match(index, /RECENT_PAGE_SIZE = 10/);
+  assert.match(index, /PRIORITY_SEVERITIES = \["disaster", "high"\]/);
+  assert.match(index, /severities: \[\.\.\.PRIORITY_SEVERITIES\]/);
+  assert.match(index, /severities: recentSeverities/);
+  assert.match(index, /RECENT_SEVERITY_GROUPS/);
+  assert.match(index, /recentSeverityGroups/);
+  assert.match(index, /Todas as severidades/);
+  assert.match(index, /ATTENTION_BUCKETS/);
+  assert.match(index, /attentionBucket/);
+  assert.match(index, /SheetContent side="left"/);
+  assert.match(index, /Abrir em Alertas/);
+  assert.doesNotMatch(index, /Fontes em erro|Sem sincronização recente|sourcesInError|sourcesWithoutRecentSync/);
+  assert.match(index, /sort: "severity"/);
   assert.match(index, /sort: "first_seen_at"/);
   assert.match(index, /order: "desc"/);
   assert.match(index, /customers: selectedCustomerKeys/);
-  assert.match(index, /Últimas sincronizações/);
-  assert.ok(index.indexOf("Últimas sincronizações") < index.indexOf("Alertas recentes"));
+  assert.match(index, /comparePriorityAlerts/);
+  assert.match(index, /first_seen_at/);
+  assert.match(index, /Ver todos/);
+  assert.match(index, /priorityAlertsHref/);
+  assert.match(index, /status: "active"/);
+  assert.match(index, /disasterFamilySeverities/);
+  assert.match(index, /buildSyncRows/);
+  assert.match(index, /name: "Banco"/);
+  assert.match(index, /name: "Worker"/);
+  assert.match(index, /Saudável/);
+  assert.match(index, /Degradado/);
+  assert.match(index, /Erro/);
+  assert.match(index, /Desabilitado/);
+  assert.match(index, /Sem dados/);
+  assert.match(index, /status === "disabled"/);
+  assert.match(index, /status === "error"/);
+  assert.match(index, /status === "warning" \|\| status === "stale"/);
+  assert.match(index, /operations\?\.items \?\? \[\]/);
+  assert.match(index, /isBackgroundUpdating/);
+  assert.match(index, /beginQuietUpdate/);
+  assert.match(index, /failureCount/);
+  assert.match(index, /lastSuccessAt/);
+  assert.match(index, /fetched/);
+  assert.match(index, /upserted/);
+  assert.match(index, /fetchAlertHistory/);
+  assert.match(index, /Sheet open=\{selectedAlertId !== null\}/);
+  assert.match(index, /Sheet open=\{attentionBucket !== null\}/);
+  assert.doesNotMatch(index, /OneView:|Nunca tratado|Reconhecimentos OneView hoje|Críticos \/ Altos|Críticos sem ACK|Saúde operacional|Atenção necessária|>Esquecidos<|>Fora do radar<|>Desastres recentes</);
+  assert.doesNotMatch(index, /disponibilidade\s*100%|disponibilidade 100|uptime\s*100%/i);
+  assert.ok(index.indexOf("Alertas prioritários") < index.indexOf("Alertas recentes"));
+  assert.ok(index.indexOf("Alertas recentes") < index.indexOf("Atenção operacional"));
+  assert.ok(index.indexOf("Atenção operacional") < index.indexOf("Integração ServiceNow em preparação."));
+  assert.ok(index.indexOf("Integração ServiceNow em preparação.") < index.indexOf("Clientes com mais alertas"));
+  assert.ok(index.indexOf("Atenção operacional") < index.indexOf("Clientes com mais alertas"));
+  assert.match(index, /xl:grid-cols-2/);
+  assert.match(index, /lastSeenFrom: todayDayFrom/);
+  assert.match(index, /lastSeenTo: todayDayTo/);
+  assert.match(index, /todayUpdatedFilter/);
+  assert.match(index, /updatedFrom: todayDayFrom/);
+  assert.match(index, /ackFrom: ackTodayFrom/);
+  assert.match(index, /ackTo: ackTodayTo/);
+  assert.match(index, /sourceAck: "acknowledged"/);
+  assert.match(index, /operational_day/);
+  assert.match(index, /space-y-2/);
+  assert.doesNotMatch(index, /acknowledgedSource: todayOnly \? true/);
+  assert.doesNotMatch(index, /xl:grid-cols-\[minmax/);
   assert.match(index, /showRefreshMeta=\{false\}/);
   assert.doesNotMatch(index, /dataSource=\{currentDataSource\}|checkedAt=\{lastCheckedAt\}/);
-  assert.match(index, /aria-label="Ver detalhes do alerta"/);
-  assert.match(index, />ACK<\/Link>/);
-  assert.match(index, /Atribuição operacional em preparação\./);
-  assert.match(index, /severities: \["disaster", "high"\]/);
+  assert.match(index, /ariaLabel="Ver detalhes do alerta prioritário"/);
+  assert.match(index, /ariaLabel="Ver detalhes do alerta recente"/);
   assert.match(index, /status: "active"/);
   assert.doesNotMatch(index, /<h2[^>]*>Chamados<\/h2>|Castrolanda/);
+  assert.match(app, /path="\/historico"/);
+  assert.match(app, /HistoricoPage/);
+  assert.match(sidebar, /name: "Histórico"/);
+  assert.match(sidebar, /href: "\/historico"/);
+  assert.match(sidebar, /History/);
+  assert.ok(sidebar.indexOf('href: "/alertas"') < sidebar.indexOf('href: "/historico"'));
+  assert.doesNotMatch(sidebar, /name: "Histórico", href: "\/alertas"/);
+  assert.match(historico, /Histórico operacional/);
+  assert.match(historico, /alert_history/);
+  assert.match(historico, /Filtrar por cliente/);
+  assert.match(historico, /Filtrar por fonte/);
+  assert.match(historico, /Filtrar por tipo de evento/);
+  assert.match(historico, /Filtrar por período/);
+  assert.match(historico, /Buscar no histórico/);
+  assert.match(historico, /Lista global em preparação/);
+  assert.doesNotMatch(historico, /fetchAlerts|fetchAlertHistory|navigate\("\/alertas"\)|Redirect/);
+  assert.doesNotMatch(historico, /fake|mockRows|placeholderRows/i);
 });
 
 test("atalho da Home abre o drawer do alerta sem depender da página atual", async () => {
@@ -161,17 +340,16 @@ test("atalho da Home abre o drawer do alerta sem depender da página atual", asy
 });
 
 test("frescor separa duração, última atualização e confirmação com limite server-side", async () => {
-  const [index, alerts, api, config] = await Promise.all([
-    read("src/pages/Index.tsx"),
+  const [alerts, api, config] = await Promise.all([
     read("src/pages/Alerts.tsx"),
     read("src/lib/oneview-api.ts"),
     read("api/_lib/oneview-config.js"),
   ]);
   assert.match(config, /ONEVIEW_ALERT_STALE_MINUTES/);
   assert.match(api, /alert_stale_minutes/);
-  assert.match(index, /Ativo e confirmado recentemente/);
-  assert.match(index, /Ativo, mas sem confirmação recente/);
-  assert.match(index, /Dados possivelmente desatualizados/);
+  assert.match(alerts, /Ativo e confirmado recentemente/);
+  assert.match(alerts, /Ativo, mas sem confirmação recente/);
+  assert.match(alerts, /Dados possivelmente desatualizados/);
   assert.match(alerts, /Frescor do dado/);
   assert.match(alerts, /Tempo sem confirmação/);
   assert.match(alerts, /Duração longa não indica falha de sincronização/);
@@ -181,35 +359,38 @@ test("cliente não identificado é filtrável sem usar datasource como cliente",
   const [index, alerts] = await Promise.all([read("src/pages/Index.tsx"), read("src/pages/Alerts.tsx")]);
   assert.match(index, /customer\.key === "unclassified" \? "Não identificado"/);
   assert.match(alerts, /customer\.key === "unclassified"/);
+  assert.match(alerts, /\{ \.\.\.customer, name: "Cliente não identificado" \}/);
   assert.match(alerts, /Cliente não identificado/);
-  assert.match(alerts, /identificar automaticamente o cliente/);
+  assert.match(alerts, /não forneceu evidências suficientes para associar este alerta automaticamente a um cliente/);
   assert.doesNotMatch(index, /customer_name\s*\|\|\s*alert\.datasource_name/);
 });
 
-test("alertas apresenta quatro prioridades sem descartar severidades Zabbix", async () => {
-  const alerts = await read("src/pages/Alerts.tsx");
-  assert.match(alerts, /critical: \{ label: "Crítico"/);
-  assert.match(alerts, /high: \{ label: "Alto"/);
-  assert.match(alerts, /medium: \{ label: "Médio"/);
-  assert.match(alerts, /low: \{ label: "Baixo"/);
-  assert.match(alerts, /rawSeverities: \["warning", "information", "not_classified"\]/);
-  assert.match(alerts, /low:[^\n]+border-emerald-200 bg-emerald-50 text-emerald-700/);
-  assert.match(alerts, /medium:[^\n]+border-amber-200 bg-amber-50 text-amber-700/);
-  assert.match(alerts, /high:[^\n]+border-red-200 bg-red-50 text-red-700/);
-  assert.match(alerts, /critical:[^\n]+border-red-500 bg-red-100 text-red-950/);
+test("alertas preserva a normalização canônica de severidade Zabbix", async () => {
+  const [alerts, api] = await Promise.all([read("src/pages/Alerts.tsx"), read("src/lib/oneview-api.ts")]);
+  for (const [severity, label] of [["disaster", "Desastre"], ["critical", "Crítico"], ["high", "Alto"], ["average", "Médio"], ["warning", "Aviso"], ["information", "Informação"], ["not_classified", "Não classificado"]]) {
+    assert.match(api, new RegExp(`${severity}: \\{ label: "${label}"`));
+  }
+  assert.match(api, /export function canonicalizeSeveritiesForApi/);
+  assert.match(api, /export function disasterFamilySeverities/);
+  assert.match(api, /if \(Number\(counts\?\.critical \?\? 0\) > 0\) severities\.push\("critical"\)/);
+  assert.doesNotMatch(api, /high: \{ label: "Crítico"/);
+  assert.match(alerts, /const severityOrder: OneViewSeverity\[\] = \[\.\.\.ONEVIEW_V1_FILTER_SEVERITIES\]/);
+  assert.match(alerts, /next\.append\("severity", value\)/);
+  assert.doesNotMatch(alerts, /rawSeverities|next\.append\("priority"/);
   assert.match(alerts, /sortableHeader\("Prioridade", "severity"\)/);
   assert.match(alerts, />Ações<\/TableHead>/);
-  assert.match(alerts, /<UserCheck className="h-3\.5 w-3\.5" \/> ACK/);
+  assert.doesNotMatch(alerts, /<UserCheck className="h-3\.5 w-3\.5" \/> ACK<\/Button>/);
   assert.doesNotMatch(alerts, /Informativo \(baixa prioridade\)|>Severidade<\/TableHead>/);
+  assert.doesNotMatch(alerts, /acknowledged_internal_comment \? <p className="mt-1 line-clamp-2/);
 });
 
 test("cards de indicadores aplicam filtros rápidos sem textos redundantes", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
-  assert.match(alerts, /type SummaryFilter = "total" \| "active" \| "acknowledged" \| "pending" \| "high" \| "critical"/);
+  assert.match(alerts, /type SummaryFilter = "total" \| "active" \| "acknowledged" \| "pending" \| "high" \| "disaster"/);
   assert.match(alerts, /const applySummaryFilter = \(filter: SummaryFilter\)/);
   assert.match(alerts, /aria-label=\{`Filtrar alertas: \$\{card\.title\}`\}/);
   assert.match(alerts, /onClick=\{\(\) => applySummaryFilter\(card\.filter\)\}/);
-  assert.match(alerts, /setStatusFilter\(filter === "total" \? "all" : "active"\)/);
+  assert.match(alerts, /setStatusFilter\(filter === "total" \? "all" : filter === "active" \? "active" : hasTemporalFilter \? statusFilter : "active"\)/);
   assert.match(alerts, /setSourceAckFilter\(filter === "acknowledged" \? "acknowledged" : filter === "pending" \? "unacknowledged" : "all"\)/);
   assert.doesNotMatch(alerts, /Resumo global do OneView/);
   assert.doesNotMatch(alerts, /Métricas de todo o ambiente\. Os controles da tabela afetam somente a listagem\./);
@@ -233,7 +414,8 @@ test("tabela reserva espaço para ACK e ações; tema lateral é persistente", a
     read("src/components/layout/Sidebar.tsx"),
   ]);
   assert.match(alerts, /<col className=\"w-\[10%\]\" \/>[\s\S]+<col className=\"w-\[12%\]\" \/>/);
-  assert.match(alerts, /showIpColumn \? \"w-\[24%\]\" : \"w-\[30%\]\"/);
+  assert.match(alerts, /showIpColumn \? \"w-\[20%\]\" : \"w-\[25%\]\"/);
+  assert.doesNotMatch(alerts, />OneView<\/span>|Não tratado/);
   assert.match(alerts, /max-w-full whitespace-nowrap border text-\[10px\]/);
   assert.match(alerts, /<div className=\"flex items-center justify-center gap-2 text-left\">/);
   assert.match(alerts, /py-5 pl-6 pr-14 text-left/);
@@ -247,24 +429,30 @@ test("tabela reserva espaço para ACK e ações; tema lateral é persistente", a
   assert.match(sidebar, /Ativar modo claro/);
 });
 
-test("drawer carrega detalhe e histórico em paralelo e solicita ACK com confirmação segura", async () => {
+test("drawer carrega detalhe e histórico e exibe somente ACK real da origem", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /Promise\.allSettled\(\[\s*fetchAlert\(id, controller\.signal\),\s*fetchAlertHistory\(id, controller\.signal\)/);
+  assert.match(alerts, /fetchAlertMetrics\(\{ refresh: force \}\)/);
+  assert.match(alerts, /loadSelectedAlert\(selectedAlert\.id\)/);
+  assert.match(alerts, /acknowledged_internal_comment: ackComment\.trim\(\)/);
   assert.match(alerts, /<TabsTrigger value="summary"/);
   assert.match(alerts, /<TabsTrigger value="history"/);
   assert.match(alerts, /<TabsTrigger value="technical"/);
   assert.doesNotMatch(alerts, /ID do datasource/);
   assert.match(alerts, /requestAlertAcknowledgement/);
-  assert.match(alerts, /Confirmar reconhecimento no OneView/);
-  assert.match(alerts, /maxLength=\{500\}/);
+  assert.doesNotMatch(alerts, /Confirmar reconhecimento no OneView|maxLength=\{500\}|Reconhecer no OneView/);
   assert.match(alerts, /ackRequestAllowedFor/);
   assert.match(alerts, /teletex-http/);
-  assert.match(alerts, /Nenhuma ação será enviada ao Zabbix/);
+  assert.match(alerts, /sourceAcknowledgementComment/);
+  assert.match(alerts, /Reconhecido por: \$\{ack\.actorLabel\}/);
+  assert.match(alerts, /Sem comentário registrado na origem\./);
+  assert.doesNotMatch(alerts, /Para reconhecer na origem, use o Zabbix/);
+  assert.match(alerts, /Detalhes históricos deste reconhecimento não estão disponíveis no registro legado\./);
+  assert.match(alerts, /source_ack/);
   assert.match(alerts, /health\?\.capabilities\?\.acknowledgement === true/);
-  assert.match(alerts, /Aguardando liberação operacional\./);
   assert.match(alerts, /Atribuição operacional em preparação\./);
   assert.match(alerts, /if \(!ackRequestsEnabled \|\| !selectedAlert \|\| !ackRequestKey \|\| ackSubmitting\) return;/);
-  assert.match(alerts, /disabled=\{ackSubmitting \|\| !selectedAlert \|\| !ackRequestsEnabled \|\| ackComment\.trim\(\)\.length === 0\}/);
+  assert.doesNotMatch(alerts, /disabled=\{ackSubmitting \|\| !selectedAlert \|\| !ackRequestsEnabled \|\| ackComment\.trim\(\)\.length === 0\}/);
   assert.match(alerts, /customerPresentation\(selectedAlert\)/);
   assert.match(alerts, /selectedAlert\.datasource_name/);
   assert.match(alerts, /selectedAlert\.host_groups/);
@@ -274,37 +462,45 @@ test("drawer carrega detalhe e histórico em paralelo e solicita ACK com confirm
   assert.match(alerts, /Enriquecimento parcial/);
   assert.match(alerts, /enrichmentExplanations/);
   assert.match(alerts, /Histórico legado/);
-  assert.match(alerts, /Não classificado/);
   assert.match(alerts, /Cliente não identificado/);
-  assert.match(alerts, /A origem não possui evidências suficientes para identificar automaticamente o cliente\./);
-  assert.match(alerts, /Dados históricos aguardando classificação/);
-  assert.match(alerts, /Classificação histórica pendente/);
+  assert.match(alerts, /A fonte \$\{datasource\} não forneceu evidências suficientes para associar este alerta automaticamente a um cliente\./);
+  assert.match(alerts, /Grupos disponíveis/);
+  assert.match(alerts, /Tags disponíveis/);
+  assert.match(alerts, /revise as tags e os grupos na origem/);
+  assert.match(alerts, /alert\.customer_source\?\.trim\(\)\.toLowerCase\(\) === "datasource_fallback"/);
+  assert.doesNotMatch(alerts, /Dados históricos aguardando classificação|Classificação histórica pendente/);
   assert.doesNotMatch(alerts, /Cliente pendente/);
-  assert.match(alerts, /Eventos exibidos/);
-  assert.match(alerts, /Primeiro evento/);
-  assert.match(alerts, /Último evento/);
-  assert.match(alerts, /Total de reconhecimentos/);
-  assert.match(alerts, /Primeiro ACK/);
-  assert.match(alerts, /ACK mais recente/);
-  assert.match(alerts, /Possui comentário/);
+  assert.match(alerts, /Eventos registrados/);
+  assert.match(alerts, /Primeira ocorrência/);
+  assert.match(alerts, /Última ocorrência/);
+  assert.match(alerts, /ACK atual/);
   assert.match(alerts, /Recovery/);
-  assert.match(alerts, /Responsável pelo ACK/);
-  assert.match(alerts, /Responsável não resolvido no Zabbix/);
+  assert.match(alerts, /ACK atual confirmado pela origem/);
+  assert.match(alerts, /Responsável não informado pela origem/);
+  assert.match(alerts, /sourceAckConfirmedWithoutHistory/);
+  assert.match(alerts, /Detalhes históricos deste reconhecimento não estão disponíveis no registro legado\./);
+  assert.doesNotMatch(alerts, /Os detalhes históricos deste reconhecimento não estão disponíveis no registro legado\./);
+  assert.match(alerts, /Processado pelo Worker OneView/);
+  assert.match(alerts, /formalHistoryTitle/);
+  assert.match(alerts, /function sourceAckPresentation/);
+  assert.match(alerts, /hasLoadedAlerts/);
+  assert.match(alerts, /Atualizando\.\.\./);
+  assert.match(alerts, /details open className="rounded-\[10px\] border border-border\/70 bg-white p-4 shadow-sm"/);
+  assert.doesNotMatch(alerts, /Sem ACK(?! no Zabbix)/);
+  assert.doesNotMatch(alerts, /Evidência parcial/);
   assert.match(alerts, /item\.ack_actor_name/);
   assert.doesNotMatch(alerts, /actor_id/);
   assert.match(alerts, /Horário da origem/);
   assert.match(alerts, /Registrado no OneView/);
-  assert.match(alerts, /Origem Zabbix/);
-  assert.match(alerts, /Origem OneView/);
-  assert.match(alerts, /Evidência parcial/);
-  assert.match(alerts, /Qualidade do histórico/);
-  assert.match(alerts, /Histórico completo/);
-  assert.match(alerts, /Histórico parcial/);
+  assert.match(alerts, /historyOrigin\(group\.primary\) === "Zabbix"/);
+  assert.match(alerts, /Fonte Zabbix/);
+  assert.match(alerts, /Integridade do histórico/);
+  assert.match(alerts, /historyQuality/);
   assert.match(alerts, /Histórico indisponível/);
   assert.match(alerts, /Valor anterior/);
   assert.match(alerts, /Valor atual/);
   assert.match(alerts, /groupHistoryItems/);
-  assert.match(alerts, /Ocorrência atualizada \$\{groupedEventCount\} vezes/);
+  assert.match(alerts, /Ocorrência atualizada/);
   assert.match(alerts, /Reconhecimentos/);
   assert.match(alerts, /Mudanças/);
   assert.match(alerts, /Legado/);
@@ -363,12 +559,17 @@ test("fila de atenção permanece server-side e é apresentada somente na Home",
   assert.match(config, /ONEVIEW_DISASTER_UNACK_MINUTES|attentionThresholds/);
   assert.match(database, /coalesce\(a\.acknowledged_source, false\) = false/);
   assert.match(database, /a\.first_seen_at < now\(\)/);
+  assert.match(database, /severity in \('disaster', 'critical'\)/);
+  assert.match(database, /severity in \('warning', 'information', 'not_classified'\)/);
+  assert.match(database, /low_minutes: thresholds\.lowMinutes/);
   assert.doesNotMatch(database.match(/async function fetchAttentionRequiredPayload[\s\S]*?function alertId/)?.[0] ?? "", /payload_raw|payload_normalized|inventory|api_url|token_encrypted/);
   assert.match(fallback, /attentionRequiredPayload/);
   assert.match(api, /fetchAttentionRequired|AttentionRequiredResponse/);
-  assert.doesNotMatch(alerts, /Atenção necessária|attentionMeta|attentionOpen/);
-  assert.match(index, /fetchAttentionRequired\(100\)/);
-  assert.match(index, /Atenção necessária/);
+  assert.doesNotMatch(alerts, /Atenção necessária|attentionMeta|attentionOpen|Esquecidos/);
+  assert.match(index, /fetchAttentionRequired\(ATTENTION_FETCH_LIMIT\)/);
+  assert.match(index, /Atenção operacional/);
+  assert.match(index, /attentionSummary/);
+  assert.match(index, /ATTENTION_BUCKETS/);
   assert.doesNotMatch(route, /method:\s*"POST"|addAlertNote|assignAlert|updateAlertStatus/);
 });
 
@@ -460,4 +661,94 @@ test("teste de carga local cobre cenários, autenticação, gates e pool sem esc
     "oneview_attention_items",
   ]) assert.match(sql, new RegExp(`PREPARE ${queryName}`));
   assert.doesNotMatch(sql, /password|senha|postgres(?:ql)?:\/\/|token|secret/i);
+});
+
+test("Home monta URL canônica de prioridade e V1 só exibe ACK nominal da origem", async () => {
+  const [index, alerts, api, snapshot] = await Promise.all([
+    read("src/pages/Index.tsx"),
+    read("src/pages/Alerts.tsx"),
+    read("src/lib/oneview-api.ts"),
+    read("scripts/generate-safe-snapshot.mjs"),
+  ]);
+
+  assert.match(index, /appendTemporal\("created"/);
+  assert.match(index, /appendTemporal\("updated"/);
+  assert.match(index, /appendTemporal\("ack"/);
+  assert.match(index, /params\.set\(prefix, "custom"\)/);
+  assert.match(index, /params\.set\("resolved", "custom"\)/);
+  assert.match(index, /disasterFamilySeverities\(severityCountMap\)/);
+  assert.match(index, /severities: \["high"\]/);
+  assert.match(api, /for \(const severity of canonicalizeSeveritiesForApi/);
+  assert.match(api, /disaster: \{ label: "Desastre"/);
+  assert.doesNotMatch(api, /high: \{ label: "Crítico"/);
+
+  assert.match(snapshot, /if \(raw === "disaster"\) return "disaster"/);
+  assert.match(snapshot, /if \(\["high", "alta", "alto"\]\.includes\(raw\)\) return "high"/);
+  assert.match(snapshot, /if \(\["critical", "critico", "crítico"\]\.includes\(raw\)\) return "critical"/);
+
+  assert.match(alerts, /function safeActorName\(value: unknown\)/);
+  assert.match(alerts, /!\/\^\\d\+\$\/\.test\(candidate\)/);
+  assert.match(alerts, /Por: \$\{ack\.actorLabel\}/);
+  assert.match(alerts, /sourceAcknowledgementComment/);
+  assert.match(alerts, /sourceAckConfirmedWithoutHistory/);
+  assert.match(alerts, /Processado pelo Worker OneView/);
+  assert.match(alerts, /hasLoadedAlerts/);
+  assert.doesNotMatch(alerts, /Sem ACK(?! no Zabbix)/);
+  assert.doesNotMatch(alerts, /Reconhecer no OneView|Nunca tratado|Reconhecimentos OneView hoje/);
+  assert.doesNotMatch(alerts, /event\.acknowledge|problem\.acknowledge|\/api\/zabbix/i);
+  assert.doesNotMatch(api, /event\.acknowledge|problem\.acknowledge|\/api\/zabbix/i);
+});
+
+test("V1 fecha ACK, histórico formal, Home operacional e refresh suave", async () => {
+  const [alerts, index, api] = await Promise.all([
+    read("src/pages/Alerts.tsx"),
+    read("src/pages/Index.tsx"),
+    read("src/lib/oneview-api.ts"),
+  ]);
+
+  assert.match(alerts, /status === "acknowledged" \? "Reconhecido" : "Pendente"/);
+  assert.match(alerts, /ack\.actorLabel \? `Por: \$\{ack\.actorLabel\}` : "Responsável não informado pela origem"/);
+  assert.match(alerts, /sourceAckConfirmedWithoutHistory/);
+  assert.match(alerts, /ACK atual confirmado pela origem/);
+  assert.match(alerts, /Detalhes históricos deste reconhecimento não estão disponíveis no registro legado\./);
+  assert.doesNotMatch(alerts, /Os detalhes históricos deste reconhecimento não estão disponíveis no registro legado\./);
+  assert.doesNotMatch(alerts, /Sem ACK(?! no Zabbix)/);
+  assert.match(alerts, /!\/\^\\d\+\$\/\.test\(candidate\)/);
+  assert.match(alerts, /Processado pelo Worker OneView/);
+  assert.match(alerts, /allowWorkerLabel: false/);
+  assert.match(alerts, /Alerta reconhecido na origem/);
+  assert.match(alerts, /Severidade alterada/);
+  assert.match(alerts, /Evento de manutenção/);
+  assert.match(alerts, /Parte dos eventos possui dados estruturados\. Informações ausentes não foram inferidas\./);
+  assert.match(alerts, /Este alerta possui registros anteriores ao modelo histórico atual\./);
+  assert.match(alerts, /Não existem eventos históricos estruturados para este alerta\./);
+  assert.match(alerts, /Os principais eventos possuem dados estruturados da origem\./);
+  assert.match(alerts, /details open className="rounded-\[10px\] border border-border\/70 bg-white p-4 shadow-sm"/);
+  assert.match(alerts, /showAlertsSkeleton = isAlertsLoading && !hasLoadedAlerts && alerts\.length === 0/);
+  assert.match(alerts, /isAlertsLoading && hasLoadedAlerts/);
+  assert.doesNotMatch(alerts.match(/const loadAlerts[\s\S]*?const loadSummaryResources/)?.[0] ?? "", /setAlerts\(\[\]\)/);
+
+  assert.match(index, /operations\?\.items \?\? \[\]/);
+  assert.match(index, /status === "disabled"/);
+  assert.match(index, /status === "error"/);
+  assert.match(index, /ATTENTION_BUCKETS/);
+  assert.match(index, /RECENT_SEVERITY_GROUPS/);
+  assert.match(index, /severities: recentSeverities/);
+  assert.match(index, /sort: "first_seen_at"/);
+  assert.match(index, /PRIORITY_SEVERITIES = \["disaster", "high"\]/);
+  assert.match(index, /severities: \[\.\.\.PRIORITY_SEVERITIES\]/);
+  assert.match(index, /isBackgroundUpdating/);
+  assert.match(index, /beginQuietUpdate/);
+  assert.match(index, /priorityAlertsHref/);
+  assert.match(index, /status: "active"/);
+  assert.match(index, /severity=|severity",/);
+  assert.doesNotMatch(index, /disponibilidade\s*100%|uptime\s*100%/i);
+
+  const priorityHrefBlock = index.match(/const priorityAlertsHref = `\/alertas\?\$\{buildAlertsQuery\(\{[\s\S]*?\}\)\.toString\(\)\}`;/);
+  assert.ok(priorityHrefBlock);
+  assert.match(priorityHrefBlock[0], /status: "active"/);
+  assert.match(priorityHrefBlock[0], /PRIORITY_SEVERITIES/);
+  assert.doesNotMatch(priorityHrefBlock[0], /priority:|status: "critical"|severity: "Crítico"/);
+
+  assert.match(api, /for \(const severity of canonicalizeSeveritiesForApi/);
 });

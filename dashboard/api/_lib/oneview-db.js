@@ -10,6 +10,9 @@ const DEFAULT_ATTENTION_LIMIT = 100;
 const MAX_FILTER_VALUES = 20;
 const MAX_SYNC_LOG_LIMIT = 50;
 const DEFAULT_SYNC_LOG_LIMIT = 20;
+const DEFAULT_OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
+const INTERNAL_ACKNOWLEDGEMENT_TYPES = ["internal"];
+const INTERNAL_ACKNOWLEDGEMENT_STATUSES = ["recorded", "pending", "processing", "success", "completed"];
 
 const URL_PATTERN = /https?:\/\/[^\s,;)]+/gi;
 const PRIVATE_IP_PATTERN = /\b(?:127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?\b/gi;
@@ -191,16 +194,22 @@ function poolSslConfig(config) {
   return true;
 }
 
-const ALERT_SEVERITIES = new Set(["disaster", "high", "average", "warning", "information", "not_classified"]);
+const ALERT_SEVERITIES = new Set(["disaster", "critical", "high", "average", "warning", "information", "not_classified"]);
 const CUSTOMER_CONFIDENCES = new Set(["high", "medium", "low", "unclassified"]);
 const ALERT_SORTS = Object.freeze({
   last_seen_at: "a.last_seen_at",
   first_seen_at: "a.first_seen_at",
   resolved_at: "a.resolved_at",
   severity: `case a.severity
-    when 'disaster' then 5 when 'high' then 4 when 'average' then 3
+    when 'disaster' then 7 when 'critical' then 6 when 'high' then 5 when 'average' then 4
     when 'warning' then 2 when 'information' then 1 else 0 end`,
-  client: "coalesce(a.customer_name, a.client_name)",
+  client: `case
+    when a.customer_name is null or btrim(a.customer_name) = ''
+      or lower(coalesce(a.customer_source, '')) = 'datasource_fallback'
+      or lower(coalesce(a.customer_key, '')) = 'unclassified'
+      then 'Cliente não identificado'
+    else a.customer_name
+  end`,
   datasource: "d.name",
   host: "a.host_name",
   problem: "a.problem_name",
@@ -224,10 +233,152 @@ const ACTIVE_ALERT_SQL = `(
   and lower(coalesce(a.status_internal, '')) not in ('resolved', 'normalized')
 )`;
 
+const UNIDENTIFIED_CUSTOMER_SQL = `(
+  a.customer_name is null
+  or btrim(a.customer_name) = ''
+  or lower(btrim(a.customer_name)) in ('cliente não classificado', 'cliente nao classificado', 'cliente não identificado', 'cliente nao identificado')
+  or lower(coalesce(a.customer_source, '')) = 'datasource_fallback'
+  or lower(coalesce(a.customer_key, '')) = 'unclassified'
+)`;
+
+const SAFE_CUSTOMER_NAME_SQL = `case
+  when ${UNIDENTIFIED_CUSTOMER_SQL} then 'Cliente não identificado'
+  else a.customer_name
+end`;
+
+const SAFE_CUSTOMER_KEY_SQL = `case
+  when ${UNIDENTIFIED_CUSTOMER_SQL} then 'unclassified'
+  else a.customer_key
+end`;
+
+// Reconhecimento interno novo é append-only. O campo legado continua sendo
+// lido para compatibilidade, mas a API de ação não atualiza public.alerts.
+const INTERNAL_ACKNOWLEDGED_SQL = `(coalesce(a.acknowledged_internal, false) or exists (
+  select 1
+    from alert_acknowledgements internal_ack
+   where internal_ack.alert_id = a.id
+     and internal_ack.acknowledgement_type in ('internal','internal_acknowledgement')
+     and internal_ack.status in ('recorded','pending','processing','success','completed')
+))`;
+
 export function isResolvedAlert(alert) {
   const sourceStatus = textValue(alert?.status_source).toLowerCase();
   const internalStatus = textValue(alert?.status_internal).toLowerCase();
   return Boolean(alert?.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
+}
+
+export function operationalTimezone(value = DEFAULT_OPERATIONAL_TIMEZONE) {
+  const candidate = textValue(value, DEFAULT_OPERATIONAL_TIMEZONE);
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date(0));
+    return candidate;
+  } catch {
+    return DEFAULT_OPERATIONAL_TIMEZONE;
+  }
+}
+
+function zonedDateTimeToUtc(parts, timeZone) {
+  const target = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour || 0, parts.minute || 0, parts.second || 0);
+  let guess = target;
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const rendered = Object.fromEntries(formatter.formatToParts(new Date(guess)).map((part) => [part.type, part.value]));
+    const renderedUtc = Date.UTC(
+      Number(rendered.year), Number(rendered.month) - 1, Number(rendered.day),
+      Number(rendered.hour), Number(rendered.minute), Number(rendered.second),
+    );
+    guess += target - renderedUtc;
+  }
+  return new Date(guess);
+}
+
+export function operationalDayBounds(timeZone = DEFAULT_OPERATIONAL_TIMEZONE, now = new Date()) {
+  const zone = operationalTimezone(timeZone);
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const current = Object.fromEntries(formatter.formatToParts(now).map((part) => [part.type, part.value]));
+  const year = Number(current.year);
+  const month = Number(current.month);
+  const day = Number(current.day);
+  const nextCalendarDay = new Date(Date.UTC(year, month - 1, day + 1));
+  const start = zonedDateTimeToUtc({ year, month, day }, zone);
+  const end = zonedDateTimeToUtc({
+    year: nextCalendarDay.getUTCFullYear(),
+    month: nextCalendarDay.getUTCMonth() + 1,
+    day: nextCalendarDay.getUTCDate(),
+  }, zone);
+  return Object.freeze({
+    timeZone: zone,
+    from: start.toISOString(),
+    to: end.toISOString(),
+  });
+}
+
+export function dailyOperationalMetricQueries(timeZone = DEFAULT_OPERATIONAL_TIMEZONE, now = new Date()) {
+  const day = operationalDayBounds(timeZone, now);
+  const values = [day.from, day.to];
+  return Object.freeze({
+    day,
+    resolved: Object.freeze({
+      text: `select count(*)::int as value
+               from alerts
+              where resolved_at >= $1::timestamptz
+                and resolved_at < $2::timestamptz`,
+      values,
+    }),
+    sourceAcknowledged: Object.freeze({
+      text: `select count(*)::int as value
+               from alerts
+              where acknowledged_source = true
+                and acknowledged_at >= $1::timestamptz
+                and acknowledged_at < $2::timestamptz`,
+      values,
+    }),
+    oneViewAcknowledged: Object.freeze({
+      text: `select count(*)::int as value
+               from alert_acknowledgements
+              where acknowledgement_type = any($3::text[])
+                and status = any($4::text[])
+                and requested_at >= $1::timestamptz
+                and requested_at < $2::timestamptz`,
+      values: [...values, INTERNAL_ACKNOWLEDGEMENT_TYPES, INTERNAL_ACKNOWLEDGEMENT_STATUSES],
+    }),
+  });
+}
+
+export function countDailyOperationalMetrics({ alerts = [], acknowledgements = [] } = {}, timeZone = DEFAULT_OPERATIONAL_TIMEZONE, now = new Date()) {
+  const day = operationalDayBounds(timeZone, now);
+  const withinDay = (value) => {
+    const timestamp = Date.parse(String(value || ""));
+    return Number.isFinite(timestamp)
+      && timestamp >= Date.parse(day.from)
+      && timestamp < Date.parse(day.to);
+  };
+  return Object.freeze({
+    resolved_today: alerts.filter((alert) => withinDay(alert?.resolved_at)).length,
+    source_acknowledgements_today: alerts.filter((alert) => (
+      alert?.acknowledged_source === true && withinDay(alert?.acknowledged_at ?? alert?.acknowledged_source_at)
+    )).length,
+    oneview_acknowledgements_today: acknowledgements.filter((acknowledgement) => (
+      INTERNAL_ACKNOWLEDGEMENT_TYPES.includes(textValue(acknowledgement?.acknowledgement_type).toLowerCase())
+      && INTERNAL_ACKNOWLEDGEMENT_STATUSES.includes(textValue(acknowledgement?.status).toLowerCase())
+      && withinDay(acknowledgement?.requested_at)
+    )).length,
+    operational_day: day,
+  });
 }
 
 export function isActiveAlert(alert) {
@@ -248,6 +399,7 @@ export function getAttentionThresholds(env = process.env) {
     disasterMinutes: integerValue(env.ONEVIEW_DISASTER_UNACK_MINUTES, 5, { min: 1, max: 1440 }),
     highMinutes: integerValue(env.ONEVIEW_HIGH_UNACK_MINUTES, 15, { min: 1, max: 1440 }),
     averageMinutes: integerValue(env.ONEVIEW_AVERAGE_UNACK_MINUTES, 30, { min: 1, max: 1440 }),
+    lowMinutes: integerValue(env.ONEVIEW_LOW_UNACK_MINUTES, 60, { min: 1, max: 1440 }),
   });
 }
 
@@ -257,15 +409,17 @@ export function buildAttentionRequiredQuery(req, thresholds = getAttentionThresh
     thresholds.disasterMinutes,
     thresholds.highMinutes,
     thresholds.averageMinutes,
+    thresholds.lowMinutes,
   ];
   const whereSql = `
     ${ACTIVE_ALERT_SQL}
     and coalesce(a.acknowledged_source, false) = false
     and a.first_seen_at is not null
     and (
-      (a.severity = 'disaster' and a.first_seen_at < now() - ($1::int * interval '1 minute'))
+      (a.severity in ('disaster', 'critical') and a.first_seen_at < now() - ($1::int * interval '1 minute'))
       or (a.severity = 'high' and a.first_seen_at < now() - ($2::int * interval '1 minute'))
       or (a.severity = 'average' and a.first_seen_at < now() - ($3::int * interval '1 minute'))
+      or (a.severity in ('warning', 'information', 'not_classified') and a.first_seen_at < now() - ($4::int * interval '1 minute'))
     )
   `;
   return {
@@ -273,7 +427,12 @@ export function buildAttentionRequiredQuery(req, thresholds = getAttentionThresh
     values,
     whereSql,
     orderSql: `
-      case a.severity when 'disaster' then 1 when 'high' then 2 when 'average' then 3 else 4 end asc,
+      case a.severity
+        when 'disaster' then 1 when 'critical' then 1
+        when 'high' then 2
+        when 'average' then 3
+        else 4
+      end asc,
       unacknowledged_minutes desc,
       a.id desc
     `,
@@ -285,13 +444,15 @@ export function attentionRequiredState(alert, thresholds = getAttentionThreshold
   const firstSeenAt = Date.parse(alert?.first_seen_at || alert?.started_at || "");
   const active = isActiveAlert(alert);
   const acknowledgedAtOrigin = Boolean(alert?.acknowledged_source);
-  const threshold = severity === "disaster"
+  const threshold = severity === "disaster" || severity === "critical"
     ? thresholds.disasterMinutes
     : severity === "high"
       ? thresholds.highMinutes
       : severity === "average"
         ? thresholds.averageMinutes
-        : null;
+        : ["warning", "information", "not_classified"].includes(severity)
+          ? thresholds.lowMinutes
+          : null;
   const ageMilliseconds = Number.isNaN(firstSeenAt) ? 0 : Math.max(now - firstSeenAt, 0);
   const unacknowledgedMinutes = Math.floor(ageMilliseconds / 60000);
   return {
@@ -301,8 +462,16 @@ export function attentionRequiredState(alert, thresholds = getAttentionThreshold
 }
 
 export function compareAttentionRequiredEntries(left, right) {
-  const severityRank = { disaster: 1, high: 2, average: 3 };
-  const severityDifference = (severityRank[left?.alert?.severity] ?? 4) - (severityRank[right?.alert?.severity] ?? 4);
+  const severityRank = {
+    disaster: 1,
+    critical: 1,
+    high: 2,
+    average: 3,
+    warning: 4,
+    information: 4,
+    not_classified: 4,
+  };
+  const severityDifference = (severityRank[left?.alert?.severity] ?? 5) - (severityRank[right?.alert?.severity] ?? 5);
   if (severityDifference !== 0) return severityDifference;
   return integerValue(right?.unacknowledgedMinutes, 0) - integerValue(left?.unacknowledgedMinutes, 0);
 }
@@ -340,7 +509,13 @@ export function buildAlertListQuery(req) {
   const dateFrom = isoFilterDate(oneQueryValue(req, "date_from"));
   const dateTo = isoFilterDate(oneQueryValue(req, "date_to"));
   const firstSeenFrom = isoFilterDate(oneQueryValue(req, "first_seen_from"));
+  const firstSeenTo = isoFilterDate(oneQueryValue(req, "first_seen_to"));
   const lastSeenFrom = isoFilterDate(oneQueryValue(req, "last_seen_from"));
+  const lastSeenTo = isoFilterDate(oneQueryValue(req, "last_seen_to"));
+  const resolvedFrom = isoFilterDate(oneQueryValue(req, "resolved_from"));
+  const resolvedTo = isoFilterDate(oneQueryValue(req, "resolved_to"));
+  const acknowledgedFrom = isoFilterDate(oneQueryValue(req, "acknowledged_from"));
+  const acknowledgedTo = isoFilterDate(oneQueryValue(req, "acknowledged_to"));
   const sort = (oneQueryValue(req, "sort") || "last_seen_at").toLowerCase();
   const order = (oneQueryValue(req, "order") || "desc").toLowerCase();
 
@@ -352,11 +527,25 @@ export function buildAlertListQuery(req) {
   if (acknowledgedInternal && !["true", "false"].includes(acknowledgedInternal)) throw requestError("invalid_query");
   if (!Object.hasOwn(ALERT_SORTS, sort) || !["asc", "desc"].includes(order)) throw requestError("invalid_query");
   if (dateFrom && dateTo && Date.parse(dateFrom) > Date.parse(dateTo)) throw requestError("invalid_query");
+  if (firstSeenFrom && firstSeenTo && Date.parse(firstSeenFrom) > Date.parse(firstSeenTo)) throw requestError("invalid_query");
+  if (lastSeenFrom && lastSeenTo && Date.parse(lastSeenFrom) > Date.parse(lastSeenTo)) throw requestError("invalid_query");
+  if (resolvedFrom && resolvedTo && Date.parse(resolvedFrom) > Date.parse(resolvedTo)) throw requestError("invalid_query");
+  if (acknowledgedFrom && acknowledgedTo && Date.parse(acknowledgedFrom) > Date.parse(acknowledgedTo)) throw requestError("invalid_query");
   const offset = (page - 1) * pageSize;
   if (!Number.isSafeInteger(offset)) throw requestError("invalid_query");
 
   if (clients.length) push("a.client_name = any(?::text[])", clients);
-  if (customers.length) push("coalesce(a.customer_key, 'unclassified') = any(?::text[])", customers);
+  if (customers.length) {
+    const includesUnidentified = customers.some((value) => value.toLowerCase() === "unclassified");
+    const identifiedKeys = customers.filter((value) => value.toLowerCase() !== "unclassified");
+    if (includesUnidentified && identifiedKeys.length) {
+      push(`(${UNIDENTIFIED_CUSTOMER_SQL} or a.customer_key = any(?::text[]))`, identifiedKeys);
+    } else if (includesUnidentified) {
+      clauses.push(UNIDENTIFIED_CUSTOMER_SQL);
+    } else {
+      push("a.customer_key = any(?::text[])", identifiedKeys);
+    }
+  }
   if (datasources.length) push("d.name = any(?::text[])", datasources);
   if (customerConfidences.length) {
     push("coalesce(a.customer_confidence, 'unclassified') = any(?::text[])", customerConfidences);
@@ -366,12 +555,12 @@ export function buildAlertListQuery(req) {
   if (status === "resolved") clauses.push(RESOLVED_ALERT_SQL);
   if (acknowledged) {
     push(
-      "(coalesce(a.acknowledged_source, false) or coalesce(a.acknowledged_internal, false)) = ?",
+      `(coalesce(a.acknowledged_source, false) or ${INTERNAL_ACKNOWLEDGED_SQL}) = ?`,
       acknowledged === "true",
     );
   }
   if (acknowledgedSource) push("coalesce(a.acknowledged_source, false) = ?", acknowledgedSource === "true");
-  if (acknowledgedInternal) push("coalesce(a.acknowledged_internal, false) = ?", acknowledgedInternal === "true");
+  if (acknowledgedInternal) push(`${INTERNAL_ACKNOWLEDGED_SQL} = ?`, acknowledgedInternal === "true");
   if (search) {
     push(
       "(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ? or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, a.client_name, '') ilike $CURRENT or coalesce(d.name, '') ilike $CURRENT)",
@@ -389,10 +578,20 @@ export function buildAlertListQuery(req) {
   if (problemSearch) {
     push("coalesce(a.problem_name, '') ilike ?", `%${problemSearch}%`);
   }
+
+  const baseParams = [...params];
+  const baseWhereSql = clauses.length ? `where ${clauses.join(" and ")}` : "";
+
   if (dateFrom) push("a.last_seen_at >= ?", dateFrom);
   if (dateTo) push("a.last_seen_at <= ?", dateTo);
   if (firstSeenFrom) push("a.first_seen_at >= ?", firstSeenFrom);
+  if (firstSeenTo) push("a.first_seen_at <= ?", firstSeenTo);
   if (lastSeenFrom) push("a.last_seen_at >= ?", lastSeenFrom);
+  if (lastSeenTo) push("a.last_seen_at <= ?", lastSeenTo);
+  if (resolvedFrom) push("a.resolved_at >= ?", resolvedFrom);
+  if (resolvedTo) push("a.resolved_at <= ?", resolvedTo);
+  if (acknowledgedFrom) push("a.acknowledged_at >= ?", acknowledgedFrom);
+  if (acknowledgedTo) push("a.acknowledged_at <= ?", acknowledgedTo);
 
   const direction = order.toUpperCase();
   return {
@@ -400,8 +599,10 @@ export function buildAlertListQuery(req) {
     pageSize,
     offset,
     params,
+    baseParams,
+    baseWhereSql,
     whereSql: clauses.length ? `where ${clauses.join(" and ")}` : "",
-    orderSql: `${ALERT_SORTS[sort]} ${direction}${sort === "resolved_at" ? " nulls last" : ""}, a.last_seen_at desc, a.id desc`,
+    orderSql: `${ALERT_SORTS[sort]} ${direction}${sort === "resolved_at" ? " nulls last" : ""}, ${sort === "severity" ? "a.first_seen_at desc, a.last_seen_at desc" : "a.last_seen_at desc"}, a.id desc`,
     filters: {
       clients,
       customers,
@@ -418,7 +619,13 @@ export function buildAlertListQuery(req) {
       dateFrom,
       dateTo,
       firstSeenFrom,
+      firstSeenTo,
       lastSeenFrom,
+      lastSeenTo,
+      resolvedFrom,
+      resolvedTo,
+      acknowledgedFrom,
+      acknowledgedTo,
       sort,
       order,
     },
@@ -436,9 +643,26 @@ function normalizedCustomerName(value) {
     .toLowerCase();
 }
 
+export function safeCustomerIdentity(alert) {
+  const customerName = textValue(alert?.customer_name);
+  const normalizedName = normalizedCustomerName(customerName);
+  const source = textValue(alert?.customer_source).toLowerCase();
+  const key = textValue(alert?.customer_key).toLowerCase();
+  const unidentified = !customerName
+    || source === "datasource_fallback"
+    || key === "unclassified"
+    || ["cliente nao classificado", "cliente nao identificado"].includes(normalizedName);
+  return {
+    customerName: unidentified ? null : customerName,
+    customerKey: unidentified ? "unclassified" : textValue(alert?.customer_key) || null,
+    unidentified,
+  };
+}
+
 export function classifyAlertEnrichment(alert) {
   const customerName = normalizedCustomerName(alert?.customer_name);
-  if (customerName === "cliente nao classificado") return "unclassified";
+  if (textValue(alert?.customer_source).toLowerCase() === "datasource_fallback") return "unclassified";
+  if (["cliente nao classificado", "cliente nao identificado"].includes(customerName)) return "unclassified";
   if (!customerName) return "legacy";
   return textValue(alert?.customer_confidence).toLowerCase() === "high" ? "complete" : "partial";
 }
@@ -448,13 +672,14 @@ function mapAlertRows(rows) {
   return rows.map((row) => {
     const hostAlias = aliasForHost(row.host_name, aliases);
     const enrichmentState = classifyAlertEnrichment(row);
+    const customerIdentity = safeCustomerIdentity(row);
     return {
       id: textValue(row.id),
       data_source_id: textValue(row.data_source_id),
       datasource_name: sanitizeText(row.datasource_name ?? row.data_source_name, "Datasource OneView", 160),
       client_name: sanitizeText(row.client_name, "Cliente OneView", 160),
-      customer_name: nullableText(sanitizeText(row.customer_name, "", 160)),
-      customer_key: nullableText(sanitizeText(row.customer_key, "", 160)),
+      customer_name: nullableText(sanitizeText(customerIdentity.customerName, "", 160)),
+      customer_key: nullableText(sanitizeText(customerIdentity.customerKey, "", 160)),
       customer_source: nullableText(sanitizeText(row.customer_source, "", 120)),
       customer_confidence: nullableText(sanitizeText(row.customer_confidence, "", 40)),
       enrichment_status: ["complete", "partial"].includes(enrichmentState) ? "enriched" : "pending",
@@ -484,8 +709,13 @@ function mapAlertRows(rows) {
       status_internal: textValue(row.status_internal, "new"),
       acknowledged_source: Boolean(row.acknowledged_source),
       acknowledged_internal: Boolean(row.acknowledged_internal),
-      acknowledged_at: isoDate(row.acknowledged_at ?? row.acknowledged_source_at ?? row.acknowledged_internal_at),
-      acknowledged_by: resolveAckActorName(row.acknowledged_by),
+      acknowledged_source_at: isoDate(row.acknowledged_source_at ?? row.acknowledged_at),
+      acknowledged_source_by: resolveAckActorName(row.acknowledged_source_by ?? row.acknowledged_by),
+      acknowledged_internal_at: isoDate(row.acknowledged_internal_at),
+      acknowledged_internal_by: resolveAckActorName(row.acknowledged_internal_by),
+      acknowledged_internal_comment: nullableText(sanitizeText(row.acknowledged_internal_comment, "", 500)),
+      acknowledged_at: isoDate(row.acknowledged_source_at ?? row.acknowledged_at ?? row.acknowledged_internal_at),
+      acknowledged_by: resolveAckActorName(row.acknowledged_source_by ?? row.acknowledged_by ?? row.acknowledged_internal_by),
       ack_request_status: ["pending", "processing"].includes(textValue(row.ack_request_status))
         ? textValue(row.ack_request_status)
         : null,
@@ -581,11 +811,79 @@ async function queryRow(config, text, values = []) {
   return rows[0] || null;
 }
 
-async function fetchAlertList(req, config) {
-  const { page, pageSize, offset, params, whereSql, orderSql } = buildAlertListQuery(req);
+function alertFilteredSummary(row) {
+  return {
+    total: integerValue(row?.total, 0),
+    active: integerValue(row?.active, 0),
+    resolved: integerValue(row?.resolved, 0),
+    acknowledged_source: integerValue(row?.acknowledged_source, 0),
+    unacknowledged_source: integerValue(row?.unacknowledged_source, 0),
+    by_severity: {
+      disaster: integerValue(row?.disaster, 0),
+      high: integerValue(row?.high, 0),
+      average: integerValue(row?.average, 0),
+      low: integerValue(row?.low, 0),
+    },
+  };
+}
 
-  const [totalRow, itemRows] = await Promise.all([
-    queryRow(config, `select count(*)::int as total from alerts a join data_sources d on d.id = a.data_source_id ${whereSql}`, params),
+function alertTemporalCounts(row) {
+  const group = (prefix, include30Days = false) => ({
+    "15m": integerValue(row?.[`${prefix}_15m`], 0),
+    "1h": integerValue(row?.[`${prefix}_1h`], 0),
+    "6h": integerValue(row?.[`${prefix}_6h`], 0),
+    "24h": integerValue(row?.[`${prefix}_24h`], 0),
+    "7d": integerValue(row?.[`${prefix}_7d`], 0),
+    ...(include30Days ? { "30d": integerValue(row?.[`${prefix}_30d`], 0) } : {}),
+  });
+  return {
+    created: group("created"),
+    updated: group("updated"),
+    resolved: group("resolved", true),
+  };
+}
+
+async function fetchAlertList(req, config) {
+  const { page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql } = buildAlertListQuery(req);
+
+  const [summaryRow, temporalRow, itemRows] = await Promise.all([
+    queryRow(config, `
+      select
+        count(*)::int as total,
+        count(*) filter (where ${ACTIVE_ALERT_SQL})::int as active,
+        count(*) filter (where ${RESOLVED_ALERT_SQL})::int as resolved,
+        count(*) filter (where coalesce(a.acknowledged_source, false))::int as acknowledged_source,
+        count(*) filter (where not coalesce(a.acknowledged_source, false))::int as unacknowledged_source,
+        count(*) filter (where a.severity = 'disaster')::int as disaster,
+        count(*) filter (where a.severity = 'high')::int as high,
+        count(*) filter (where a.severity = 'average')::int as average,
+        count(*) filter (where a.severity in ('warning', 'information', 'not_classified'))::int as low
+      from alerts a
+      join data_sources d on d.id = a.data_source_id
+      ${whereSql}
+    `, params),
+    queryRow(config, `
+      select
+        count(*) filter (where a.first_seen_at >= now() - interval '15 minutes')::int as created_15m,
+        count(*) filter (where a.first_seen_at >= now() - interval '1 hour')::int as created_1h,
+        count(*) filter (where a.first_seen_at >= now() - interval '6 hours')::int as created_6h,
+        count(*) filter (where a.first_seen_at >= now() - interval '24 hours')::int as created_24h,
+        count(*) filter (where a.first_seen_at >= now() - interval '7 days')::int as created_7d,
+        count(*) filter (where a.last_seen_at >= now() - interval '15 minutes')::int as updated_15m,
+        count(*) filter (where a.last_seen_at >= now() - interval '1 hour')::int as updated_1h,
+        count(*) filter (where a.last_seen_at >= now() - interval '6 hours')::int as updated_6h,
+        count(*) filter (where a.last_seen_at >= now() - interval '24 hours')::int as updated_24h,
+        count(*) filter (where a.last_seen_at >= now() - interval '7 days')::int as updated_7d,
+        count(*) filter (where a.resolved_at >= now() - interval '15 minutes')::int as resolved_15m,
+        count(*) filter (where a.resolved_at >= now() - interval '1 hour')::int as resolved_1h,
+        count(*) filter (where a.resolved_at >= now() - interval '6 hours')::int as resolved_6h,
+        count(*) filter (where a.resolved_at >= now() - interval '24 hours')::int as resolved_24h,
+        count(*) filter (where a.resolved_at >= now() - interval '7 days')::int as resolved_7d,
+        count(*) filter (where a.resolved_at >= now() - interval '30 days')::int as resolved_30d
+      from alerts a
+      join data_sources d on d.id = a.data_source_id
+      ${baseWhereSql}
+    `, baseParams),
     queryRows(
       config,
       `
@@ -611,9 +909,30 @@ async function fetchAlertList(req, config) {
           a.status_source,
           a.status_internal,
           a.acknowledged_source,
-          a.acknowledged_internal,
-          a.acknowledged_at,
-          a.acknowledged_by,
+          ${INTERNAL_ACKNOWLEDGED_SQL} as acknowledged_internal,
+          a.acknowledged_at as acknowledged_source_at,
+          a.acknowledged_by as acknowledged_source_by,
+          (select ack.requested_at
+             from alert_acknowledgements ack
+            where ack.alert_id = a.id
+              and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+              and ack.status in ('recorded','pending','processing','success','completed')
+            order by ack.requested_at desc, ack.id desc
+            limit 1) as acknowledged_internal_at,
+          (select ack.operator_name
+             from alert_acknowledgements ack
+            where ack.alert_id = a.id
+              and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+              and ack.status in ('recorded','pending','processing','success','completed')
+            order by ack.requested_at desc, ack.id desc
+            limit 1) as acknowledged_internal_by,
+          (select ack.message
+             from alert_acknowledgements ack
+            where ack.alert_id = a.id
+              and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+              and ack.status in ('recorded','pending','processing','success','completed')
+            order by ack.requested_at desc, ack.id desc
+            limit 1) as acknowledged_internal_comment,
           (select ack.status
              from alert_acknowledgements ack
             where ack.alert_id = a.id and ack.status in ('pending','processing')
@@ -639,12 +958,14 @@ async function fetchAlertList(req, config) {
     ),
   ]);
 
-  const totalItems = integerValue(totalRow?.total, 0);
+  const totalItems = integerValue(summaryRow?.total, 0);
   const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize);
 
   return {
     generated_at: generatedAt(),
     items: mapAlertRows(itemRows),
+    filtered_summary: alertFilteredSummary(summaryRow),
+    temporal_counts: alertTemporalCounts(temporalRow),
     pagination: {
       page,
       page_size: pageSize,
@@ -661,6 +982,7 @@ function attentionThresholdPayload(thresholds) {
     disaster_minutes: thresholds.disasterMinutes,
     high_minutes: thresholds.highMinutes,
     average_minutes: thresholds.averageMinutes,
+    low_minutes: thresholds.lowMinutes,
   };
 }
 
@@ -736,7 +1058,7 @@ async function fetchAttentionRequiredPayload(req, config, thresholds = getAttent
         join public.data_sources d on d.id = a.data_source_id
         where ${whereSql}
         order by ${orderSql}
-        limit $4
+        limit $5
       `,
       [...values, limit],
     ),
@@ -745,15 +1067,21 @@ async function fetchAttentionRequiredPayload(req, config, thresholds = getAttent
     severityRows.map((row) => [textValue(row.severity), integerValue(row.count, 0)]),
   );
   const disaster = integerValue(severityCounts.disaster, 0);
+  const critical = integerValue(severityCounts.critical, 0);
   const high = integerValue(severityCounts.high, 0);
   const average = integerValue(severityCounts.average, 0);
+  const low = integerValue(severityCounts.warning, 0)
+    + integerValue(severityCounts.information, 0)
+    + integerValue(severityCounts.not_classified, 0);
 
   return {
     summary: {
-      total: disaster + high + average,
+      total: disaster + critical + high + average + low,
       disaster,
+      critical,
       high,
       average,
+      low,
       by_customer: customerRows.map((row) => ({
         customer_name: sanitizeText(row.customer_name, "Sem classificação", 160),
         count: integerValue(row.count, 0),
@@ -776,9 +1104,10 @@ function alertId(req) {
 
 async function fetchAlertDetailPayload(req, config) {
   const id = alertId(req);
-  const row = await queryRow(
-    config,
-    `
+  const [row, ackHistoryRows] = await Promise.all([
+    queryRow(
+      config,
+      `
       select
         a.id, a.data_source_id, d.name as datasource_name, a.client_name,
         a.customer_name, a.customer_key, a.customer_source, a.customer_confidence,
@@ -789,8 +1118,29 @@ async function fetchAlertDetailPayload(req, config) {
         a.service_name, a.item_name, a.item_key, a.trigger_description, a.operational_data,
         a.problem_name,
         a.severity, a.status_source, a.status_internal,
-        a.acknowledged_source, a.acknowledged_internal,
-        a.acknowledged_at, a.acknowledged_by,
+        a.acknowledged_source, ${INTERNAL_ACKNOWLEDGED_SQL} as acknowledged_internal,
+        a.acknowledged_at as acknowledged_source_at, a.acknowledged_by as acknowledged_source_by,
+        (select ack.requested_at
+           from alert_acknowledgements ack
+          where ack.alert_id = a.id
+            and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+            and ack.status in ('recorded','pending','processing','success','completed')
+          order by ack.requested_at desc, ack.id desc
+          limit 1) as acknowledged_internal_at,
+        (select ack.operator_name
+           from alert_acknowledgements ack
+          where ack.alert_id = a.id
+            and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+            and ack.status in ('recorded','pending','processing','success','completed')
+          order by ack.requested_at desc, ack.id desc
+          limit 1) as acknowledged_internal_by,
+        (select ack.message
+           from alert_acknowledgements ack
+          where ack.alert_id = a.id
+            and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+            and ack.status in ('recorded','pending','processing','success','completed')
+          order by ack.requested_at desc, ack.id desc
+          limit 1) as acknowledged_internal_comment,
         (select ack.status
            from alert_acknowledgements ack
           where ack.alert_id = a.id and ack.status in ('pending','processing')
@@ -799,23 +1149,98 @@ async function fetchAlertDetailPayload(req, config) {
         a.suppressed, a.suppressed_until, a.maintenance_status,
         a.first_seen_at, a.last_seen_at, a.resolved_at, a.duration_seconds,
         a.created_at, a.updated_at,
-        (select count(*)::int from alert_history h where h.alert_id = a.id) as history_count,
+        ((select count(*)::int from alert_history h where h.alert_id = a.id)
+          + (select count(*)::int from alert_acknowledgements ack
+              where ack.alert_id = a.id
+                and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+                and ack.status in ('recorded','pending','processing','success','completed'))) as history_count,
         (select count(*)::int from alert_acknowledgements ack where ack.alert_id = a.id) as acknowledgement_count
       from alerts a
       join data_sources d on d.id = a.data_source_id
       where a.id = $1
       limit 1
     `,
-    [id],
-  );
+      [id],
+    ),
+    queryRows(
+      config,
+      `
+      select
+        h.id::text as id,
+        h.action_type::text as event_type,
+        h.message::text as description,
+        h.source_event_id,
+        h.occurred_at,
+        h.created_at,
+        nullif(h.actor_name, '')::text as actor_name_candidate,
+        nullif(h.operator_name, '')::text as operator_name_candidate,
+        nullif(a.acknowledged_by, '')::text as acknowledged_by_candidate,
+        coalesce(
+          h.current_value ->> 'acknowledgeid',
+          h.previous_value ->> 'acknowledgeid',
+          h.metadata ->> 'acknowledgeid'
+        )::text as acknowledge_id
+      from alert_history h
+      join alerts a on a.id = h.alert_id
+      where h.alert_id = $1
+        and (
+          lower(coalesce(h.action_type, '')) in ('acknowledged', 'ack_message')
+          or lower(coalesce(h.action_type, '')) like '%ack%'
+        )
+        and lower(coalesce(h.action_type, '')) <> 'internal_acknowledged'
+      order by h.occurred_at desc nulls last, h.created_at desc, h.id desc
+      limit 100
+    `,
+      [id],
+    ),
+  ]);
   if (!row) throw requestError("not_found", 404);
   const item = mapAlertRows([row])[0];
+  const sourceAckHistoryItems = (ackHistoryRows || []).map((historyRow) => {
+    const eventType = textValue(historyRow.event_type, "acknowledged");
+    const ackActorName = resolveAckActorName(
+      historyRow.actor_name_candidate,
+      historyRow.operator_name_candidate,
+      historyRow.acknowledged_by_candidate,
+    );
+    return {
+      id: textValue(historyRow.id),
+      event_type: eventType,
+      title: historyTitle(eventType),
+      description: historyDescription(eventType, historyRow.description),
+      previous_value: null,
+      current_value: null,
+      source_event_id: nullableText(sanitizeText(historyRow.source_event_id ?? row.source_event_id, "", 120)),
+      occurred_at: isoDate(historyRow.occurred_at ?? historyRow.created_at, generatedAt()),
+      created_at: isoDate(historyRow.created_at, generatedAt()),
+      actor_name: ackActorName,
+      ack_actor_name: ackActorName,
+      ack_actor_unresolved: !ackActorName && [
+        historyRow.actor_name_candidate,
+        historyRow.operator_name_candidate,
+        historyRow.acknowledged_by_candidate,
+      ].some((value) => isNumericIdentifier(value)),
+      acknowledge_id: nullableText(sanitizeText(historyRow.acknowledge_id, "", 120)),
+      actor_type: null,
+      source: "Zabbix",
+      origin: "zabbix",
+      legacy: false,
+    };
+  });
+  const source_ack = resolveSourceAck({
+    acknowledged_source: item.acknowledged_source,
+    acknowledged_source_by: item.acknowledged_source_by,
+    acknowledged_by: item.acknowledged_by,
+    acknowledged_source_at: item.acknowledged_source_at,
+    acknowledged_at: item.acknowledged_at,
+  }, sourceAckHistoryItems);
   return {
     generated_at: generatedAt(),
     item: {
       ...item,
       history_count: integerValue(row.history_count, 0),
       acknowledgement_count: integerValue(row.acknowledgement_count, 0),
+      source_ack,
     },
   };
 }
@@ -956,12 +1381,12 @@ export function consolidateAlertHistoryItems(sourceItems) {
   }
 
   return consolidated
-    .map(({ acknowledge_id: _acknowledgeId, ...item }) => item)
     .sort((left, right) => Date.parse(right.occurred_at) - Date.parse(left.occurred_at));
 }
 
-function historySummary(items) {
-  const acknowledgements = items.filter((item) => historyHasAcknowledgement(item.event_type));
+function historySummary(items, { acknowledgedSource = false } = {}) {
+  const acknowledgements = items.filter((item) => historyHasAcknowledgement(item.event_type)
+    && textValue(item.event_type).toLowerCase() !== "internal_acknowledged");
   const actors = [...new Set(acknowledgements.map((item) => item.ack_actor_name).filter(Boolean))];
   return {
     acknowledgement_count: acknowledgements.length,
@@ -969,11 +1394,66 @@ function historySummary(items) {
     latest_ack_at: acknowledgements[0]?.occurred_at ?? null,
     has_ack_comment: acknowledgements.some((item) => Boolean(item.comment)),
     ack_actor_summary: acknowledgements.length === 0
-      ? "Sem ACK"
+      ? (acknowledgedSource ? "ACK atual confirmado pela origem" : "Sem ACK")
       : actors.length > 1
         ? "Mais de um responsável"
         : actors[0] || "Responsável não resolvido",
   };
+}
+
+/**
+ * Resolve o ACK da origem a partir do estado do alerta + eventos de histórico.
+ * Prioridade do responsável: actor_name → operator_name → acknowledged_by (já resolvidos via resolveAckActorName).
+ * Comentário vem apenas de message/description dos eventos acknowledged/ack_message.
+ */
+export function resolveSourceAck(alertFields = {}, historyItems = []) {
+  const acknowledged = Boolean(alertFields?.acknowledged_source);
+  const sourceHistory = (historyItems || []).filter((item) => {
+    const eventType = textValue(item?.event_type).toLowerCase();
+    if (eventType === "internal_acknowledged") return false;
+    return historyHasAcknowledgement(eventType);
+  });
+  const consolidated = consolidateAlertHistoryItems(sourceHistory);
+  const latest = consolidated.find((item) => historyHasAcknowledgement(item.event_type));
+
+  if (latest) {
+    return Object.freeze({
+      acknowledged: true,
+      actor_name: resolveAckActorName(
+        latest.ack_actor_name,
+        latest.actor_name,
+        alertFields?.acknowledged_source_by,
+        alertFields?.acknowledged_by,
+      ),
+      acknowledged_at: isoDate(latest.occurred_at || alertFields?.acknowledged_source_at || alertFields?.acknowledged_at),
+      comment: nullableText(sanitizeText(latest.comment, "", 500)),
+      acknowledge_id: nullableText(sanitizeText(latest.acknowledge_id, "", 120)),
+      history_available: true,
+    });
+  }
+
+  if (acknowledged) {
+    return Object.freeze({
+      acknowledged: true,
+      actor_name: resolveAckActorName(
+        alertFields?.acknowledged_source_by,
+        alertFields?.acknowledged_by,
+      ),
+      acknowledged_at: isoDate(alertFields?.acknowledged_source_at || alertFields?.acknowledged_at),
+      comment: null,
+      acknowledge_id: null,
+      history_available: false,
+    });
+  }
+
+  return Object.freeze({
+    acknowledged: false,
+    actor_name: null,
+    acknowledged_at: null,
+    comment: null,
+    acknowledge_id: null,
+    history_available: false,
+  });
 }
 
 function historySource(value, legacy = false) {
@@ -994,7 +1474,9 @@ async function fetchAlertHistoryPayload(req, config) {
   const id = alertId(req);
   const alert = await queryRow(
     config,
-    "select id, source_event_id, host_name from alerts where id = $1 limit 1",
+    `select id, source_event_id, host_name, acknowledged_source,
+            acknowledged_at, acknowledged_by
+       from alerts where id = $1 limit 1`,
     [id],
   );
   if (!alert) throw requestError("not_found", 404);
@@ -1025,7 +1507,28 @@ async function fetchAlertHistoryPayload(req, config) {
       from alert_history h
       join alerts a on a.id = h.alert_id
       where h.alert_id = $1
-      order by h.occurred_at desc nulls last, h.created_at desc, h.id desc
+      union all
+      select
+        ack.id::text as id,
+        'internal_acknowledged'::text as event_type,
+        nullif(ack.message, '')::text as description,
+        null::jsonb as previous_value,
+        null::jsonb as current_value,
+        ack.source_event_id,
+        ack.requested_at as occurred_at,
+        ack.created_at,
+        nullif(ack.operator_name, '')::text as actor_name_candidate,
+        nullif(ack.operator_name, '')::text as operator_name_candidate,
+        null::text as acknowledged_by_candidate,
+        ack.id::text as acknowledge_id,
+        nullif(ack.actor_type, '')::text as actor_type,
+        'oneview_internal'::text as action_source,
+        'oneview'::text as source
+      from alert_acknowledgements ack
+      where ack.alert_id = $1
+        and ack.acknowledgement_type in ('internal','internal_acknowledgement')
+        and ack.status in ('recorded','pending','processing','success','completed')
+      order by occurred_at desc nulls last, created_at desc, id desc
     `,
     [id],
   );
@@ -1069,8 +1572,9 @@ async function fetchAlertHistoryPayload(req, config) {
       legacy,
     };
   });
-  const items = consolidateAlertHistoryItems(mappedItems);
-  const summary = historySummary(items);
+  const consolidated = consolidateAlertHistoryItems(mappedItems);
+  const items = consolidated.map(({ acknowledge_id: _acknowledgeId, ...item }) => item);
+  const summary = historySummary(items, { acknowledgedSource: Boolean(alert.acknowledged_source) });
   return {
     generated_at: generatedAt(),
     alert_id: id,
@@ -1081,7 +1585,8 @@ async function fetchAlertHistoryPayload(req, config) {
     first_event_at: items.at(-1)?.occurred_at ?? null,
     last_event_at: items[0]?.occurred_at ?? null,
     has_recovery: items.some((item) => historyHasRecovery(item.event_type)),
-    has_ack: items.some((item) => historyHasAcknowledgement(item.event_type)),
+    has_ack: items.some((item) => historyHasAcknowledgement(item.event_type))
+      || Boolean(alert.acknowledged_source),
     ...summary,
     items,
   };
@@ -1296,11 +1801,14 @@ async function fetchHealthPayload(config, acknowledgementEnabled = false, alertS
   };
 }
 
-async function fetchDashboardSummaryPayload(config) {
+async function fetchDashboardSummaryPayload(config, timeZone = DEFAULT_OPERATIONAL_TIMEZONE) {
+  const dailyMetrics = dailyOperationalMetricQueries(timeZone);
   const [
     totalAlertsRow,
     activeAlertsRow,
     resolvedTodayRow,
+    sourceAcknowledgedTodayRow,
+    oneViewAcknowledgedTodayRow,
     severityRows,
     statusRows,
     clientRows,
@@ -1313,18 +1821,18 @@ async function fetchDashboardSummaryPayload(config) {
   ] = await Promise.all([
     queryRow(config, "select count(*)::int as value from alerts"),
     queryRow(config, "select count(*)::int as value from v_active_alerts"),
-    queryRow(
-      config,
-      `select count(*)::int as value
-         from alerts
-        where resolved_at >= date_trunc('day', now())
-          and resolved_at < date_trunc('day', now()) + interval '1 day'`,
-    ),
+    queryRow(config, dailyMetrics.resolved.text, dailyMetrics.resolved.values),
+    queryRow(config, dailyMetrics.sourceAcknowledged.text, dailyMetrics.sourceAcknowledged.values),
+    queryRow(config, dailyMetrics.oneViewAcknowledged.text, dailyMetrics.oneViewAcknowledged.values),
     queryRows(config, "select severity, count(*)::int as count from v_active_alerts group by severity order by count desc, severity asc"),
     queryRows(config, "select status_internal, count(*)::int as count from v_active_alerts group by status_internal order by count desc, status_internal asc"),
     queryRows(
       config,
-      "select coalesce(customer_name, 'Cliente não classificado') as client_name, count(*)::int as count from alerts where status_source = 'active' and resolved_at is null group by coalesce(customer_name, 'Cliente não classificado') order by count desc, client_name asc",
+      `select ${SAFE_CUSTOMER_NAME_SQL} as client_name, count(*)::int as count
+         from alerts a
+        where a.status_source = 'active' and a.resolved_at is null
+        group by ${SAFE_CUSTOMER_NAME_SQL}
+        order by count desc, client_name asc`,
     ),
     queryRows(
       config,
@@ -1340,7 +1848,12 @@ async function fetchDashboardSummaryPayload(config) {
     queryRow(config, "select count(*)::int as value from v_alert_unacknowledged"),
     queryRows(
       config,
-      "select id, coalesce(customer_name, 'Cliente não classificado') as client_name, host_name, problem_name, severity, duration_seconds::int, first_seen_at from alerts where status_source = 'active' and resolved_at is null order by duration_seconds desc nulls last limit 10",
+      `select a.id, ${SAFE_CUSTOMER_NAME_SQL} as client_name, a.host_name, a.problem_name,
+              a.severity, a.duration_seconds::int, a.first_seen_at
+         from alerts a
+        where a.status_source = 'active' and a.resolved_at is null
+        order by a.duration_seconds desc nulls last
+        limit 10`,
     ),
     queryRow(config, "select avg_ack_time_seconds::int as avg_ack_time_seconds from v_alert_ack_metrics"),
     queryRow(config, "select avg_normalization_time_seconds::int as avg_normalization_time_seconds from v_alert_normalization_metrics"),
@@ -1359,6 +1872,13 @@ async function fetchDashboardSummaryPayload(config) {
     alerts_sample_size: activeTotal,
     active_total: activeTotal,
     resolved_today: integerValue(resolvedTodayRow?.value, 0),
+    source_acknowledgements_today: integerValue(sourceAcknowledgedTodayRow?.value, 0),
+    oneview_acknowledgements_today: integerValue(oneViewAcknowledgedTodayRow?.value, 0),
+    operational_day: {
+      timezone: dailyMetrics.day.timeZone,
+      from: dailyMetrics.day.from,
+      to: dailyMetrics.day.to,
+    },
     resolved_total: Math.max(alertsTotal - activeTotal, 0),
     by_severity: severityRows.map((row) => ({
       severity: textValue(row.severity, "not_classified"),
@@ -1400,15 +1920,20 @@ async function fetchGrafanaSummaryPayload(config) {
       config,
       `
         select count(*)::int as value
-        from v_active_alerts
-        where coalesce(acknowledged_source, false) = true
-           or coalesce(acknowledged_internal, false) = true
+        from alerts a
+        where ${ACTIVE_ALERT_SQL}
+          and (coalesce(a.acknowledged_source, false) = true
+            or ${INTERNAL_ACKNOWLEDGED_SQL})
       `,
     ),
     queryRows(config, "select severity, count(*)::int as count from v_active_alerts group by severity order by count desc, severity asc"),
     queryRows(
       config,
-      "select coalesce(customer_name, 'Cliente não classificado') as client, count(*)::int as count from alerts where status_source = 'active' and resolved_at is null group by coalesce(customer_name, 'Cliente não classificado') order by count desc, client asc",
+      `select ${SAFE_CUSTOMER_NAME_SQL} as client, count(*)::int as count
+         from alerts a
+        where a.status_source = 'active' and a.resolved_at is null
+        group by ${SAFE_CUSTOMER_NAME_SQL}
+        order by count desc, client asc`,
     ),
     queryRow(config, "select max(last_seen_at) as last_updated_at from v_active_alerts"),
     fetchDataSourceRows(config),
@@ -1451,14 +1976,14 @@ async function fetchClientsSummaryPayload(config) {
       config,
       `
         select
-          coalesce(a.customer_name, 'Cliente não classificado') as name,
-          coalesce(a.customer_key, 'unclassified') as key,
+          ${SAFE_CUSTOMER_NAME_SQL} as name,
+          ${SAFE_CUSTOMER_KEY_SQL} as key,
           count(*)::int as alerts_count,
           count(*) filter (where a.customer_confidence = 'high')::int as high_confidence_count,
           count(*) filter (where a.customer_confidence = 'low')::int as low_confidence_count
         from alerts a
         where a.status_source = 'active' and a.resolved_at is null
-        group by coalesce(a.customer_name, 'Cliente não classificado'), coalesce(a.customer_key, 'unclassified')
+        group by ${SAFE_CUSTOMER_NAME_SQL}, ${SAFE_CUSTOMER_KEY_SQL}
         order by alerts_count desc, name asc
       `,
     ),
@@ -1487,7 +2012,7 @@ async function fetchClientsSummaryPayload(config) {
     })),
     customers: customerRows.map((row) => ({
       key: sanitizeText(row.key, "unclassified", 160),
-      name: sanitizeText(row.name, "Cliente não classificado", 160),
+      name: sanitizeText(row.name, "Cliente não identificado", 160),
       alerts_count: integerValue(row.alerts_count, 0),
       high_confidence_count: integerValue(row.high_confidence_count, 0),
       low_confidence_count: integerValue(row.low_confidence_count, 0),
@@ -1583,7 +2108,7 @@ export async function fetchOneViewDatabase(routeName, req, config) {
       case "health":
         return fetchHealthPayload(dbConfig, config?.ackEnabled, config?.alertStaleMinutes);
       case "dashboard-summary":
-        return fetchDashboardSummaryPayload(dbConfig);
+        return fetchDashboardSummaryPayload(dbConfig, config?.operationalTimezone);
       case "grafana-summary":
         return fetchGrafanaSummaryPayload(dbConfig);
       case "alerts":

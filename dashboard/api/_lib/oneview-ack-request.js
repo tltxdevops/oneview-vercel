@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
+import { invalidateOneViewSummaryCache } from "./oneview-runtime-cache.js";
 
 const MAX_COMMENT_LENGTH = 500;
 const ALERT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
@@ -76,6 +77,7 @@ function publicDatabaseError(error) {
 
 export function getAckRequestConfig(env = process.env) {
   return Object.freeze({
+    allowAllAuthenticatedActions: booleanValue(env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS, false),
     requestEnabled: booleanValue(env.ONEVIEW_ACK_REQUEST_ENABLED, false),
     executionEnabled: booleanValue(env.ONEVIEW_ACK_EXECUTION_ENABLED, false),
     allowedDatasources: csv(env.ONEVIEW_ACK_ALLOWED_DATASOURCES),
@@ -88,6 +90,7 @@ export function createAckRequestHandler({
   configProvider = getAckRequestConfig,
   idFactory = randomUUID,
   now = () => new Date(),
+  invalidateSummary = invalidateOneViewSummaryCache,
   logger = (entry) => console.info(JSON.stringify(entry)),
 } = {}) {
   return async function ackRequestHandler(req, res) {
@@ -98,6 +101,9 @@ export function createAckRequestHandler({
     if (!auth) return;
 
     const config = configProvider();
+    if (!config.allowAllAuthenticatedActions) {
+      return sendJson(res, 403, { error: "authenticated_actions_disabled" });
+    }
     if (!config.requestEnabled) return sendJson(res, 403, { error: "ack_request_disabled" });
     if (config.executionEnabled) return sendJson(res, 503, { error: "ack_execution_not_supported" });
 
@@ -124,7 +130,7 @@ export function createAckRequestHandler({
 
         const alertResult = await client.query(
           `select a.id, a.data_source_id, a.source_event_id, a.acknowledged_source,
-                  a.acknowledged_internal, d.name as datasource_name
+                  d.name as datasource_name
              from alerts a
              join data_sources d on d.id = a.data_source_id
             where a.id = $1
@@ -140,14 +146,24 @@ export function createAckRequestHandler({
         const existing = await client.query(
           `select id
              from alert_acknowledgements
-            where idempotency_key = $1 and acknowledgement_type = 'internal_acknowledgement'
+            where idempotency_key = $1 and acknowledgement_type in ('internal','internal_acknowledgement')
             limit 1`,
           [key],
         );
         if (existing.rows[0]) {
           return { acknowledgementId: existing.rows[0].id, idempotent: true };
         }
-        if (alert.acknowledged_internal) {
+        const priorInternalRecognition = await client.query(
+          `select id
+             from alert_acknowledgements
+            where alert_id = $1
+              and acknowledgement_type in ('internal','internal_acknowledgement')
+              and status in ('recorded','pending','processing')
+            order by requested_at desc, id desc
+            limit 1`,
+          [alert.id],
+        );
+        if (priorInternalRecognition.rows[0]) {
           return { error: "alert_already_recognized", status: 409 };
         }
 
@@ -160,14 +176,9 @@ export function createAckRequestHandler({
              id, alert_id, data_source_id, acknowledgement_type, status,
              source_event_id, message, operator_name, correlation_id, request_id,
              actor_type, actor_id, idempotency_key, attempts, requested_at, created_at, updated_at
-           ) values ($1,$2,$3,'internal_acknowledgement','recorded',$4,$5,$6,$7,$8,'sso_user',$9,$10,0,$11,$11,$11)`,
+           ) values ($1,$2,$3,'internal','recorded',$4,$5,$6,$7,$8,'sso_user',$9,$10,0,$11,$11,$11)`,
           [acknowledgementId, alert.id, alert.data_source_id, alert.source_event_id, comment,
             actorName, currentCorrelationId, currentRequestId, actorId, key, createdAt],
-        );
-
-        await client.query(
-          "update alerts set acknowledged_internal = true where id = $1",
-          [alert.id],
         );
 
         await client.query(
@@ -177,7 +188,7 @@ export function createAckRequestHandler({
            ) values ($1,$2,'sso_user',$3,'alert_internal_acknowledged','vercel_api','alert',$4,$5,$4,$6,$7,$8,$9,$10)`,
           [auditId, actorName, actorId, alert.id, alert.data_source_id, currentCorrelationId, currentRequestId,
             JSON.stringify({ status: "recorded" }),
-            JSON.stringify({ acknowledgement_id: acknowledgementId, acknowledgement_type: "internal_acknowledgement", actor_email: String(auth.email || "").slice(0, 254), execution_enabled: false }),
+            JSON.stringify({ acknowledgement_id: acknowledgementId, acknowledgement_type: "internal", actor_email: String(auth.email || "").slice(0, 254), execution_enabled: false }),
             createdAt],
         );
 
@@ -185,6 +196,7 @@ export function createAckRequestHandler({
       });
 
       if (result.error) return sendJson(res, result.status, { error: result.error });
+      invalidateSummary();
       logger({
         event: "oneview_ack_request",
         route: "/api/oneview/alerts/:id/ack-request",

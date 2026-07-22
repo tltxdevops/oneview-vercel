@@ -1,14 +1,14 @@
-import { Home, Bell, BarChart3, Ticket, FileText, Settings, ShieldCheck, Database, Monitor, Moon, Sun } from "lucide-react";
+import { Home, Bell, History, BarChart3, Ticket, FileText, Settings, ShieldCheck, Database, Monitor, Moon, Sun } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Button } from "@/components/ui/button";
 import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/hooks/useAuth";
 
 const navigation = [
   { name: "Início", href: "/", icon: Home },
   { name: "Alertas", href: "/alertas", icon: Bell },
+  { name: "Histórico", href: "/historico", icon: History },
   { name: "Banco de Dados", href: "/banco-dados", icon: Database },
   { name: "Certificados", href: "/certificados", icon: ShieldCheck },
   { name: "workspaces", href: "/workspaces", icon: Monitor },
