@@ -4,11 +4,22 @@ import { endOfDay, format, formatDistanceToNow, startOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import {
+  ClientIdentity,
+  UNCLASSIFIED_CLIENT_LABEL,
+  canonicalClientName,
+  canonicalHostName,
+  displayHostField,
+  isUnclassifiedClient,
+} from "@/components/oneview/ClientIdentity";
+import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
+import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
+import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card } from "@/components/ui/card";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -33,7 +44,6 @@ import {
   OneViewSeverity,
   OneViewHealthResponse,
   OneViewFacetsResponse,
-  OperationsHealthResponse,
   fetchAlert,
   fetchAlertHistory,
   fetchAlertMetrics,
@@ -43,10 +53,31 @@ import {
   fetchOneViewFacets,
   fetchOperationsHealth,
   formatDurationSeconds,
+  formatNullableCount,
+  formatOneViewSeverityLabel,
   isOneViewSeverity,
+  normalizeAlertSeveritySummary,
   normalizeOneViewSeverity,
   requestAlertAcknowledgement,
 } from "@/lib/oneview-api";
+import {
+  ALERTS_DATE_FIELD_OPTIONS,
+  ALERTS_DATE_PRESET_OPTIONS,
+  ALERTS_SEARCH_FIELD_OPTIONS,
+  ALERTS_SORT_OPTIONS,
+  alertsDateActive,
+  alertsDateBounds,
+  applyDateFieldToFetchParams,
+  applySearchToFetchParams,
+  parseAlertsDateUrlValue,
+  sortOptionKey,
+  writeAlertsUrlParams,
+  type AlertsAckFilter,
+  type AlertsDateField,
+  type AlertsDatePreset,
+  type AlertsSearchField,
+  type AlertsSortKey,
+} from "@/lib/alerts-query";
 import {
   Activity,
   ArrowUpDown,
@@ -56,36 +87,77 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleAlert,
-  ChevronsUpDown,
-  Database,
   Eye,
   History,
   Info,
   Loader2,
   MessageSquare,
-  Pause,
-  Play,
   RefreshCcw,
   Search,
   ServerCog,
-  ShieldAlert,
   Siren,
-  TriangleAlert,
+  SlidersHorizontal,
   UserCheck,
   WifiOff,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 
-type RecognitionFilter = "all" | "acknowledged" | "unacknowledged";
+type RecognitionFilter = AlertsAckFilter;
 type StatusFilter = "active" | "resolved" | "all";
-type SortField = "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source";
+type AlertsView = "recent" | "open" | "priority" | "forgotten" | "resolved" | "all";
+type SortField = AlertsSortKey | "client" | "datasource" | "host" | "problem" | "status" | "acknowledged_source" | "last_seen_at";
 type SortOrder = "asc" | "desc";
-type TemporalPreset = "all" | "15m" | "1h" | "6h" | "24h" | "7d" | "custom";
-type ResolvedTemporalPreset = TemporalPreset | "30d";
+type TemporalPreset = AlertsDatePreset;
+type ResolvedTemporalPreset = AlertsDatePreset;
 type HistoryFilter = "all" | "acknowledgements" | "changes" | "recovery" | "legacy";
+
+const ALERTS_VIEWS: Array<{ id: AlertsView; label: string }> = [
+  { id: "recent", label: "Recentes" },
+  { id: "open", label: "Em aberto" },
+  { id: "priority", label: "Prioritários" },
+  { id: "forgotten", label: "Esquecidos" },
+  { id: "resolved", label: "Resolvidos" },
+  { id: "all", label: "Todos" },
+];
+
+function inferAlertsView(query: URLSearchParams): AlertsView {
+  const explicit = query.get("view");
+  if (explicit === "recent" || explicit === "open" || explicit === "priority" || explicit === "forgotten" || explicit === "resolved" || explicit === "all") {
+    return explicit;
+  }
+  const status = queryEnum(query.get("status"), ["active", "resolved", "all"] as const, "active");
+  const sort = query.get("sort");
+  const order = query.get("order");
+  const severities = query.getAll("severity");
+  if (status === "resolved") return "resolved";
+  if (status === "all") return "all";
+  if (severities.includes("disaster") || severities.includes("high")) return "priority";
+  if (sort === "first_seen_at" && order === "asc") return "forgotten";
+  if (sort === "first_seen_at") return "recent";
+  return "recent";
+}
 type MetaState = { source?: OneViewDataSourceKind; checkedAt?: string; fallbackCode?: string | null };
-type SummaryFilter = "total" | "active" | "acknowledged" | "pending" | "high" | "disaster";
+type SummaryFilter =
+  | "total"
+  | "active"
+  | "acknowledged"
+  | "pending"
+  | "information"
+  | "warning"
+  | "average"
+  | "high"
+  | "disaster"
+  | "not_classified";
+
+/** Faixa visual obrigatória (OV-P0-41). Not classified fica fora. */
+const VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
+  "information",
+  "warning",
+  "average",
+  "high",
+  "disaster",
+];
 
 const SUMMARY_REFRESH_MS = 60_000;
 const ALERTS_REFRESH_MS = 120_000;
@@ -143,85 +215,13 @@ const severityCatalog: Record<OneViewSeverity, { label: string; short: string; t
   average: { label: ONEVIEW_SEVERITY_CATALOG.average.label, short: "P3", tone: "border-amber-200 bg-amber-50 text-amber-700" },
   warning: { label: ONEVIEW_SEVERITY_CATALOG.warning.label, short: "P4", tone: "border-yellow-200 bg-yellow-50 text-yellow-800" },
   information: { label: ONEVIEW_SEVERITY_CATALOG.information.label, short: "P5", tone: "border-sky-200 bg-sky-50 text-sky-700" },
-  not_classified: { label: ONEVIEW_SEVERITY_CATALOG.not_classified.label, short: "N/C", tone: "border-slate-200 bg-slate-50 text-slate-700" },
+  not_classified: { label: ONEVIEW_SEVERITY_CATALOG.not_classified.label, short: "N/C", tone: "border-slate-200 bg-slate-50 text-slate-600" },
 };
 
+/** OV-P0-07 backlog: adicionar ordenação composta no BFF: severity → unacknowledged → duration. */
+const PRIORITY_VIEW_NOTE = "Prioritários usa sort=severity no BFF; desempate global por ACK/duração permanece em backlog.";
+
 const severityOrder: OneViewSeverity[] = [...ONEVIEW_V1_FILTER_SEVERITIES];
-
-function normalizedClientKey(...values: Array<string | null | undefined>) {
-  return values
-    .filter((value): value is string => Boolean(value))
-    .join(" ")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-}
-
-const customerLogoCatalog = [
-  { aliases: ["ailos"], src: "/tltx/clientes/logos/Ailos.png" },
-  { aliases: ["alubauen"], src: "/tltx/clientes/logos/alubauen-logo.png" },
-  { aliases: ["arauco"], src: "/tltx/clientes/logos/arauco-logo.png" },
-  { aliases: ["berneck"], src: "/tltx/clientes/logos/berneck-logo.png" },
-  { aliases: ["bnb", "banco do nordeste"], src: "/tltx/clientes/logos/bnb-logo.png" },
-  { aliases: ["brinks"], src: "/tltx/clientes/logos/brinks-logo.png" },
-  { aliases: ["castrolanda"], src: "/tltx/clientes/logos/castrolanda-logo.png" },
-  { aliases: ["ciser"], src: "/tltx/clientes/logos/ciser-logo.png" },
-  { aliases: ["copel"], src: "/tltx/clientes/logos/copel-logo.png" },
-  { aliases: ["essentia"], src: "/tltx/clientes/logos/essentia-logo.png" },
-  { aliases: ["estacio"], src: "/tltx/clientes/logos/estacio-logo.png" },
-  { aliases: ["fps"], src: "/tltx/clientes/logos/fps-logo.png" },
-  { aliases: ["fraport"], src: "/tltx/clientes/logos/fraport-logo.png" },
-  { aliases: ["havan"], src: "/tltx/clientes/logos/havan-logo.png" },
-  { aliases: ["nissan"], src: "/tltx/clientes/logos/nissan-logo.png" },
-  { aliases: ["ntn"], src: "/tltx/clientes/logos/ntn-logo.png" },
-  { aliases: ["osasco"], src: "/tltx/clientes/logos/osasco-logo.png" },
-  { aliases: ["sapore"], src: "/tltx/clientes/logos/sapore-logo.png" },
-  { aliases: ["sesi"], src: "/tltx/clientes/logos/sesi-logo.png" },
-  { aliases: ["teletex", "teletex-http"], src: "/tltx/clientes/logos/teletex-logo.png" },
-  { aliases: ["tjba", "tribunal de justica da bahia"], src: "/tltx/clientes/logos/tjba-logo.png" },
-  { aliases: ["tullett"], src: "/tltx/clientes/logos/tullett-logo.png" },
-  { aliases: ["tuper"], src: "/tltx/clientes/logos/tuper-logo.png" },
-  { aliases: ["unicap"], src: "/tltx/clientes/logos/unicap-logo.png" },
-  { aliases: ["unimed"], src: "/tltx/clientes/logos/unimed-logo.png" },
-  { aliases: ["zurich"], src: "/tltx/clientes/logos/zurich-logo.png" },
-] as const;
-
-function customerLogoFor(customer?: { key?: string | null; name?: string | null }) {
-  const normalized = normalizedClientKey(customer?.key, customer?.name);
-  return customerLogoCatalog.find((item) => item.aliases.some((alias) => normalized.includes(alias)))?.src ?? null;
-}
-
-function customerInitials(customer?: { key?: string | null; name?: string | null }, fallback = "CL") {
-  const source = safeDisplayText(customer?.name || customer?.key, fallback);
-  return source
-    .split(/[\s-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase() || fallback;
-}
-
-function CustomerLogo({ customer, size = "sm" }: { customer?: { key?: string | null; name?: string | null }; size?: "sm" | "md" }) {
-  const logo = customerLogoFor(customer);
-  const className = size === "md" ? "h-10 w-10" : "h-8 w-8";
-  if (logo) {
-    return (
-      <img
-        src={logo}
-        alt={safeDisplayText(customer?.name, "Cliente")}
-        className={cn(className, "shrink-0 rounded-md border border-border/50 bg-white object-contain p-1")}
-        loading="lazy"
-      />
-    );
-  }
-  return (
-    <span className={cn(className, "flex shrink-0 items-center justify-center rounded-md border border-dashed border-border/70 bg-white text-[10px] font-semibold uppercase text-muted-foreground")}>
-      {customerInitials(customer)}
-    </span>
-  );
-}
 
 function safeDisplayText(value: unknown, fallback = "-", maxLength = 500) {
   if (typeof value !== "string") return fallback;
@@ -299,6 +299,7 @@ function sourceAckPresentation(alert: {
   } | null;
 } | null | undefined) {
   const sourceAck = alert?.source_ack;
+  // source_ack é o reconhecimento selecionado pelo contrato atual.
   if (sourceAck) {
     if (!sourceAck.acknowledged) {
       return {
@@ -313,7 +314,7 @@ function sourceAckPresentation(alert: {
       status: "acknowledged" as const,
       actorLabel: historyActorLabel(sourceAck.actor_name, { allowWorkerLabel: false }),
       at: sourceAck.acknowledged_at || null,
-      comment: sourceAck.comment || null,
+      comment: typeof sourceAck.comment === "string" ? sourceAck.comment : null,
       historyAvailable: sourceAck.history_available === true,
     };
   }
@@ -336,6 +337,51 @@ function sourceAckPresentation(alert: {
   };
 }
 
+/** Comentário oficial Zabbix: rejeita vazio, JSON, backfill/sync e frases genéricas. */
+function isValidZabbixAckComment(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/^(null|undefined|n\/a|na|-|none)$/i.test(trimmed)) return false;
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}"))
+    || (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    return false;
+  }
+  if (/backfill|sincroniza|sync[_ ]?log|payload|outbox|reconcil|upsert|worker oneview/i.test(trimmed)) {
+    return false;
+  }
+  const normalized = trimmed.toLowerCase();
+  if (["alerta reconhecido", "reconhecimento registrado", "observação do reconhecimento", "observacao do reconhecimento"].includes(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Precedência: source_ack.comment → comentário Zabbix acknowledged/ack_message no histórico → ausente.
+ * Não usa comentário interno do OneView.
+ */
+function resolveOfficialAckComment(
+  sourceAckComment: string | null | undefined,
+  historyItems: AlertHistoryItem[],
+): { comment: string | null; fedBy: "source_ack.comment" | "history.comment" | null } {
+  if (isValidZabbixAckComment(sourceAckComment)) {
+    return { comment: sourceAckComment.trim(), fedBy: "source_ack.comment" };
+  }
+  for (const item of historyItems) {
+    const eventType = String(item.event_type || "").toLowerCase();
+    if (eventType !== "acknowledged" && eventType !== "ack_message") continue;
+    if (historyOrigin(item) !== "Zabbix") continue;
+    if (item.origin === "oneview_internal") continue;
+    if (isValidZabbixAckComment(item.comment)) {
+      return { comment: item.comment.trim(), fedBy: "history.comment" };
+    }
+  }
+  return { comment: null, fedBy: null };
+}
+
 function historyValueText(value: unknown, depth = 0): string {
   if (value === undefined || value === null || value === "") return "-";
   if (typeof value === "string") return safeDisplayText(value);
@@ -355,16 +401,10 @@ function historyValueIsMeaningful(value: unknown): boolean {
 }
 
 function historySeverityValue(value: unknown): string | null {
-  const labels: Record<string, string> = {
-    disaster: "Desastre",
-    critical: "Crítico",
-    high: "Alto",
-    average: "Médio",
-    warning: "Aviso",
-    information: "Informação",
-    not_classified: "Não classificado",
-  };
-  if (typeof value === "string") return labels[value.trim().toLowerCase()] ?? null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? formatOneViewSeverityLabel(trimmed) : null;
+  }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const entry = Object.entries(value as Record<string, unknown>)
       .find(([key]) => key.toLowerCase().includes("severity") || key.toLowerCase().includes("severidade"));
@@ -525,23 +565,24 @@ const enrichmentExplanations: Record<OneViewAlert["enrichment_state"], string> =
 };
 
 function customerPresentation(alert: OneViewAlert) {
-  const normalizedCustomer = alert.customer_name?.trim().toLocaleLowerCase("pt-BR") ?? "";
-  const unidentified = !normalizedCustomer
-    || alert.customer_key?.trim().toLowerCase() === "unclassified"
-    || alert.customer_source?.trim().toLowerCase() === "datasource_fallback"
-    || ["cliente não classificado", "cliente nao classificado", "cliente não identificado", "cliente nao identificado"].includes(normalizedCustomer);
+  const customer = {
+    key: alert.customer_key,
+    name: alert.customer_name,
+    source: alert.customer_source,
+  };
+  const unidentified = isUnclassifiedClient(customer);
 
   if (unidentified) {
     const datasource = safeDisplayText(alert.datasource_name, "Fonte não identificada");
     return {
-      name: "Cliente não identificado",
+      name: UNCLASSIFIED_CLIENT_LABEL,
       hint: `A fonte ${datasource} não forneceu evidências suficientes para associar este alerta automaticamente a um cliente.`,
       enrichment: "unclassified" as const,
       unidentified: true,
     };
   }
   return {
-    name: alert.customer_name as string,
+    name: canonicalClientName(customer),
     hint: null,
     enrichment: alert.enrichment_state === "complete" ? "complete" as const : "partial" as const,
     unidentified: false,
@@ -571,12 +612,6 @@ function formatRelative(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "data indisponível";
   return formatDistanceToNow(date, { addSuffix: true, locale: ptBR });
-}
-
-function formatCountdown(seconds: number) {
-  const safe = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(safe / 60);
-  return `${String(minutes).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 }
 
 function latestCheckedAt(...values: Array<string | undefined>) {
@@ -613,7 +648,9 @@ function ackRequestAllowedFor(alert: OneViewAlert | null | undefined, requestEna
 
 const temporalDurations: Record<Exclude<ResolvedTemporalPreset, "all" | "custom">, number> = {
   "15m": 15 * 60_000,
+  "30m": 30 * 60_000,
   "1h": 60 * 60_000,
+  "2h": 2 * 60 * 60_000,
   "6h": 6 * 60 * 60_000,
   "24h": 24 * 60 * 60_000,
   "7d": 7 * 24 * 60 * 60_000,
@@ -623,7 +660,9 @@ const temporalDurations: Record<Exclude<ResolvedTemporalPreset, "all" | "custom"
 const temporalLabels: Record<ResolvedTemporalPreset, string> = {
   all: "sem período",
   "15m": "nos últimos 15 minutos",
+  "30m": "nos últimos 30 minutos",
   "1h": "na última hora",
+  "2h": "nas últimas 2 horas",
   "6h": "nas últimas 6 horas",
   "24h": "nas últimas 24 horas",
   "7d": "nos últimos 7 dias",
@@ -683,11 +722,17 @@ function rangeFromUrl(params: URLSearchParams, prefix: string): DateRange | unde
   return from || to ? { from, to } : undefined;
 }
 
-function temporalPresetFromUrl(value: string | null, resolved = false): ResolvedTemporalPreset {
-  const allowed = resolved
-    ? ["all", "15m", "1h", "6h", "24h", "7d", "30d", "custom"]
-    : ["all", "15m", "1h", "6h", "24h", "7d", "custom"];
+function temporalPresetFromUrl(value: string | null): ResolvedTemporalPreset {
+  const allowed = ["all", "15m", "30m", "1h", "2h", "6h", "24h", "7d", "30d", "custom"];
   return allowed.includes(value ?? "") ? value as ResolvedTemporalPreset : "all";
+}
+
+function dateFieldFromUrl(value: string | null): AlertsDateField {
+  return queryEnum(value, ["first_seen", "last_seen", "acknowledged", "resolved"] as const, "first_seen");
+}
+
+function searchFieldFromUrl(value: string | null): AlertsSearchField {
+  return queryEnum(value, ["all", "host", "problem", "customer", "eventid"] as const, "all");
 }
 
 function queryEnum<T extends string>(value: string | null, allowed: readonly T[], fallback: T): T {
@@ -719,7 +764,6 @@ export default function AlertsPage() {
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
   const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
-  const [operationsHealth, setOperationsHealth] = useState<OperationsHealthResponse | null>(null);
   const [pagination, setPagination] = useState<AlertPagination>(emptyPagination);
   const [filteredSummary, setFilteredSummary] = useState<AlertListResponse["filtered_summary"]>(undefined);
   const [temporalCounts, setTemporalCounts] = useState<AlertListResponse["temporal_counts"]>(undefined);
@@ -729,24 +773,79 @@ export default function AlertsPage() {
   const [pageSize, setPageSize] = useState(() => Number(queryEnum(initialQuery.get("page_size"), ["25", "50", "100"] as const, "50")));
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(() => initialQuery.getAll("customer").filter(Boolean));
   const [selectedDatasources, setSelectedDatasources] = useState<string[]>(() => initialQuery.getAll("datasource").filter(Boolean));
-  const [selectedSeverities, setSelectedSeverities] = useState<OneViewSeverity[]>(() => initialQuery.getAll("severity").filter(isOneViewSeverity));
-  const [sourceAckFilter, setSourceAckFilter] = useState<RecognitionFilter>(() => queryEnum(initialQuery.get("source_ack"), ["all", "acknowledged", "unacknowledged"] as const, "all"));
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => queryEnum(initialQuery.get("status"), ["active", "resolved", "all"] as const, "active"));
-  const [sortField, setSortField] = useState<SortField>(() => queryEnum(initialQuery.get("sort"), ["last_seen_at", "first_seen_at", "resolved_at", "severity", "client", "datasource", "host", "problem", "duration", "status", "acknowledged_source"] as const, "last_seen_at"));
-  const [sortOrder, setSortOrder] = useState<SortOrder>(() => queryEnum(initialQuery.get("order"), ["asc", "desc"] as const, "desc"));
-  const [hostSearch, setHostSearch] = useState(() => initialQuery.get("host") ?? "");
-  const [problemSearch, setProblemSearch] = useState(() => initialQuery.get("problem") ?? "");
-  const [debouncedHostSearch, setDebouncedHostSearch] = useState("");
-  const [debouncedProblemSearch, setDebouncedProblemSearch] = useState("");
-  const [datasourceSearch, setDatasourceSearch] = useState("");
-  const [createdPreset, setCreatedPreset] = useState<TemporalPreset>(() => temporalPresetFromUrl(initialQuery.get("created")) as TemporalPreset);
-  const [updatedPreset, setUpdatedPreset] = useState<TemporalPreset>(() => temporalPresetFromUrl(initialQuery.get("updated")) as TemporalPreset);
-  const [resolvedPreset, setResolvedPreset] = useState<ResolvedTemporalPreset>(() => temporalPresetFromUrl(initialQuery.get("resolved"), true));
-  const [ackPreset, setAckPreset] = useState<TemporalPreset>(() => temporalPresetFromUrl(initialQuery.get("ack")) as TemporalPreset);
-  const [createdRange, setCreatedRange] = useState<DateRange>(() => rangeFromUrl(initialQuery, "created"));
-  const [updatedRange, setUpdatedRange] = useState<DateRange>(() => rangeFromUrl(initialQuery, "updated"));
-  const [resolvedRange, setResolvedRange] = useState<DateRange>(() => rangeFromUrl(initialQuery, "resolved"));
-  const [ackRange, setAckRange] = useState<DateRange>(() => rangeFromUrl(initialQuery, "ack"));
+  const initialView = inferAlertsView(initialQuery);
+  const [sourceAckFilter, setSourceAckFilter] = useState<RecognitionFilter>(() => {
+    const ackSource = initialQuery.get("acknowledged_source");
+    if (ackSource === "true") return "acknowledged";
+    if (ackSource === "false") return "unacknowledged";
+    if (initialQuery.get("source_ack")) {
+      return queryEnum(initialQuery.get("source_ack"), ["all", "acknowledged", "unacknowledged"] as const, "all");
+    }
+    if (initialView === "priority" || initialView === "forgotten") return "unacknowledged";
+    return "all";
+  });
+  const [alertsView, setAlertsView] = useState<AlertsView>(() => initialView);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => {
+    if (initialQuery.get("status")) return queryEnum(initialQuery.get("status"), ["active", "resolved", "all"] as const, "active");
+    if (initialView === "resolved") return "resolved";
+    if (initialView === "all") return "all";
+    return "active";
+  });
+  const [sortField, setSortField] = useState<SortField>(() => {
+    if (initialQuery.get("sort")) {
+      return queryEnum(initialQuery.get("sort"), ["last_seen_at", "first_seen_at", "resolved_at", "severity", "client", "datasource", "host", "problem", "duration", "status", "acknowledged_source", "acknowledged_at"] as const, "first_seen_at");
+    }
+    if (initialView === "priority") return "severity";
+    if (initialView === "resolved") return "resolved_at";
+    if (initialView === "open" || initialView === "all") return "last_seen_at";
+    return "first_seen_at";
+  });
+  const [sortOrder, setSortOrder] = useState<SortOrder>(() => {
+    if (initialQuery.get("order")) return queryEnum(initialQuery.get("order"), ["asc", "desc"] as const, "desc");
+    if (initialView === "forgotten") return "asc";
+    return "desc";
+  });
+  const [selectedSeverities, setSelectedSeverities] = useState<OneViewSeverity[]>(() => {
+    const fromUrl = initialQuery.getAll("severity").filter(isOneViewSeverity);
+    if (fromUrl.length) return fromUrl;
+    if (initialView === "priority") return ["disaster", "high"];
+    return [];
+  });
+  const [searchField, setSearchField] = useState<AlertsSearchField>(() => {
+    if (initialQuery.get("search_field")) return searchFieldFromUrl(initialQuery.get("search_field"));
+    if (initialQuery.get("host")) return "host";
+    if (initialQuery.get("problem")) return "problem";
+    return "all";
+  });
+  const [searchQuery, setSearchQuery] = useState(() => initialQuery.get("search") ?? initialQuery.get("host") ?? initialQuery.get("problem") ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [dateField, setDateField] = useState<AlertsDateField>(() => {
+    if (initialQuery.get("date_field")) return dateFieldFromUrl(initialQuery.get("date_field"));
+    if (initialQuery.get("updated") && initialQuery.get("updated") !== "all") return "last_seen";
+    if (initialQuery.get("resolved") && initialQuery.get("resolved") !== "all") return "resolved";
+    if (initialQuery.get("ack") && initialQuery.get("ack") !== "all") return "acknowledged";
+    return "first_seen";
+  });
+  const [datePreset, setDatePreset] = useState<AlertsDatePreset>(() => {
+    if (initialQuery.get("date_preset")) return temporalPresetFromUrl(initialQuery.get("date_preset"));
+    if (initialQuery.get("date_from") || initialQuery.get("date_to")) return "custom";
+    if (initialQuery.get("created")) return temporalPresetFromUrl(initialQuery.get("created"));
+    if (initialQuery.get("updated")) return temporalPresetFromUrl(initialQuery.get("updated"));
+    if (initialQuery.get("resolved")) return temporalPresetFromUrl(initialQuery.get("resolved"));
+    if (initialQuery.get("ack")) return temporalPresetFromUrl(initialQuery.get("ack"));
+    if (initialView === "recent") return "24h";
+    if (initialView === "all") return "30d";
+    return "all";
+  });
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(() => {
+    const from = parseAlertsDateUrlValue(initialQuery.get("date_from"));
+    const to = parseAlertsDateUrlValue(initialQuery.get("date_to"));
+    if (from || to) return { from, to };
+    return rangeFromUrl(initialQuery, "created")
+      || rangeFromUrl(initialQuery, "updated")
+      || rangeFromUrl(initialQuery, "resolved")
+      || rangeFromUrl(initialQuery, "ack");
+  });
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
 
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
@@ -754,8 +853,6 @@ export default function AlertsPage() {
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [alertsError, setAlertsError] = useState<string | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
-  const [isPaused, setIsPaused] = useState(false);
-  const [clockTick, setClockTick] = useState(Date.now());
 
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<OneViewAlert | null>(null);
@@ -764,6 +861,7 @@ export default function AlertsPage() {
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [historyLoadError, setHistoryLoadError] = useState<string | null>(null);
   const [ackDialogOpen, setAckDialogOpen] = useState(false);
   const [ackComment, setAckComment] = useState("");
   const [ackRequestKey, setAckRequestKey] = useState("");
@@ -789,41 +887,33 @@ export default function AlertsPage() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setDebouncedHostSearch(hostSearch.trim());
-      setDebouncedProblemSearch(problemSearch.trim());
-    }, 400);
+      setDebouncedSearch(searchQuery.trim());
+    }, 300);
     return () => window.clearTimeout(timer);
-  }, [hostSearch, problemSearch]);
+  }, [searchQuery]);
 
   useEffect(() => {
-    const next = new URLSearchParams();
-    if (requestedAlertId) next.set("alert", requestedAlertId);
-    if (page !== 1) next.set("page", String(page));
-    if (pageSize !== 50) next.set("page_size", String(pageSize));
-    selectedCustomerKeys.forEach((value) => next.append("customer", value));
-    selectedDatasources.forEach((value) => next.append("datasource", value));
-    selectedSeverities.forEach((value) => next.append("severity", value));
-    next.set("status", statusFilter);
-    if (sourceAckFilter !== "all") next.set("source_ack", sourceAckFilter);
-    next.set("sort", sortField);
-    next.set("order", sortOrder);
-    if (hostSearch.trim()) next.set("host", hostSearch.trim());
-    if (problemSearch.trim()) next.set("problem", problemSearch.trim());
-
-    const appendTemporal = (prefix: string, preset: ResolvedTemporalPreset, range?: DateRange) => {
-      if (preset === "all") return;
-      next.set(prefix, preset);
-      if (preset !== "custom") return;
-      if (range?.from) next.set(`${prefix}_from`, formatTemporalUrlValue(range.from));
-      if (range?.to) next.set(`${prefix}_to`, formatTemporalUrlValue(range.to));
-    };
-    appendTemporal("created", createdPreset, createdRange);
-    appendTemporal("updated", updatedPreset, updatedRange);
-    appendTemporal("resolved", resolvedPreset, resolvedRange);
-    appendTemporal("ack", ackPreset, ackRange);
-
+    const next = writeAlertsUrlParams({
+      view: alertsView,
+      customers: selectedCustomerKeys,
+      severities: selectedSeverities,
+      status: statusFilter,
+      acknowledgedSource: sourceAckFilter,
+      dateField,
+      datePreset,
+      dateRange,
+      searchField,
+      search: searchQuery,
+      sort: (sortField === "acknowledged_at" || sortField === "duration" || sortField === "first_seen_at" || sortField === "last_seen_at" || sortField === "resolved_at" || sortField === "severity"
+        ? sortField
+        : "first_seen_at") as AlertsSortKey,
+      order: sortOrder,
+      page,
+      pageSize,
+      alert: requestedAlertId,
+    });
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [ackPreset, ackRange, createdPreset, createdRange, hostSearch, page, pageSize, problemSearch, requestedAlertId, resolvedPreset, resolvedRange, searchParams, selectedCustomerKeys, selectedDatasources, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter, updatedPreset, updatedRange]);
+  }, [alertsView, dateField, datePreset, dateRange, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadAlerts = useCallback(async () => {
     alertsRequestRef.current?.abort();
@@ -833,14 +923,20 @@ export default function AlertsPage() {
     setIsAlertsLoading(true);
     setAlertsError(null);
     try {
-      // Presets relativos precisam acompanhar cada consulta. Calculá-los fora
-      // daqui congelava "últimos 15 minutos/1 hora" no instante da seleção.
       const requestTime = Date.now();
-      const createdBounds = temporalBounds(createdPreset, createdRange, requestTime);
-      const updatedBounds = temporalBounds(updatedPreset, updatedRange, requestTime);
-      const resolvedBounds = temporalBounds(resolvedPreset, resolvedRange, requestTime);
-      const ackBounds = temporalBounds(ackPreset, ackRange, requestTime);
-      const response = await fetchAlerts({
+      const configuredStale = Number(health?.thresholds?.alert_stale_minutes);
+      const staleMinutes = Number.isFinite(configuredStale) && configuredStale > 0 ? configuredStale : null;
+      if (alertsView === "forgotten" && staleMinutes == null) {
+        if (requestId !== alertsRequestIdRef.current) return;
+        setIsAlertsLoading(Boolean(health == null));
+        return;
+      }
+
+      const dateBounds = alertsView === "forgotten"
+        ? { to: new Date(requestTime - (staleMinutes as number) * 60_000).toISOString() }
+        : alertsDateBounds(datePreset, dateRange, requestTime);
+
+      let request: Parameters<typeof fetchAlerts>[0] = {
         page,
         pageSize,
         customers: selectedCustomerKeys,
@@ -848,23 +944,26 @@ export default function AlertsPage() {
         severities: selectedSeverities,
         status: statusFilter,
         acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
-        hostSearch: debouncedHostSearch || undefined,
-        problemSearch: debouncedProblemSearch || undefined,
-        firstSeenFrom: createdBounds.from,
-        firstSeenTo: createdBounds.to,
-        lastSeenFrom: updatedBounds.from,
-        lastSeenTo: updatedBounds.to,
-        resolvedFrom: resolvedBounds.from,
-        resolvedTo: resolvedBounds.to,
-        acknowledgedFrom: ackBounds.from,
-        acknowledgedTo: ackBounds.to,
-        sort: sortField,
+        sort: sortField as "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "duration" | "acknowledged_at",
         order: sortOrder,
         signal: controller.signal,
-      });
+      };
+
+      request = applySearchToFetchParams(request, searchField, debouncedSearch);
+      if (alertsView === "forgotten") {
+        request.firstSeenTo = dateBounds.to;
+      } else if (alertsDateActive(datePreset, dateRange)) {
+        request = applyDateFieldToFetchParams(request, dateField, dateBounds);
+      }
+
+      const response = await fetchAlerts(request);
       if (requestId !== alertsRequestIdRef.current) return;
       const normalized = normalizeAlertResponse(response, page, pageSize);
       const safeResponse = response ?? ({} as AlertListResponse);
+      if (normalized.pagination.total_pages > 0 && page > normalized.pagination.total_pages) {
+        setPage(normalized.pagination.total_pages);
+        return;
+      }
       setAlerts(normalized.items);
       setPagination(normalized.pagination);
       setFilteredSummary(safeResponse.filtered_summary);
@@ -879,7 +978,7 @@ export default function AlertsPage() {
     } finally {
       if (requestId === alertsRequestIdRef.current) setIsAlertsLoading(false);
     }
-  }, [ackPreset, ackRange, createdPreset, createdRange, debouncedHostSearch, debouncedProblemSearch, page, pageSize, resolvedPreset, resolvedRange, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter, updatedPreset, updatedRange]);
+  }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, health, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -910,7 +1009,6 @@ export default function AlertsPage() {
         setFacetsMeta(metaOf(results[3].value));
       }
       if (results[4].status === "fulfilled") {
-        setOperationsHealth(results[4].value);
         setOperationsMeta(metaOf(results[4].value));
       }
       const rejected = results.find((result) => result.status === "rejected");
@@ -932,7 +1030,6 @@ export default function AlertsPage() {
     const controller = new AbortController();
     detailRequestRef.current = controller;
     setIsDetailLoading(true);
-    setDetailError(null);
     const results = await Promise.allSettled([
       fetchAlert(id, controller.signal),
       fetchAlertHistory(id, controller.signal),
@@ -941,14 +1038,16 @@ export default function AlertsPage() {
     if (results[0].status === "fulfilled") {
       setDetail(results[0].value);
       setDetailMeta(metaOf(results[0].value));
+      setDetailError(null);
     } else {
       setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Detalhe indisponível.");
     }
     if (results[1].status === "fulfilled") {
       setHistory(results[1].value);
       setHistoryMeta(metaOf(results[1].value));
-    } else if (results[0].status === "fulfilled") {
-      setDetailError(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
+      setHistoryLoadError(null);
+    } else {
+      setHistoryLoadError(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
     }
     setIsDetailLoading(false);
   }, []);
@@ -962,6 +1061,8 @@ export default function AlertsPage() {
     setHistoryFilter("all");
     setDetailMeta({});
     setHistoryMeta({});
+    setDetailError(null);
+    setHistoryLoadError(null);
     void loadSelectedAlert(requestedAlertId);
   }, [loadSelectedAlert, requestedAlertId, selectedAlertId]);
 
@@ -982,8 +1083,7 @@ export default function AlertsPage() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       const now = Date.now();
-      setClockTick(now);
-      if (isPaused || document.hidden) return;
+      if (document.hidden) return;
       if (now >= summaryDeadlineRef.current) {
         summaryDeadlineRef.current = now + SUMMARY_REFRESH_MS;
         void loadSummaryResources();
@@ -994,7 +1094,7 @@ export default function AlertsPage() {
       }
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [isPaused, loadAlerts, loadSummaryResources]);
+  }, [loadAlerts, loadSummaryResources]);
 
   useEffect(() => () => {
     alertsRequestRef.current?.abort();
@@ -1008,40 +1108,96 @@ export default function AlertsPage() {
   const fallbackCode = [...baseMetas, detailMeta, historyMeta].find((meta) => meta.source === "snapshot" && meta.fallbackCode)?.fallbackCode;
 
   const severityCounts = Object.fromEntries((metrics?.by_severity ?? []).map((item) => [item.severity, item.count]));
-  const hasTemporalFilter = temporalFilterActive(createdPreset, createdRange)
-    || temporalFilterActive(updatedPreset, updatedRange)
-    || temporalFilterActive(resolvedPreset, resolvedRange)
-    || temporalFilterActive(ackPreset, ackRange);
+  const hasTemporalFilter = alertsView !== "forgotten" && alertsDateActive(datePreset, dateRange);
+  const hasActiveListFilters = Boolean(
+    selectedCustomerKeys.length
+    || selectedSeverities.length
+    || sourceAckFilter !== "all"
+    || statusFilter !== "active"
+    || debouncedSearch
+    || hasTemporalFilter
+    || alertsView === "forgotten",
+  );
   const listTotal = pagination.total_items;
-  // Com filtro temporal usamos filtered_summary. Enquanto ele não chega, mostramos
-  // "…" (null) em vez de 0, para não confundir carregamento com resultado vazio real.
-  const activeTotal = hasTemporalFilter ? (filteredSummary ? filteredSummary.active : null) : metrics?.active_total ?? health?.counts.active_alerts ?? 0;
-  const pendingTotal = hasTemporalFilter ? (filteredSummary ? filteredSummary.unacknowledged_source : null) : metrics?.unacknowledged_total ?? 0;
-  const acknowledgedTotal = hasTemporalFilter
-    ? (filteredSummary ? filteredSummary.acknowledged_source : null)
-    : Math.max(Number(activeTotal ?? 0) - Number(pendingTotal ?? 0), 0);
-  const totalForCards = hasTemporalFilter
-    ? (filteredSummary ? filteredSummary.total : (isAlertsLoading ? null : listTotal))
-    : health?.counts.total_alerts ?? metrics?.alerts_total ?? 0;
-  const highForCards = hasTemporalFilter ? (filteredSummary ? filteredSummary.by_severity.high : null) : severityCounts.high ?? 0;
-  const disasterForCards = hasTemporalFilter ? (filteredSummary ? filteredSummary.by_severity.disaster : null) : severityCounts.disaster ?? 0;
-  const temporalDescription = hasTemporalFilter ? "No período selecionado" : null;
-  const formatCardValue = (value: number | null) => (value === null ? "…" : Number(value).toLocaleString("pt-BR"));
-  const summaryCards = [
-    { filter: "total" as const, title: "Total persistido", value: totalForCards, description: temporalDescription ?? "Alertas registrados no OneView", icon: Database, tone: "bg-primary/10 text-primary" },
-    { filter: "active" as const, title: "Alertas ativos", value: activeTotal, description: temporalDescription ?? "Ocorrências em acompanhamento", icon: Activity, tone: "bg-amber-100 text-amber-700" },
-    { filter: "acknowledged" as const, title: "Reconhecidos", value: acknowledgedTotal, description: temporalDescription ?? "Reconhecidos na origem", icon: UserCheck, tone: "bg-emerald-100 text-emerald-700" },
-    { filter: "pending" as const, title: "Pendentes", value: pendingTotal, description: temporalDescription ?? "Aguardando tratamento", icon: TriangleAlert, tone: "bg-yellow-100 text-yellow-700" },
-    { filter: "high" as const, title: "Alto", value: highForCards, description: temporalDescription ?? "Prioridade elevada", icon: ShieldAlert, tone: "bg-red-50 text-red-700" },
-    { filter: "disaster" as const, title: "Desastre", value: disasterForCards, description: temporalDescription ?? "Prioridade máxima", icon: Siren, tone: "bg-red-100 text-red-950" },
+  // Indicadores refletem os mesmos filtros da lista (filtered_summary do BFF).
+  // Erro/ausência => "—"; zero válido => 0.
+  const activeTotal = filteredSummary
+    ? filteredSummary.active
+    : (hasActiveListFilters ? null : (metrics?.active_total ?? health?.counts?.active_alerts ?? null));
+  const pendingTotal = filteredSummary
+    ? filteredSummary.unacknowledged_source
+    : (hasActiveListFilters ? null : (metrics ? (metrics.unacknowledged_total ?? 0) : null));
+  const acknowledgedTotal = filteredSummary
+    ? filteredSummary.acknowledged_source
+    : (hasActiveListFilters
+      ? null
+      : (activeTotal == null || pendingTotal == null
+        ? null
+        : Math.max(Number(activeTotal) - Number(pendingTotal), 0)));
+  const temporalDescription = hasActiveListFilters ? "Nos filtros atuais" : null;
+  const formatCardValue = (value: number | null | undefined) => formatNullableCount(value);
+  const severitySummary = useMemo(
+    () => (filteredSummary ? normalizeAlertSeveritySummary(filteredSummary) : null),
+    [filteredSummary],
+  );
+  const severityCountFor = (severity: OneViewSeverity): number | null => {
+    if (severitySummary) {
+      if (severity === "not_classified") return severitySummary.not_classified;
+      if (severity === "critical") return null;
+      return severitySummary.by_severity?.[severity] ?? null;
+    }
+    if (hasActiveListFilters) return null;
+    if (!metrics) return null;
+    return severityCounts[severity] ?? 0;
+  };
+  // OV-P0-17 / OV-P0-41: faixa operacional + cinco severidades Zabbix; Not classified separado.
+  const operationalCards = [
+    {
+      filter: "active" as const,
+      title: "Em acompanhamento",
+      value: activeTotal,
+      description: temporalDescription ?? "Ocorrências atualmente mantidas como ativas no OneView.",
+    },
+    {
+      filter: "acknowledged" as const,
+      title: "Reconhecidos",
+      value: acknowledgedTotal,
+      description: temporalDescription ?? "Reconhecidos na origem",
+    },
+    {
+      filter: "pending" as const,
+      title: "Pendentes",
+      value: pendingTotal,
+      description: temporalDescription ?? "Aguardando tratamento",
+    },
   ];
+  const severityCards = VISUAL_SEVERITY_STRIP.map((severity) => ({
+    filter: severity as SummaryFilter,
+    title: severityCatalog[severity].label,
+    value: severityCountFor(severity),
+    description: temporalDescription ?? `Severidade ${severityCatalog[severity].label}`,
+  }));
+  const notClassifiedCard = {
+    filter: "not_classified" as const,
+    title: severityCatalog.not_classified.label,
+    value: severityCountFor("not_classified"),
+    description: temporalDescription ?? "Fora da faixa visual das cinco severidades",
+  };
 
-  const customerCards = useMemo(() => [
-    { key: "all", name: "Todos", alerts_count: metrics?.active_total ?? health?.counts.active_alerts ?? 0, enrichment_status: "enriched" as const },
-    ...(facets?.customers ?? []).map((customer) => customer.key === "unclassified"
-      ? { ...customer, name: "Cliente não identificado" }
-      : customer),
-  ], [facets?.customers, health?.counts.active_alerts, metrics?.active_total]);
+  const customerCards = useMemo(() => {
+    const allCount = metrics?.active_total ?? health?.counts.active_alerts ?? null;
+    return [
+      {
+        key: "all",
+        name: "Todos",
+        alerts_count: allCount,
+        enrichment_status: "enriched" as const,
+      },
+      ...(facets?.customers ?? []).map((customer) => customer.key === "unclassified"
+        ? { ...customer, name: UNCLASSIFIED_CLIENT_LABEL }
+        : customer),
+    ];
+  }, [facets?.customers, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
     if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
@@ -1060,19 +1216,19 @@ export default function AlertsPage() {
     selectedDatasources.length ? { label: `${selectedDatasources.length} fonte(s)`, remove: () => setSelectedDatasources([]) } : null,
     ...selectedSeverities.map((severity) => ({ label: severityCatalog[severity].label, remove: () => setSelectedSeverities((current) => current.filter((item) => item !== severity)) })),
     statusFilter !== "active" ? { label: `Status: ${statusFilter === "resolved" ? "Resolvidos" : "Todos"}`, remove: () => setStatusFilter("active") } : null,
-    sourceAckFilter !== "all" ? { label: `ACK origem: ${sourceAckFilter === "acknowledged" ? "Reconhecido" : "Pendente"}`, remove: () => setSourceAckFilter("all") } : null,
-    temporalFilterActive(createdPreset, createdRange) ? { label: `Criados ${temporalLabels[createdPreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`, remove: () => { setCreatedPreset("all"); setCreatedRange(undefined); } } : null,
-    temporalFilterActive(updatedPreset, updatedRange) ? { label: `Atualizados ${temporalLabels[updatedPreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`, remove: () => { setUpdatedPreset("all"); setUpdatedRange(undefined); } } : null,
-    temporalFilterActive(resolvedPreset, resolvedRange) ? { label: `Resolvidos ${temporalLabels[resolvedPreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`, remove: () => { setResolvedPreset("all"); setResolvedRange(undefined); } } : null,
-    temporalFilterActive(ackPreset, ackRange) ? { label: `ACKs Zabbix ${temporalLabels[ackPreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`, remove: () => { setAckPreset("all"); setAckRange(undefined); } } : null,
-    debouncedHostSearch ? { label: `Host: ${debouncedHostSearch}`, remove: () => setHostSearch("") } : null,
-    debouncedProblemSearch ? { label: `Problema: ${debouncedProblemSearch}`, remove: () => setProblemSearch("") } : null,
+    sourceAckFilter !== "all" ? { label: `ACK origem: ${sourceAckFilter === "acknowledged" ? "Com ACK" : "Sem ACK"}`, remove: () => setSourceAckFilter("all") } : null,
+    hasTemporalFilter ? {
+      label: `${ALERTS_DATE_FIELD_OPTIONS.find((item) => item.id === dateField)?.label ?? "Período"} ${temporalLabels[datePreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`,
+      remove: () => { setDatePreset("all"); setDateRange(undefined); },
+    } : null,
+    debouncedSearch ? {
+      label: `${ALERTS_SEARCH_FIELD_OPTIONS.find((item) => item.id === searchField)?.label ?? "Busca"}: ${debouncedSearch}`,
+      remove: () => setSearchQuery(""),
+    } : null,
   ].filter((chip): chip is { label: string; remove: () => void } => Boolean(chip));
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + alerts.length - 1, pagination.total_items);
-  const summarySeconds = Math.ceil((summaryDeadlineRef.current - clockTick) / 1000);
-  const alertsSeconds = Math.ceil((alertsDeadlineRef.current - clockTick) / 1000);
   const selectedAlert = detail?.item ?? selectedPreview;
   const selectedCustomer = selectedAlert ? customerPresentation(selectedAlert) : null;
   const selectedClassificationTags = selectedAlert ? safeClassificationTags(selectedAlert) : [];
@@ -1117,9 +1273,11 @@ export default function AlertsPage() {
     }
     return "Pendente";
   })();
-  const sourceAcknowledgementComment = selectedSourceAck.comment
-    || acknowledgementGroups.find((group) => historyOrigin(group.primary) === "Zabbix")?.primary.comment
-    || null;
+  const sourceAcknowledgementComment = resolveOfficialAckComment(
+    selectedSourceAck.comment,
+    acknowledgementGroups.flatMap((group) => group.items),
+  );
+  const officialAckComment = sourceAcknowledgementComment.comment;
   const historyQuality = useMemo(
     () => historyQualityFor(v1HistoryGroups.flatMap((group) => group.items), history?.history_partial === true),
     [history?.history_partial, v1HistoryGroups],
@@ -1127,67 +1285,131 @@ export default function AlertsPage() {
   const isRefreshing = isAlertsLoading || isSummaryLoading;
   const showAlertsSkeleton = isAlertsLoading && !hasLoadedAlerts && alerts.length === 0;
   const ackRequestsEnabled = health?.capabilities?.acknowledgement === true;
-  const showIpColumn = useMemo(() => alerts.some((alert) => safeHostIp(alert.host_ip) !== null), [alerts]);
-  const tableColumnCount = showIpColumn ? 10 : 9;
-  const selectedSourceHealth = selectedAlert
-    ? operationsHealth?.items.find((item) => item.name.trim().toLowerCase() === selectedAlert.datasource_name?.trim().toLowerCase())
-    : undefined;
-  const staleThresholdMinutes = health?.thresholds?.alert_stale_minutes ?? 15;
-  const selectedLastSeenAt = selectedAlert ? Date.parse(selectedAlert.last_seen_at || "") : Number.NaN;
-  const minutesWithoutConfirmation = Number.isNaN(selectedLastSeenAt)
-    ? null
-    : Math.max(0, Math.floor((Date.now() - selectedLastSeenAt) / 60_000));
-  const freshnessState = !selectedAlert
-    ? "Informação indisponível"
-    : isResolvedAlert(selectedAlert)
-      ? "Resolvido"
-      : selectedSourceHealth?.operational_status === "error" || selectedSourceHealth?.operational_status === "stale"
-        ? "Dados possivelmente desatualizados"
-        : minutesWithoutConfirmation !== null && minutesWithoutConfirmation <= staleThresholdMinutes
-          ? "Ativo e confirmado recentemente"
-          : "Ativo, mas sem confirmação recente";
+  const tableColumnCount = 9;
 
   const clearFilters = () => {
     setSelectedCustomerKeys([]);
     setSelectedDatasources([]);
     setSelectedSeverities([]);
     setSourceAckFilter("all");
+    setAlertsView("recent");
     setStatusFilter("active");
-    setSortField("last_seen_at");
+    setSortField("first_seen_at");
     setSortOrder("desc");
-    setHostSearch("");
-    setProblemSearch("");
-    setDatasourceSearch("");
-    setCreatedPreset("all");
-    setUpdatedPreset("all");
-    setResolvedPreset("all");
-    setAckPreset("all");
-    setCreatedRange(undefined);
-    setUpdatedRange(undefined);
-    setResolvedRange(undefined);
-    setAckRange(undefined);
+    setSearchField("all");
+    setSearchQuery("");
+    setDateField("first_seen");
+    setDatePreset("24h");
+    setDateRange(undefined);
     setPage(1);
   };
 
-  const applySummaryFilter = (filter: SummaryFilter) => {
-    setSelectedSeverities(filter === "high" ? ["high"] : filter === "disaster" ? ["disaster"] : []);
-    setSourceAckFilter(filter === "acknowledged" ? "acknowledged" : filter === "pending" ? "unacknowledged" : "all");
-    setStatusFilter(filter === "total" ? "all" : filter === "active" ? "active" : hasTemporalFilter ? statusFilter : "active");
+  const applyAlertsView = (view: AlertsView) => {
+    setAlertsView(view);
+    setPage(1);
+    setSourceAckFilter("all");
+    setDateRange(undefined);
+    if (view === "recent") {
+      setStatusFilter("active");
+      setSelectedSeverities([]);
+      setDateField("first_seen");
+      setDatePreset("24h");
+      setSortField("first_seen_at");
+      setSortOrder("desc");
+      return;
+    }
+    if (view === "open") {
+      setStatusFilter("active");
+      setSelectedSeverities([]);
+      setDateField("first_seen");
+      setDatePreset("all");
+      setSortField("last_seen_at");
+      setSortOrder("desc");
+      return;
+    }
+    if (view === "priority") {
+      void PRIORITY_VIEW_NOTE;
+      setStatusFilter("active");
+      setSelectedSeverities(["disaster", "high"]);
+      setSourceAckFilter("unacknowledged");
+      setDateField("first_seen");
+      setDatePreset("all");
+      setSortField("severity");
+      setSortOrder("desc");
+      return;
+    }
+    if (view === "forgotten") {
+      setStatusFilter("active");
+      setSelectedSeverities([]);
+      setSourceAckFilter("unacknowledged");
+      setDateField("first_seen");
+      setDatePreset("all");
+      setSortField("first_seen_at");
+      setSortOrder("asc");
+      return;
+    }
+    if (view === "resolved") {
+      setStatusFilter("resolved");
+      setSelectedSeverities([]);
+      setDateField("resolved");
+      setDatePreset("all");
+      setSortField("resolved_at");
+      setSortOrder("desc");
+      return;
+    }
+    setStatusFilter("all");
+    setSelectedSeverities([]);
+    setDateField("first_seen");
+    setDatePreset("30d");
     setSortField("last_seen_at");
     setSortOrder("desc");
-    setHostSearch("");
-    setProblemSearch("");
+  };
+
+  const applySummaryFilter = (filter: SummaryFilter) => {
+    const severityFilters: OneViewSeverity[] = [
+      "information",
+      "warning",
+      "average",
+      "high",
+      "disaster",
+      "not_classified",
+    ];
+    if (severityFilters.includes(filter as OneViewSeverity)) {
+      const severity = filter as OneViewSeverity;
+      setSelectedSeverities((current) => (
+        current.length === 1 && current[0] === severity ? [] : [severity]
+      ));
+      setPage(1);
+      return;
+    }
+    setSelectedSeverities([]);
+    setSourceAckFilter(filter === "acknowledged" ? "acknowledged" : filter === "pending" ? "unacknowledged" : "all");
+    setStatusFilter(filter === "total" ? "all" : filter === "active" ? "active" : hasTemporalFilter ? statusFilter : "active");
+    setAlertsView(filter === "total" ? "all" : "open");
+    setSortField("last_seen_at");
+    setSortOrder("desc");
+    setSearchQuery("");
     setPage(1);
   };
 
   const summaryFilterIsActive = (filter: SummaryFilter) => {
-    if (selectedSeverities.length > 1) return false;
-    if (filter === "total") return statusFilter === "all" && sourceAckFilter === "all" && selectedSeverities.length === 0;
-    if (filter === "active") return statusFilter === "active" && sourceAckFilter === "all" && selectedSeverities.length === 0;
-    if (filter === "acknowledged") return statusFilter === "active" && sourceAckFilter === "acknowledged" && selectedSeverities.length === 0;
-    if (filter === "pending") return statusFilter === "active" && sourceAckFilter === "unacknowledged" && selectedSeverities.length === 0;
-    if (filter === "high") return statusFilter === "active" && sourceAckFilter === "all" && selectedSeverities[0] === "high";
-    return statusFilter === "active" && sourceAckFilter === "all" && selectedSeverities[0] === "disaster";
+    const severityFilters: OneViewSeverity[] = [
+      "information",
+      "warning",
+      "average",
+      "high",
+      "disaster",
+      "not_classified",
+    ];
+    if (severityFilters.includes(filter as OneViewSeverity)) {
+      return selectedSeverities.length === 1 && selectedSeverities[0] === filter;
+    }
+    if (selectedSeverities.length > 0) return false;
+    if (filter === "total") return statusFilter === "all" && sourceAckFilter === "all";
+    if (filter === "active") return statusFilter === "active" && sourceAckFilter === "all";
+    if (filter === "acknowledged") return statusFilter === "active" && sourceAckFilter === "acknowledged";
+    if (filter === "pending") return statusFilter === "active" && sourceAckFilter === "unacknowledged";
+    return false;
   };
 
   const toggleCustomer = (key: string) => {
@@ -1199,22 +1421,10 @@ export default function AlertsPage() {
     setSelectedCustomerKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
   };
 
-  const applyCreatedPreset = (preset: TemporalPreset) => {
-    setCreatedPreset(preset);
-    if (preset !== "custom") setCreatedRange(undefined);
-    setPage(1);
-  };
-
-  const applyUpdatedPreset = (preset: TemporalPreset) => {
-    setUpdatedPreset(preset);
-    if (preset !== "custom") setUpdatedRange(undefined);
-    setPage(1);
-  };
-
-  const applyResolvedPreset = (preset: ResolvedTemporalPreset) => {
-    setResolvedPreset(preset);
-    if (preset !== "custom") setResolvedRange(undefined);
-    if (preset !== "all") setStatusFilter("resolved");
+  const applyDatePreset = (preset: AlertsDatePreset) => {
+    setDatePreset(preset);
+    if (preset !== "custom") setDateRange(undefined);
+    if (dateField === "resolved" && preset !== "all") setStatusFilter("resolved");
     setPage(1);
   };
 
@@ -1229,6 +1439,8 @@ export default function AlertsPage() {
     setHistoryFilter("all");
     setDetailMeta({});
     setHistoryMeta({});
+    setDetailError(null);
+    setHistoryLoadError(null);
     void loadSelectedAlert(alert.id);
   };
 
@@ -1245,6 +1457,7 @@ export default function AlertsPage() {
     setDetailMeta({});
     setHistoryMeta({});
     setDetailError(null);
+    setHistoryLoadError(null);
     setAckDialogOpen(false);
     setAckComment("");
     setAckRequestKey("");
@@ -1302,47 +1515,6 @@ export default function AlertsPage() {
     }
   };
 
-  const handlePause = () => {
-    if (isPaused) {
-      setIsPaused(false);
-      void refreshAll();
-      return;
-    }
-    setIsPaused(true);
-  };
-
-  const topbarControls = (
-    <div className="flex flex-wrap items-center justify-end gap-2">
-      <div className="flex items-center gap-2 text-[11px] leading-4 text-muted-foreground">
-        <span>{hasSnapshot ? "Próxima tentativa" : "Resumo"} em {isPaused ? "pausa" : formatCountdown(summarySeconds)}</span>
-        <span aria-hidden="true">·</span>
-        <span>Alertas em {isPaused ? "pausa" : formatCountdown(alertsSeconds)}</span>
-      </div>
-      <TooltipProvider delayDuration={200}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 rounded-full text-muted-foreground"
-              aria-label="Atualizar dados"
-              onClick={() => void refreshAll()}
-              disabled={isRefreshing}
-            >
-              {isRefreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5" />}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Atualizar dados em segundo plano</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-      <Button type="button" variant={isPaused ? "default" : "outline"} size="sm" onClick={handlePause}>
-        {isPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-        {isPaused ? "Retomar" : "Pausar"}
-      </Button>
-    </div>
-  );
-
   const toggleColumnSort = (field: SortField) => {
     setSortOrder((current) => sortField === field && current === "asc" ? "desc" : "asc");
     setSortField(field);
@@ -1362,86 +1534,32 @@ export default function AlertsPage() {
     </button>
   );
 
-  const visibleDatasourceOptions = (facets?.datasources ?? []).filter((source) =>
-    source.name.toLocaleLowerCase("pt-BR").includes(datasourceSearch.trim().toLocaleLowerCase("pt-BR")),
-  );
-
   const temporalOptionText = (subject: string, preset: ResolvedTemporalPreset, count?: number) => preset === "all"
     ? "Todos"
     : `${subject} ${temporalLabels[preset]} · ${(count ?? 0).toLocaleString("pt-BR")} alertas`;
 
   const clientSelector = (
-    <Popover open={customerFilterOpen} onOpenChange={setCustomerFilterOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={customerFilterOpen}
-          className="h-12 min-w-56 justify-between rounded-[10px] border-[1.5px] border-border/60 bg-white px-3 shadow-sm hover:border-black hover:bg-white"
-        >
-          <span className="flex min-w-0 items-center gap-3 text-left">
-            <CustomerLogo
-              customer={selectedCustomerKeys.length === 1 ? customerCards.find((customer) => customer.key === selectedCustomerKeys[0]) : { key: "all", name: "Todos" }}
-            />
-            <span className="min-w-0">
-              <span className="block text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Cliente</span>
-              <span className="block truncate text-sm font-semibold tracking-wide text-foreground">{selectedCustomerLabel}</span>
-            </span>
-          </span>
-          <span className="ml-3 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[1.5px] border-border/60 bg-white text-muted-foreground">
-            <ChevronsUpDown className="h-4 w-4" />
-          </span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[310px] p-0">
-        <Command>
-          <CommandInput placeholder="Buscar cliente..." className="h-10" />
-          <CommandList>
-            <CommandEmpty>Nenhum cliente encontrado.</CommandEmpty>
-            <CommandGroup heading="Clientes disponíveis">
-              {customerCards.map((customer) => {
-                const selected = customer.key === "all"
-                  ? selectedCustomerKeys.length === 0
-                  : selectedCustomerKeys.includes(customer.key);
-                return (
-                  <CommandItem
-                    key={customer.key}
-                    value={`${customer.name} ${customer.key}`}
-                    onSelect={() => {
-                      toggleCustomer(customer.key);
-                      if (customer.key === "all") setCustomerFilterOpen(false);
-                    }}
-                    className={cn(
-                      "mx-1 my-1 gap-3 rounded-md border-[1.5px] border-transparent px-2 py-2 transition-colors",
-                      selected && "border-black bg-white",
-                      "data-[selected=true]:border-black data-[selected=true]:bg-white data-[selected=true]:text-foreground",
-                    )}
-                  >
-                    <CustomerLogo customer={customer} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{safeDisplayText(customer.name, "Cliente não identificado")}</span>
-                      <span className="text-[10px] text-muted-foreground">{customer.alerts_count.toLocaleString("pt-BR")} alertas</span>
-                    </span>
-                    <Check className={cn("h-4 w-4 text-primary", selected ? "opacity-100" : "opacity-0")} />
-                  </CommandItem>
-                );
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <ClientFilterCombobox
+      open={customerFilterOpen}
+      onOpenChange={setCustomerFilterOpen}
+      options={customerCards}
+      selectedKeys={selectedCustomerKeys}
+      selectedLabel={selectedCustomerLabel}
+      onToggle={toggleCustomer}
+    />
   );
 
   return (
     <AppLayout
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      clientSelect={clientSelector}
-      topbarRightSection={topbarControls}
-      contentClassName="gap-3 px-3 py-3 lg:px-4"
-      title="Alertas"
+      clientSelect={(
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Alertas</h1>
+          {clientSelector}
+        </div>
+      )}
+      contentClassName="gap-3 p-3 lg:px-4"
     >
       {hasSnapshot ? (
         <Card className="rounded-[10px] border border-amber-300 bg-amber-50 p-4 shadow-sm">
@@ -1456,61 +1574,87 @@ export default function AlertsPage() {
                 </p>
               </div>
             </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => void refreshAll()} disabled={isRefreshing}>
+            <Button type="button" variant="outline" size="sm" className="ov-error-action" onClick={() => void refreshAll()} disabled={isRefreshing}>
               <RefreshCcw className="h-4 w-4" /> Tentar novamente
             </Button>
           </div>
         </Card>
       ) : null}
 
-      {summaryError ? (
-        <div className="rounded-[10px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{summaryError}</div>
-      ) : null}
+      {summaryError ? <OperationalErrorBanner message={summaryError} /> : null}
 
-      <section aria-label="Filtros rápidos por indicadores">
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
-          {summaryCards.map((card) => {
-            const Icon = card.icon;
-            const selected = summaryFilterIsActive(card.filter);
-            return (
-              <button
-                key={card.title}
-                type="button"
-                aria-pressed={selected}
-                aria-label={`Filtrar alertas: ${card.title}`}
-                onClick={() => applySummaryFilter(card.filter)}
-                className={cn(
-                  "rounded-[10px] border border-border/70 bg-card p-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-foreground/30 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                  selected && "border-foreground/50 ring-1 ring-foreground/20",
-                )}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-semibold text-foreground">{card.title}</h3>
-                    {isSummaryLoading && !health && !metrics ? <Skeleton className="mt-2 h-7 w-20" /> : (
-                      <p className="mt-0.5 text-xl font-semibold tabular-nums text-foreground">{formatCardValue(card.value)}</p>
-                    )}
-                    <p className="text-xs text-muted-foreground">{card.description}</p>
-                  </div>
-                  <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-full", card.tone)}><Icon className="h-4 w-4" /></div>
-                </div>
-              </button>
-            );
+      <div className="space-y-1.5">
+        <CompactMetricStrip
+          aria-label="Filtros rápidos por indicadores"
+          items={[...operationalCards, ...severityCards].map((card) => {
+            const showSkeleton = isSummaryLoading && !health && !metrics && card.value === null;
+            const unknown = card.value === null && !showSkeleton;
+            return {
+              key: card.filter,
+              label: card.title,
+              value: formatCardValue(card.value),
+              description: card.description,
+              selected: summaryFilterIsActive(card.filter),
+              unknown,
+              loading: showSkeleton,
+              onClick: () => applySummaryFilter(card.filter),
+            };
           })}
-        </div>
-      </section>
+          footer={temporalDescription ? (
+            <p className="border-t border-border/50 px-2.5 py-1 text-[10px] text-muted-foreground">{temporalDescription}</p>
+          ) : null}
+        />
+        <CompactMetricStrip
+          aria-label="Severidade fora da faixa visual"
+          className="border-dashed"
+          items={[{
+            key: notClassifiedCard.filter,
+            label: notClassifiedCard.title,
+            value: formatCardValue(notClassifiedCard.value),
+            description: notClassifiedCard.description,
+            selected: summaryFilterIsActive(notClassifiedCard.filter),
+            unknown: notClassifiedCard.value === null && !(isSummaryLoading && !health && !metrics),
+            loading: isSummaryLoading && !health && !metrics && notClassifiedCard.value === null,
+            onClick: () => applySummaryFilter(notClassifiedCard.filter),
+          }]}
+        />
+      </div>
 
-      <Card className="overflow-hidden rounded-[10px] border border-border/70 bg-white shadow-sm">
+      <Card className="overflow-hidden ov-panel">
         <div className="border-b border-border/70 px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h2 className="text-base font-semibold text-foreground">{statusFilter === "resolved" ? "Alertas resolvidos" : "Alertas"} filtrados por {tableCustomerScope}</h2>
+              <h2 className="text-base font-semibold text-foreground">
+                {ALERTS_VIEWS.find((item) => item.id === alertsView)?.label ?? "Alertas"} · filtrados por {tableCustomerScope}
+              </h2>
               <p className="text-xs text-muted-foreground">
+                {alertsView === "forgotten"
+                  ? "Alertas ativos sem ACK acima do tempo esperado."
+                  : "Fila por cliente para ação imediata"}
                 {isAlertsLoading && hasTemporalFilter
-                  ? "Aplicando filtro de período…"
-                  : `Exibindo ${firstVisible.toLocaleString("pt-BR")}–${lastVisible.toLocaleString("pt-BR")} de ${listTotal.toLocaleString("pt-BR")} ${statusFilter === "resolved" ? "alertas resolvidos" : "alertas"}`}
+                  ? " · Aplicando filtro de período…"
+                  : ` · Exibindo ${firstVisible.toLocaleString("pt-BR")}–${lastVisible.toLocaleString("pt-BR")} de ${listTotal.toLocaleString("pt-BR")} ${statusFilter === "resolved" ? "alertas resolvidos" : "alertas"}`}
                 {snapshotCoverage?.partial ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos` : ""}
               </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Visualizações de alertas">
+              {ALERTS_VIEWS.map((view) => (
+                <button
+                  key={view.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={alertsView === view.id}
+                  onClick={() => applyAlertsView(view.id)}
+                  className={cn(
+                    "rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                    alertsView === view.id
+                      ? "border-foreground/30 bg-foreground text-background"
+                      : "border-border/70 bg-muted/30 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                  )}
+                >
+                  {view.label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -1529,10 +1673,61 @@ export default function AlertsPage() {
                 </Button>
               ))}
               {activeFilterChips.length === 0 ? (
-                <span className="text-[11px] text-muted-foreground">Clique nos títulos das colunas para ordenar. Use as lupas para filtrar.</span>
+                <span className="text-[11px] text-muted-foreground">Filtros server-side · alteração volta para a página 1</span>
               ) : null}
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+              <Select
+                value={statusFilter}
+                onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}
+              >
+                <SelectTrigger className="h-8 w-[120px] bg-white text-xs" aria-label="Estado">
+                  <SelectValue placeholder="Estado" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Ativos</SelectItem>
+                  <SelectItem value="resolved">Resolvidos</SelectItem>
+                  <SelectItem value="all">Todos</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Select
+                value={sourceAckFilter}
+                onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}
+              >
+                <SelectTrigger className="h-8 w-[120px] bg-white text-xs" aria-label="ACK da origem">
+                  <SelectValue placeholder="ACK" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="acknowledged">Com ACK</SelectItem>
+                  <SelectItem value="unacknowledged">Sem ACK</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <div className="flex h-8 items-center gap-1 rounded-md border border-border/70 bg-white px-1">
+                <Select
+                  value={searchField}
+                  onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}
+                >
+                  <SelectTrigger className="h-7 w-[100px] border-0 bg-transparent px-2 text-xs shadow-none" aria-label="Campo de busca">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ALERTS_SEARCH_FIELD_OPTIONS.map((option) => (
+                      <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  value={searchQuery}
+                  onChange={(event) => { setSearchQuery(event.target.value); setPage(1); }}
+                  placeholder="Buscar…"
+                  className="h-7 w-[140px] border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
+                  aria-label="Busca server-side"
+                />
+              </div>
+
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
@@ -1542,115 +1737,146 @@ export default function AlertsPage() {
                     className={cn("h-8 px-2.5 text-xs", hasTemporalFilter && "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")}
                   >
                     <CalendarRange className="h-3.5 w-3.5" />
-                    Período{hasTemporalFilter ? ` · ${[temporalFilterActive(createdPreset, createdRange), temporalFilterActive(updatedPreset, updatedRange), temporalFilterActive(resolvedPreset, resolvedRange), temporalFilterActive(ackPreset, ackRange)].filter(Boolean).length}` : ""}
+                    Período
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent align="end" className="w-[340px] p-3">
-                  <div className="mb-3">
+                <PopoverContent align="end" className="w-[340px] space-y-3 p-3">
+                  <div>
                     <p className="text-sm font-semibold">Filtrar por período</p>
-                    <p className="text-[11px] text-muted-foreground">Criação, atualização e resolução usam datas independentes.</p>
+                    <p className="text-[11px] text-muted-foreground">Janelas rolantes a partir de agora (não desde meia-noite).</p>
                   </div>
-                  <Tabs defaultValue={resolvedPreset !== "all" ? "resolved" : updatedPreset !== "all" ? "updated" : "created"}>
-                    <TabsList className="grid w-full grid-cols-3">
-                      <TabsTrigger value="created" className="gap-1 text-xs">Criados{temporalFilterActive(createdPreset, createdRange) ? <span className="h-1.5 w-1.5 rounded-full bg-current" /> : null}</TabsTrigger>
-                      <TabsTrigger value="updated" className="gap-1 text-xs">Atualizados{temporalFilterActive(updatedPreset, updatedRange) ? <span className="h-1.5 w-1.5 rounded-full bg-current" /> : null}</TabsTrigger>
-                      <TabsTrigger value="resolved" className="gap-1 text-xs">Resolvidos{temporalFilterActive(resolvedPreset, resolvedRange) ? <span className="h-1.5 w-1.5 rounded-full bg-current" /> : null}</TabsTrigger>
-                    </TabsList>
-                    <TabsContent value="created" className="mt-3 space-y-2">
-                      <Select value={createdPreset} onValueChange={(value) => applyCreatedPreset(value as TemporalPreset)}>
-                        <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Todos os criados</SelectItem>
-                          {(["15m", "1h", "6h", "24h", "7d"] as const).map((preset) => (
-                            <SelectItem key={preset} value={preset}>{temporalOptionText("Criados", preset, temporalCounts?.created[preset])}</SelectItem>
-                          ))}
-                          <SelectItem value="custom">Período personalizado</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {createdPreset === "custom" ? <Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={createdRange} onSelect={(range) => { setCreatedRange(range); setPage(1); }} /> : null}
-                    </TabsContent>
-                    <TabsContent value="updated" className="mt-3 space-y-2">
-                      <Select value={updatedPreset} onValueChange={(value) => applyUpdatedPreset(value as TemporalPreset)}>
-                        <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Todos os atualizados</SelectItem>
-                          {(["15m", "1h", "6h", "24h", "7d"] as const).map((preset) => (
-                            <SelectItem key={preset} value={preset}>{temporalOptionText("Atualizados", preset, temporalCounts?.updated[preset])}</SelectItem>
-                          ))}
-                          <SelectItem value="custom">Período personalizado</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {updatedPreset === "custom" ? <Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={updatedRange} onSelect={(range) => { setUpdatedRange(range); setPage(1); }} /> : null}
-                    </TabsContent>
-                    <TabsContent value="resolved" className="mt-3 space-y-2">
-                      <Select value={resolvedPreset} onValueChange={(value) => applyResolvedPreset(value as ResolvedTemporalPreset)}>
-                        <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Todos os resolvidos</SelectItem>
-                          {(["15m", "1h", "6h", "24h", "7d", "30d"] as const).map((preset) => (
-                            <SelectItem key={preset} value={preset}>{temporalOptionText("Resolvidos", preset, temporalCounts?.resolved[preset])}</SelectItem>
-                          ))}
-                          <SelectItem value="custom">Período personalizado</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {resolvedPreset === "custom" ? <Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={resolvedRange} onSelect={(range) => { setResolvedRange(range); setPage(1); }} /> : null}
-                    </TabsContent>
-                  </Tabs>
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Atalhos de período">
+                    {([
+                      { id: "24h", label: "Últimas 24 horas" },
+                      { id: "30d", label: "Últimos 30 dias" },
+                    ] as const).map((preset) => (
+                      <Button
+                        key={preset.id}
+                        type="button"
+                        size="sm"
+                        variant={datePreset === preset.id ? "default" : "outline"}
+                        className="h-7 px-2.5 text-[11px]"
+                        aria-pressed={datePreset === preset.id}
+                        onClick={() => applyDatePreset(preset.id)}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                    Campo
+                    <Select
+                      value={dateField}
+                      onValueChange={(value) => { setDateField(value as AlertsDateField); setPage(1); }}
+                    >
+                      <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {ALERTS_DATE_FIELD_OPTIONS.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                    Janela
+                    <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}>
+                      <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Sem período</SelectItem>
+                        {ALERTS_DATE_PRESET_OPTIONS.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+                        ))}
+                        <SelectItem value="custom">Personalizado</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  {datePreset === "custom" ? (
+                    <Calendar
+                      mode="range"
+                      numberOfMonths={1}
+                      locale={ptBR}
+                      selected={dateRange}
+                      onSelect={(range) => { setDateRange(range); setPage(1); }}
+                    />
+                  ) : null}
                   {hasTemporalFilter ? (
-                    <Button type="button" variant="ghost" size="sm" className="mt-2 h-8 w-full text-xs" onClick={() => {
-                      setCreatedPreset("all"); setUpdatedPreset("all"); setResolvedPreset("all"); setAckPreset("all");
-                      setCreatedRange(undefined); setUpdatedRange(undefined); setResolvedRange(undefined); setAckRange(undefined); setPage(1);
-                    }}>Limpar períodos</Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-full text-xs"
+                      onClick={() => { setDatePreset("all"); setDateRange(undefined); setPage(1); }}
+                    >
+                      Limpar período
+                    </Button>
                   ) : null}
                 </PopoverContent>
               </Popover>
+
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className={cn("h-8 px-2.5 text-xs", sourceAckFilter !== "all" && "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")}
-                  >
-                    <UserCheck className="h-3.5 w-3.5" /> ACK origem
+                  <Button type="button" variant="outline" size="sm" className="h-8 px-2.5 text-xs">
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    Mais filtros
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent align="end" className="w-64 space-y-3 p-3">
+                <PopoverContent align="end" className="w-[280px] space-y-3 p-3">
                   <div>
-                    <p className="text-sm font-semibold">Filtrar ACK da origem</p>
-                    <p className="text-[11px] text-muted-foreground">Estado confirmado pelo Zabbix.</p>
+                    <p className="text-sm font-semibold">Mais filtros</p>
+                    <p className="text-[11px] text-muted-foreground">Ordenação e paginação da consulta.</p>
                   </div>
                   <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-                    ACK real
-                    <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}>
-                      <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
+                    Ordenação
+                    <Select
+                      value={sortOptionKey(
+                        (sortField === "acknowledged_at" || sortField === "duration" || sortField === "first_seen_at" || sortField === "last_seen_at" || sortField === "resolved_at" || sortField === "severity"
+                          ? sortField
+                          : "first_seen_at") as AlertsSortKey,
+                        sortOrder,
+                      )}
+                      onValueChange={(value) => {
+                        const [sort, order] = value.split(":") as [AlertsSortKey, SortOrder];
+                        setSortField(sort);
+                        setSortOrder(order);
+                        setPage(1);
+                      }}
+                    >
+                      <SelectTrigger className="h-9 bg-white text-xs" aria-label="Ordenação">
+                        <SelectValue placeholder="Ordenação" />
+                      </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">Todos</SelectItem>
-                        <SelectItem value="acknowledged">Reconhecidos na origem</SelectItem>
-                        <SelectItem value="unacknowledged">Pendentes na origem</SelectItem>
+                        {ALERTS_SORT_OPTIONS.map((option) => (
+                          <SelectItem key={`${option.id}:${option.order}`} value={`${option.id}:${option.order}`}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                    Itens por página
+                    <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}>
+                      <SelectTrigger className="h-9 bg-white" aria-label="Itens por página"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="25">25</SelectItem>
+                        <SelectItem value="50">50</SelectItem>
+                        <SelectItem value="100">100</SelectItem>
                       </SelectContent>
                     </Select>
                   </label>
                 </PopoverContent>
               </Popover>
+
               {activeFilterChips.length > 0 ? (
                 <Button type="button" variant="ghost" size="sm" className="h-8 px-2.5 text-xs" onClick={clearFilters}>Limpar</Button>
               ) : null}
-              <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}>
-                <SelectTrigger className="h-8 w-[76px] bg-white" aria-label="Itens por página"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="25">25</SelectItem>
-                  <SelectItem value="50">50</SelectItem>
-                  <SelectItem value="100">100</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
           </div>
         </div>
 
-        {alertsError ? <div className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{alertsError}</div> : null}
+        {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} /> : null}
 
-        <div className="relative min-h-[360px] max-h-[calc(100vh-22rem)] overflow-auto" aria-busy={isAlertsLoading}>
+        <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading}>
           {isAlertsLoading && hasLoadedAlerts ? (
             <div className="sticky top-0 z-20 flex items-center justify-center gap-2 border-b border-border/50 bg-background/90 px-3 py-1 text-[11px] text-muted-foreground backdrop-blur">
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -1658,81 +1884,24 @@ export default function AlertsPage() {
             </div>
           ) : null}
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
-          <Table className={cn(showIpColumn ? "min-w-[1420px]" : "min-w-[1340px]", "w-full table-fixed text-[11px]")}>
+          <TooltipProvider delayDuration={250}>
+          <Table className="min-w-[1180px] w-full table-fixed text-[11px]">
             <colgroup>
-              <col className="w-[10%]" />
-              <col className="w-[7%]" />
-              <col className="w-[12%]" />
-              {showIpColumn ? <col className="w-[6%]" /> : null}
-              <col className="w-[7%]" />
-              <col className={showIpColumn ? "w-[20%]" : "w-[25%]"} />
-              <col className="w-[6%]" />
-              <col className="w-[8%]" />
               <col className="w-[9%]" />
+              <col className="w-[12%]" />
+              <col className="w-[13%]" />
+              <col className="w-[22%]" />
               <col className="w-[10%]" />
+              <col className="w-[8%]" />
+              <col className="w-[12%]" />
+              <col className="w-[8%]" />
+              <col className="w-[6%]" />
             </colgroup>
             <TableHeader className="sticky top-0 z-10">
               <TableRow className="border-border/70 bg-muted/80 text-[10px] text-muted-foreground hover:bg-muted/80">
-                <TableHead className="px-3 text-center">{sortableHeader("Cliente", "client")}</TableHead>
                 <TableHead className="px-3 text-center">
                   <div className="flex items-center justify-center gap-1">
-                    {sortableHeader("Fonte", "datasource")}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", selectedDatasources.length > 0 && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar fonte">
-                          <Search className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="start" className="w-64 p-2">
-                        <Input value={datasourceSearch} onChange={(event) => setDatasourceSearch(event.target.value)} placeholder="Buscar fonte..." className="h-8" />
-                        <div className="mt-2 max-h-52 space-y-1 overflow-auto">
-                          {visibleDatasourceOptions.map((source) => {
-                            const selected = selectedDatasources.includes(source.name);
-                            return (
-                              <Button
-                                key={source.id}
-                                type="button"
-                                variant={selected ? "default" : "ghost"}
-                                size="sm"
-                                className="h-8 w-full justify-between px-2 text-xs"
-                                onClick={() => {
-                                  setSelectedDatasources((current) => selected ? current.filter((item) => item !== source.name) : [...current, source.name]);
-                                  setPage(1);
-                                }}
-                              >
-                                <span className="truncate">{safeDisplayText(source.name, "Fonte")}</span>
-                                <span className="ml-2 tabular-nums opacity-70">{source.alerts_count.toLocaleString("pt-BR")}</span>
-                              </Button>
-                            );
-                          })}
-                          {visibleDatasourceOptions.length === 0 ? <p className="p-2 text-xs text-muted-foreground">Nenhuma fonte encontrada.</p> : null}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </TableHead>
-                <TableHead className="px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
-                    {sortableHeader("Host", "host")}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", debouncedHostSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar host">
-                          <Search className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="start" className="w-72 p-3">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          Pesquisar somente em host
-                          <Input autoFocus value={hostSearch} onChange={(event) => { setHostSearch(event.target.value); setPage(1); }} placeholder="Nome visível ou técnico" className="mt-1 h-8" />
-                        </label>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </TableHead>
-                {showIpColumn ? <TableHead className="px-3 text-center">IP</TableHead> : null}
-                <TableHead className="px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
-                    {sortableHeader("Prioridade", "severity")}
+                    {sortableHeader("Severidade", "severity")}
                     <Popover>
                       <PopoverTrigger asChild>
                         <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", selectedSeverities.length > 0 && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar prioridade">
@@ -1763,69 +1932,67 @@ export default function AlertsPage() {
                     </Popover>
                   </div>
                 </TableHead>
+                <TableHead className="px-3 text-center">Cliente</TableHead>
+                <TableHead className="px-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {sortableHeader("Host", "host")}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", searchField === "host" && debouncedSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar host">
+                          <Search className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-72 p-3">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Pesquisar somente em host
+                          <Input
+                            autoFocus
+                            value={searchField === "host" ? searchQuery : ""}
+                            onChange={(event) => {
+                              setSearchField("host");
+                              setSearchQuery(event.target.value);
+                              setPage(1);
+                            }}
+                            placeholder="Nome visível ou técnico"
+                            className="mt-1 h-8"
+                          />
+                        </label>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TableHead>
                 <TableHead className="px-3 text-center">
                   <div className="flex items-center justify-center gap-1">
                     {sortableHeader("Problema", "problem")}
                     <Popover>
                       <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", debouncedProblemSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar problema">
+                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", searchField === "problem" && debouncedSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar problema">
                           <Search className="h-3.5 w-3.5" />
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent align="end" className="w-80 p-3">
                         <label className="text-xs font-medium text-muted-foreground">
                           Pesquisar somente em problema
-                          <Input autoFocus value={problemSearch} onChange={(event) => { setProblemSearch(event.target.value); setPage(1); }} placeholder="Descrição do problema" className="mt-1 h-8" />
+                          <Input
+                            autoFocus
+                            value={searchField === "problem" ? searchQuery : ""}
+                            onChange={(event) => {
+                              setSearchField("problem");
+                              setSearchQuery(event.target.value);
+                              setPage(1);
+                            }}
+                            placeholder="Descrição do problema"
+                            className="mt-1 h-8"
+                          />
                         </label>
                       </PopoverContent>
                     </Popover>
                   </div>
                 </TableHead>
+                <TableHead className="px-3 text-center">{sortableHeader("Início", "first_seen_at")}</TableHead>
                 <TableHead className="px-3 text-center">{sortableHeader("Duração", "duration")}</TableHead>
-                <TableHead className="px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
-                    {sortableHeader("Status", "status")}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", statusFilter !== "active" && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar status">
-                          <Search className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="end" className="w-52 p-2">
-                        <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}>
-                          <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="active">Ativos</SelectItem>
-                            <SelectItem value="resolved">Resolvidos</SelectItem>
-                            <SelectItem value="all">Todos</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </TableHead>
-                <TableHead className="px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
-                    {sortableHeader("ACK origem", "acknowledged_source")}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", sourceAckFilter !== "all" && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar ACK da origem">
-                          <Search className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="end" className="w-52 p-2">
-                        <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}>
-                          <SelectTrigger className="h-8 bg-white"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">Todos</SelectItem>
-                            <SelectItem value="acknowledged">Reconhecidos na origem</SelectItem>
-                            <SelectItem value="unacknowledged">Pendentes na origem</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </TableHead>
+                <TableHead className="px-3 text-center">{sortableHeader("ACK", "acknowledged_source")}</TableHead>
+                <TableHead className="px-3 text-center">{sortableHeader("Estado", "status")}</TableHead>
                 <TableHead className="px-3 text-center">Ações</TableHead>
               </TableRow>
             </TableHeader>
@@ -1833,12 +2000,31 @@ export default function AlertsPage() {
               {showAlertsSkeleton ? Array.from({ length: 8 }).map((_, index) => (
                 <TableRow key={index}>{Array.from({ length: tableColumnCount }).map((__, cell) => <TableCell key={cell} className="py-4"><Skeleton className="h-4 w-full" /></TableCell>)}</TableRow>
               )) : alerts.length === 0 ? (
-                <TableRow><TableCell colSpan={tableColumnCount} className="py-16 text-center text-muted-foreground"><CircleAlert className="mx-auto mb-2 h-7 w-7" />Nenhum alerta corresponde aos filtros selecionados.</TableCell></TableRow>
+                <TableRow>
+                  <TableCell colSpan={tableColumnCount} className="p-0">
+                    <OperationalEmptyState
+                      compact
+                      icon={<CircleAlert className="h-7 w-7" />}
+                      title={hasLoadedAlerts ? "Nenhum alerta corresponde aos filtros selecionados." : "Carregando fila operacional..."}
+                    />
+                  </TableCell>
+                </TableRow>
               ) : alerts.map((alert) => {
-                const priority = severityCatalog[normalizeOneViewSeverity(alert.severity)];
+                const severityKey = normalizeOneViewSeverity(alert.severity);
+                const priority = severityCatalog[severityKey];
                 const isResolved = isResolvedAlert(alert);
                 const isActive = !isResolved;
-                const customer = customerPresentation(alert);
+                const hostLabel = canonicalHostName(alert);
+                const technicalHost = displayHostField(alert.host_technical_name, "");
+                const clientLabel = canonicalClientName({
+                  key: alert.customer_key,
+                  name: alert.customer_name,
+                  source: alert.customer_source,
+                });
+                const problemLabel = safeDisplayText(alert.problem_name, "Alerta sem descrição", 220);
+                const durationLabel = Number.isFinite(Number(alert.duration_seconds)) && Number(alert.duration_seconds) >= 0
+                  ? formatDurationSeconds(Number(alert.duration_seconds))
+                  : "—";
                 return (
                   <TableRow
                     key={alert.id}
@@ -1849,41 +2035,84 @@ export default function AlertsPage() {
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openAlert(alert); } }}
                     className={cn("cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60", selectedAlertId === alert.id && "bg-muted/60")}
                   >
-                    <TableCell className="align-middle px-3 py-2.5">
-                      <div className="flex flex-col items-center text-center">
-                        <div className="flex items-center justify-center gap-2 text-left">
-                          <CustomerLogo customer={{ key: alert.customer_key, name: alert.customer_name }} />
-                          <div className="min-w-0">
-                            <p className="font-semibold leading-4">{customer.name}</p>
-                            {customer.hint ? <p className="mt-1 text-[9px] leading-3 text-muted-foreground">{customer.hint}</p> : null}
-                          </div>
-                        </div>
-                      </div>
+                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                      {severityKey === "not_classified" ? (
+                        <span className="text-[11px] text-muted-foreground">{formatOneViewSeverityLabel("not_classified")}</span>
+                      ) : (
+                        <Badge className={cn("border text-[10px] hover:bg-inherit", priority.tone)}>{formatOneViewSeverityLabel(severityKey)}</Badge>
+                      )}
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center font-medium">{safeDisplayText(alert.datasource_name, "Fonte não identificada")}</TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center"><p className="truncate font-semibold" title={safeDisplayText(alert.host_visible_name || alert.host_technical_name || alert.host_name)}>{safeDisplayText(alert.host_visible_name || alert.host_technical_name || alert.host_name)}</p>{alert.host_visible_name && alert.host_technical_name ? <p className="truncate font-mono text-[9px] text-muted-foreground">{safeDisplayText(alert.host_technical_name)}</p> : null}</TableCell>
-                    {showIpColumn ? <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">{safeHostIp(alert.host_ip) ?? "-"}</TableCell> : null}
-                    <TableCell className="align-middle px-3 py-2.5 text-center"><Badge className={cn("border text-[10px] hover:bg-inherit", priority.tone)}>{priority.label}</Badge></TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center"><p className="line-clamp-2 font-medium leading-4" title={safeDisplayText(alert.problem_name, "Alerta sem descrição")}>{safeDisplayText(alert.problem_name, "Alerta sem descrição", 220)}</p></TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">{formatDurationSeconds(alert.duration_seconds)}</TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center"><p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p><p className="text-[9px] text-muted-foreground">{isResolved ? `Resolvido em ${formatDateTime(alert.resolved_at)}` : formatDateTime(alert.last_seen_at)}</p></TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex max-w-full justify-center">
+                            <ClientIdentity
+                              customer={{
+                                key: alert.customer_key,
+                                name: alert.customer_name,
+                                source: alert.customer_source,
+                              }}
+                              showName
+                              nameClassName="max-w-[7rem] truncate text-left text-[11px]"
+                            />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs break-words">{clientLabel}</TooltipContent>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold">{hostLabel}</p>
+                            {technicalHost && technicalHost !== hostLabel ? (
+                              <p className="truncate font-mono text-[9px] text-muted-foreground">{technicalHost}</p>
+                            ) : null}
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs break-words">
+                          {technicalHost && technicalHost !== hostLabel ? `${hostLabel} · ${technicalHost}` : hostLabel}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <p className="line-clamp-2 font-medium leading-4">{problemLabel}</p>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-sm break-words">
+                          {safeDisplayText(alert.problem_name, "Alerta sem descrição")}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">
+                      {alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}
+                    </TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">{durationLabel}</TableCell>
                     <TableCell className="overflow-hidden align-middle px-3 py-2.5 text-center">
                       {(() => {
                         const ack = sourceAckPresentation(alert);
+                        if (ack.status !== "acknowledged") {
+                          return <span className="text-[11px] font-medium text-amber-800">Pendente</span>;
+                        }
+                        const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido";
                         return (
-                          <>
-                            <Badge className={cn("max-w-full whitespace-nowrap border text-[10px] hover:bg-inherit", ack.status === "acknowledged" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>
-                              {ack.status === "acknowledged" ? "Reconhecido" : "Pendente"}
-                            </Badge>
-                            {ack.status === "acknowledged" ? (
-                              <p className="mt-1 whitespace-normal break-words text-[9px] text-muted-foreground">
-                                {ack.actorLabel ? `Por: ${ack.actorLabel}` : "Responsável não informado pela origem"}
-                              </p>
-                            ) : null}
-                            {ack.status === "acknowledged" && ack.at ? <p className="text-[9px] text-muted-foreground">{formatDateTime(ack.at)}</p> : null}
-                          </>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className="min-w-0">
+                                <p className="truncate text-[11px] font-medium leading-4 text-foreground">{ackLabel}</p>
+                                {ack.at ? <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{formatDateTime(ack.at)}</p> : null}
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="max-w-xs break-words">
+                              {ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}
+                            </TooltipContent>
+                          </Tooltip>
                         );
                       })()}
+                    </TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                      <p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p>
                     </TableCell>
                     <TableCell className="align-middle px-3 py-2.5 text-center">
                       <div className="flex items-center justify-center gap-1 whitespace-nowrap">
@@ -1909,10 +2138,15 @@ export default function AlertsPage() {
               })}
             </TableBody>
           </Table>
+          </TooltipProvider>
         </div>
 
         <div className="flex flex-col gap-3 border-t border-border/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted-foreground">Página {pagination.total_pages === 0 ? 0 : pagination.page} de {pagination.total_pages}</p>
+          <p className="text-xs text-muted-foreground">
+            Página {pagination.total_pages === 0 ? 0 : pagination.page} de {pagination.total_pages}
+            {" · "}
+            {pagination.total_items.toLocaleString("pt-BR")} resultado{pagination.total_items === 1 ? "" : "s"}
+          </p>
           <div className="flex items-center gap-2">
             <Button type="button" variant="outline" size="sm" disabled={!pagination.has_previous || isAlertsLoading} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="h-4 w-4" />Anterior</Button>
             <Button type="button" variant="outline" size="sm" disabled={!pagination.has_next || isAlertsLoading} onClick={() => setPage((current) => current + 1)}>Próxima<ChevronRight className="h-4 w-4" /></Button>
@@ -1926,7 +2160,19 @@ export default function AlertsPage() {
             <div className="flex h-full flex-col">
               <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
                 <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0"><SheetTitle className="text-xl">Detalhes do alerta</SheetTitle><SheetDescription>Informações operacionais seguras e histórico do OneView.</SheetDescription></div>
+                  <div className="min-w-0 space-y-2">
+                    <SheetTitle className="text-xl">Detalhes do alerta</SheetTitle>
+                    <SheetDescription>Informações operacionais seguras e histórico do OneView.</SheetDescription>
+                    <ClientIdentity
+                      customer={{
+                        key: selectedAlert.customer_key,
+                        name: selectedAlert.customer_name,
+                        source: selectedAlert.customer_source,
+                      }}
+                      size="md"
+                      showName
+                    />
+                  </div>
                   <Badge className={cn("shrink-0 whitespace-nowrap border hover:bg-inherit", isResolvedAlert(selectedAlert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{isResolvedAlert(selectedAlert) ? "Resolvido" : "Em acompanhamento"}</Badge>
                 </div>
               </SheetHeader>
@@ -1938,20 +2184,24 @@ export default function AlertsPage() {
                   <TabsTrigger value="technical"><Info className="mr-1.5 h-4 w-4" />Informações técnicas</TabsTrigger>
                 </TabsList>
 
-                {detailError ? <div className="mx-6 mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{detailError}</div> : null}
+                {detailError ? <OperationalErrorBanner className="mx-6 mt-4 px-3 py-2" message={detailError} /> : null}
+                {historyLoadError && !detailError ? <div className="mx-6 mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{historyLoadError}</div> : null}
 
                 <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
                   <TabsContent value="summary" className="mt-4 space-y-4">
                     {isDetailLoading && !detail ? <><Skeleton className="h-28 w-full" /><Skeleton className="h-52 w-full" /></> : (
                       <>
-                        <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Problema</p><p className="mt-2 text-base font-semibold leading-6">{safeDisplayText(selectedAlert.problem_name, "Alerta sem descrição")}</p></Card>
+                        <section aria-label="Resumo" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Resumo</h3>
+                          <Card className="ov-panel p-4"><p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Problema</p><p className="mt-2 text-base font-semibold leading-6">{safeDisplayText(selectedAlert.problem_name, "Alerta sem descrição")}</p></Card>
+                        </section>
                         {selectedCustomer?.unidentified ? (
-                          <section aria-label="Cliente não identificado" className="rounded-[10px] border border-border/70 bg-muted/20 p-4 shadow-sm">
-                            <h3 className="text-sm font-semibold">Cliente não identificado</h3>
+                          <section aria-label={UNCLASSIFIED_CLIENT_LABEL} className="rounded-[10px] border border-border/70 bg-muted/20 p-4 shadow-sm">
+                            <h3 className="text-sm font-semibold">{UNCLASSIFIED_CLIENT_LABEL}</h3>
                             <p className="mt-1 text-sm text-muted-foreground">{selectedCustomer.hint}</p>
                             <div className="mt-4 grid gap-3 sm:grid-cols-2">
                               <div><p className="text-[11px] text-muted-foreground">Fonte</p><p className="mt-1 font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></div>
-                              <div><p className="text-[11px] text-muted-foreground">Host visível</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.host_visible_name || selectedAlert.host_name, "Host não identificado")}</p></div>
+                              <div><p className="text-[11px] text-muted-foreground">Host</p><p className="mt-1 break-words font-semibold">{canonicalHostName(selectedAlert)}</p></div>
                             </div>
                             <div className="mt-4">
                               <p className="text-[11px] text-muted-foreground">Grupos disponíveis</p>
@@ -1968,121 +2218,100 @@ export default function AlertsPage() {
                             <p className="mt-4 border-t border-border/70 pt-3 text-xs text-muted-foreground">Recomendação: revise as tags e os grupos na origem para permitir a associação automática do cliente.</p>
                           </section>
                         ) : null}
-                        <section aria-label="Estado atual" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Estado atual</h3>
+                        <section aria-label="Resumo operacional" className="space-y-2">
                           <div className="grid gap-3 sm:grid-cols-2">
                             {[
-                              ["Status", isResolvedAlert(selectedAlert) ? "Resolvido" : "Ativo"],
-                              ["Prioridade", severityCatalog[normalizeOneViewSeverity(selectedAlert.severity)].label],
-                              ["Supressão", selectedAlert.suppressed ? `Ativa${selectedAlert.suppressed_until ? ` até ${formatDateTime(selectedAlert.suppressed_until)}` : ""}` : "Sem supressão"],
-                              ["Recovery", selectedAlert.resolved_at ? `Resolvido em ${formatDateTime(selectedAlert.resolved_at)}` : "Alerta ainda ativo"],
-                            ].map(([label, value]) => <Card key={label} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 break-words font-semibold">{safeDisplayText(value, "Informação indisponível")}</p></Card>)}
+                              ["Estado", isResolvedAlert(selectedAlert) ? "Resolvido" : "Ativo"],
+                              ["Severidade", formatOneViewSeverityLabel(selectedAlert.severity)],
+                              ["Início", formatDateTime(selectedAlert.first_seen_at)],
+                              ["Duração", Number.isFinite(Number(selectedAlert.duration_seconds)) && Number(selectedAlert.duration_seconds) >= 0 ? formatDurationSeconds(Number(selectedAlert.duration_seconds)) : "—"],
+                              ["Recovery", selectedAlert.resolved_at ? formatDateTime(selectedAlert.resolved_at) : "Alerta ainda ativo"],
+                              ["Última atualização", formatDateTime(selectedAlert.last_seen_at)],
+                            ].map(([label, value]) => <Card key={label} className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 break-words font-semibold">{safeDisplayText(value, "—")}</p></Card>)}
                           </div>
                         </section>
-                        <section aria-label="Identificação" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Identificação</h3>
-                          <div className="grid gap-3 sm:grid-cols-3">
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Cliente</p><p className="mt-1 break-words font-semibold">{selectedCustomer?.name ?? "Cliente não identificado"}</p></Card>
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Fonte Zabbix</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></Card>
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">Host</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.host_visible_name || selectedAlert.host_technical_name || selectedAlert.host_name, "Host não identificado")}</p></Card>
-                          </div>
-                        </section>
-                        <section aria-label="Linha do tempo essencial" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Linha do tempo essencial</h3>
+                        <section aria-label="Origem" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Origem</h3>
                           <div className="grid gap-3 sm:grid-cols-2">
-                            {[
-                              ["Primeira ocorrência", formatDateTime(selectedAlert.first_seen_at)],
-                              ["Última ocorrência", formatDateTime(selectedAlert.last_seen_at)],
-                              ["Duração", formatDurationSeconds(selectedAlert.duration_seconds)],
-                              ["Persistido no OneView", formatDateTime(selectedAlert.created_at)],
-                            ].map(([label, value]) => <Card key={label} className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 break-words font-semibold">{safeDisplayText(value, "Informação indisponível")}</p></Card>)}
+                            <Card className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">Fonte Zabbix</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></Card>
+                            <Card className="ov-panel p-4">
+                              <p className="text-[11px] text-muted-foreground">Cliente identificado</p>
+                              <div className="mt-1">
+                                <ClientIdentity
+                                  customer={{
+                                    key: selectedAlert.customer_key,
+                                    name: selectedAlert.customer_name,
+                                    source: selectedAlert.customer_source,
+                                  }}
+                                  size="sm"
+                                  showName
+                                  nameClassName="break-words font-semibold"
+                                />
+                              </div>
+                            </Card>
                           </div>
                         </section>
-                        <section aria-label="Tratamento" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Tratamento</h3>
+                        <section aria-label="Host, grupos e tags" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Host, grupos e tags</h3>
+                          <Card className="ov-panel p-4">
+                            <p className="text-[11px] text-muted-foreground">Host</p>
+                            <p className="mt-1 break-words font-semibold">{canonicalHostName(selectedAlert)}</p>
+                            <div className="mt-4">
+                              <p className="text-[11px] text-muted-foreground">Grupos</p>
+                              <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedAlert.host_groups?.length
+                                ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? group.name}-${index}`} variant="outline">{safeDisplayText(group.name, "Grupo sem nome")}</Badge>)
+                                : <span className="text-xs text-muted-foreground">Nenhum grupo disponível.</span>}</div>
+                            </div>
+                            <div className="mt-3">
+                              <p className="text-[11px] text-muted-foreground">Tags</p>
+                              <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedClassificationTags.length
+                                ? selectedClassificationTags.map((tag, index) => <Badge key={`${tag.tag}-${tag.value}-${index}`} variant="secondary">{tag.tag}{tag.value ? `: ${tag.value}` : ""}</Badge>)
+                                : <span className="text-xs text-muted-foreground">Nenhuma tag disponível.</span>}</div>
+                            </div>
+                          </Card>
+                        </section>
+                        <section aria-label="Reconhecimento" className="space-y-2">
+                          <h3 className="text-sm font-semibold">Reconhecimento</h3>
                           <div className="grid gap-3">
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                              <p className="text-[11px] text-muted-foreground">ACK na origem</p>
+                            <Card className="ov-panel p-4">
+                              <p className="text-[11px] text-muted-foreground">ACK na origem (Zabbix)</p>
                               {(() => {
-                                const ack = sourceAckPresentation(selectedAlert);
+                                const ack = selectedSourceAck;
                                 if (ack.status === "pending") {
                                   return <p className="mt-1 break-words font-semibold">Pendente</p>;
-                                }
-                                if (!ack.historyAvailable) {
-                                  return (
-                                    <>
-                                      <p className="mt-1 break-words font-semibold">Reconhecido</p>
-                                      <p className="mt-1 break-words text-sm">
-                                        <span className="text-muted-foreground">Responsável:</span>{" "}
-                                        {ack.actorLabel || "Responsável não informado pela origem"}
-                                      </p>
-                                      {ack.at ? (
-                                        <p className="mt-1 break-words text-sm">
-                                          <span className="text-muted-foreground">Data:</span>{" "}
-                                          {formatDateTime(ack.at)}
-                                        </p>
-                                      ) : null}
-                                      <p className="mt-3 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
-                                        Detalhes históricos deste reconhecimento não estão disponíveis no registro legado.
-                                      </p>
-                                    </>
-                                  );
                                 }
                                 return (
                                   <>
                                     <p className="mt-1 break-words font-semibold">
                                       {ack.actorLabel
-                                        ? `Reconhecido por: ${ack.actorLabel}`
+                                        ? `Reconhecido por ${ack.actorLabel}`
                                         : "Reconhecido"}
                                     </p>
-                                    {ack.at ? (
-                                      <p className="mt-1 break-words text-sm">
-                                        <span className="text-muted-foreground">Data:</span>{" "}
-                                        {formatDateTime(ack.at)}
+                                    {ack.at && !Number.isNaN(Date.parse(ack.at)) ? (
+                                      <p className="mt-1 break-words text-sm text-muted-foreground">{formatDateTime(ack.at)}</p>
+                                    ) : null}
+                                    {officialAckComment ? (
+                                      <p className="mt-2 break-words text-sm">
+                                        <span className="text-muted-foreground">Comentário:</span>{" "}
+                                        {safeDisplayText(officialAckComment)}
                                       </p>
                                     ) : null}
-                                    <p className="mt-2 break-words text-sm">
-                                      <span className="text-muted-foreground">Comentário:</span>{" "}
-                                      {ack.comment || sourceAcknowledgementComment
-                                        ? safeDisplayText(ack.comment || sourceAcknowledgementComment)
-                                        : "Sem comentário registrado na origem."}
-                                    </p>
+                                    {sourceAckConfirmedWithoutHistory ? (
+                                      <p className="mt-3 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+                                        Detalhes históricos deste reconhecimento não estão disponíveis no registro legado.
+                                      </p>
+                                    ) : null}
                                   </>
                                 );
                               })()}
                             </Card>
                           </div>
                         </section>
-                        <section aria-label="Frescor do dado" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Frescor do dado</h3>
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                              <p className="text-[11px] text-muted-foreground">Estado de confirmação</p>
-                              <p className={cn(
-                                "mt-1 break-words font-semibold",
-                                freshnessState === "Ativo e confirmado recentemente" && "text-emerald-700",
-                                freshnessState === "Ativo, mas sem confirmação recente" && "text-amber-700",
-                                freshnessState === "Dados possivelmente desatualizados" && "text-red-700",
-                              )}>{freshnessState}</p>
-                            </Card>
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                              <p className="text-[11px] text-muted-foreground">Última atualização</p>
-                              <p className="mt-1 break-words font-semibold">{formatDateTime(selectedAlert.last_seen_at)}</p>
-                            </Card>
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                              <p className="text-[11px] text-muted-foreground">Tempo sem confirmação</p>
-                              <p className="mt-1 break-words font-semibold">{isResolvedAlert(selectedAlert)
-                                ? "Alerta encerrado"
-                                : minutesWithoutConfirmation === null
-                                  ? "Horário indisponível"
-                                  : formatDurationSeconds(minutesWithoutConfirmation * 60)}</p>
-                            </Card>
-                            <Card className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                              <p className="text-[11px] text-muted-foreground">Duração do alerta</p>
-                              <p className="mt-1 break-words font-semibold">{formatDurationSeconds(selectedAlert.duration_seconds)}</p>
-                              <p className="mt-1 text-[10px] text-muted-foreground">Duração longa não indica falha de sincronização.</p>
-                            </Card>
-                          </div>
+                        <section aria-label="ServiceNow" className="space-y-2">
+                          <h3 className="text-sm font-semibold">ServiceNow</h3>
+                          <Card className="rounded-[10px] border border-border/70 bg-muted/20 p-4 shadow-sm">
+                            <p className="text-sm text-muted-foreground">Integração ServiceNow em preparação.</p>
+                          </Card>
                         </section>
                       </>
                     )}
@@ -2090,9 +2319,15 @@ export default function AlertsPage() {
 
                   <TabsContent value="history" className="mt-4 space-y-4">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <p className="text-xs text-muted-foreground">Linha do tempo do alerta</p>
+                      <div>
+                        <h3 className="text-sm font-semibold">Histórico resumido</h3>
+                        <p className="text-xs text-muted-foreground">Linha do tempo do alerta</p>
+                      </div>
                       {history?.history_available === true ? <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">Histórico do banco</Badge> : null}
                     </div>
+                    {historyLoadError ? (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{historyLoadError}</div>
+                    ) : null}
                     {isDetailLoading && !history ? (
                       <div className="space-y-4"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /></div>
                     ) : (
@@ -2108,7 +2343,7 @@ export default function AlertsPage() {
                             ["Recovery", historyHasRecovery ? "Sim" : "Não"],
                             ["Integridade do histórico", historyQuality.kind === "complete" ? "Completo" : historyQuality.kind === "partial" ? "Parcial" : historyQuality.kind === "legacy" ? "Legado" : "Indisponível"],
                           ].map(([label, value]) => (
-                            <Card key={label} className="rounded-[10px] border border-border/70 bg-white p-3 shadow-sm">
+                            <Card key={label} className="ov-panel p-3">
                               <p className="text-[10px] text-muted-foreground">{label}</p>
                               <p className="mt-1 break-words text-xs font-semibold">{value}</p>
                             </Card>
@@ -2117,7 +2352,7 @@ export default function AlertsPage() {
 
                         <section aria-label="Integridade do histórico" className={cn(
                           "rounded-[10px] border p-4 shadow-sm",
-                          historyQuality.kind === "complete" && "border-border/70 bg-white",
+                          historyQuality.kind === "complete" && "border-border/70 bg-card",
                           historyQuality.kind === "partial" && "border-amber-200 bg-amber-50",
                           historyQuality.kind === "legacy" && "border-orange-200 bg-orange-50",
                           historyQuality.kind === "unavailable" && "border-border/70 bg-muted/20",
@@ -2180,7 +2415,7 @@ export default function AlertsPage() {
                                     <span className="absolute -left-[45px] top-0 flex h-7 w-7 items-center justify-center rounded-full border border-primary/25 bg-primary/10 text-primary ring-4 ring-background">
                                       <TimelineIcon className="h-3.5 w-3.5" />
                                     </span>
-                                    <div className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                                    <div className="ov-panel p-4">
                                       <div className="flex flex-wrap items-start justify-between gap-2">
                                         <div className="flex flex-wrap items-center gap-2">
                                           <p className="font-semibold">{formalHistoryTitle(item, groupedEventCount)}</p>
@@ -2194,12 +2429,9 @@ export default function AlertsPage() {
                                       {isAckEvent ? (
                                         <div className="mt-3 space-y-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
                                           <p><span className="font-medium">Responsável:</span>{" "}{ackActor || "Responsável não informado pela origem"}</p>
-                                          <p>
-                                            <span className="font-medium">Comentário:</span>{" "}
-                                            {item.comment
-                                              ? safeDisplayText(item.comment)
-                                              : "Sem comentário registrado na origem."}
-                                          </p>
+                                          {isValidZabbixAckComment(item.comment) ? (
+                                            <p><span className="font-medium">Comentário:</span>{" "}{safeDisplayText(item.comment)}</p>
+                                          ) : null}
                                           <p><span className="font-medium">Horário da origem:</span>{" "}{formatDateTime(item.occurred_at)}</p>
                                           <p><span className="font-medium">Registrado no OneView:</span>{" "}{formatDateTime(item.created_at)}</p>
                                           {previousSeverity || currentSeverity ? (
@@ -2252,13 +2484,13 @@ export default function AlertsPage() {
                                 );
                               })}
                             </ol> : (
-                              <Card className="rounded-[10px] border border-dashed border-border/70 bg-white p-6 text-center shadow-sm">
+                              <Card className="ov-panel border-dashed p-6 text-center">
                                 <p className="text-sm font-semibold">Nenhum evento corresponde ao filtro selecionado.</p>
                               </Card>
                             )}
                           </>
                         ) : (
-                          <Card className="rounded-[10px] border border-dashed border-border/70 bg-white p-6 text-center shadow-sm">
+                          <Card className="ov-panel border-dashed p-6 text-center">
                             <History className="mx-auto h-8 w-8 text-muted-foreground" />
                             <p className="mt-3 text-sm font-semibold">
                               {sourceAckConfirmedWithoutHistory
@@ -2272,23 +2504,34 @@ export default function AlertsPage() {
                   </TabsContent>
 
                   <TabsContent value="technical" className="mt-4 space-y-3">
-                    <details open className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                      <summary className="cursor-pointer text-sm font-semibold">Origem</summary>
-                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Fonte Zabbix</dt><dd>{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</dd></div><div><dt className="text-xs text-muted-foreground">Evento de origem</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_event_id, "Não informado")}</dd></div></dl>
+                    <p className="text-xs text-muted-foreground">Identificadores e metadados técnicos — seção secundária.</p>
+                    <details className="ov-panel p-4">
+                      <summary className="cursor-pointer text-sm font-semibold">Identificadores técnicos</summary>
+                      <dl className="mt-4 space-y-3 text-sm">
+                        <div><dt className="text-xs text-muted-foreground">Event ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_event_id, "Não informado")}</dd></div>
+                        <div><dt className="text-xs text-muted-foreground">Problem ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_problem_id, "Não informado")}</dd></div>
+                        <div><dt className="text-xs text-muted-foreground">Trigger ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_trigger_id, "Não informado")}</dd></div>
+                        <div><dt className="text-xs text-muted-foreground">Host ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_host_id, "Não informado")}</dd></div>
+                        <div><dt className="text-xs text-muted-foreground">Recovery event ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_recovery_event_id, "Não informado")}</dd></div>
+                      </dl>
                     </details>
-                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
-                      <summary className="cursor-pointer text-sm font-semibold">Host</summary>
-                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Nome visível</dt><dd>{safeDisplayText(selectedAlert.host_visible_name || selectedAlert.host_name, "Host não identificado")}</dd></div><div><dt className="text-xs text-muted-foreground">Nome técnico</dt><dd>{safeDisplayText(selectedAlert.host_technical_name, "Não informado")}</dd></div><div><dt className="text-xs text-muted-foreground">Grupos</dt><dd className="mt-1 flex flex-wrap gap-2">{selectedAlert.host_groups?.length ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? "group"}-${index}`} variant="outline">{safeDisplayText(group.name)}</Badge>) : <span className="text-muted-foreground">Nenhum grupo enriquecido.</span>}</dd></div></dl>
+                    <details className="ov-panel p-4">
+                      <summary className="cursor-pointer text-sm font-semibold">Origem técnica</summary>
+                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Fonte Zabbix</dt><dd>{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</dd></div><div><dt className="text-xs text-muted-foreground">Tipo de fonte</dt><dd>{safeDisplayText(selectedAlert.source_type, "Não informado")}</dd></div></dl>
                     </details>
-                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                    <details className="ov-panel p-4">
+                      <summary className="cursor-pointer text-sm font-semibold">Host técnico</summary>
+                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Nome visível</dt><dd>{displayHostField(selectedAlert.host_visible_name)}</dd></div><div><dt className="text-xs text-muted-foreground">Nome técnico</dt><dd>{displayHostField(selectedAlert.host_technical_name)}</dd></div><div><dt className="text-xs text-muted-foreground">IP público</dt><dd className="font-mono">{safeHostIp(selectedAlert.host_ip) ?? "Não disponível"}</dd></div><div><dt className="text-xs text-muted-foreground">Grupos</dt><dd className="mt-1 flex flex-wrap gap-2">{selectedAlert.host_groups?.length ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? "group"}-${index}`} variant="outline">{safeDisplayText(group.name)}</Badge>) : <span className="text-muted-foreground">Nenhum grupo enriquecido.</span>}</dd></div></dl>
+                    </details>
+                    <details className="ov-panel p-4">
                       <summary className="cursor-pointer text-sm font-semibold">Trigger e item</summary>
                       <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Descrição do trigger</dt><dd>{safeDisplayText(selectedAlert.trigger_description, "Não informada")}</dd></div><div><dt className="text-xs text-muted-foreground">Item</dt><dd>{safeDisplayText(selectedAlert.item_name, "Não informado")}</dd></div><div><dt className="text-xs text-muted-foreground">Chave do item</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.item_key, "Não informada")}</dd></div></dl>
                     </details>
-                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                    <details className="ov-panel p-4">
                       <summary className="cursor-pointer text-sm font-semibold">Classificação</summary>
-                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Cliente interno</dt><dd className="font-semibold">{selectedCustomer?.name ?? "Cliente não identificado"}</dd></div><div><dt className="text-xs text-muted-foreground">Enriquecimento</dt><dd>{selectedCustomer ? enrichmentLabels[selectedCustomer.enrichment] : "Não classificado"}</dd></div><div><dt className="text-xs text-muted-foreground">Origem da classificação</dt><dd>{customerSourceLabel(selectedAlert.customer_source)}</dd></div><div><dt className="text-xs text-muted-foreground">Confiança</dt><dd>{confidenceLabel(selectedAlert.customer_confidence)}</dd></div><div><dt className="text-xs text-muted-foreground">Tags seguras</dt><dd className="mt-1 space-y-2">{[["Evento", selectedAlert.event_tags], ["Trigger", selectedAlert.trigger_tags], ["Host", selectedAlert.host_tags]].map(([label, tags]) => <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><div className="mt-1 flex flex-wrap gap-1.5">{Array.isArray(tags) && tags.length ? tags.map((tag, index) => <Badge key={`${tag.tag}-${index}`} variant="secondary">{safeDisplayText(tag.tag)}: {safeDisplayText(tag.value)}</Badge>) : <span className="text-xs text-muted-foreground">Sem tags.</span>}</div></div>)}</dd></div></dl>
+                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Cliente interno</dt><dd className="font-semibold">{selectedCustomer?.name ?? UNCLASSIFIED_CLIENT_LABEL}</dd></div><div><dt className="text-xs text-muted-foreground">Enriquecimento</dt><dd>{selectedCustomer ? enrichmentLabels[selectedCustomer.enrichment] : "Não classificado"}</dd></div><div><dt className="text-xs text-muted-foreground">Origem da classificação</dt><dd>{customerSourceLabel(selectedAlert.customer_source)}</dd></div><div><dt className="text-xs text-muted-foreground">Confiança</dt><dd>{confidenceLabel(selectedAlert.customer_confidence)}</dd></div><div><dt className="text-xs text-muted-foreground">Tags seguras</dt><dd className="mt-1 space-y-2">{[["Evento", selectedAlert.event_tags], ["Trigger", selectedAlert.trigger_tags], ["Host", selectedAlert.host_tags]].map(([label, tags]) => <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><div className="mt-1 flex flex-wrap gap-1.5">{Array.isArray(tags) && tags.length ? tags.map((tag, index) => <Badge key={`${tag.tag}-${index}`} variant="secondary">{safeDisplayText(tag.tag)}: {safeDisplayText(tag.value)}</Badge>) : <span className="text-xs text-muted-foreground">Sem tags.</span>}</div></div>)}</dd></div></dl>
                     </details>
-                    <details className="rounded-[10px] border border-border/70 bg-white p-4 shadow-sm">
+                    <details className="ov-panel p-4">
                       <summary className="cursor-pointer text-sm font-semibold">Auditoria temporal</summary>
                       <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">Primeira ocorrência</dt><dd>{formatDateTime(selectedAlert.first_seen_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Última ocorrência</dt><dd>{formatDateTime(selectedAlert.last_seen_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Persistido no OneView</dt><dd>{formatDateTime(selectedAlert.created_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Eventos históricos</dt><dd>{detail?.item.history_count ?? history?.total_items ?? 0}</dd></div></dl>
                     </details>

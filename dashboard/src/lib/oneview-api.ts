@@ -2,6 +2,7 @@ import { Alert, Client, Severity } from "@/types";
 import { isSsoEnvironmentReady, loginRequest, msalInstance } from "@/lib/auth/msal";
 import { isReadOnlyMode } from "@/lib/demo-mode";
 import { getServerAuthToken, serverAuthEnabled } from "@/lib/server-auth";
+import { canonicalClientName, canonicalHostName } from "@/components/oneview/ClientIdentity";
 
 const API_BASE_URL = "/api";
 
@@ -87,17 +88,65 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type OneViewDataSourceKind = "database" | "snapshot";
 
+/** Labels oficiais Zabbix (sem tradução). Slugs técnicos permanecem para BFF/filtros. */
 export const ONEVIEW_SEVERITY_CATALOG = {
-  disaster: { label: "Desastre", rank: 7 },
-  critical: { label: "Crítico", rank: 6 },
-  high: { label: "Alto", rank: 5 },
-  average: { label: "Médio", rank: 4 },
-  warning: { label: "Aviso", rank: 3 },
-  information: { label: "Informação", rank: 2 },
-  not_classified: { label: "Não classificado", rank: 1 },
+  disaster: { label: "Disaster", rank: 7 },
+  /** Interno legado; sem nome oficial Zabbix 0–5 — UI via formatOneViewSeverityLabel. */
+  critical: { label: "critical", rank: 6 },
+  high: { label: "High", rank: 5 },
+  average: { label: "Average", rank: 4 },
+  warning: { label: "Warning", rank: 3 },
+  information: { label: "Information", rank: 2 },
+  not_classified: { label: "Not classified", rank: 1 },
 } as const;
 
 export type OneViewSeverity = keyof typeof ONEVIEW_SEVERITY_CATALOG;
+
+const ZABBIX_SEVERITY_DISPLAY: Record<string, string> = Object.freeze({
+  "0": "Not classified",
+  "1": "Information",
+  "2": "Warning",
+  "3": "Average",
+  "4": "High",
+  "5": "Disaster",
+  not_classified: "Not classified",
+  information: "Information",
+  warning: "Warning",
+  average: "Average",
+  high: "High",
+  disaster: "Disaster",
+});
+
+const reportedUnknownSeverities = new Set<string>();
+
+function sanitizeSeverityToken(value: string) {
+  return value.replace(/[<>]/g, "").trim() || "—";
+}
+
+function reportUnknownSeverity(raw: string) {
+  const key = raw.toLowerCase();
+  if (reportedUnknownSeverities.has(key)) return;
+  reportedUnknownSeverities.add(key);
+  if (typeof console !== "undefined" && typeof console.warn === "function") {
+    console.warn(`[oneview] severidade sem label Zabbix oficial: ${sanitizeSeverityToken(raw)}`);
+  }
+}
+
+/**
+ * Apresentação única de severidade (nomenclatura oficial Zabbix).
+ * Não inventa tradução; desconhecido → valor sanitizado ou "—".
+ */
+export function formatOneViewSeverityLabel(value?: string | number | null): string {
+  if (value === undefined || value === null) return "—";
+  const raw = String(value).trim();
+  if (!raw) return "—";
+  const key = raw.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(ZABBIX_SEVERITY_DISPLAY, key)) {
+    return ZABBIX_SEVERITY_DISPLAY[key];
+  }
+  reportUnknownSeverity(raw);
+  return sanitizeSeverityToken(raw);
+}
 
 /** Severidades usadas nos filtros da V1 (Zabbix). `critical` só entra quando existir no dado. */
 export const ONEVIEW_V1_FILTER_SEVERITIES: OneViewSeverity[] = [
@@ -118,7 +167,7 @@ export function normalizeOneViewSeverity(value?: string | null): OneViewSeverity
   return isOneViewSeverity(normalized) ? normalized : "not_classified";
 }
 
-/** Valores canônicos aceitos pelo BFF — nunca labels PT-BR. */
+/** Valores canônicos aceitos pelo BFF — nunca labels de apresentação. */
 export function canonicalizeSeveritiesForApi(values: string[]): OneViewSeverity[] {
   const seen = new Set<OneViewSeverity>();
   for (const value of values) {
@@ -129,7 +178,7 @@ export function canonicalizeSeveritiesForApi(values: string[]): OneViewSeverity[
   return [...seen];
 }
 
-/** Severidades do card/link Desastre: disaster + critical só se houver contagem real. */
+/** Severidades do card/link Disaster: disaster + critical só se houver contagem real. */
 export function disasterFamilySeverities(counts?: Record<string, number>): OneViewSeverity[] {
   const severities: OneViewSeverity[] = ["disaster"];
   if (Number(counts?.critical ?? 0) > 0) severities.push("critical");
@@ -289,7 +338,20 @@ export interface AlertListResponse extends OneViewResponseMeta {
     resolved: number;
     acknowledged_source: number;
     unacknowledged_source: number;
-    by_severity: { disaster: number; high: number; average: number; low: number };
+    /**
+     * Faixa visual das cinco severidades Zabbix.
+     * `high` inclui `critical` legado somente neste summary (item.severity permanece "critical").
+     * Campo legado `low` (warning+information+not_classified) foi removido.
+     */
+    by_severity: {
+      information: number;
+      warning: number;
+      average: number;
+      high: number;
+      disaster: number;
+    };
+    /** Fora da faixa visual das cinco severidades. */
+    not_classified: number;
   };
   temporal_counts?: {
     created: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
@@ -300,6 +362,59 @@ export interface AlertListResponse extends OneViewResponseMeta {
     partial: boolean;
     total_persisted: number;
     available_items: number;
+  };
+}
+
+/** Contagem finita verificável; ausente/inválido → null (UI "—"). Zero válido permanece 0. */
+export function readFiniteCount(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Formata contagem para KPI/faixa: nunca emite "NaN". */
+export function formatNullableCount(value: number | null | undefined): string {
+  const n = readFiniteCount(value);
+  return n == null ? "—" : n.toLocaleString("pt-BR");
+}
+
+export type NormalizedSeverityStripCounts = {
+  information: number | null;
+  warning: number | null;
+  average: number | null;
+  high: number | null;
+  disaster: number | null;
+};
+
+export type NormalizedAlertSeveritySummary = {
+  by_severity: NormalizedSeverityStripCounts | null;
+  not_classified: number | null;
+};
+
+/**
+ * OV-P0-42A-REGRESSION: normaliza filtered_summary campo a campo.
+ * Não recria `low`. Não inventa zero para campo ausente.
+ */
+export function normalizeAlertSeveritySummary(summary: unknown): NormalizedAlertSeveritySummary {
+  if (!summary || typeof summary !== "object") {
+    return { by_severity: null, not_classified: null };
+  }
+  const raw = summary as Record<string, unknown>;
+  const by = raw.by_severity;
+  const notClassified = readFiniteCount(raw.not_classified);
+  if (!by || typeof by !== "object" || Array.isArray(by)) {
+    return { by_severity: null, not_classified: notClassified };
+  }
+  const bag = by as Record<string, unknown>;
+  return {
+    by_severity: {
+      information: readFiniteCount(bag.information),
+      warning: readFiniteCount(bag.warning),
+      average: readFiniteCount(bag.average),
+      high: readFiniteCount(bag.high),
+      disaster: readFiniteCount(bag.disaster),
+    },
+    not_classified: notClassified,
   };
 }
 
@@ -399,6 +514,10 @@ export interface OneViewFacetsResponse extends OneViewResponseMeta {
     key: string;
     name: string;
     alerts_count: number;
+    disaster_count?: number;
+    high_count?: number;
+    unacknowledged_count?: number;
+    max_severity?: string;
     high_confidence_count: number;
     low_confidence_count: number;
     enrichment_status: "enriched" | "pending";
@@ -408,6 +527,59 @@ export interface OneViewFacetsResponse extends OneViewResponseMeta {
     name: string;
     alerts_count: number;
   }>;
+  clients?: Array<{
+    id: string;
+    name: string;
+    status?: string;
+    alerts_count?: number;
+    last_sync_at?: string | null;
+  }>;
+  /** OV-P0-42B: presente no modo janela (first_seen_from). */
+  window?: {
+    field: "first_seen_at";
+    from: string;
+    to: string | null;
+  };
+  total_active?: number;
+  top_clients?: Array<{
+    customer_key: string;
+    customer_name: string;
+    count: number;
+  }>;
+  unclassified_count?: number | null;
+  partial?: boolean;
+}
+
+export interface GlobalHistoryItem {
+  id: string;
+  alert_id: string;
+  event_type: string;
+  title: string;
+  description: string | null;
+  occurred_at: string;
+  actor_name: string | null;
+  source: string;
+  customer_name: string;
+  customer_key: string;
+  datasource_name: string;
+  host_name: string;
+  problem_name: string;
+  severity: string;
+  previous_value?: unknown;
+  current_value?: unknown;
+  legacy?: boolean;
+}
+
+export interface GlobalHistoryResponse extends OneViewResponseMeta {
+  items: GlobalHistoryItem[];
+  pagination: {
+    page: number;
+    page_size: number;
+    total_items: number;
+    total_pages: number;
+    has_next: boolean;
+    has_previous: boolean;
+  };
 }
 
 export interface OneViewHealthResponse extends OneViewResponseMeta {
@@ -567,6 +739,7 @@ export interface FetchAlertsParams {
   acknowledgedSource?: boolean;
   acknowledgedInternal?: boolean;
   search?: string;
+  searchField?: "all" | "host" | "problem" | "customer" | "eventid";
   hostSearch?: string;
   problemSearch?: string;
   dateFrom?: string;
@@ -579,8 +752,9 @@ export interface FetchAlertsParams {
   resolvedTo?: string;
   acknowledgedFrom?: string;
   acknowledgedTo?: string;
-  sort?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source";
+  sort?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source" | "acknowledged_at";
   order?: "asc" | "desc";
+  sortSecondary?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source" | "acknowledged_at";
   signal?: AbortSignal;
 }
 
@@ -598,6 +772,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
   if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
   if (params?.search) search.set("search", params.search);
+  if (params?.searchField && params.searchField !== "all") search.set("search_field", params.searchField);
   if (params?.hostSearch) search.set("host_search", params.hostSearch);
   if (params?.problemSearch) search.set("problem_search", params.problemSearch);
   if (params?.dateFrom) search.set("date_from", params.dateFrom);
@@ -612,6 +787,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   if (params?.acknowledgedTo) search.set("acknowledged_to", params.acknowledgedTo);
   if (params?.sort) search.set("sort", params.sort);
   if (params?.order) search.set("order", params.order);
+  if (params?.sortSecondary) search.set("sort_secondary", params.sortSecondary);
 
   const query = search.toString();
   return fetchApi<AlertListResponse>(`/oneview/alerts${query ? `?${query}` : ""}`, { signal: params?.signal });
@@ -623,6 +799,30 @@ export async function fetchAlert(id: string, signal?: AbortSignal): Promise<Aler
 
 export async function fetchAlertHistory(id: string, signal?: AbortSignal): Promise<AlertHistoryResponse> {
   return fetchApi<AlertHistoryResponse>(`/oneview/alerts/${encodeURIComponent(id)}/history`, { signal });
+}
+
+export async function fetchGlobalHistory(params?: {
+  page?: number;
+  pageSize?: number;
+  customers?: string[];
+  datasources?: string[];
+  eventType?: string;
+  search?: string;
+  occurredFrom?: string;
+  occurredTo?: string;
+  signal?: AbortSignal;
+}): Promise<GlobalHistoryResponse> {
+  const search = new URLSearchParams();
+  search.set("page", String(Math.max(1, params?.page ?? 1)));
+  search.set("page_size", String(Math.min(params?.pageSize ?? 50, 100)));
+  for (const customer of params?.customers ?? []) search.append("customer", customer);
+  for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
+  if (params?.eventType && params.eventType !== "all") search.set("event_type", params.eventType);
+  if (params?.search) search.set("search", params.search);
+  if (params?.occurredFrom) search.set("occurred_from", params.occurredFrom);
+  if (params?.occurredTo) search.set("occurred_to", params.occurredTo);
+  const query = search.toString();
+  return fetchApi<GlobalHistoryResponse>(`/oneview/history${query ? `?${query}` : ""}`, { signal: params?.signal });
 }
 
 export async function requestAlertAcknowledgement(
@@ -645,13 +845,59 @@ export async function fetchOneViewFacets(signal?: AbortSignal): Promise<OneViewF
   return fetchApi<OneViewFacetsResponse>("/oneview/clients-summary", { signal });
 }
 
+/** OV-P0-42B: top clientes ativos na janela (first_seen_at), server-side. */
+export async function fetchClientsTopSummary(params: {
+  status?: "active";
+  firstSeenFrom: string;
+  firstSeenTo?: string;
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<OneViewFacetsResponse> {
+  const search = new URLSearchParams();
+  search.set("status", params.status || "active");
+  search.set("first_seen_from", params.firstSeenFrom);
+  if (params.firstSeenTo) search.set("first_seen_to", params.firstSeenTo);
+  if (params.limit != null) search.set("limit", String(params.limit));
+  return fetchApi<OneViewFacetsResponse>(`/oneview/clients-summary?${search.toString()}`, {
+    signal: params.signal,
+  });
+}
+
+/**
+ * OV-P0-42B-VALIDATION: contrato windowed obrigatório.
+ * Facets legado (só customers) sem top_clients/total_active → inválido.
+ */
+export function isWindowedClientsSummary(payload: unknown): payload is OneViewFacetsResponse & {
+  top_clients: NonNullable<OneViewFacetsResponse["top_clients"]>;
+  total_active: number;
+  unclassified_count: number;
+} {
+  if (!payload || typeof payload !== "object") return false;
+  const raw = payload as Record<string, unknown>;
+  if (!Array.isArray(raw.top_clients)) return false;
+  if (typeof raw.total_active !== "number" || !Number.isFinite(raw.total_active)) return false;
+  if (typeof raw.unclassified_count !== "number" || !Number.isFinite(raw.unclassified_count)) return false;
+  if (!raw.window || typeof raw.window !== "object") return false;
+  const window = raw.window as Record<string, unknown>;
+  return window.field === "first_seen_at" && typeof window.from === "string" && Boolean(window.from);
+}
+
 export async function fetchAlertMetrics(options: { refresh?: boolean } = {}): Promise<AlertMetrics> {
   return fetchApi<AlertMetrics>(`/oneview/dashboard-summary${options.refresh ? "?refresh=1" : ""}`);
 }
 
-export async function fetchAttentionRequired(limit = 100): Promise<AttentionRequiredResponse> {
+export async function fetchAttentionRequired(
+  limit = 100,
+  options: { firstSeenFrom?: string; firstSeenTo?: string; signal?: AbortSignal } = {},
+): Promise<AttentionRequiredResponse> {
   const safeLimit = Math.min(Math.max(Math.floor(limit), 1), 200);
-  return fetchApi<AttentionRequiredResponse>(`/oneview/attention-required?limit=${safeLimit}`);
+  const search = new URLSearchParams();
+  search.set("limit", String(safeLimit));
+  if (options.firstSeenFrom) search.set("first_seen_from", options.firstSeenFrom);
+  if (options.firstSeenTo) search.set("first_seen_to", options.firstSeenTo);
+  return fetchApi<AttentionRequiredResponse>(`/oneview/attention-required?${search.toString()}`, {
+    signal: options.signal,
+  });
 }
 
 export async function fetchOneViewHealth(): Promise<OneViewHealthResponse> {
@@ -761,18 +1007,18 @@ export function oneViewAlertToLegacyAlert(alert: OneViewAlert): Alert {
     id: alert.source_event_id || alert.id,
     time: Number.isNaN(firstSeen.getTime()) ? alert.first_seen_at : firstSeen.toISOString(),
     severity: severityToUi(alert.severity),
-    host: alert.host_visible_name || alert.host_technical_name || alert.host_name || "-",
+    host: canonicalHostName(alert),
     problem: alert.problem_name,
     operationalData: "",
     duration: formatDurationSeconds(alert.duration_seconds),
     status,
     tags: [],
     clientId: alert.data_source_id,
-    clientName: alert.customer_source === "datasource_fallback"
-      || alert.customer_key === "unclassified"
-      || !alert.customer_name
-      ? "Cliente não identificado"
-      : alert.customer_name,
+    clientName: canonicalClientName({
+      key: alert.customer_key,
+      name: alert.customer_name,
+      source: alert.customer_source,
+    }),
   };
 }
 

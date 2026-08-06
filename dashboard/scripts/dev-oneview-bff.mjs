@@ -30,6 +30,8 @@ for (const file of [
   "api/oneview/alerts/[id]/history.js",
   "api/oneview/operations/health.js",
   "api/oneview/attention-required.js",
+  "api/oneview/history.js",
+  "api/oneview/clients-summary.js",
 ]) codeHash.update(readFileSync(path.join(rootDir, file)));
 const codeVersion = codeHash.digest("hex").slice(0, 16);
 const loadState = {
@@ -46,6 +48,7 @@ const routes = new Map([
   ["/api/oneview/alerts", "alerts"],
   ["/api/oneview/attention-required", "attention-required"],
   ["/api/oneview/clients-summary", "clients-summary"],
+  ["/api/oneview/history", "history"],
   ["/api/oneview/data-sources", "data-sources"],
   ["/api/oneview/sync-logs", "sync-logs"],
   ["/api/oneview/operations/health", "operations-health"],
@@ -85,6 +88,7 @@ function resolveRoute(pathname) {
 
 function routeTemplate(routeName) {
   if (routeName === "attention-required") return "/api/oneview/attention-required";
+  if (routeName === "history") return "/api/oneview/history";
   if (routeName === "alert-detail") return "/api/oneview/alerts/:id";
   if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
   if (routeName === "alert-ack-request") return "/api/oneview/alerts/:id/ack-request";

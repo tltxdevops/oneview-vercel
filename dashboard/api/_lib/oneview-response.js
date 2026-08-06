@@ -58,6 +58,7 @@ function routeTemplate(routeName) {
   if (routeName === "attention-required") return "/api/oneview/attention-required";
   if (routeName === "alert-detail") return "/api/oneview/alerts/:id";
   if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
+  if (routeName === "history") return "/api/oneview/history";
   if (routeName === "operations-health") return "/api/oneview/operations/health";
   return `/api/oneview/${routeName}`;
 }

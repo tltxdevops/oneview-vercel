@@ -8,6 +8,7 @@ import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import AlertsPage from "@/pages/Alerts";
 import HistoricoPage from "@/pages/Historico";
+import MonitoringPage from "@/pages/Monitoring";
 import ChamadosPage from "@/pages/Chamados";
 import CertificadosPage from "@/pages/Certificados";
 import BancoDadosPage from "@/pages/BancoDados";
@@ -31,6 +32,7 @@ const App = () => (
           <Route path="/auth/microsoft/callback" element={<SsoCallback />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<Index />} />
+            <Route path="/monitoramento" element={<MonitoringPage />} />
             <Route path="/alertas" element={<AlertsPage />} />
             <Route path="/historico" element={<HistoricoPage />} />
             <Route path="/banco-dados" element={<BancoDadosPage />} />

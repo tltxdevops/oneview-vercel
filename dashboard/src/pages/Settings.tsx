@@ -98,6 +98,7 @@ export default function SettingsPage() {
       onRefresh={loadDataSources}
       refreshInterval={60}
       showRefreshMeta={false}
+      showHealthStrip={false}
       dataSource={dataSource}
       checkedAt={checkedAt}
     >

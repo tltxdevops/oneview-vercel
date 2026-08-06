@@ -55,48 +55,48 @@ All colors MUST be HSL.
   }
 
   .dark {
-    --background: 0 0% 5%;
-    --foreground: 0 0% 98%;
+    --background: 220 10% 7%;
+    --foreground: 0 0% 96%;
 
-    --card: 0 0% 8%;
-    --card-foreground: 0 0% 98%;
+    --card: 220 10% 10%;
+    --card-foreground: 0 0% 96%;
 
-    --popover: 0 0% 8%;
-    --popover-foreground: 0 0% 98%;
+    --popover: 220 10% 10%;
+    --popover-foreground: 0 0% 96%;
 
-    --primary: 0 0% 100%;
-    --primary-foreground: 0 0% 0%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 220 10% 8%;
 
-    --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 100%;
+    --secondary: 220 8% 16%;
+    --secondary-foreground: 0 0% 96%;
 
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 65%;
+    --muted: 220 8% 15%;
+    --muted-foreground: 220 8% 68%;
 
-    --accent: 0 0% 100%;
-    --accent-foreground: 0 0% 0%;
+    --accent: 220 8% 18%;
+    --accent-foreground: 0 0% 96%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive: 0 55% 42%;
+    --destructive-foreground: 0 0% 98%;
 
-    --border: 0 0% 14%;
-    --input: 0 0% 14%;
-    --ring: 0 0% 100%;
+    --border: 220 8% 18%;
+    --input: 220 8% 18%;
+    --ring: 0 0% 90%;
 
-    --sidebar-background: 0 0% 0%;
-    --sidebar-foreground: 0 0% 100%;
+    --sidebar-background: 220 12% 5%;
+    --sidebar-foreground: 0 0% 96%;
     --sidebar-primary: 0 0% 100%;
     --sidebar-primary-foreground: 0 0% 0%;
-    --sidebar-accent: 0 0% 10%;
-    --sidebar-accent-foreground: 0 0% 100%;
-    --sidebar-border: 0 0% 15%;
+    --sidebar-accent: 220 10% 11%;
+    --sidebar-accent-foreground: 0 0% 96%;
+    --sidebar-border: 220 8% 14%;
     --sidebar-ring: 0 0% 100%;
 
-    --success: 142.1 70.6% 45.3%;
-    --warning: 37.7 92.1% 50.2%;
-    --error: 0 84.2% 60.2%;
+    --success: 142.1 55% 42%;
+    --warning: 37.7 85% 48%;
+    --error: 0 72% 58%;
     --info: 0 0% 100%;
-    --critical: 0 70% 35%;
+    --critical: 0 70% 42%;
   }
 }
 
@@ -152,7 +152,65 @@ All colors MUST be HSL.
 
   .dark .border-black,
   .dark .hover\:border-black:hover {
-    border-color: hsl(var(--foreground));
+    border-color: hsl(var(--foreground) / 0.55);
+  }
+
+  /* Alertas/erros claros (bg-red-50) ficam legíveis no modo escuro. */
+  .dark .bg-red-50 {
+    background-color: hsl(0 42% 14% / 0.92);
+  }
+
+  .dark .border-red-200 {
+    border-color: hsl(0 55% 42% / 0.45);
+  }
+
+  .dark .text-red-700,
+  .dark .text-red-800 {
+    color: hsl(0 92% 82%);
+  }
+
+  .dark .bg-amber-50 {
+    background-color: hsl(36 40% 14% / 0.9);
+  }
+
+  .dark .border-amber-200 {
+    border-color: hsl(36 55% 42% / 0.45);
+  }
+
+  .dark .text-amber-700,
+  .dark .text-amber-800,
+  .dark .text-amber-900 {
+    color: hsl(38 95% 78%);
+  }
+
+  .dark .bg-emerald-50 {
+    background-color: hsl(152 35% 12% / 0.9);
+  }
+
+  .dark .border-emerald-200 {
+    border-color: hsl(152 45% 38% / 0.45);
+  }
+
+  .dark .text-emerald-700,
+  .dark .text-emerald-800,
+  .dark .text-emerald-900 {
+    color: hsl(152 70% 78%);
+  }
+
+  .ov-error-banner {
+    @apply flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-red-300/70 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-none;
+  }
+
+  .ov-error-banner .ov-error-action {
+    @apply border-red-300/80 bg-red-100/90 text-red-950 hover:bg-red-200/90 hover:text-red-950;
+  }
+
+  .dark .ov-error-banner .ov-error-action {
+    @apply border-red-400/35 bg-red-500/20 text-red-50 hover:bg-red-500/30 hover:text-white;
+  }
+
+  .ov-panel {
+    @apply rounded-[10px] border border-border/70 bg-card text-card-foreground shadow-sm dark:shadow-none;
   }
 
   .animate-fade-in {

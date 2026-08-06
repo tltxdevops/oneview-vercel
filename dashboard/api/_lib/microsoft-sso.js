@@ -148,13 +148,37 @@ export async function fetchMicrosoftProfile(accessToken) {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
-  const email = clean(profile.mail || profile.userPrincipalName || profile.email).toLowerCase();
+  // Precedência Graph (SSO server-side): mail → userPrincipalName → email.
+  // unique_name / preferred_username / name NÃO entram neste caminho.
+  let emailClaim = "none";
+  let emailRaw = "";
+  if (clean(profile.mail)) {
+    emailClaim = "mail";
+    emailRaw = profile.mail;
+  } else if (clean(profile.userPrincipalName)) {
+    emailClaim = "userPrincipalName";
+    emailRaw = profile.userPrincipalName;
+  } else if (clean(profile.email)) {
+    emailClaim = "email";
+    emailRaw = profile.email;
+  }
+
+  const email = clean(emailRaw).toLowerCase();
   if (!email) throw new Error("microsoft_email_missing");
+
+  const domain = email.includes("@") ? email.slice(email.lastIndexOf("@") + 1) : "";
+  // OV-P0-16B temporary safe diagnostic: claim + domain only (never email/token).
+  console.warn(JSON.stringify({
+    event: "oneview_sso_identity",
+    claim: emailClaim,
+    domain,
+  }));
 
   return {
     id: clean(profile.id || email),
     name: clean(profile.displayName || email),
     email,
+    emailClaim,
     firstName: clean(profile.givenName),
     lastName: clean(profile.surname),
     jobTitle: clean(profile.jobTitle),
@@ -179,6 +203,7 @@ function sessionUserFromPayload(session) {
     id: session.sub || session.email,
     name: session.name || session.email,
     email: session.email,
+    emailClaim: session.email_claim || "session.email",
     roles: Array.isArray(session.roles) ? session.roles : ["viewer"],
   };
 }

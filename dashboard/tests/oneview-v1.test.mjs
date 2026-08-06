@@ -12,6 +12,7 @@ import {
   countDailyOperationalMetrics,
   dailyOperationalMetricQueries,
   getAttentionThresholds,
+  GLOBAL_HISTORY_EVENT_TYPES,
   historyTitle,
   historyValueIsMeaningful,
   resolveAckActorName,
@@ -48,16 +49,18 @@ test("métricas diárias separam resolução, ACK da origem e reconhecimento One
   const queries = dailyOperationalMetricQueries("America/Sao_Paulo", new Date("2026-07-22T02:30:00.000Z"));
   assert.equal(queries.day.from, "2026-07-21T03:00:00.000Z");
   assert.equal(queries.day.to, "2026-07-22T03:00:00.000Z");
-  assert.match(queries.resolved.text, /resolved_at >= \$1::timestamptz/);
+  assert.match(queries.resolved.text, /d\.name = \$1/);
+  assert.match(queries.resolved.text, /resolved_at >= \$2::timestamptz/);
   assert.doesNotMatch(queries.resolved.text, /acknowledged/);
   assert.match(queries.sourceAcknowledged.text, /acknowledged_source = true/);
-  assert.match(queries.sourceAcknowledged.text, /acknowledged_at >= \$1::timestamptz/);
+  assert.match(queries.sourceAcknowledged.text, /acknowledged_at >= \$2::timestamptz/);
   assert.doesNotMatch(queries.sourceAcknowledged.text, /alert_acknowledgements/);
   assert.match(queries.oneViewAcknowledged.text, /from alert_acknowledgements/);
-  assert.match(queries.oneViewAcknowledged.text, /requested_at >= \$1::timestamptz/);
-  assert.deepEqual(queries.oneViewAcknowledged.values[2], ["internal"]);
-  assert.equal(queries.oneViewAcknowledged.values[3].includes("failed"), false);
-  assert.equal(queries.oneViewAcknowledged.values[3].includes("cancelled"), false);
+  assert.match(queries.oneViewAcknowledged.text, /requested_at >= \$2::timestamptz/);
+  assert.equal(queries.oneViewAcknowledged.values[0], "teletex-http");
+  assert.deepEqual(queries.oneViewAcknowledged.values[3], ["internal"]);
+  assert.equal(queries.oneViewAcknowledged.values[4].includes("failed"), false);
+  assert.equal(queries.oneViewAcknowledged.values[4].includes("cancelled"), false);
 });
 
 test("virada do dia operacional não usa meia-noite UTC", () => {
@@ -135,7 +138,8 @@ test("fila de atenção usa defaults seguros, limita 200 e neutraliza entrada in
   });
   const query = buildAttentionRequiredQuery(request("GET", { limit: "5000" }), getAttentionThresholds({}));
   assert.equal(query.limit, 200);
-  assert.deepEqual(query.values, [5, 15, 30, 60]);
+  assert.deepEqual(query.values, [5, 15, 30, 60, "teletex-http"]);
+  assert.match(query.whereSql, /scope_d\.name = \$5/);
   assert.match(query.whereSql, /a\.first_seen_at < now\(\)/);
   assert.match(query.whereSql, /severity in \('disaster', 'critical'\)/);
   assert.match(query.whereSql, /severity in \('warning', 'information', 'not_classified'\)/);
@@ -143,6 +147,20 @@ test("fila de atenção usa defaults seguros, limita 200 e neutraliza entrada in
   assert.match(query.orderSql, /when 'disaster' then 1 when 'critical' then 1/);
   assert.throws(
     () => buildAttentionRequiredQuery(request("GET", { limit: "100; select * from alerts" })),
+    (error) => error?.code === "invalid_query",
+  );
+
+  const recentWindow = buildAttentionRequiredQuery(
+    request("GET", { limit: "20", first_seen_from: "2026-08-03T10:00:00.000Z" }),
+    getAttentionThresholds({}),
+  );
+  assert.equal(recentWindow.values[5], "2026-08-03T10:00:00.000Z");
+  assert.match(recentWindow.whereSql, /a\.first_seen_at >= \$6::timestamptz/);
+  assert.throws(
+    () => buildAttentionRequiredQuery(request("GET", {
+      first_seen_from: "2026-08-03T12:00:00.000Z",
+      first_seen_to: "2026-08-03T10:00:00.000Z",
+    })),
     (error) => error?.code === "invalid_query",
   );
 });
@@ -237,7 +255,7 @@ test("status active, resolved e all usam predicados antes da paginacao", () => {
   assert.match(active.whereSql, /status_internal/);
   assert.match(resolved.whereSql, /a\.resolved_at is not null/);
   assert.match(resolved.whereSql, /'normalized'/);
-  assert.equal(all.whereSql, "");
+  assert.match(all.whereSql, /d\.name = \$1/);
   assert.deepEqual([resolved.page, resolved.pageSize, resolved.offset], [3, 25, 50]);
 });
 
@@ -250,7 +268,7 @@ test("ACK da origem e reconhecimento interno usam filtros independentes no BFF",
   assert.equal(query.filters.acknowledgedInternal, "false");
   assert.match(query.whereSql, /acknowledged_source/);
   assert.match(query.whereSql, /acknowledged_internal/);
-  assert.deepEqual(query.params, [true, false]);
+  assert.deepEqual(query.params, ["teletex-http", true, false]);
 });
 
 test("resolvidos combinam cliente, datasource, busca e recovery parametrizados", () => {
@@ -366,6 +384,31 @@ test("filtros canônicos não convertem disaster em high nem high em critical", 
   assert.match(query.orderSql, /DESC, a\.first_seen_at desc, a\.last_seen_at desc/);
 });
 
+test("sort_secondary duration/resolved_at no desempate de severity (OV-P0-34)", () => {
+  const byDuration = buildAlertListQuery(request("GET", {
+    status: "active",
+    severity: ["disaster", "high"],
+    sort: "severity",
+    order: "desc",
+    sort_secondary: "duration",
+  }));
+  const byResolved = buildAlertListQuery(request("GET", {
+    status: "resolved",
+    severity: ["disaster", "high"],
+    sort: "severity",
+    order: "desc",
+    sort_secondary: "resolved_at",
+  }));
+  assert.equal(byDuration.filters.sortSecondary, "duration");
+  assert.match(byDuration.orderSql, /DESC, a\.duration_seconds DESC/);
+  assert.equal(byResolved.filters.sortSecondary, "resolved_at");
+  assert.match(byResolved.orderSql, /DESC, a\.resolved_at DESC nulls last/);
+  assert.throws(
+    () => buildAlertListQuery(request("GET", { sort: "severity", sort_secondary: "severity" })),
+    (error) => error?.code === "invalid_query" && error?.status === 400,
+  );
+});
+
 test("atalho da Home (desastre sem ACK) gera filtro válido sem 400", () => {
   const query = buildAlertListQuery(request("GET", {
     status: "active",
@@ -431,12 +474,79 @@ test("snapshot aplica paginação, filtros e informa cobertura parcial", async (
   assert.equal(second.pagination.page, 2);
   assert.equal(first.items.some((item) => second.items.some((other) => other.id === item.id)), false);
   assert.equal(first.snapshot_coverage.partial, true);
-  assert.equal(first.snapshot_coverage.available_items, 3000);
-  assert.ok(first.snapshot_coverage.total_persisted > first.snapshot_coverage.available_items);
+  assert.equal(first.snapshot_coverage.available_items, first.pagination.total_items);
+  assert.ok(first.items.every((item) => item.datasource_name === "teletex-http"));
+  assert.ok(first.snapshot_coverage.total_persisted >= first.snapshot_coverage.available_items);
   assert.equal(first.filtered_summary.total, first.pagination.total_items);
+  assert.deepEqual(Object.keys(first.filtered_summary.by_severity), [
+    "information",
+    "warning",
+    "average",
+    "high",
+    "disaster",
+  ]);
+  assert.equal(typeof first.filtered_summary.not_classified, "number");
+  assert.equal(Object.hasOwn(first.filtered_summary.by_severity, "low"), false);
+  assert.ok(
+    Object.values(first.filtered_summary.by_severity).every((value) => Number.isInteger(value) && value >= 0),
+  );
+  assert.ok(Number.isInteger(first.filtered_summary.not_classified) && first.filtered_summary.not_classified >= 0);
   assert.deepEqual(Object.keys(first.temporal_counts.created), ["15m", "1h", "6h", "24h", "7d"]);
   assert.deepEqual(Object.keys(first.temporal_counts.updated), ["15m", "1h", "6h", "24h", "7d"]);
   assert.deepEqual(Object.keys(first.temporal_counts.resolved), ["15m", "1h", "6h", "24h", "7d", "30d"]);
+});
+
+test("OV-P0-39: filtered_summary separa warning/information e agrega critical em high (snapshot)", async () => {
+  const probe = await getOneViewSnapshotPayload("alerts", request("GET", { page_size: "1", status: "all" }));
+  const totalItems = probe.pagination.total_items;
+  const pageSize = 100;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const allItems = [];
+  let summary = null;
+
+  for (let page = 1; page <= totalPages; page += 1) {
+    const payload = await getOneViewSnapshotPayload("alerts", request("GET", {
+      page: String(page),
+      page_size: String(pageSize),
+      status: "all",
+    }));
+    assert.ok(payload.items.length <= pageSize);
+    assert.equal(payload.pagination.page_size, pageSize);
+    assert.equal(payload.filtered_summary.total, totalItems);
+    assert.equal(payload.pagination.total_items, totalItems);
+    if (!summary) summary = payload.filtered_summary;
+    else assert.deepEqual(payload.filtered_summary, summary);
+    allItems.push(...payload.items);
+  }
+
+  assert.equal(allItems.length, totalItems);
+  assert.deepEqual(Object.keys(summary.by_severity), [
+    "information",
+    "warning",
+    "average",
+    "high",
+    "disaster",
+  ]);
+  assert.equal(Object.hasOwn(summary.by_severity, "low"), false);
+  assert.equal(typeof summary.not_classified, "number");
+
+  const count = (severity) => allItems.filter((item) => item.severity === severity).length;
+  assert.equal(summary.by_severity.information, count("information"));
+  assert.equal(summary.by_severity.warning, count("warning"));
+  assert.equal(summary.by_severity.average, count("average"));
+  assert.equal(summary.by_severity.high, count("high") + count("critical"));
+  assert.equal(summary.by_severity.disaster, count("disaster"));
+  assert.equal(summary.not_classified, count("not_classified"));
+  // Warning e Information nunca compartilham o mesmo bucket
+  assert.equal(
+    summary.by_severity.warning + summary.by_severity.information,
+    count("warning") + count("information"),
+  );
+  // Disaster nunca entra em high
+  assert.equal(
+    summary.by_severity.high,
+    allItems.filter((item) => item.severity === "high" || item.severity === "critical").length,
+  );
 });
 
 test("snapshot fornece detalhe seguro e histórico vazio para ID existente", async () => {
@@ -480,6 +590,37 @@ test("event_type do histórico recebe nome amigável", () => {
   for (const [eventType, title] of Object.entries(expected)) {
     assert.equal(historyTitle(eventType), title);
   }
+});
+
+test("histórico global operacional exclui técnicos e resolution só recovered (OV-P0-10)", () => {
+  assert.deepEqual(GLOBAL_HISTORY_EVENT_TYPES.operational, [
+    "problem_created",
+    "created_from_zabbix",
+    "acknowledged",
+    "ack_message",
+    "severity_changed",
+    "recovered",
+    "maintenance",
+    "suppressed",
+    "unsuppressed",
+  ]);
+  assert.deepEqual(GLOBAL_HISTORY_EVENT_TYPES.identified, ["problem_created", "created_from_zabbix"]);
+  assert.deepEqual(GLOBAL_HISTORY_EVENT_TYPES.actions, [
+    "acknowledged",
+    "ack_message",
+    "severity_changed",
+    "recovered",
+    "maintenance",
+    "suppressed",
+    "unsuppressed",
+  ]);
+  assert.deepEqual(GLOBAL_HISTORY_EVENT_TYPES.resolution, ["recovered"]);
+  assert.deepEqual(GLOBAL_HISTORY_EVENT_TYPES.acks, ["acknowledged", "ack_message"]);
+  assert.ok(!GLOBAL_HISTORY_EVENT_TYPES.resolution.includes("resolved_by_reconciliation"));
+  assert.ok(!GLOBAL_HISTORY_EVENT_TYPES.operational.includes("problem_seen"));
+  assert.ok(!GLOBAL_HISTORY_EVENT_TYPES.operational.includes("status_changed"));
+  assert.ok(!GLOBAL_HISTORY_EVENT_TYPES.operational.includes("internal_acknowledged"));
+  assert.ok(!GLOBAL_HISTORY_EVENT_TYPES.operational.includes("resolved_by_reconciliation"));
 });
 
 test("responsável do ACK rejeita identificador numérico e respeita prioridade nominal", () => {
@@ -745,6 +886,25 @@ test("clients-summary separa clientes internos de datasources", async () => {
   assert.ok(Array.isArray(facets.customers));
   assert.ok(Array.isArray(facets.datasources));
   assert.ok(facets.customers.some((item) => item.enrichment_status === "pending"));
+});
+
+test("OV-P0-42B clients-summary windowed agrega top_clients e separa unclassified", async () => {
+  const from = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const payload = await getOneViewSnapshotPayload(
+    "clients-summary",
+    request("GET", { status: "active", first_seen_from: from, limit: "5" }),
+  );
+  assert.equal(payload.window?.field, "first_seen_at");
+  assert.ok(payload.window?.from);
+  assert.ok(Array.isArray(payload.top_clients));
+  assert.ok(payload.top_clients.length <= 5);
+  assert.equal(Object.hasOwn(payload, "unclassified_count"), true);
+  assert.ok(Number.isInteger(payload.total_active));
+  assert.ok(payload.total_active >= 0);
+  assert.ok(Number.isInteger(payload.unclassified_count));
+  assert.ok(!payload.top_clients.some((item) => item.customer_key === "unclassified"));
+  assert.deepEqual(payload.customers, []);
+  assert.equal(typeof payload.partial, "boolean");
 });
 
 test("400 e 404 do database não acionam fallback", async () => {

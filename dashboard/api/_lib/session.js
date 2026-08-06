@@ -48,6 +48,8 @@ export function createSessionToken(user) {
   const payload = {
     sub: String(user?.id || user?.email || ""),
     email: String(user?.email || "").toLowerCase(),
+    // OV-P0-16B: claim source only (mail|userPrincipalName|email|session.email). Never a secret.
+    email_claim: String(user?.emailClaim || user?.email_claim || "session.email").slice(0, 64),
     name: String(user?.name || user?.nome || user?.email || ""),
     roles: Array.isArray(user?.roles) ? user.roles : ["viewer"],
     iat: nowSec,

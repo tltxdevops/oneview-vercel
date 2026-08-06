@@ -242,6 +242,7 @@ export default function BancoDadosPage() {
     <AppLayout
       title="Banco de Dados"
       description={description}
+      showHealthStrip={false}
       clientSelect={
         <ClientSelect
           clients={mockClients}

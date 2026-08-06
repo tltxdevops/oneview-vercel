@@ -13,6 +13,7 @@ import {
   operationalDayBounds,
   safeCustomerIdentity,
 } from "./oneview-db.js";
+import { getPrimaryDataSourceName } from "./oneview-scope.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
 let snapshotPromise;
@@ -116,11 +117,33 @@ function snapshotAlerts(snapshot) {
   return (snapshot.alerts || []).map((alert) => snapshotAlert(alert, snapshot.generated_at));
 }
 
-function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresholds()) {
-  const { limit } = buildAttentionRequiredQuery(req, thresholds);
+function scopedSnapshot(snapshot, primaryDataSourceName) {
+  const sourceIds = new Set(
+    (snapshot.data_sources || [])
+      .filter((source) => String(source.name || "").toLowerCase() === primaryDataSourceName)
+      .map((source) => String(source.id || "")),
+  );
+  return {
+    ...snapshot,
+    alerts: (snapshot.alerts || []).filter((alert) => (
+      String(alert.datasource_name || alert.client_name || "").toLowerCase() === primaryDataSourceName
+      || sourceIds.has(String(alert.data_source_id || ""))
+    )),
+    data_sources: (snapshot.data_sources || []).filter((source) => (
+      String(source.name || "").toLowerCase() === primaryDataSourceName
+    )),
+    sync_logs: (snapshot.sync_logs || []).filter((log) => (
+      String(log.datasource || "").toLowerCase() === primaryDataSourceName
+      || sourceIds.has(String(log.data_source_id || ""))
+    )),
+  };
+}
+
+function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresholds(), primaryDataSourceName) {
+  const { limit, firstSeenFrom, firstSeenTo } = buildAttentionRequiredQuery(req, thresholds, primaryDataSourceName);
   const matching = snapshotAlerts(snapshot)
     .map((alert) => {
-      const state = attentionRequiredState(alert, thresholds);
+      const state = attentionRequiredState(alert, thresholds, Date.now(), { firstSeenFrom, firstSeenTo });
       return { alert, ...state };
     })
     .filter((entry) => entry.matches)
@@ -175,7 +198,7 @@ function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresh
     })),
     snapshot_coverage: {
       partial: Number(snapshot.alerts_count || 0) > Number(snapshot.alerts?.length || 0),
-      total_persisted: Math.max(0, Number(snapshot.alerts_count) || matching.length),
+      total_persisted: Number(snapshot.alerts?.length || 0),
       available_items: Number(snapshot.alerts?.length || 0),
     },
   };
@@ -195,9 +218,9 @@ function snapshotLog(log, generatedAt) {
   };
 }
 
-function filteredAlerts(snapshot, req) {
+function filteredAlerts(snapshot, req, primaryDataSourceName) {
   let items = snapshotAlerts(snapshot);
-  const { page, pageSize, offset, filters } = buildAlertListQuery(req);
+  const { page, pageSize, offset, filters } = buildAlertListQuery(req, primaryDataSourceName);
 
   if (filters.clients.length) items = items.filter((item) => filters.clients.includes(item.client_name));
   if (filters.customers.length) items = items.filter((item) => filters.customers.includes(item.customer_key || "unclassified"));
@@ -222,17 +245,22 @@ function filteredAlerts(snapshot, req) {
   }
   if (filters.search) {
     const search = filters.search.toLocaleLowerCase("pt-BR");
-    items = items.filter((item) => [
-      item.host_visible_name,
-      item.host_technical_name,
-      item.host_name,
-      item.problem_name,
-      item.service_name,
-      item.customer_name,
-      item.client_name,
-      item.datasource_name,
-    ]
-      .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(search)));
+    const searchField = String(filters.searchField || "all").toLowerCase();
+    items = items.filter((item) => {
+      const host = [item.host_visible_name, item.host_technical_name, item.host_name]
+        .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(search));
+      const problem = String(item.problem_name || "").toLocaleLowerCase("pt-BR").includes(search);
+      const customer = [item.customer_name, item.client_name, item.customer_key]
+        .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(search));
+      const eventId = [item.source_event_id, item.id]
+        .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(search));
+      if (searchField === "host") return host;
+      if (searchField === "problem") return problem;
+      if (searchField === "customer") return customer;
+      if (searchField === "eventid") return eventId;
+      return host || problem || customer || eventId
+        || String(item.service_name || "").toLocaleLowerCase("pt-BR").includes(search);
+    });
   }
   if (filters.hostSearch) {
     const hostSearch = filters.hostSearch.toLocaleLowerCase("pt-BR");
@@ -276,7 +304,19 @@ function filteredAlerts(snapshot, req) {
     if (filters.sort === "duration") return item.duration_seconds;
     if (filters.sort === "status") return isResolvedAlert(item) ? 1 : 0;
     if (filters.sort === "acknowledged_source") return item.acknowledged_source ? 1 : 0;
+    if (filters.sort === "acknowledged_at") return Date.parse(item.acknowledged_source_at || item.acknowledged_at || "") || 0;
     return Date.parse(item[filters.sort] || item.last_seen_at) || 0;
+  };
+  const secondaryValueOf = (item) => {
+    if (filters.sortSecondary === "duration") return item.duration_seconds;
+    if (filters.sortSecondary === "resolved_at") return Date.parse(item.resolved_at || "") || 0;
+    if (filters.sortSecondary === "acknowledged_at") {
+      return Date.parse(item.acknowledged_source_at || item.acknowledged_at || "") || 0;
+    }
+    if (filters.sortSecondary === "first_seen_at") return Date.parse(item.first_seen_at || "") || 0;
+    if (filters.sortSecondary === "last_seen_at") return Date.parse(item.last_seen_at || "") || 0;
+    if (filters.sort === "severity") return Date.parse(item.first_seen_at || "") || 0;
+    return Date.parse(item.last_seen_at || "") || 0;
   };
   items.sort((left, right) => {
     const leftValue = valueOf(left);
@@ -284,10 +324,12 @@ function filteredAlerts(snapshot, req) {
     const comparison = typeof leftValue === "string"
       ? leftValue.localeCompare(String(rightValue), "pt-BR")
       : Number(leftValue) - Number(rightValue);
-    return filters.order === "asc" ? comparison : -comparison;
+    if (comparison !== 0) return filters.order === "asc" ? comparison : -comparison;
+    return Number(secondaryValueOf(right)) - Number(secondaryValueOf(left));
   });
 
-  const filteredTotal = items.length;
+  const filteredItems = items;
+  const filteredTotal = filteredItems.length;
   const totalPages = filteredTotal === 0 ? 0 : Math.ceil(filteredTotal / pageSize);
   const countSince = (source, field, milliseconds) => {
     const threshold = Date.now() - milliseconds;
@@ -301,23 +343,28 @@ function filteredAlerts(snapshot, req) {
     "7d": countSince(baseItems, field, 7 * 24 * 60 * 60_000),
     ...(include30Days ? { "30d": countSince(baseItems, field, 30 * 24 * 60 * 60_000) } : {}),
   });
+  // OV-P0-39B: summary no conjunto filtrado completo, antes do slice de paginação.
+  // by_severity = information/warning/average/high/disaster; critical legado → high;
+  // not_classified separado; items da resposta permanecem limitados a page_size (máx. 100).
   const filteredSummary = {
     total: filteredTotal,
-    active: items.filter(isActiveAlert).length,
-    resolved: items.filter(isResolvedAlert).length,
-    acknowledged_source: items.filter((item) => Boolean(item.acknowledged_source)).length,
-    unacknowledged_source: items.filter((item) => !item.acknowledged_source).length,
+    active: filteredItems.filter(isActiveAlert).length,
+    resolved: filteredItems.filter(isResolvedAlert).length,
+    acknowledged_source: filteredItems.filter((item) => Boolean(item.acknowledged_source)).length,
+    unacknowledged_source: filteredItems.filter((item) => !item.acknowledged_source).length,
     by_severity: {
-      disaster: items.filter((item) => item.severity === "disaster").length,
-      high: items.filter((item) => item.severity === "high").length,
-      average: items.filter((item) => item.severity === "average").length,
-      low: items.filter((item) => ["warning", "information", "not_classified"].includes(item.severity)).length,
+      information: filteredItems.filter((item) => item.severity === "information").length,
+      warning: filteredItems.filter((item) => item.severity === "warning").length,
+      average: filteredItems.filter((item) => item.severity === "average").length,
+      high: filteredItems.filter((item) => item.severity === "high" || item.severity === "critical").length,
+      disaster: filteredItems.filter((item) => item.severity === "disaster").length,
     },
+    not_classified: filteredItems.filter((item) => item.severity === "not_classified").length,
   };
 
   return {
     generated_at: snapshot.generated_at,
-    items: items.slice(offset, offset + pageSize),
+    items: filteredItems.slice(offset, offset + pageSize),
     filtered_summary: filteredSummary,
     temporal_counts: {
       created: temporalGroup("first_seen_at"),
@@ -334,7 +381,7 @@ function filteredAlerts(snapshot, req) {
     },
     snapshot_coverage: {
       partial: Number(snapshot.alerts_count || 0) > Number(snapshot.alerts?.length || 0),
-      total_persisted: Math.max(0, Number(snapshot.alerts_count) || filteredTotal),
+      total_persisted: Number(snapshot.alerts?.length || 0),
       available_items: Number(snapshot.alerts?.length || 0),
     },
   };
@@ -399,8 +446,8 @@ function isWithinDay(value, day) {
 function dashboardSummaryPayload(snapshot, timeZone) {
   const alerts = snapshotAlerts(snapshot);
   const active = alerts.filter((alert) => alert.status_source === "active" && !alert.resolved_at);
-  const alertsTotal = Math.max(0, Number(snapshot.summary?.total_alerts ?? snapshot.alerts_count) || alerts.length);
-  const activeTotal = Math.max(0, Number(snapshot.summary?.active_alerts) || active.length);
+  const alertsTotal = alerts.length;
+  const activeTotal = active.length;
   const day = operationalDayBounds(timeZone);
 
   return {
@@ -428,8 +475,7 @@ function dashboardSummaryPayload(snapshot, timeZone) {
     top_hosts: countBy(active, (alert) => alert.host_name || "-", (host_name, count) => ({ host_name, count }))
       .sort((left, right) => right.count - left.count)
       .slice(0, 10),
-    unacknowledged_total: Number(snapshot.operational_view?.sem_tratamento)
-      || active.filter((alert) => !(alert.acknowledged_internal || alert.acknowledged_source)).length,
+    unacknowledged_total: active.filter((alert) => !(alert.acknowledged_internal || alert.acknowledged_source)).length,
     longest_duration: [...active]
       .sort((left, right) => right.duration_seconds - left.duration_seconds)
       .slice(0, 10)
@@ -449,21 +495,18 @@ function dashboardSummaryPayload(snapshot, timeZone) {
 
 function grafanaSummaryPayload(snapshot) {
   const alerts = snapshotAlerts(snapshot).filter((alert) => alert.status_source === "active" && !alert.resolved_at);
-  const acknowledged = Number(snapshot.grafana_summary?.acknowledged)
-    || alerts.filter((alert) => alert.acknowledged_internal || alert.acknowledged_source).length;
-  const total = Number(snapshot.grafana_summary?.total) || alerts.length;
+  const acknowledged = alerts.filter((alert) => alert.acknowledged_internal || alert.acknowledged_source).length;
+  const total = alerts.length;
 
   return {
     generated_at: snapshot.generated_at,
     total,
     acknowledged,
-    unacknowledged: Number(snapshot.grafana_summary?.unacknowledged) || Math.max(total - acknowledged, 0),
-    average: Number(snapshot.grafana_summary?.average)
-      || alerts.filter((alert) => ["average", "warning"].includes(alert.severity)).length,
-    high: Number(snapshot.grafana_summary?.high) || alerts.filter((alert) => alert.severity === "high").length,
-    disaster: Number(snapshot.grafana_summary?.disaster) || alerts.filter((alert) => alert.severity === "disaster").length,
-    by_client: snapshot.grafana_summary?.by_client
-      || countBy(alerts, (alert) => alert.client_name, (client, count) => ({ client, count })),
+    unacknowledged: Math.max(total - acknowledged, 0),
+    average: alerts.filter((alert) => ["average", "warning"].includes(alert.severity)).length,
+    high: alerts.filter((alert) => alert.severity === "high").length,
+    disaster: alerts.filter((alert) => alert.severity === "disaster").length,
+    by_client: countBy(alerts, (alert) => alert.client_name, (client, count) => ({ client, count })),
     last_updated_at: snapshot.grafana_summary?.last_updated_at ?? snapshot.generated_at,
     data_sources: (snapshot.data_sources || []).map((source) => ({
       id: source.id,
@@ -477,8 +520,89 @@ function grafanaSummaryPayload(snapshot) {
   };
 }
 
-function clientsSummaryPayload(snapshot) {
+function clientsSummaryPayload(snapshot, req = {}) {
   const alerts = snapshotAlerts(snapshot).filter((alert) => alert.status_source === "active" && !alert.resolved_at);
+  const severityRank = (value) => {
+    const severity = String(value || "").toLowerCase();
+    if (severity === "disaster") return 7;
+    if (severity === "critical") return 6;
+    if (severity === "high") return 5;
+    if (severity === "average") return 4;
+    if (severity === "warning") return 2;
+    if (severity === "information") return 1;
+    return 0;
+  };
+  const severityFromRank = (rank) => {
+    if (rank >= 7) return "disaster";
+    if (rank >= 6) return "critical";
+    if (rank >= 5) return "high";
+    if (rank >= 4) return "average";
+    if (rank >= 2) return "warning";
+    if (rank >= 1) return "information";
+    return "not_classified";
+  };
+
+  const firstSeenFromRaw = oneQueryValue(req, "first_seen_from");
+  const firstSeenToRaw = oneQueryValue(req, "first_seen_to");
+  const firstSeenFromMs = firstSeenFromRaw ? Date.parse(String(firstSeenFromRaw)) : NaN;
+  const firstSeenToMs = firstSeenToRaw ? Date.parse(String(firstSeenToRaw)) : NaN;
+  const hasWindow = Boolean(firstSeenFromRaw);
+
+  // OV-P0-42B: modo janela — espelho do SQL server-side.
+  if (hasWindow) {
+    const limit = asInt(oneQueryValue(req, "limit") || 5, 5, { min: 1, max: 50 });
+    const fromIso = Number.isFinite(firstSeenFromMs) ? new Date(firstSeenFromMs).toISOString() : String(firstSeenFromRaw);
+    const toIso = firstSeenToRaw && Number.isFinite(firstSeenToMs) ? new Date(firstSeenToMs).toISOString() : null;
+    const windowed = alerts.filter((alert) => {
+      const seen = Date.parse(alert.first_seen_at || "");
+      if (!Number.isFinite(seen)) return false;
+      if (Number.isFinite(firstSeenFromMs) && seen < firstSeenFromMs) return false;
+      if (Number.isFinite(firstSeenToMs) && seen > firstSeenToMs) return false;
+      return true;
+    });
+
+    const groups = new Map();
+    for (const alert of windowed) {
+      const identity = safeCustomerIdentity(alert);
+      const key = identity.customerKey || "unclassified";
+      const name = identity.unidentified
+        ? "Cliente não identificado"
+        : (identity.customerName || alert.customer_name || "Cliente não identificado");
+      const current = groups.get(key);
+      if (current) current.count += 1;
+      else groups.set(key, { customer_key: key, customer_name: name, count: 1 });
+    }
+
+    let totalActive = 0;
+    let unclassifiedCount = 0;
+    const identified = [];
+    for (const item of groups.values()) {
+      totalActive += item.count;
+      if (item.customer_key === "unclassified") {
+        unclassifiedCount = item.count;
+        continue;
+      }
+      identified.push(item);
+    }
+    identified.sort((left, right) => right.count - left.count || String(left.customer_name).localeCompare(String(right.customer_name)));
+
+    return {
+      generated_at: snapshot.generated_at,
+      window: {
+        field: "first_seen_at",
+        from: fromIso,
+        to: toIso,
+      },
+      total_active: totalActive,
+      top_clients: identified.slice(0, limit),
+      unclassified_count: unclassifiedCount,
+      partial: identified.length > limit,
+      clients: [],
+      customers: [],
+      datasources: [],
+    };
+  }
+
   return {
     generated_at: snapshot.generated_at,
     clients: (snapshot.data_sources || []).map((source) => ({
@@ -492,13 +616,19 @@ function clientsSummaryPayload(snapshot) {
       alerts,
       (alert) => alert.customer_key || "unclassified",
       (key, count) => {
-        const item = alerts.find((alert) => (alert.customer_key || "unclassified") === key);
+        const group = alerts.filter((alert) => (alert.customer_key || "unclassified") === key);
+        const item = group[0];
+        const maxRank = group.reduce((current, alert) => Math.max(current, severityRank(alert.severity)), 0);
         return {
           key,
           name: item?.customer_name || "Cliente não identificado",
           alerts_count: count,
-          high_confidence_count: alerts.filter((alert) => (alert.customer_key || "unclassified") === key && alert.customer_confidence === "high").length,
-          low_confidence_count: alerts.filter((alert) => (alert.customer_key || "unclassified") === key && alert.customer_confidence === "low").length,
+          disaster_count: group.filter((alert) => ["disaster", "critical"].includes(String(alert.severity || "").toLowerCase())).length,
+          high_count: group.filter((alert) => String(alert.severity || "").toLowerCase() === "high").length,
+          unacknowledged_count: group.filter((alert) => !alert.acknowledged_source).length,
+          max_severity: severityFromRank(maxRank),
+          high_confidence_count: group.filter((alert) => alert.customer_confidence === "high").length,
+          low_confidence_count: group.filter((alert) => alert.customer_confidence === "low").length,
           enrichment_status: key === "unclassified" ? "pending" : "enriched",
         };
       },
@@ -512,6 +642,57 @@ function clientsSummaryPayload(snapshot) {
         alerts_count: count,
       }),
     ).sort((left, right) => right.alerts_count - left.alerts_count),
+  };
+}
+
+function globalHistoryPayload(snapshot, req) {
+  const page = Math.max(1, Number.parseInt(String(oneQueryValue(req, "page") || "1"), 10) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(String(oneQueryValue(req, "page_size") || "50"), 10) || 50));
+  const eventType = String(oneQueryValue(req, "event_type") || "all").toLowerCase();
+  const eventGroups = {
+    operational: [
+      "problem_created",
+      "created_from_zabbix",
+      "acknowledged",
+      "ack_message",
+      "severity_changed",
+      "recovered",
+      "maintenance",
+      "suppressed",
+      "unsuppressed",
+    ],
+    identified: ["problem_created", "created_from_zabbix"],
+    actions: [
+      "acknowledged",
+      "ack_message",
+      "severity_changed",
+      "recovered",
+      "maintenance",
+      "suppressed",
+      "unsuppressed",
+    ],
+    ack: ["acknowledged"],
+    ack_comment: ["ack_message"],
+    acks: ["acknowledged", "ack_message"],
+    resolution: ["recovered"],
+    severity: ["severity_changed"],
+    maintenance: ["maintenance", "suppressed", "unsuppressed"],
+    update: ["problem_seen", "status_changed", "reopened", "problem_created", "created_from_zabbix"],
+  };
+  if (eventType !== "all" && !Object.hasOwn(eventGroups, eventType)) throw fallbackError("invalid_query", 400);
+
+  // Snapshot seguro não inclui alert_history global; retorna lista vazia paginada.
+  return {
+    generated_at: snapshot.generated_at,
+    items: [],
+    pagination: {
+      page,
+      page_size: pageSize,
+      total_items: 0,
+      total_pages: 1,
+      has_next: false,
+      has_previous: false,
+    },
   };
 }
 
@@ -577,7 +758,7 @@ function alertHistoryPayload(snapshot, req) {
   };
 }
 
-function operationsHealthPayload(snapshot) {
+function operationsHealthPayload(snapshot, primaryDataSourceName) {
   const logsBySource = new Map();
   for (const log of snapshot.sync_logs || []) {
     const current = logsBySource.get(log.data_source_id);
@@ -586,7 +767,13 @@ function operationsHealthPayload(snapshot) {
     }
   }
   const now = Date.now();
-  const items = (snapshot.data_sources || []).map((source) => {
+  const primaryName = String(primaryDataSourceName || "").toLowerCase();
+  // OV-P0-26: nunca expor castrolanda/fraport/zurich na saúde operacional.
+  const sources = (snapshot.data_sources || []).filter((source) => {
+    if (!primaryName) return true;
+    return String(source.name || "").toLowerCase() === primaryName;
+  });
+  const items = sources.map((source) => {
     const log = logsBySource.get(source.id);
     const lastActivityAt = [source.last_sync_at, source.last_success_at, log?.created_at]
       .filter(Boolean)
@@ -628,7 +815,9 @@ function operationsHealthPayload(snapshot) {
 }
 
 export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
-  const snapshot = await loadSnapshot();
+  const loadedSnapshot = await loadSnapshot();
+  const primaryDataSourceName = String(config.primaryDataSourceName || getPrimaryDataSourceName()).trim().toLowerCase();
+  const snapshot = scopedSnapshot(loadedSnapshot, primaryDataSourceName);
   const alerts = snapshot.alerts || [];
 
   switch (routeName) {
@@ -637,8 +826,8 @@ export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
         status: "ok",
         database_reachable: false,
         counts: {
-          total_alerts: Math.max(0, Number(snapshot.alerts_count) || alerts.length),
-          active_alerts: Math.max(0, Number(snapshot.summary?.active_alerts) || alerts.length),
+          total_alerts: alerts.length,
+          active_alerts: snapshotAlerts(snapshot).filter(isActiveAlert).length,
         },
         capabilities: { acknowledgement: false },
         thresholds: { alert_stale_minutes: Number(config.alertStaleMinutes) || 15 },
@@ -648,17 +837,19 @@ export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
     case "grafana-summary":
       return grafanaSummaryPayload(snapshot);
     case "alerts":
-      return filteredAlerts(snapshot, req);
+      return filteredAlerts(snapshot, req, primaryDataSourceName);
     case "attention-required":
-      return attentionRequiredPayload(snapshot, req, config.attentionThresholds);
+      return attentionRequiredPayload(snapshot, req, config.attentionThresholds, primaryDataSourceName);
     case "alert-detail":
       return alertDetailPayload(snapshot, req);
     case "alert-history":
       return alertHistoryPayload(snapshot, req);
+    case "history":
+      return globalHistoryPayload(snapshot, req);
     case "operations-health":
-      return operationsHealthPayload(snapshot);
+      return operationsHealthPayload(snapshot, primaryDataSourceName);
     case "clients-summary":
-      return clientsSummaryPayload(snapshot);
+      return clientsSummaryPayload(snapshot, req);
     case "data-sources":
       return dataSourcesPayload(snapshot);
     case "sync-logs":

@@ -268,6 +268,7 @@ export default function WorkspacesPage() {
     <AppLayout 
       title="workspaces Cisco"
       description="Monitoramento de salas e dispositivos Webex"
+      showHealthStrip={false}
       clientSelect={
         <ClientSelect
           clients={mockClients}

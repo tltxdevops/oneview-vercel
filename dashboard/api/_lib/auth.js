@@ -15,9 +15,16 @@ function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function deny(res, error) {
-  // Runtime diagnostic intentionally contains only a stable reason.
-  console.warn(JSON.stringify({ event: "oneview_auth_denied", reason: error }));
+function deny(res, error, details = {}) {
+  // OV-P0-16B temporary safe diagnostic: never log email, token, cookie or secrets.
+  console.warn(JSON.stringify({
+    event: "oneview_auth_denied",
+    reason: error,
+    claim: details.claim || null,
+    received_domain: details.received_domain || null,
+    allowed_domains: details.allowed_domains || null,
+    auth_source: details.auth_source || null,
+  }));
   sendJson(res, 403, { error });
   return null;
 }
@@ -50,7 +57,12 @@ function getJwks() {
 }
 
 function emailFromPayload(payload) {
-  return normalizeEmail(payload.preferred_username || payload.email || payload.upn);
+  // Precedência Azure ID token (Bearer MSAL/Azure): preferred_username → email → upn.
+  // unique_name e name NÃO são usados para autorização de domínio.
+  if (payload?.preferred_username) return { email: normalizeEmail(payload.preferred_username), claim: "preferred_username" };
+  if (payload?.email) return { email: normalizeEmail(payload.email), claim: "email" };
+  if (payload?.upn) return { email: normalizeEmail(payload.upn), claim: "upn" };
+  return { email: "", claim: "none" };
 }
 
 function allowedEmailDomains() {
@@ -93,19 +105,50 @@ async function verifyAzureToken(token) {
 
 function authorizeIdentity(req, res, identity, role, source) {
   const email = normalizeEmail(identity?.email);
-  if (!email) return deny(res, "email_not_allowed");
-
+  const claim = identity?.emailClaim || identity?.email_claim || (source === "session" ? "session.email" : "unknown");
+  const allowed = allowedEmailDomains();
   const domain = email.includes("@") ? email.slice(email.lastIndexOf("@") + 1) : "";
-  if (!domain || !allowedEmailDomains().includes(domain)) return deny(res, "domain_not_allowed");
+
+  if (!email) {
+    return deny(res, "email_not_allowed", {
+      claim,
+      received_domain: null,
+      allowed_domains: allowed,
+      auth_source: source,
+    });
+  }
+
+  if (!domain || !allowed.includes(domain)) {
+    return deny(res, "domain_not_allowed", {
+      claim,
+      received_domain: domain || null,
+      allowed_domains: allowed,
+      auth_source: source,
+    });
+  }
 
   // A sessão server-side só é emitida depois do SSO no tenant configurado;
   // o Microsoft Entra aplica a atribuição ao aplicativo durante esse login.
-  if (!isAllowedRequestOrigin(req)) return deny(res, "origin_not_allowed");
+  if (!isAllowedRequestOrigin(req)) {
+    return deny(res, "origin_not_allowed", {
+      claim,
+      received_domain: domain,
+      allowed_domains: allowed,
+      auth_source: source,
+    });
+  }
 
   // Cookies antigos não concedem permissão operacional. A liberação
   // de ações vem exclusivamente da flag geral server-side.
   const roles = rolesFor();
-  if (!hasRole(roles, role)) return deny(res, role === "operator" || role === "admin" ? "operator_required" : "email_not_allowed");
+  if (!hasRole(roles, role)) {
+    return deny(res, role === "operator" || role === "admin" ? "operator_required" : "email_not_allowed", {
+      claim,
+      received_domain: domain,
+      allowed_domains: allowed,
+      auth_source: source,
+    });
+  }
 
   const auth = {
     id: String(identity?.id || email),
@@ -144,10 +187,11 @@ export async function requireAuth(req, res, { role = "viewer" } = {}) {
 
   try {
     const payload = await verifyAzureToken(token);
-    const email = emailFromPayload(payload);
+    const { email, claim } = emailFromPayload(payload);
     return authorizeIdentity(req, res, {
       id: String(payload.oid || payload.sub || ""),
       email,
+      emailClaim: claim,
       name: String(payload.name || email),
       roles: [],
     }, role, "bearer");

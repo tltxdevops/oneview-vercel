@@ -2,9 +2,9 @@ import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import settings from "@/lib/settings";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCcw, Pause, Play, BadgeCheck } from "lucide-react";
+import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
+import { BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
@@ -20,10 +20,10 @@ interface AppLayoutProps {
   onRefresh?: () => void | Promise<void>;
   refreshInterval?: number;
   enableAutoRefresh?: boolean;
-  initiallyPaused?: boolean;
   showRefreshMeta?: boolean;
   dataSource?: "database" | "snapshot" | null;
   checkedAt?: string | null;
+  showHealthStrip?: boolean;
 }
 
 const DEFAULT_REFRESH_INTERVAL = 60;
@@ -41,17 +41,15 @@ export function AppLayout({
   onRefresh,
   refreshInterval = DEFAULT_REFRESH_INTERVAL,
   enableAutoRefresh = true,
-  initiallyPaused = false,
   showRefreshMeta = true,
   dataSource,
   checkedAt,
+  showHealthStrip = true,
 }: AppLayoutProps) {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const [isPaused, setIsPaused] = useState(initiallyPaused);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [countdown, setCountdown] = useState(refreshInterval);
 
-  // If caller didn't provide a refreshInterval, read from persisted settings
   const effectiveRefreshInterval = typeof refreshInterval === "number" ? refreshInterval : settings.getStoredRefreshInterval();
   const refreshIntervalValue = Math.max(5, effectiveRefreshInterval);
 
@@ -66,7 +64,6 @@ export function AppLayout({
     }
   }, [onRefresh, refreshIntervalValue]);
 
-  // Load inicial apenas uma vez
   useEffect(() => {
     let mounted = true;
     const loadInitial = async () => {
@@ -78,9 +75,8 @@ export function AppLayout({
     return () => { mounted = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-refresh timer
   useEffect(() => {
-    if (!enableAutoRefresh || isPaused) {
+    if (!enableAutoRefresh) {
       setCountdown(refreshIntervalValue);
       return;
     }
@@ -96,58 +92,28 @@ export function AppLayout({
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [enableAutoRefresh, isPaused, refreshIntervalValue, triggerRefresh]);
+  }, [enableAutoRefresh, refreshIntervalValue, triggerRefresh]);
 
   const formattedLastUpdate = useMemo(() => {
     if (!lastUpdatedAt) return "—";
     return new Date(lastUpdatedAt).toLocaleTimeString("pt-BR", { hour12: false });
   }, [lastUpdatedAt]);
 
-  const topbarControls = useMemo(() => {
-    return (
-      <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => void triggerRefresh()}
-          disabled={isRefreshing}
-        >
-          <RefreshCcw className="h-4 w-4" />
-          {isRefreshing ? "Atualizando..." : "Atualizar agora"}
-        </Button>
-        <Button
-          variant={isPaused ? "default" : "outline"}
-          size="sm"
-          className="gap-2"
-          onClick={() => setIsPaused((prev) => !prev)}
-          disabled={!enableAutoRefresh}
-        >
-          {isPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-          {isPaused ? "Retomar" : "Pausar"}
-        </Button>
-      </div>
-    );
-  }, [enableAutoRefresh, isPaused, triggerRefresh, isRefreshing]);
-
   const refreshMeta = useMemo(() => {
     if (!showRefreshMeta) return null;
 
-    const nextUpdateLabel = enableAutoRefresh
-      ? isPaused
-        ? "Pausada"
-        : `${countdown}s`
-      : "Manual";
+    const nextUpdateLabel = enableAutoRefresh ? `${countdown}s` : null;
 
     return (
       <div className="flex flex-col items-end gap-1 text-xs text-muted-foreground sm:text-sm">
         <span>
           Última atualização: <span className="font-semibold text-foreground">{formattedLastUpdate}</span>
         </span>
-        <span>Próxima atualização: {nextUpdateLabel}</span>
+        {nextUpdateLabel ? <span>Próxima atualização: {nextUpdateLabel}</span> : null}
+        {isRefreshing ? <span>Atualizando...</span> : null}
       </div>
     );
-  }, [showRefreshMeta, enableAutoRefresh, isPaused, countdown, formattedLastUpdate]);
+  }, [showRefreshMeta, enableAutoRefresh, countdown, formattedLastUpdate, isRefreshing]);
 
   const effectiveDataSource = dataSource ?? null;
   const checkedAtLabel = useMemo(() => {
@@ -156,25 +122,42 @@ export function AppLayout({
     return Number.isNaN(date.getTime()) ? null : date.toLocaleString("pt-BR");
   }, [checkedAt]);
 
+  const topbarLeft = clientSelect ? (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      {clientSelect}
+    </div>
+  ) : undefined;
+
+  const topbarRight = (showHealthStrip || topbarRightSection) ? (
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
+      {showHealthStrip ? <PlatformHealthStrip /> : null}
+      {topbarRightSection}
+    </div>
+  ) : undefined;
+
   return (
-    <div className="flex min-h-screen bg-background antialiased">
+    <div className="flex h-dvh overflow-hidden bg-background antialiased">
       <Sidebar />
-      <div className="ml-20 flex min-h-screen flex-1 flex-col">
-        <Topbar clientSection={clientSelect} rightSection={topbarRightSection === undefined ? topbarControls : topbarRightSection} className={topbarClassName} />
-        <main className="flex-1 overflow-x-hidden">
-          <div className={cn("flex flex-col gap-5 p-5", contentClassName)}>
+      <div className="ml-14 flex h-dvh min-w-0 flex-1 flex-col overflow-hidden">
+        <Topbar
+          clientSection={topbarLeft}
+          rightSection={topbarRight}
+          className={topbarClassName}
+        />
+        <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+          <div className={cn("flex flex-col gap-3 p-3 lg:px-4", contentClassName)}>
             {headerContent ?? (
               (title || description || headerAside || refreshMeta) && (
-                <header className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="space-y-1.5">
-                      {title && <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>}
+                <header className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      {title && <h1 className="text-xl font-semibold tracking-tight">{title}</h1>}
                       {description && (
                         <p className="text-sm text-muted-foreground">{description}</p>
                       )}
                     </div>
                     {(headerAside || refreshMeta) && (
-                      <div className="flex flex-col items-end gap-3 text-right">
+                      <div className="flex flex-col items-end gap-2 text-right">
                         {headerAside}
                         {refreshMeta}
                       </div>

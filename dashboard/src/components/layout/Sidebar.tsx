@@ -1,32 +1,134 @@
-import { Home, Bell, History, BarChart3, Ticket, FileText, Settings, ShieldCheck, Database, Monitor, Moon, Sun } from "lucide-react";
+import { Home, Bell, History, Moon, Sun, Monitor, ChevronLeft, ChevronRight, type LucideIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 
-const navigation = [
-  { name: "Início", href: "/", icon: Home },
-  { name: "Alertas", href: "/alertas", icon: Bell },
-  { name: "Histórico", href: "/historico", icon: History },
-  { name: "Banco de Dados", href: "/banco-dados", icon: Database },
-  { name: "Certificados", href: "/certificados", icon: ShieldCheck },
-  { name: "workspaces", href: "/workspaces", icon: Monitor },
-  { name: "KPIs", href: "/kpis", icon: BarChart3 },
-  { name: "Chamados", href: "/chamados", icon: Ticket },
-  { name: "Relatórios", href: "/relatorios", icon: FileText },
-  { name: "Configurações", href: "/config", icon: Settings },
+const MONITOR_SIDEBAR_STORAGE_KEY = "oneview-monitor-sidebar-open";
+
+type SidebarProps = {
+  /**
+   * Exclusivo de /monitoramento (OV-P0-38): permite recolher a largura zero
+   * e persiste o estado em sessionStorage. Home/Alertas/Histórico não usam.
+   */
+  monitoringCollapse?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+};
+
+type NavAccent = "neutral" | "monitor" | "alerts" | "history";
+
+type NavItem = {
+  name: string;
+  href: string;
+  icon: LucideIcon;
+  accent: NavAccent;
+  secondary?: string;
+  liveDot?: boolean;
+};
+
+// OV-P0-18/19/20: /config fora do menu; Monitoramento/Alertas/Histórico com identidade visual.
+const navigation: NavItem[] = [
+  { name: "Início", href: "/", icon: Home, accent: "neutral" },
+  { name: "Monitoramento", href: "/monitoramento", icon: Monitor, accent: "monitor", liveDot: true },
+  { name: "Alertas", href: "/alertas", icon: Bell, accent: "alerts", secondary: "Fila operacional" },
+  { name: "Histórico", href: "/historico", icon: History, accent: "history", secondary: "Eventos e ações" },
 ];
 
-export function Sidebar() {
+function accentClasses(accent: NavAccent, isActive: boolean) {
+  if (!isActive) {
+    return {
+      item: "text-white/65 hover:bg-white/5 hover:text-white",
+      marker: "bg-transparent",
+      icon: "text-white/65 group-hover/link:text-white",
+      label: "text-white/70 group-hover/link:text-white",
+      secondary: "text-white/40",
+    };
+  }
+
+  if (accent === "monitor") {
+    return {
+      item: "bg-emerald-500/15 text-emerald-50",
+      marker: "bg-emerald-400",
+      icon: "text-emerald-300",
+      label: "text-emerald-50",
+      secondary: "text-emerald-100/70",
+    };
+  }
+  if (accent === "alerts") {
+    return {
+      item: "bg-amber-500/15 text-amber-50",
+      marker: "bg-red-400",
+      icon: "text-amber-200",
+      label: "text-amber-50",
+      secondary: "text-amber-100/70",
+    };
+  }
+  if (accent === "history") {
+    return {
+      item: "bg-sky-500/15 text-sky-50",
+      marker: "bg-sky-400",
+      icon: "text-sky-200",
+      label: "text-sky-50",
+      secondary: "text-sky-100/70",
+    };
+  }
+  return {
+    item: "bg-white/10 text-white",
+    marker: "bg-white/70",
+    icon: "text-white",
+    label: "text-white",
+    secondary: "text-white/55",
+  };
+}
+
+function readMonitorSidebarOpen(): boolean {
+  try {
+    const raw = sessionStorage.getItem(MONITOR_SIDEBAR_STORAGE_KEY);
+    if (raw === "0") return false;
+    if (raw === "1") return true;
+  } catch {
+    // sessionStorage pode estar indisponível.
+  }
+  return true;
+}
+
+function writeMonitorSidebarOpen(open: boolean) {
+  try {
+    sessionStorage.setItem(MONITOR_SIDEBAR_STORAGE_KEY, open ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
+export function Sidebar({
+  monitoringCollapse = false,
+  open: controlledOpen,
+  onOpenChange,
+}: SidebarProps) {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") return "light";
     const storedTheme = window.localStorage.getItem("oneview-theme");
     if (storedTheme === "light" || storedTheme === "dark") return storedTheme;
     return "light";
   });
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(() => (
+    monitoringCollapse ? readMonitorSidebarOpen() : true
+  ));
   const { user, logout } = useAuth();
   const displayUser = user;
+
+  const isControlled = typeof controlledOpen === "boolean";
+  const navOpen = monitoringCollapse
+    ? (isControlled ? controlledOpen : uncontrolledOpen)
+    : true;
+
+  const setNavOpen = (next: boolean) => {
+    if (!monitoringCollapse) return;
+    if (!isControlled) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -34,8 +136,13 @@ export function Sidebar() {
     window.localStorage.setItem("oneview-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (!monitoringCollapse) return;
+    writeMonitorSidebarOpen(navOpen);
+  }, [monitoringCollapse, navOpen]);
+
   const toggleTheme = () => {
-    setTheme((current) => current === "light" ? "dark" : "light");
+    setTheme((current) => (current === "light" ? "dark" : "light"));
   };
 
   const initials = useMemo(() => {
@@ -50,27 +157,46 @@ export function Sidebar() {
     return letters.toUpperCase();
   }, [displayUser?.name, displayUser?.email]);
 
+  if (monitoringCollapse && !navOpen) {
+    return (
+      <button
+        type="button"
+        onClick={() => setNavOpen(true)}
+        className="fixed left-0 top-1/2 z-50 flex h-12 w-4 -translate-y-1/2 items-center justify-center rounded-r-md border border-l-0 border-border/70 bg-background/95 text-muted-foreground shadow-sm transition-colors hover:w-5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label="Abrir navegação do monitoramento"
+        title="Abrir navegação"
+        data-monitor-sidebar="collapsed"
+      >
+        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+    );
+  }
+
   return (
-    <aside className="group fixed left-0 top-0 z-40 h-screen w-20 hover:w-64 transition-[width] duration-200 ease-linear bg-sidebar border-r border-sidebar-border flex flex-col overflow-hidden">
-      {/* Logo */}
-      <div className="h-20 flex items-center border-b border-sidebar-border px-4 justify-start">
-        <div className="flex items-center gap-3">
-          <span className="flex items-center justify-center w-12 h-12 rounded-full">
+    <aside
+      className="group fixed inset-y-0 left-0 z-40 flex h-dvh max-h-dvh w-14 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar transition-[width] duration-200 ease-linear hover:w-56"
+      data-monitor-sidebar={monitoringCollapse ? "open" : undefined}
+    >
+      <div className="relative flex h-14 items-center justify-start border-b border-sidebar-border px-2.5">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-9 w-9 items-center justify-center rounded-full">
             <img
               src="/tltx/tltx-t-branco.svg"
               alt="TLTX"
-              className="w-8 h-8 select-none"
+              className="h-6 w-6 select-none"
               draggable={false}
             />
           </span>
-          <span className="hidden group-hover:inline-block text-white font-semibold text-base">
+          <span className="hidden text-sm font-semibold text-white group-hover:inline-block">
             OneView
           </span>
         </div>
       </div>
 
-      {/* Navigation */}
-      <nav className="min-h-0 flex-1 py-4 flex flex-col gap-2 items-start overflow-y-auto overflow-x-hidden px-4">
+      <nav
+        className="flex min-h-0 flex-1 flex-col items-stretch gap-1 overflow-y-auto overflow-x-hidden px-2.5 py-3"
+        aria-label="Navegação operacional"
+      >
         {navigation.map((item) => {
           const Icon = item.icon;
           return (
@@ -79,53 +205,63 @@ export function Sidebar() {
                 <NavLink
                   to={item.href}
                   end={item.href === "/"}
-                  className={({ isActive }) =>
-                    cn(
-                      "group/link relative flex items-center justify-center h-12 w-12 rounded-full transition-colors",
-                      "text-white/70",
-                      isActive ? "bg-sidebar-accent text-white" : "hover:bg-sidebar-accent/80 hover:text-white"
-                    )
-                  }
+                  aria-label={item.secondary ? `${item.name}. ${item.secondary}` : item.name}
+                  className={({ isActive }) => {
+                    const tones = accentClasses(item.accent, isActive);
+                    return cn(
+                      "group/link relative flex min-h-9 items-center rounded-lg px-1.5 py-1 transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+                      tones.item,
+                    );
+                  }}
                 >
-                  {({ isActive }) => (
-                    <>
-                      <span
-                        className={cn(
-                          "flex h-10 w-10 items-center justify-center rounded-full transition-colors",
-                          isActive && "bg-white/10"
-                        )}
-                      >
-                        <Icon
+                  {({ isActive }) => {
+                    const tones = accentClasses(item.accent, isActive);
+                    return (
+                      <>
+                        <span
+                          aria-hidden="true"
                           className={cn(
-                            "h-5 w-5 transition-colors flex-shrink-0",
-                            isActive
-                              ? "text-white"
-                              : "text-white/70 group-hover/link:text-white"
+                            "absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full transition-colors",
+                            tones.marker,
                           )}
                         />
-                      </span>
-                      <span
-                        className={cn(
-                          "absolute left-14 text-sm whitespace-nowrap opacity-0 transition-opacity",
-                          "group-hover:opacity-100",
-                          isActive ? "text-white" : "text-white/70 group-hover/link:text-white"
-                        )}
-                      >
-                        {item.name}
-                      </span>
-                    </>
-                  )}
+                        <span className="relative flex h-8 w-8 shrink-0 items-center justify-center">
+                          <Icon className={cn("h-4 w-4 shrink-0 transition-colors", tones.icon)} />
+                          {item.liveDot ? (
+                            <span
+                              aria-hidden="true"
+                              className={cn(
+                                "absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full",
+                                isActive ? "bg-emerald-300" : "bg-emerald-500/70",
+                              )}
+                            />
+                          ) : null}
+                        </span>
+                        <span className="ml-2 min-w-0 flex-1 opacity-0 transition-opacity group-hover:opacity-100">
+                          <span className={cn("block truncate text-sm font-medium", tones.label)}>
+                            {item.name}
+                          </span>
+                          {item.secondary ? (
+                            <span className={cn("mt-0.5 block truncate text-[11px]", tones.secondary)}>
+                              {item.secondary}
+                            </span>
+                          ) : null}
+                        </span>
+                      </>
+                    );
+                  }}
                 </NavLink>
               </TooltipTrigger>
               <TooltipContent side="right" className="group-hover:hidden">
                 <p>{item.name}</p>
+                {item.secondary ? <p className="text-xs text-muted-foreground">{item.secondary}</p> : null}
               </TooltipContent>
             </Tooltip>
           );
         })}
       </nav>
 
-      {/* Theme */}
       <div className="shrink-0 p-3">
         <Tooltip>
           <TooltipTrigger asChild>
@@ -147,16 +283,15 @@ export function Sidebar() {
         </Tooltip>
       </div>
 
-      {/* User */}
       <div className="p-3">
-        <div className="flex items-center gap-3 justify-start pl-1">
+        <div className="flex items-center justify-start gap-3 pl-1">
           <Tooltip>
-              <TooltipTrigger asChild>
+            <TooltipTrigger asChild>
               <button
                 onClick={logout}
                 className={cn(
                   "relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/10 text-sm font-semibold uppercase text-white transition hover:opacity-90",
-                  !displayUser && "opacity-70 cursor-not-allowed"
+                  !displayUser && "cursor-not-allowed opacity-70",
                 )}
                 aria-label={displayUser ? `Perfil (${displayUser.email})` : "Usuário não autenticado"}
                 disabled={!displayUser}
@@ -186,20 +321,32 @@ export function Sidebar() {
             </TooltipContent>
           </Tooltip>
 
-          <div className="hidden min-w-0 flex-1 flex-col group-hover:flex text-white/90">
-            <span className="text-sm font-semibold truncate">{displayUser?.name ?? "Usuário"}</span>
-            <span className="text-xs text-white/70 truncate">{displayUser?.email ?? "sso@teletex.com"}</span>
+          <div className="hidden min-w-0 flex-1 flex-col text-white/90 group-hover:flex">
+            <span className="truncate text-sm font-semibold">{displayUser?.name ?? "Usuário"}</span>
+            <span className="truncate text-xs text-white/70">{displayUser?.email ?? "sso@teletex.com"}</span>
             <button
               type="button"
               onClick={logout}
               disabled={!displayUser}
-              className="mt-2 w-fit text-xs font-medium text-white/80 hover:text-white underline-offset-2 hover:underline disabled:text-white/40"
+              className="mt-2 w-fit text-xs font-medium text-white/80 underline-offset-2 hover:text-white hover:underline disabled:text-white/40"
             >
               Sair
             </button>
           </div>
         </div>
       </div>
+
+      {monitoringCollapse ? (
+        <button
+          type="button"
+          onClick={() => setNavOpen(false)}
+          className="absolute right-0 top-1/2 z-50 flex h-10 w-4 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-white/70 shadow-sm transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          aria-label="Recolher navegação do monitoramento"
+          title="Recolher navegação"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      ) : null}
     </aside>
   );
 }

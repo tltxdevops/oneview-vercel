@@ -15,18 +15,18 @@ export function Topbar({ clientSection, rightSection, className }: TopbarProps) 
   return (
     <section
       className={cn(
-        "sticky top-0 z-30 flex min-h-[80px] flex-col justify-center border-b border-border/60 bg-background/95 px-5 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80",
+        "sticky top-0 z-30 flex min-h-10 flex-col justify-center border-b border-border/60 bg-background/95 px-3 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-background/80",
         className
       )}
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
         {clientSection && (
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             {clientSection}
           </div>
         )}
         {rightSection && (
-          <div className="flex min-w-0 flex-1 items-center justify-end">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:shrink-0">
             {rightSection}
           </div>
         )}

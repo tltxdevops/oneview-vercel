@@ -1,3 +1,5 @@
+import { getPrimaryDataSourceName } from "./oneview-scope.js";
+
 export const ALERT_FIELDS = `
   id, data_source_id, client_name, source_type, source_event_id,
   source_problem_id, source_trigger_id, source_host_id, host_name, host_ip,
@@ -9,6 +11,14 @@ export const ALERT_FIELDS = `
 `;
 
 export async function getAlert(client, id) {
-  const result = await client.query(`select ${ALERT_FIELDS} from alerts where id = $1`, [id]);
+  const result = await client.query(
+    `select ${ALERT_FIELDS}
+       from alerts
+      where id = $1
+        and data_source_id = (
+          select id from data_sources where name = $2 limit 1
+        )`,
+    [id, getPrimaryDataSourceName()],
+  );
   return result.rows[0] || null;
 }

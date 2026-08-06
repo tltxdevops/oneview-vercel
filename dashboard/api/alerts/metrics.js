@@ -1,16 +1,25 @@
 import { query } from "../_lib/db.js";
 import { requireAuth } from "../_lib/auth.js";
 import { handleError, methodNotAllowed, sendJson } from "../_lib/http.js";
+import { getPrimaryDataSourceName } from "../_lib/oneview-scope.js";
 
 const ACTIVE_WHERE = "status_source = 'active' and resolved_at is null";
+const SCOPE_CTE = `
+  with scoped_alerts as (
+    select a.*, d.environment
+    from alerts a
+    join data_sources d on d.id = a.data_source_id
+    where d.name = $1
+  )
+`;
 
-async function rows(sql, params = []) {
-  const result = await query(sql, params);
+async function rows(sql) {
+  const result = await query(`${SCOPE_CTE} ${sql}`, [getPrimaryDataSourceName()]);
   return result.rows;
 }
 
-async function scalar(sql, params = [], fallback = 0) {
-  const result = await query(sql, params);
+async function scalar(sql, fallback = 0) {
+  const result = await query(`${SCOPE_CTE} ${sql}`, [getPrimaryDataSourceName()]);
   return result.rows[0]?.value ?? fallback;
 }
 
@@ -31,40 +40,39 @@ export default async function handler(req, res) {
       avgAckTimeSeconds,
       avgNormalizationTimeSeconds,
     ] = await Promise.all([
-      scalar(`select count(*)::int as value from alerts where ${ACTIVE_WHERE}`),
+      scalar(`select count(*)::int as value from scoped_alerts where ${ACTIVE_WHERE}`),
       rows(`
         select severity, count(*)::int as count
-        from alerts
+        from scoped_alerts
         where ${ACTIVE_WHERE}
         group by severity
         order by count desc, severity
       `),
       rows(`
         select status_internal, count(*)::int as count
-        from alerts
+        from scoped_alerts
         where ${ACTIVE_WHERE}
         group by status_internal
         order by count desc, status_internal
       `),
       rows(`
         select client_name, count(*)::int as count
-        from alerts
+        from scoped_alerts
         where ${ACTIVE_WHERE}
         group by client_name
         order by count desc, client_name
       `),
       rows(`
-        select coalesce(a.service_name, '-') as service_name, d.environment, count(*)::int as count
-        from alerts a
-        left join data_sources d on d.id = a.data_source_id
+        select coalesce(a.service_name, '-') as service_name, a.environment, count(*)::int as count
+        from scoped_alerts a
         where a.status_source = 'active' and a.resolved_at is null
-        group by coalesce(a.service_name, '-'), d.environment
+        group by coalesce(a.service_name, '-'), a.environment
         order by count desc, service_name
         limit 20
       `),
       rows(`
         select coalesce(host_name, '-') as host_name, count(*)::int as count
-        from alerts
+        from scoped_alerts
         where ${ACTIVE_WHERE}
         group by coalesce(host_name, '-')
         order by count desc, host_name
@@ -72,32 +80,32 @@ export default async function handler(req, res) {
       `),
       scalar(`
         select count(*)::int as value
-        from alerts
+        from scoped_alerts
         where ${ACTIVE_WHERE}
           and acknowledged_source = false
           and acknowledged_internal = false
       `),
       rows(`
         select id, client_name, host_name, problem_name, severity, duration_seconds, first_seen_at
-        from alerts
+        from scoped_alerts
         where ${ACTIVE_WHERE}
         order by duration_seconds desc
         limit 10
       `),
       scalar(`
-        with first_ack as (
+        , first_ack as (
           select alert_id, min(created_at) as ack_at
           from alert_history
           where new_status = 'acknowledged' or action_type in ('ack_requested', 'acknowledged')
           group by alert_id
         )
         select coalesce(avg(extract(epoch from (first_ack.ack_at - alerts.first_seen_at))), 0)::int as value
-        from alerts
+        from scoped_alerts alerts
         join first_ack on first_ack.alert_id = alerts.id
       `),
       scalar(`
         select coalesce(avg(extract(epoch from ((coalesce(normalized_at, resolved_at, updated_at)) - first_seen_at))), 0)::int as value
-        from alerts
+        from scoped_alerts
         where status_source = 'resolved' or status_internal = 'normalized'
       `),
     ]);

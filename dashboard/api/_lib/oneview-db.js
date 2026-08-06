@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
+import { getPrimaryDataSourceName } from "./oneview-scope.js";
 
 const { Pool } = pg;
 
@@ -219,6 +220,7 @@ const ALERT_SORTS = Object.freeze({
       or lower(coalesce(a.status_internal, '')) in ('resolved', 'normalized') then 1
     else 0 end`,
   acknowledged_source: "coalesce(a.acknowledged_source, false)",
+  acknowledged_at: "a.acknowledged_at",
 });
 
 const RESOLVED_ALERT_SQL = `(
@@ -327,33 +329,44 @@ export function operationalDayBounds(timeZone = DEFAULT_OPERATIONAL_TIMEZONE, no
   });
 }
 
-export function dailyOperationalMetricQueries(timeZone = DEFAULT_OPERATIONAL_TIMEZONE, now = new Date()) {
+export function dailyOperationalMetricQueries(
+  timeZone = DEFAULT_OPERATIONAL_TIMEZONE,
+  now = new Date(),
+  primaryDataSourceName = getPrimaryDataSourceName(),
+) {
   const day = operationalDayBounds(timeZone, now);
-  const values = [day.from, day.to];
+  const values = [primaryDataSourceName, day.from, day.to];
   return Object.freeze({
     day,
     resolved: Object.freeze({
       text: `select count(*)::int as value
-               from alerts
-              where resolved_at >= $1::timestamptz
-                and resolved_at < $2::timestamptz`,
+               from alerts a
+               join data_sources d on d.id = a.data_source_id
+              where d.name = $1
+                and a.resolved_at >= $2::timestamptz
+                and a.resolved_at < $3::timestamptz`,
       values,
     }),
     sourceAcknowledged: Object.freeze({
       text: `select count(*)::int as value
-               from alerts
-              where acknowledged_source = true
-                and acknowledged_at >= $1::timestamptz
-                and acknowledged_at < $2::timestamptz`,
+               from alerts a
+               join data_sources d on d.id = a.data_source_id
+              where d.name = $1
+                and a.acknowledged_source = true
+                and a.acknowledged_at >= $2::timestamptz
+                and a.acknowledged_at < $3::timestamptz`,
       values,
     }),
     oneViewAcknowledged: Object.freeze({
       text: `select count(*)::int as value
-               from alert_acknowledgements
-              where acknowledgement_type = any($3::text[])
-                and status = any($4::text[])
-                and requested_at >= $1::timestamptz
-                and requested_at < $2::timestamptz`,
+               from alert_acknowledgements ack
+               join alerts a on a.id = ack.alert_id
+               join data_sources d on d.id = a.data_source_id
+              where d.name = $1
+                and ack.acknowledgement_type = any($4::text[])
+                and ack.status = any($5::text[])
+                and ack.requested_at >= $2::timestamptz
+                and ack.requested_at < $3::timestamptz`,
       values: [...values, INTERNAL_ACKNOWLEDGEMENT_TYPES, INTERNAL_ACKNOWLEDGEMENT_STATUSES],
     }),
   });
@@ -403,29 +416,55 @@ export function getAttentionThresholds(env = process.env) {
   });
 }
 
-export function buildAttentionRequiredQuery(req, thresholds = getAttentionThresholds()) {
+export function buildAttentionRequiredQuery(
+  req,
+  thresholds = getAttentionThresholds(),
+  primaryDataSourceName = getPrimaryDataSourceName(),
+) {
   const limit = positiveInteger(oneQueryValue(req, "limit"), DEFAULT_ATTENTION_LIMIT, { maximum: MAX_ATTENTION_LIMIT });
+  const firstSeenFrom = isoFilterDate(oneQueryValue(req, "first_seen_from"));
+  const firstSeenTo = isoFilterDate(oneQueryValue(req, "first_seen_to"));
+  if (firstSeenFrom && firstSeenTo && Date.parse(firstSeenFrom) > Date.parse(firstSeenTo)) {
+    throw requestError("invalid_query");
+  }
   const values = [
     thresholds.disasterMinutes,
     thresholds.highMinutes,
     thresholds.averageMinutes,
     thresholds.lowMinutes,
+    primaryDataSourceName,
   ];
-  const whereSql = `
-    ${ACTIVE_ALERT_SQL}
-    and coalesce(a.acknowledged_source, false) = false
-    and a.first_seen_at is not null
-    and (
+  const clauses = [
+    ACTIVE_ALERT_SQL,
+    "coalesce(a.acknowledged_source, false) = false",
+    `exists (
+      select 1
+      from data_sources scope_d
+      where scope_d.id = a.data_source_id
+        and scope_d.name = $5
+    )`,
+    "a.first_seen_at is not null",
+    `(
       (a.severity in ('disaster', 'critical') and a.first_seen_at < now() - ($1::int * interval '1 minute'))
       or (a.severity = 'high' and a.first_seen_at < now() - ($2::int * interval '1 minute'))
       or (a.severity = 'average' and a.first_seen_at < now() - ($3::int * interval '1 minute'))
       or (a.severity in ('warning', 'information', 'not_classified') and a.first_seen_at < now() - ($4::int * interval '1 minute'))
-    )
-  `;
+    )`,
+  ];
+  if (firstSeenFrom) {
+    values.push(firstSeenFrom);
+    clauses.push(`a.first_seen_at >= $${values.length}::timestamptz`);
+  }
+  if (firstSeenTo) {
+    values.push(firstSeenTo);
+    clauses.push(`a.first_seen_at <= $${values.length}::timestamptz`);
+  }
   return {
     limit,
     values,
-    whereSql,
+    firstSeenFrom,
+    firstSeenTo,
+    whereSql: clauses.join("\n    and "),
     orderSql: `
       case a.severity
         when 'disaster' then 1 when 'critical' then 1
@@ -439,7 +478,12 @@ export function buildAttentionRequiredQuery(req, thresholds = getAttentionThresh
   };
 }
 
-export function attentionRequiredState(alert, thresholds = getAttentionThresholds(), now = Date.now()) {
+export function attentionRequiredState(
+  alert,
+  thresholds = getAttentionThresholds(),
+  now = Date.now(),
+  options = {},
+) {
   const severity = textValue(alert?.severity).toLowerCase();
   const firstSeenAt = Date.parse(alert?.first_seen_at || alert?.started_at || "");
   const active = isActiveAlert(alert);
@@ -455,8 +499,19 @@ export function attentionRequiredState(alert, thresholds = getAttentionThreshold
           : null;
   const ageMilliseconds = Number.isNaN(firstSeenAt) ? 0 : Math.max(now - firstSeenAt, 0);
   const unacknowledgedMinutes = Math.floor(ageMilliseconds / 60000);
+  const firstSeenFromMs = options.firstSeenFrom ? Date.parse(options.firstSeenFrom) : NaN;
+  const firstSeenToMs = options.firstSeenTo ? Date.parse(options.firstSeenTo) : NaN;
+  const withinFrom = Number.isNaN(firstSeenFromMs) || (!Number.isNaN(firstSeenAt) && firstSeenAt >= firstSeenFromMs);
+  const withinTo = Number.isNaN(firstSeenToMs) || (!Number.isNaN(firstSeenAt) && firstSeenAt <= firstSeenToMs);
   return {
-    matches: Boolean(active && !acknowledgedAtOrigin && threshold !== null && ageMilliseconds > threshold * 60000),
+    matches: Boolean(
+      active
+      && !acknowledgedAtOrigin
+      && threshold !== null
+      && ageMilliseconds > threshold * 60000
+      && withinFrom
+      && withinTo,
+    ),
     unacknowledgedMinutes,
   };
 }
@@ -484,7 +539,7 @@ function isoFilterDate(value) {
   return parsed.toISOString();
 }
 
-export function buildAlertListQuery(req) {
+export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataSourceName()) {
   const params = [];
   const clauses = [];
   const push = (clause, value) => {
@@ -504,6 +559,7 @@ export function buildAlertListQuery(req) {
   const acknowledgedSource = oneQueryValue(req, "acknowledged_source").toLowerCase();
   const acknowledgedInternal = oneQueryValue(req, "acknowledged_internal").toLowerCase();
   const search = oneQueryValue(req, "search").slice(0, 200);
+  const searchField = (oneQueryValue(req, "search_field") || "all").toLowerCase();
   const hostSearch = oneQueryValue(req, "host_search").slice(0, 200);
   const problemSearch = oneQueryValue(req, "problem_search").slice(0, 200);
   const dateFrom = isoFilterDate(oneQueryValue(req, "date_from"));
@@ -518,6 +574,7 @@ export function buildAlertListQuery(req) {
   const acknowledgedTo = isoFilterDate(oneQueryValue(req, "acknowledged_to"));
   const sort = (oneQueryValue(req, "sort") || "last_seen_at").toLowerCase();
   const order = (oneQueryValue(req, "order") || "desc").toLowerCase();
+  const sortSecondary = (oneQueryValue(req, "sort_secondary") || "").toLowerCase();
 
   if (severities.some((value) => !ALERT_SEVERITIES.has(value))) throw requestError("invalid_query");
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
@@ -525,7 +582,11 @@ export function buildAlertListQuery(req) {
   if (acknowledged && !["true", "false"].includes(acknowledged)) throw requestError("invalid_query");
   if (acknowledgedSource && !["true", "false"].includes(acknowledgedSource)) throw requestError("invalid_query");
   if (acknowledgedInternal && !["true", "false"].includes(acknowledgedInternal)) throw requestError("invalid_query");
+  if (!["all", "host", "problem", "customer", "eventid"].includes(searchField)) throw requestError("invalid_query");
   if (!Object.hasOwn(ALERT_SORTS, sort) || !["asc", "desc"].includes(order)) throw requestError("invalid_query");
+  if (sortSecondary && (!Object.hasOwn(ALERT_SORTS, sortSecondary) || sortSecondary === sort)) {
+    throw requestError("invalid_query");
+  }
   if (dateFrom && dateTo && Date.parse(dateFrom) > Date.parse(dateTo)) throw requestError("invalid_query");
   if (firstSeenFrom && firstSeenTo && Date.parse(firstSeenFrom) > Date.parse(firstSeenTo)) throw requestError("invalid_query");
   if (lastSeenFrom && lastSeenTo && Date.parse(lastSeenFrom) > Date.parse(lastSeenTo)) throw requestError("invalid_query");
@@ -534,6 +595,7 @@ export function buildAlertListQuery(req) {
   const offset = (page - 1) * pageSize;
   if (!Number.isSafeInteger(offset)) throw requestError("invalid_query");
 
+  push("d.name = ?", primaryDataSourceName);
   if (clients.length) push("a.client_name = any(?::text[])", clients);
   if (customers.length) {
     const includesUnidentified = customers.some((value) => value.toLowerCase() === "unclassified");
@@ -562,12 +624,25 @@ export function buildAlertListQuery(req) {
   if (acknowledgedSource) push("coalesce(a.acknowledged_source, false) = ?", acknowledgedSource === "true");
   if (acknowledgedInternal) push(`${INTERNAL_ACKNOWLEDGED_SQL} = ?`, acknowledgedInternal === "true");
   if (search) {
-    push(
-      "(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ? or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, a.client_name, '') ilike $CURRENT or coalesce(d.name, '') ilike $CURRENT)",
-      `%${search}%`,
-    );
-    const current = `$${params.length}`;
-    clauses[clauses.length - 1] = clauses[clauses.length - 1].replaceAll("$CURRENT", current);
+    if (searchField === "host") {
+      push(
+        "coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ?",
+        `%${search}%`,
+      );
+    } else if (searchField === "problem") {
+      push("coalesce(a.problem_name, '') ilike ?", `%${search}%`);
+    } else if (searchField === "customer") {
+      push("coalesce(a.customer_name, a.client_name, a.customer_key, '') ilike ?", `%${search}%`);
+    } else if (searchField === "eventid") {
+      push("coalesce(a.source_event_id, a.id::text, '') ilike ?", `%${search}%`);
+    } else {
+      push(
+        "(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ? or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, a.client_name, '') ilike $CURRENT or coalesce(a.source_event_id, a.id::text, '') ilike $CURRENT)",
+        `%${search}%`,
+      );
+      const current = `$${params.length}`;
+      clauses[clauses.length - 1] = clauses[clauses.length - 1].replaceAll("$CURRENT", current);
+    }
   }
   if (hostSearch) {
     push(
@@ -594,6 +669,12 @@ export function buildAlertListQuery(req) {
   if (acknowledgedTo) push("a.acknowledged_at <= ?", acknowledgedTo);
 
   const direction = order.toUpperCase();
+  const nullableSort = sort === "resolved_at" || sort === "acknowledged_at" ? " nulls last" : "";
+  const secondarySql = sortSecondary
+    ? `${ALERT_SORTS[sortSecondary]} DESC${sortSecondary === "resolved_at" || sortSecondary === "acknowledged_at" ? " nulls last" : ""}`
+    : sort === "severity"
+      ? "a.first_seen_at desc, a.last_seen_at desc"
+      : "a.last_seen_at desc";
   return {
     page,
     pageSize,
@@ -602,7 +683,7 @@ export function buildAlertListQuery(req) {
     baseParams,
     baseWhereSql,
     whereSql: clauses.length ? `where ${clauses.join(" and ")}` : "",
-    orderSql: `${ALERT_SORTS[sort]} ${direction}${sort === "resolved_at" ? " nulls last" : ""}, ${sort === "severity" ? "a.first_seen_at desc, a.last_seen_at desc" : "a.last_seen_at desc"}, a.id desc`,
+    orderSql: `${ALERT_SORTS[sort]} ${direction}${nullableSort}, ${secondarySql}, a.id desc`,
     filters: {
       clients,
       customers,
@@ -614,6 +695,7 @@ export function buildAlertListQuery(req) {
       acknowledgedSource,
       acknowledgedInternal,
       search,
+      searchField,
       hostSearch,
       problemSearch,
       dateFrom,
@@ -628,6 +710,7 @@ export function buildAlertListQuery(req) {
       acknowledgedTo,
       sort,
       order,
+      sortSecondary,
     },
   };
 }
@@ -811,6 +894,17 @@ async function queryRow(config, text, values = []) {
   return rows[0] || null;
 }
 
+/**
+ * Agregação de severidades do filtered_summary (GET /api/oneview/alerts).
+ *
+ * by_severity (faixa visual obrigatória): information, warning, average, high, disaster.
+ * - Contagens usam severidades persistidas reais (sem colapsar Warning↔Information).
+ * - Disaster nunca entra em High.
+ * - critical legado: agregado em high somente no summary; item.severity permanece "critical".
+ * - not_classified: fora de by_severity (campo irmão), não entra na faixa das cinco.
+ * - Zero válido → 0. Falha de query propaga erro (não inventa contagens).
+ * - Campo legado `low` (warning+information+not_classified) removido — não era consumido pelo FE.
+ */
 function alertFilteredSummary(row) {
   return {
     total: integerValue(row?.total, 0),
@@ -819,11 +913,13 @@ function alertFilteredSummary(row) {
     acknowledged_source: integerValue(row?.acknowledged_source, 0),
     unacknowledged_source: integerValue(row?.unacknowledged_source, 0),
     by_severity: {
-      disaster: integerValue(row?.disaster, 0),
-      high: integerValue(row?.high, 0),
+      information: integerValue(row?.information, 0),
+      warning: integerValue(row?.warning, 0),
       average: integerValue(row?.average, 0),
-      low: integerValue(row?.low, 0),
+      high: integerValue(row?.high, 0),
+      disaster: integerValue(row?.disaster, 0),
     },
+    not_classified: integerValue(row?.not_classified, 0),
   };
 }
 
@@ -843,8 +939,11 @@ function alertTemporalCounts(row) {
   };
 }
 
-async function fetchAlertList(req, config) {
-  const { page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql } = buildAlertListQuery(req);
+async function fetchAlertList(req, config, primaryDataSourceName) {
+  const { page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql } = buildAlertListQuery(
+    req,
+    primaryDataSourceName,
+  );
 
   const [summaryRow, temporalRow, itemRows] = await Promise.all([
     queryRow(config, `
@@ -854,10 +953,12 @@ async function fetchAlertList(req, config) {
         count(*) filter (where ${RESOLVED_ALERT_SQL})::int as resolved,
         count(*) filter (where coalesce(a.acknowledged_source, false))::int as acknowledged_source,
         count(*) filter (where not coalesce(a.acknowledged_source, false))::int as unacknowledged_source,
-        count(*) filter (where a.severity = 'disaster')::int as disaster,
-        count(*) filter (where a.severity = 'high')::int as high,
+        count(*) filter (where a.severity = 'information')::int as information,
+        count(*) filter (where a.severity = 'warning')::int as warning,
         count(*) filter (where a.severity = 'average')::int as average,
-        count(*) filter (where a.severity in ('warning', 'information', 'not_classified'))::int as low
+        count(*) filter (where a.severity in ('high', 'critical'))::int as high,
+        count(*) filter (where a.severity = 'disaster')::int as disaster,
+        count(*) filter (where a.severity = 'not_classified')::int as not_classified
       from alerts a
       join data_sources d on d.id = a.data_source_id
       ${whereSql}
@@ -1008,8 +1109,13 @@ function mapAttentionRows(rows) {
   });
 }
 
-async function fetchAttentionRequiredPayload(req, config, thresholds = getAttentionThresholds()) {
-  const { limit, values, whereSql, orderSql } = buildAttentionRequiredQuery(req, thresholds);
+async function fetchAttentionRequiredPayload(
+  req,
+  config,
+  thresholds = getAttentionThresholds(),
+  primaryDataSourceName = getPrimaryDataSourceName(),
+) {
+  const { limit, values, whereSql, orderSql } = buildAttentionRequiredQuery(req, thresholds, primaryDataSourceName);
   const [severityRows, customerRows, datasourceRows, itemRows] = await Promise.all([
     queryRows(
       config,
@@ -1058,7 +1164,7 @@ async function fetchAttentionRequiredPayload(req, config, thresholds = getAttent
         join public.data_sources d on d.id = a.data_source_id
         where ${whereSql}
         order by ${orderSql}
-        limit $5
+        limit $6
       `,
       [...values, limit],
     ),
@@ -1102,7 +1208,7 @@ function alertId(req) {
   return value;
 }
 
-async function fetchAlertDetailPayload(req, config) {
+async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
   const id = alertId(req);
   const [row, ackHistoryRows] = await Promise.all([
     queryRow(
@@ -1158,9 +1264,10 @@ async function fetchAlertDetailPayload(req, config) {
       from alerts a
       join data_sources d on d.id = a.data_source_id
       where a.id = $1
+        and d.name = $2
       limit 1
     `,
-      [id],
+      [id, primaryDataSourceName],
     ),
     queryRows(
       config,
@@ -1182,7 +1289,9 @@ async function fetchAlertDetailPayload(req, config) {
         )::text as acknowledge_id
       from alert_history h
       join alerts a on a.id = h.alert_id
+      join data_sources d on d.id = a.data_source_id
       where h.alert_id = $1
+        and d.name = $2
         and (
           lower(coalesce(h.action_type, '')) in ('acknowledged', 'ack_message')
           or lower(coalesce(h.action_type, '')) like '%ack%'
@@ -1191,7 +1300,7 @@ async function fetchAlertDetailPayload(req, config) {
       order by h.occurred_at desc nulls last, h.created_at desc, h.id desc
       limit 100
     `,
-      [id],
+      [id, primaryDataSourceName],
     ),
   ]);
   if (!row) throw requestError("not_found", 404);
@@ -1470,14 +1579,17 @@ function historyIsLegacy(actionType, actionSource) {
     || ["created_from_zabbix", "resolved_by_reconciliation"].includes(type);
 }
 
-async function fetchAlertHistoryPayload(req, config) {
+async function fetchAlertHistoryPayload(req, config, primaryDataSourceName) {
   const id = alertId(req);
   const alert = await queryRow(
     config,
-    `select id, source_event_id, host_name, acknowledged_source,
-            acknowledged_at, acknowledged_by
-       from alerts where id = $1 limit 1`,
-    [id],
+    `select a.id, a.source_event_id, a.host_name, a.acknowledged_source,
+            a.acknowledged_at, a.acknowledged_by
+       from alerts a
+       join data_sources d on d.id = a.data_source_id
+      where a.id = $1 and d.name = $2
+      limit 1`,
+    [id, primaryDataSourceName],
   );
   if (!alert) throw requestError("not_found", 404);
 
@@ -1506,7 +1618,9 @@ async function fetchAlertHistoryPayload(req, config) {
         coalesce(h.source, 'legacy')::text as source
       from alert_history h
       join alerts a on a.id = h.alert_id
+      join data_sources d on d.id = a.data_source_id
       where h.alert_id = $1
+        and d.name = $2
       union all
       select
         ack.id::text as id,
@@ -1525,12 +1639,15 @@ async function fetchAlertHistoryPayload(req, config) {
         'oneview_internal'::text as action_source,
         'oneview'::text as source
       from alert_acknowledgements ack
+      join alerts a on a.id = ack.alert_id
+      join data_sources d on d.id = a.data_source_id
       where ack.alert_id = $1
+        and d.name = $2
         and ack.acknowledgement_type in ('internal','internal_acknowledgement')
         and ack.status in ('recorded','pending','processing','success','completed')
       order by occurred_at desc nulls last, created_at desc, id desc
     `,
-    [id],
+    [id, primaryDataSourceName],
   );
   const alias = aliasForHost(alert.host_name);
   const mappedItems = rows.map((row) => {
@@ -1613,7 +1730,7 @@ export function classifyOperationalSource(source, now = Date.now()) {
   return { status: "healthy", reason_code: "healthy", lastActivityAt, intervalSeconds };
 }
 
-async function fetchOperationsHealthPayload(config) {
+async function fetchOperationsHealthPayload(config, primaryDataSourceName) {
   const rows = await queryRows(
     config,
     `
@@ -1633,8 +1750,10 @@ async function fetchOperationsHealthPayload(config) {
         from sync_logs sl
         where sl.data_source_id = d.id
       ) latest on true
+      where d.name = $1
       order by d.display_order asc, d.name asc
     `,
+    [primaryDataSourceName],
   );
   const now = Date.now();
   const items = rows.map((row) => {
@@ -1681,7 +1800,7 @@ async function fetchOperationsHealthPayload(config) {
   };
 }
 
-async function fetchDataSourceRows(config) {
+async function fetchDataSourceRows(config, primaryDataSourceName) {
   return queryRows(
     config,
     `
@@ -1709,6 +1828,7 @@ async function fetchDataSourceRows(config) {
         count(a.id)::int as alerts_count
       from data_sources d
       left join v_active_alerts a on a.data_source_id = d.id
+      where d.name = $1
       group by
         d.id,
         d.name,
@@ -1732,17 +1852,18 @@ async function fetchDataSourceRows(config) {
         d.token_encrypted
       order by d.display_order asc, d.name asc
     `,
+    [primaryDataSourceName],
   );
 }
 
-async function fetchDataSourcesPayload(config) {
+async function fetchDataSourcesPayload(config, primaryDataSourceName) {
   return {
     generated_at: generatedAt(),
-    items: mapDataSourceRows(await fetchDataSourceRows(config)),
+    items: mapDataSourceRows(await fetchDataSourceRows(config, primaryDataSourceName)),
   };
 }
 
-async function fetchSyncLogRows(config, limit = DEFAULT_SYNC_LOG_LIMIT) {
+async function fetchSyncLogRows(config, limit = DEFAULT_SYNC_LOG_LIMIT, primaryDataSourceName = getPrimaryDataSourceName()) {
   return queryRows(
     config,
     `
@@ -1756,32 +1877,45 @@ async function fetchSyncLogRows(config, limit = DEFAULT_SYNC_LOG_LIMIT) {
         coalesce(sl.finished_at, sl.created_at, sl.started_at) as created_at
       from sync_logs sl
       join data_sources d on d.id = sl.data_source_id
+      where d.name = $1
       order by coalesce(sl.finished_at, sl.created_at, sl.started_at) desc, sl.id desc
-      limit $1
+      limit $2
     `,
-    [limit],
+    [primaryDataSourceName, limit],
   );
 }
 
-async function fetchSyncLogsPayload(req, config) {
+async function fetchSyncLogsPayload(req, config, primaryDataSourceName) {
   const rawLimit = Array.isArray(req.query?.limit) ? req.query.limit[0] : req.query?.limit;
   const limit = integerValue(rawLimit, DEFAULT_SYNC_LOG_LIMIT, { min: 1, max: MAX_SYNC_LOG_LIMIT });
   return {
     generated_at: generatedAt(),
-    items: mapSyncLogRows(await fetchSyncLogRows(config, limit)),
+    items: mapSyncLogRows(await fetchSyncLogRows(config, limit, primaryDataSourceName)),
   };
 }
 
-async function fetchHealthPayload(config, acknowledgementEnabled = false, alertStaleMinutes = 15) {
+async function fetchHealthPayload(
+  config,
+  acknowledgementEnabled = false,
+  alertStaleMinutes = 15,
+  primaryDataSourceName = getPrimaryDataSourceName(),
+) {
   const [reachableRow, countsRow] = await Promise.all([
     queryRow(config, "select 1 as reachable"),
     queryRow(
       config,
       `
         select
-          (select count(*)::int from alerts) as total_alerts,
-          (select count(*)::int from v_active_alerts) as active_alerts
+          (select count(*)::int
+             from alerts a
+             join data_sources d on d.id = a.data_source_id
+            where d.name = $1) as total_alerts,
+          (select count(*)::int
+             from alerts a
+             join data_sources d on d.id = a.data_source_id
+            where d.name = $1 and ${ACTIVE_ALERT_SQL}) as active_alerts
       `,
+      [primaryDataSourceName],
     ),
   ]);
 
@@ -1801,8 +1935,14 @@ async function fetchHealthPayload(config, acknowledgementEnabled = false, alertS
   };
 }
 
-async function fetchDashboardSummaryPayload(config, timeZone = DEFAULT_OPERATIONAL_TIMEZONE) {
-  const dailyMetrics = dailyOperationalMetricQueries(timeZone);
+async function fetchDashboardSummaryPayload(
+  config,
+  timeZone = DEFAULT_OPERATIONAL_TIMEZONE,
+  primaryDataSourceName = getPrimaryDataSourceName(),
+) {
+  const dailyMetrics = dailyOperationalMetricQueries(timeZone, new Date(), primaryDataSourceName);
+  const scopeValues = [primaryDataSourceName];
+  const dayValues = [primaryDataSourceName, dailyMetrics.day.from, dailyMetrics.day.to];
   const [
     totalAlertsRow,
     activeAlertsRow,
@@ -1819,44 +1959,87 @@ async function fetchDashboardSummaryPayload(config, timeZone = DEFAULT_OPERATION
     ackMetricsRow,
     normalizationMetricsRow,
   ] = await Promise.all([
-    queryRow(config, "select count(*)::int as value from alerts"),
-    queryRow(config, "select count(*)::int as value from v_active_alerts"),
-    queryRow(config, dailyMetrics.resolved.text, dailyMetrics.resolved.values),
-    queryRow(config, dailyMetrics.sourceAcknowledged.text, dailyMetrics.sourceAcknowledged.values),
-    queryRow(config, dailyMetrics.oneViewAcknowledged.text, dailyMetrics.oneViewAcknowledged.values),
-    queryRows(config, "select severity, count(*)::int as count from v_active_alerts group by severity order by count desc, severity asc"),
-    queryRows(config, "select status_internal, count(*)::int as count from v_active_alerts group by status_internal order by count desc, status_internal asc"),
+    queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = $1`, scopeValues),
+    queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = $1 and ${ACTIVE_ALERT_SQL}`, scopeValues),
+    queryRow(config, `select count(*)::int as value
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and a.resolved_at >= $2::timestamptz and a.resolved_at < $3::timestamptz`, dayValues),
+    queryRow(config, `select count(*)::int as value
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and a.acknowledged_source = true
+        and a.acknowledged_at >= $2::timestamptz and a.acknowledged_at < $3::timestamptz`, dayValues),
+    queryRow(config, `select count(*)::int as value
+      from alert_acknowledgements ack
+      join alerts a on a.id = ack.alert_id
+      join data_sources d on d.id = a.data_source_id
+      where d.name = $1
+        and ack.acknowledgement_type = any($4::text[])
+        and ack.status = any($5::text[])
+        and ack.requested_at >= $2::timestamptz and ack.requested_at < $3::timestamptz`,
+    [...dayValues, INTERNAL_ACKNOWLEDGEMENT_TYPES, INTERNAL_ACKNOWLEDGEMENT_STATUSES]),
+    queryRows(config, `select a.severity, count(*)::int as count
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      group by a.severity order by count desc, a.severity asc`, scopeValues),
+    queryRows(config, `select a.status_internal, count(*)::int as count
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      group by a.status_internal order by count desc, a.status_internal asc`, scopeValues),
     queryRows(
       config,
       `select ${SAFE_CUSTOMER_NAME_SQL} as client_name, count(*)::int as count
          from alerts a
-        where a.status_source = 'active' and a.resolved_at is null
+         join data_sources d on d.id = a.data_source_id
+        where d.name = $1 and a.status_source = 'active' and a.resolved_at is null
         group by ${SAFE_CUSTOMER_NAME_SQL}
         order by count desc, client_name asc`,
+      scopeValues,
     ),
     queryRows(
       config,
       `
-        select coalesce(service_name, '-') as service_name, coalesce(environment, 'internal') as environment, count(*)::int as count
-        from v_active_alerts
-        group by coalesce(service_name, '-'), coalesce(environment, 'internal')
+        select coalesce(a.service_name, '-') as service_name, coalesce(d.environment, 'internal') as environment, count(*)::int as count
+        from alerts a join data_sources d on d.id = a.data_source_id
+        where d.name = $1 and ${ACTIVE_ALERT_SQL}
+        group by coalesce(a.service_name, '-'), coalesce(d.environment, 'internal')
         order by count desc, service_name asc
         limit 20
       `,
+      scopeValues,
     ),
-    queryRows(config, "select host_name, active_alerts::int as count from v_alert_top_hosts limit 10"),
-    queryRow(config, "select count(*)::int as value from v_alert_unacknowledged"),
+    queryRows(config, `select a.host_name, count(*)::int as count
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      group by a.host_name order by count desc, a.host_name asc limit 10`, scopeValues),
+    queryRow(config, `select count(*)::int as value
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+        and coalesce(a.acknowledged_source, false) = false`, scopeValues),
     queryRows(
       config,
       `select a.id, ${SAFE_CUSTOMER_NAME_SQL} as client_name, a.host_name, a.problem_name,
               a.severity, a.duration_seconds::int, a.first_seen_at
          from alerts a
-        where a.status_source = 'active' and a.resolved_at is null
+         join data_sources d on d.id = a.data_source_id
+        where d.name = $1 and a.status_source = 'active' and a.resolved_at is null
         order by a.duration_seconds desc nulls last
         limit 10`,
+      scopeValues,
     ),
-    queryRow(config, "select avg_ack_time_seconds::int as avg_ack_time_seconds from v_alert_ack_metrics"),
-    queryRow(config, "select avg_normalization_time_seconds::int as avg_normalization_time_seconds from v_alert_normalization_metrics"),
+    queryRow(config, `with first_ack as (
+        select h.alert_id, min(h.created_at) as ack_at
+        from alert_history h
+        where h.new_status = 'acknowledged' or h.action_type in ('ack_requested', 'acknowledged')
+        group by h.alert_id
+      )
+      select coalesce(avg(extract(epoch from (first_ack.ack_at - a.first_seen_at))), 0)::int as avg_ack_time_seconds
+      from alerts a
+      join data_sources d on d.id = a.data_source_id
+      join first_ack on first_ack.alert_id = a.id
+      where d.name = $1`, scopeValues),
+    queryRow(config, `select coalesce(avg(extract(epoch from (coalesce(a.normalized_at, a.resolved_at, a.updated_at) - a.first_seen_at))), 0)::int as avg_normalization_time_seconds
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and (a.status_source = 'resolved' or a.status_internal = 'normalized')`, scopeValues),
   ]);
 
   const aliases = aliasMapFromHosts([
@@ -1905,7 +2088,8 @@ async function fetchDashboardSummaryPayload(config, timeZone = DEFAULT_OPERATION
   };
 }
 
-async function fetchGrafanaSummaryPayload(config) {
+async function fetchGrafanaSummaryPayload(config, primaryDataSourceName) {
+  const scopeValues = [primaryDataSourceName];
   const [
     activeAlertsRow,
     acknowledgedRow,
@@ -1915,29 +2099,40 @@ async function fetchGrafanaSummaryPayload(config) {
     dataSourceRows,
     syncLogRows,
   ] = await Promise.all([
-    queryRow(config, "select count(*)::int as value from v_active_alerts"),
+    queryRow(config, `select count(*)::int as value
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and ${ACTIVE_ALERT_SQL}`, scopeValues),
     queryRow(
       config,
       `
         select count(*)::int as value
         from alerts a
-        where ${ACTIVE_ALERT_SQL}
+        join data_sources d on d.id = a.data_source_id
+        where d.name = $1 and ${ACTIVE_ALERT_SQL}
           and (coalesce(a.acknowledged_source, false) = true
             or ${INTERNAL_ACKNOWLEDGED_SQL})
       `,
+      scopeValues,
     ),
-    queryRows(config, "select severity, count(*)::int as count from v_active_alerts group by severity order by count desc, severity asc"),
+    queryRows(config, `select a.severity, count(*)::int as count
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      group by a.severity order by count desc, a.severity asc`, scopeValues),
     queryRows(
       config,
       `select ${SAFE_CUSTOMER_NAME_SQL} as client, count(*)::int as count
          from alerts a
-        where a.status_source = 'active' and a.resolved_at is null
+         join data_sources d on d.id = a.data_source_id
+        where d.name = $1 and a.status_source = 'active' and a.resolved_at is null
         group by ${SAFE_CUSTOMER_NAME_SQL}
         order by count desc, client asc`,
+      scopeValues,
     ),
-    queryRow(config, "select max(last_seen_at) as last_updated_at from v_active_alerts"),
-    fetchDataSourceRows(config),
-    fetchSyncLogRows(config, 8),
+    queryRow(config, `select max(a.last_seen_at) as last_updated_at
+      from alerts a join data_sources d on d.id = a.data_source_id
+      where d.name = $1 and ${ACTIVE_ALERT_SQL}`, scopeValues),
+    fetchDataSourceRows(config, primaryDataSourceName),
+    fetchSyncLogRows(config, 8, primaryDataSourceName),
   ]);
 
   const severityMap = Object.fromEntries(severityRows.map((row) => [textValue(row.severity), integerValue(row.count, 0)]));
@@ -1969,9 +2164,87 @@ async function fetchGrafanaSummaryPayload(config) {
   };
 }
 
-async function fetchClientsSummaryPayload(config) {
+async function fetchClientsSummaryPayload(req, config, primaryDataSourceName) {
+  const status = (oneQueryValue(req, "status") || "active").toLowerCase();
+  if (!["active", "all"].includes(status)) throw requestError("invalid_query");
+
+  const firstSeenFromRaw = oneQueryValue(req, "first_seen_from");
+  const firstSeenToRaw = oneQueryValue(req, "first_seen_to");
+  const firstSeenFrom = firstSeenFromRaw ? isoFilterDate(firstSeenFromRaw) : null;
+  const firstSeenTo = firstSeenToRaw ? isoFilterDate(firstSeenToRaw) : null;
+  if (firstSeenFrom && firstSeenTo && Date.parse(firstSeenFrom) > Date.parse(firstSeenTo)) {
+    throw requestError("invalid_query");
+  }
+
+  // OV-P0-42B: modo janela (Home) — top clientes ativos por first_seen_at.
+  if (firstSeenFrom) {
+    if (status !== "active") throw requestError("invalid_query");
+    const limit = positiveInteger(oneQueryValue(req, "limit") || "5", 5, { maximum: 50 });
+    const values = [primaryDataSourceName, firstSeenFrom];
+    let toSql = "";
+    if (firstSeenTo) {
+      values.push(firstSeenTo);
+      toSql = ` and a.first_seen_at <= $${values.length}::timestamptz`;
+    }
+    const rows = await queryRows(
+      config,
+      `
+        select
+          ${SAFE_CUSTOMER_KEY_SQL} as customer_key,
+          ${SAFE_CUSTOMER_NAME_SQL} as customer_name,
+          count(*)::int as count
+        from alerts a
+        join data_sources d on d.id = a.data_source_id
+        where d.name = $1
+          and ${ACTIVE_ALERT_SQL}
+          and a.first_seen_at >= $2::timestamptz
+          ${toSql}
+        group by ${SAFE_CUSTOMER_KEY_SQL}, ${SAFE_CUSTOMER_NAME_SQL}
+        order by count desc, customer_name asc
+      `,
+      values,
+    );
+
+    let totalActive = 0;
+    let unclassifiedCount = 0;
+    const identified = [];
+    for (const row of rows) {
+      const count = integerValue(row.count, 0);
+      totalActive += count;
+      const key = sanitizeText(row.customer_key, "unclassified", 160);
+      if (key === "unclassified") {
+        unclassifiedCount = count;
+        continue;
+      }
+      identified.push({
+        customer_key: key,
+        customer_name: sanitizeText(row.customer_name, "Cliente não identificado", 160),
+        count,
+      });
+    }
+
+    return {
+      generated_at: generatedAt(),
+      window: {
+        field: "first_seen_at",
+        from: firstSeenFrom,
+        to: firstSeenTo,
+      },
+      total_active: totalActive,
+      top_clients: identified.slice(0, limit),
+      unclassified_count: unclassifiedCount,
+      partial: identified.length > limit,
+      clients: [],
+      customers: [],
+      datasources: [],
+    };
+  }
+
+  const severityRankSql = `case lower(coalesce(a.severity, ''))
+    when 'disaster' then 7 when 'critical' then 6 when 'high' then 5 when 'average' then 4
+    when 'warning' then 2 when 'information' then 1 else 0 end`;
   const [items, customerRows, datasourceRows] = await Promise.all([
-    mapDataSourceRows(await fetchDataSourceRows(config)),
+    mapDataSourceRows(await fetchDataSourceRows(config, primaryDataSourceName)),
     queryRows(
       config,
       `
@@ -1979,13 +2252,20 @@ async function fetchClientsSummaryPayload(config) {
           ${SAFE_CUSTOMER_NAME_SQL} as name,
           ${SAFE_CUSTOMER_KEY_SQL} as key,
           count(*)::int as alerts_count,
+          count(*) filter (where lower(coalesce(a.severity, '')) = 'disaster')::int as disaster_count,
+          count(*) filter (where lower(coalesce(a.severity, '')) = 'critical')::int as critical_count,
+          count(*) filter (where lower(coalesce(a.severity, '')) = 'high')::int as high_count,
+          count(*) filter (where coalesce(a.acknowledged_source, false) = false)::int as unacknowledged_count,
           count(*) filter (where a.customer_confidence = 'high')::int as high_confidence_count,
-          count(*) filter (where a.customer_confidence = 'low')::int as low_confidence_count
+          count(*) filter (where a.customer_confidence = 'low')::int as low_confidence_count,
+          max(${severityRankSql})::int as max_severity_rank
         from alerts a
-        where a.status_source = 'active' and a.resolved_at is null
+        join data_sources d on d.id = a.data_source_id
+        where d.name = $1 and ${ACTIVE_ALERT_SQL}
         group by ${SAFE_CUSTOMER_NAME_SQL}, ${SAFE_CUSTOMER_KEY_SQL}
         order by alerts_count desc, name asc
       `,
+      [primaryDataSourceName],
     ),
     queryRows(
       config,
@@ -1994,13 +2274,23 @@ async function fetchClientsSummaryPayload(config) {
         from data_sources d
         left join alerts a
           on a.data_source_id = d.id
-         and a.status_source = 'active'
-         and a.resolved_at is null
+         and ${ACTIVE_ALERT_SQL}
+        where d.name = $1
         group by d.id, d.name
         order by alerts_count desc, d.name asc
       `,
+      [primaryDataSourceName],
     ),
   ]);
+  const severityFromRank = (rank) => {
+    if (rank >= 7) return "disaster";
+    if (rank >= 6) return "critical";
+    if (rank >= 5) return "high";
+    if (rank >= 4) return "average";
+    if (rank >= 2) return "warning";
+    if (rank >= 1) return "information";
+    return "not_classified";
+  };
   return {
     generated_at: generatedAt(),
     clients: items.map((source) => ({
@@ -2014,6 +2304,10 @@ async function fetchClientsSummaryPayload(config) {
       key: sanitizeText(row.key, "unclassified", 160),
       name: sanitizeText(row.name, "Cliente não identificado", 160),
       alerts_count: integerValue(row.alerts_count, 0),
+      disaster_count: integerValue(row.disaster_count, 0) + integerValue(row.critical_count, 0),
+      high_count: integerValue(row.high_count, 0),
+      unacknowledged_count: integerValue(row.unacknowledged_count, 0),
+      max_severity: severityFromRank(integerValue(row.max_severity_rank, 0)),
       high_confidence_count: integerValue(row.high_confidence_count, 0),
       low_confidence_count: integerValue(row.low_confidence_count, 0),
       enrichment_status: row.key === "unclassified" ? "pending" : "enriched",
@@ -2023,6 +2317,187 @@ async function fetchClientsSummaryPayload(config) {
       name: sanitizeText(row.name, "Datasource OneView", 160),
       alerts_count: integerValue(row.alerts_count, 0),
     })),
+  };
+}
+
+export const GLOBAL_HISTORY_EVENT_TYPES = Object.freeze({
+  operational: [
+    "problem_created",
+    "created_from_zabbix",
+    "acknowledged",
+    "ack_message",
+    "severity_changed",
+    "recovered",
+    "maintenance",
+    "suppressed",
+    "unsuppressed",
+  ],
+  identified: ["problem_created", "created_from_zabbix"],
+  actions: [
+    "acknowledged",
+    "ack_message",
+    "severity_changed",
+    "recovered",
+    "maintenance",
+    "suppressed",
+    "unsuppressed",
+  ],
+  ack: ["acknowledged"],
+  ack_comment: ["ack_message"],
+  acks: ["acknowledged", "ack_message"],
+  resolution: ["recovered"],
+  severity: ["severity_changed"],
+  maintenance: ["maintenance", "suppressed", "unsuppressed"],
+  update: ["problem_seen", "status_changed", "reopened", "problem_created", "created_from_zabbix"],
+});
+
+async function fetchGlobalHistoryPayload(req, config, primaryDataSourceName) {
+  const page = positiveInteger(oneQueryValue(req, "page"), 1);
+  const pageSize = positiveInteger(oneQueryValue(req, "page_size"), DEFAULT_ALERT_PAGE_SIZE, { maximum: MAX_ALERT_PAGE_SIZE });
+  const customers = queryValues(req, "customer").map((value) => value.slice(0, 160));
+  const datasources = queryValues(req, "datasource").map((value) => value.slice(0, 160));
+  const eventType = oneQueryValue(req, "event_type").toLowerCase();
+  const search = oneQueryValue(req, "search").slice(0, 200);
+  const occurredFrom = isoFilterDate(oneQueryValue(req, "occurred_from"));
+  const occurredTo = isoFilterDate(oneQueryValue(req, "occurred_to"));
+  if (eventType && eventType !== "all" && !Object.hasOwn(GLOBAL_HISTORY_EVENT_TYPES, eventType)) {
+    throw requestError("invalid_query");
+  }
+  if (occurredFrom && occurredTo && Date.parse(occurredFrom) > Date.parse(occurredTo)) {
+    throw requestError("invalid_query");
+  }
+
+  const params = [primaryDataSourceName];
+  const clauses = [
+    `d.name = $1`,
+    `lower(coalesce(h.action_type, '')) <> 'internal_acknowledged'`,
+    `lower(coalesce(h.action_source, '')) <> 'oneview_internal'`,
+  ];
+  const push = (clause, value) => {
+    params.push(value);
+    clauses.push(clause.replace("?", `$${params.length}`));
+  };
+
+  if (customers.length) {
+    const unclassified = customers.filter((value) => value === "unclassified");
+    const named = customers.filter((value) => value !== "unclassified");
+    const parts = [];
+    if (named.length) {
+      params.push(named);
+      parts.push(`${SAFE_CUSTOMER_KEY_SQL} = any($${params.length})`);
+    }
+    if (unclassified.length) parts.push(UNIDENTIFIED_CUSTOMER_SQL);
+    if (parts.length) clauses.push(`(${parts.join(" or ")})`);
+  }
+  if (datasources.length) {
+    params.push(datasources);
+    clauses.push(`d.name = any($${params.length})`);
+  }
+  if (eventType && eventType !== "all") {
+    params.push(GLOBAL_HISTORY_EVENT_TYPES[eventType]);
+    clauses.push(`lower(coalesce(h.action_type, '')) = any($${params.length})`);
+  }
+  if (occurredFrom) push("coalesce(h.occurred_at, h.created_at) >= ?::timestamptz", occurredFrom);
+  if (occurredTo) push("coalesce(h.occurred_at, h.created_at) < ?::timestamptz", occurredTo);
+  if (search) {
+    params.push(`%${search}%`);
+    const idx = params.length;
+    clauses.push(`(
+      coalesce(a.host_name, '') ilike $${idx}
+      or coalesce(a.problem_name, '') ilike $${idx}
+      or coalesce(h.message, '') ilike $${idx}
+      or coalesce(h.actor_name, '') ilike $${idx}
+      or coalesce(h.operator_name, '') ilike $${idx}
+      or ${SAFE_CUSTOMER_NAME_SQL} ilike $${idx}
+      or coalesce(d.name, '') ilike $${idx}
+    )`);
+  }
+
+  const whereSql = clauses.length ? `where ${clauses.join(" and ")}` : "";
+  const fromSql = `
+    from alert_history h
+    join alerts a on a.id = h.alert_id
+    left join data_sources d on d.id = a.data_source_id
+    ${whereSql}
+  `;
+  const countRow = await queryRow(config, `select count(*)::int as total ${fromSql}`, params);
+  const totalItems = integerValue(countRow?.total, 0);
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
+  const safePage = Math.min(page, totalPages);
+  const offset = (safePage - 1) * pageSize;
+  const rows = await queryRows(
+    config,
+    `
+      select
+        h.id::text as id,
+        a.id::text as alert_id,
+        h.action_type::text as event_type,
+        h.message::text as description,
+        h.occurred_at,
+        h.created_at,
+        nullif(h.actor_name, '')::text as actor_name_candidate,
+        nullif(h.operator_name, '')::text as operator_name_candidate,
+        nullif(a.acknowledged_by, '')::text as acknowledged_by_candidate,
+        coalesce(h.action_source, 'legacy')::text as action_source,
+        coalesce(h.source, 'legacy')::text as source,
+        coalesce(h.previous_value, to_jsonb(h.previous_status)) as previous_value,
+        coalesce(h.current_value, to_jsonb(h.new_status)) as current_value,
+        ${SAFE_CUSTOMER_NAME_SQL} as customer_name,
+        ${SAFE_CUSTOMER_KEY_SQL} as customer_key,
+        coalesce(d.name, 'Fonte não identificada')::text as datasource_name,
+        a.host_name,
+        a.problem_name,
+        a.severity
+      ${fromSql}
+      order by coalesce(h.occurred_at, h.created_at) desc nulls last, h.id desc
+      limit $${params.length + 1} offset $${params.length + 2}
+    `,
+    [...params, pageSize, offset],
+  );
+
+  const items = rows.map((row) => {
+    const eventTypeValue = textValue(row.event_type, "updated");
+    const isAcknowledgement = historyHasAcknowledgement(eventTypeValue);
+    const actorName = resolveAckActorName(
+      row.actor_name_candidate,
+      row.operator_name_candidate,
+      isAcknowledgement ? row.acknowledged_by_candidate : null,
+    );
+    const legacy = historyIsLegacy(row.event_type, row.action_source);
+    const previousValue = sanitizeStructuredValue(row.previous_value);
+    const currentValue = sanitizeStructuredValue(row.current_value);
+    return {
+      id: textValue(row.id),
+      alert_id: textValue(row.alert_id),
+      event_type: eventTypeValue,
+      title: historyTitle(eventTypeValue),
+      description: historyDescription(eventTypeValue, row.description),
+      occurred_at: isoDate(row.occurred_at ?? row.created_at, generatedAt()),
+      actor_name: actorName,
+      source: historySource(row.source, legacy),
+      customer_name: sanitizeText(row.customer_name, "Cliente não identificado", 160),
+      customer_key: sanitizeText(row.customer_key, "unclassified", 160),
+      datasource_name: sanitizeText(row.datasource_name, "Fonte não identificada", 160),
+      host_name: sanitizeText(row.host_name, "Host não identificado", 200),
+      problem_name: sanitizeText(row.problem_name, "Alerta sem descrição", 300),
+      severity: sanitizeText(row.severity, "not_classified", 40),
+      previous_value: legacy && !historyValueIsMeaningful(previousValue) ? null : previousValue,
+      current_value: legacy && !historyValueIsMeaningful(currentValue) ? null : currentValue,
+      legacy,
+    };
+  });
+
+  return {
+    generated_at: generatedAt(),
+    items,
+    pagination: {
+      page: safePage,
+      page_size: pageSize,
+      total_items: totalItems,
+      total_pages: totalPages,
+      has_next: safePage < totalPages,
+      has_previous: safePage > 1,
+    },
   };
 }
 
@@ -2103,30 +2578,33 @@ export function getOneViewDbPoolStats() {
 
 export async function fetchOneViewDatabase(routeName, req, config) {
   const dbConfig = config?.dbConfig || getOneViewDbConfig();
+  const primaryDataSourceName = config?.primaryDataSourceName || getPrimaryDataSourceName();
   try {
     switch (routeName) {
       case "health":
-        return fetchHealthPayload(dbConfig, config?.ackEnabled, config?.alertStaleMinutes);
+        return fetchHealthPayload(dbConfig, config?.ackEnabled, config?.alertStaleMinutes, primaryDataSourceName);
       case "dashboard-summary":
-        return fetchDashboardSummaryPayload(dbConfig, config?.operationalTimezone);
+        return fetchDashboardSummaryPayload(dbConfig, config?.operationalTimezone, primaryDataSourceName);
       case "grafana-summary":
-        return fetchGrafanaSummaryPayload(dbConfig);
+        return fetchGrafanaSummaryPayload(dbConfig, primaryDataSourceName);
       case "alerts":
-        return fetchAlertList(req, dbConfig);
+        return fetchAlertList(req, dbConfig, primaryDataSourceName);
       case "attention-required":
-        return fetchAttentionRequiredPayload(req, dbConfig, config?.attentionThresholds);
+        return fetchAttentionRequiredPayload(req, dbConfig, config?.attentionThresholds, primaryDataSourceName);
       case "alert-detail":
-        return fetchAlertDetailPayload(req, dbConfig);
+        return fetchAlertDetailPayload(req, dbConfig, primaryDataSourceName);
       case "alert-history":
-        return fetchAlertHistoryPayload(req, dbConfig);
+        return fetchAlertHistoryPayload(req, dbConfig, primaryDataSourceName);
+      case "history":
+        return fetchGlobalHistoryPayload(req, dbConfig, primaryDataSourceName);
       case "operations-health":
-        return fetchOperationsHealthPayload(dbConfig);
+        return fetchOperationsHealthPayload(dbConfig, primaryDataSourceName);
       case "clients-summary":
-        return fetchClientsSummaryPayload(dbConfig);
+        return fetchClientsSummaryPayload(req, dbConfig, primaryDataSourceName);
       case "data-sources":
-        return fetchDataSourcesPayload(dbConfig);
+        return fetchDataSourcesPayload(dbConfig, primaryDataSourceName);
       case "sync-logs":
-        return fetchSyncLogsPayload(req, dbConfig);
+        return fetchSyncLogsPayload(req, dbConfig, primaryDataSourceName);
       default:
         throw new Error("oneview_route_not_supported");
     }

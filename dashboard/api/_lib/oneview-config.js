@@ -1,4 +1,5 @@
 import { getAttentionThresholds, getOneViewDbConfig, operationalTimezone } from "./oneview-db.js";
+import { getPrimaryDataSourceName } from "./oneview-scope.js";
 
 const ROUTES = Object.freeze({
   health: Object.freeze({ upstreamPath: "/health", role: "viewer", fallbackSafe: true, query: [] }),
@@ -21,6 +22,7 @@ const ROUTES = Object.freeze({
       "acknowledged_source",
       "acknowledged_internal",
       "search",
+      "search_field",
       "host_search",
       "problem_search",
       "date_from",
@@ -35,18 +37,39 @@ const ROUTES = Object.freeze({
       "acknowledged_to",
       "sort",
       "order",
+      "sort_secondary",
     ],
   }),
   "attention-required": Object.freeze({
     upstreamPath: "/attention-required",
     role: "viewer",
     fallbackSafe: true,
-    query: ["limit"],
+    query: ["limit", "first_seen_from", "first_seen_to"],
   }),
   "alert-detail": Object.freeze({ upstreamPath: "/alerts/:id", role: "viewer", fallbackSafe: true, query: ["id"] }),
   "alert-history": Object.freeze({ upstreamPath: "/alerts/:id/history", role: "viewer", fallbackSafe: true, query: ["id"] }),
+  history: Object.freeze({
+    upstreamPath: "/history",
+    role: "viewer",
+    fallbackSafe: true,
+    query: [
+      "page",
+      "page_size",
+      "customer",
+      "datasource",
+      "event_type",
+      "search",
+      "occurred_from",
+      "occurred_to",
+    ],
+  }),
   "operations-health": Object.freeze({ upstreamPath: "/operations/health", role: "viewer", fallbackSafe: true, query: [] }),
-  "clients-summary": Object.freeze({ upstreamPath: "/clients/summary", role: "viewer", fallbackSafe: true, query: [] }),
+  "clients-summary": Object.freeze({
+    upstreamPath: "/clients/summary",
+    role: "viewer",
+    fallbackSafe: true,
+    query: ["status", "first_seen_from", "first_seen_to", "limit"],
+  }),
   "data-sources": Object.freeze({ upstreamPath: "/data-sources", role: "viewer", fallbackSafe: true, query: [] }),
   "sync-logs": Object.freeze({ upstreamPath: "/sync-logs/latest", role: "viewer", fallbackSafe: true, query: ["limit"] }),
 });
@@ -108,6 +131,7 @@ export function getOneViewConfig(env = process.env) {
     attentionThresholds: getAttentionThresholds(env),
     operationalTimezone: operationalTimezone(env.ONEVIEW_OPERATIONAL_TIMEZONE),
     alertStaleMinutes: alertStaleMinutes(env.ONEVIEW_ALERT_STALE_MINUTES),
+    primaryDataSourceName: getPrimaryDataSourceName(env),
     dbConfig,
     dbConfigErrorCode,
   });
