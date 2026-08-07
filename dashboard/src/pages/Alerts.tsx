@@ -2053,7 +2053,7 @@ export default function AlertsPage() {
                                 source: alert.customer_source,
                               }}
                               showName
-                              nameClassName="max-w-[7rem] truncate text-left text-[11px]"
+                              nameClassName="max-w-[9rem] truncate text-left text-xs font-semibold"
                             />
                           </span>
                         </TooltipTrigger>

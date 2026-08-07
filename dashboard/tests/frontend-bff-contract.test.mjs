@@ -487,19 +487,20 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
 test("OV-P0-20 navegação operacional diferencia Monitoramento, Alertas e Histórico", async () => {
   const sidebar = await read("src/components/layout/Sidebar.tsx");
 
-  assert.match(sidebar, /accent: "monitor"/);
-  assert.match(sidebar, /accent: "alerts"/);
-  assert.match(sidebar, /accent: "history"/);
   assert.match(sidebar, /icon: Monitor/);
   assert.match(sidebar, /icon: Bell/);
   assert.match(sidebar, /icon: History/);
   assert.match(sidebar, /liveDot: true/);
   assert.match(sidebar, /secondary: "Fila operacional"/);
   assert.match(sidebar, /secondary: "Eventos e ações"/);
-  assert.match(sidebar, /bg-emerald-500\/15|text-emerald-300|bg-emerald-400/);
-  assert.match(sidebar, /bg-amber-500\/15|text-amber-200|bg-red-400/);
-  assert.match(sidebar, /bg-sky-500\/15|text-sky-200|bg-sky-400/);
-  assert.match(sidebar, /absolute left-0[\s\S]*w-0\.5/);
+  assert.match(sidebar, /navToneClasses/);
+  assert.match(sidebar, /bg-white\/15/);
+  assert.match(sidebar, /h-7 w-1/);
+  assert.doesNotMatch(sidebar, /accent: "monitor"|accent: "alerts"|accent: "history"/);
+  assert.doesNotMatch(sidebar, /bg-emerald-500\/15|text-emerald-300|bg-emerald-400/);
+  assert.doesNotMatch(sidebar, /bg-amber-500\/15|text-amber-200|bg-red-400/);
+  assert.doesNotMatch(sidebar, /bg-sky-500\/15|text-sky-200|bg-sky-400/);
+  assert.match(sidebar, /absolute left-0[\s\S]*w-1/);
   assert.match(sidebar, /hover:bg-white\/5/);
   assert.match(sidebar, /focus-visible:ring-2/);
   assert.match(sidebar, /aria-label=\{item\.secondary \? `\$\{item\.name\}\. \$\{item\.secondary\}` : item\.name\}/);

@@ -209,7 +209,7 @@ function PriorityRow({
   return (
     <button
       type="button"
-      className="flex w-full items-start gap-3 py-2.5 text-left transition-colors hover:bg-muted/30"
+      className="flex w-full items-center gap-2.5 py-2.5 text-left transition-colors hover:bg-muted/30"
       onClick={() => onOpen(alert)}
       aria-label={`Abrir resumo de ${alert.problem_name || "alerta"}`}
     >
@@ -218,27 +218,25 @@ function PriorityRow({
         size="sm"
       />
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Badge variant="outline" className={cn("text-[10px]", severityTone(alert.severity))}>
             {severityLabel(alert.severity)}
           </Badge>
           <Badge variant="outline" className="border-amber-200 bg-amber-50 text-[10px] text-amber-700">
             Sem ACK
           </Badge>
-          <span className="truncate text-[11px] text-muted-foreground">
-            {canonicalClientName({ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source })}
-          </span>
         </div>
-        <p className="mt-1 truncate text-sm font-semibold">
-          {canonicalHostName(alert)}
+        <p className="mt-1 truncate text-sm font-semibold text-foreground">
+          {canonicalClientName({ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source })}
         </p>
+        <p className="truncate text-xs text-foreground/80">{canonicalHostName(alert)}</p>
         <p className="truncate text-xs text-muted-foreground">{alert.problem_name}</p>
         <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
           <span>Duração {formatDurationSeconds(alert.duration_seconds)}</span>
           <span>Início {formatDateTime(alert.first_seen_at)}</span>
         </div>
       </div>
-      <Eye className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <Eye className="h-5 w-5 shrink-0 self-center text-muted-foreground" aria-hidden="true" />
     </button>
   );
 }
@@ -793,26 +791,35 @@ export default function Index() {
                   <button
                     key={item.id}
                     type="button"
-                    className="flex w-full items-start justify-between gap-3 py-2.5 text-left transition-colors hover:bg-muted/30"
+                    className="flex w-full items-start justify-between gap-2.5 py-2.5 text-left transition-colors hover:bg-muted/30"
                     onClick={() => openHistoryEvent(item)}
                   >
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="outline" className="text-[10px]">{homeEventLabel(item.event_type)}</Badge>
-                        {item.severity ? (
-                          <Badge variant="outline" className={cn("text-[10px]", severityTone(item.severity))}>
-                            {severityLabel(item.severity)}
-                          </Badge>
+                    <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                      <ClientIdentity
+                        customer={{ key: item.customer_key, name: item.customer_name }}
+                        size="sm"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge variant="outline" className="text-[10px]">{homeEventLabel(item.event_type)}</Badge>
+                          {item.severity ? (
+                            <Badge variant="outline" className={cn("text-[10px]", severityTone(item.severity))}>
+                              {severityLabel(item.severity)}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 truncate text-sm font-semibold text-foreground">
+                          {canonicalClientName({ key: item.customer_key, name: item.customer_name })}
+                        </p>
+                        <p className="truncate text-xs text-foreground/80">{canonicalHostName(item)}</p>
+                        <p className="truncate text-xs text-muted-foreground">{item.problem_name}</p>
+                        {item.description ? (
+                          <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{item.description}</p>
+                        ) : null}
+                        {safeActorName(item.actor_name) ? (
+                          <p className="mt-1 text-[10px] text-muted-foreground">Por {safeActorName(item.actor_name)}</p>
                         ) : null}
                       </div>
-                      <p className="mt-1 truncate text-sm font-semibold">{canonicalHostName(item)}</p>
-                      <p className="truncate text-xs text-muted-foreground">{item.problem_name}</p>
-                      {item.description ? (
-                        <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{item.description}</p>
-                      ) : null}
-                      {safeActorName(item.actor_name) ? (
-                        <p className="mt-1 text-[10px] text-muted-foreground">Por {safeActorName(item.actor_name)}</p>
-                      ) : null}
                     </div>
                     <span className="shrink-0 text-[11px] text-muted-foreground">{formatDateTime(item.occurred_at)}</span>
                   </button>

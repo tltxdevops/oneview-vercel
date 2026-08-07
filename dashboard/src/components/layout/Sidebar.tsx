@@ -17,26 +17,23 @@ type SidebarProps = {
   onOpenChange?: (open: boolean) => void;
 };
 
-type NavAccent = "neutral" | "monitor" | "alerts" | "history";
-
 type NavItem = {
   name: string;
   href: string;
   icon: LucideIcon;
-  accent: NavAccent;
   secondary?: string;
   liveDot?: boolean;
 };
 
-// OV-P0-18/19/20: /config fora do menu; Monitoramento/Alertas/Histórico com identidade visual.
+// OV-P0-18/19/20: /config fora do menu; estado ativo neutro (sem cor por rota).
 const navigation: NavItem[] = [
-  { name: "Início", href: "/", icon: Home, accent: "neutral" },
-  { name: "Monitoramento", href: "/monitoramento", icon: Monitor, accent: "monitor", liveDot: true },
-  { name: "Alertas", href: "/alertas", icon: Bell, accent: "alerts", secondary: "Fila operacional" },
-  { name: "Histórico", href: "/historico", icon: History, accent: "history", secondary: "Eventos e ações" },
+  { name: "Início", href: "/", icon: Home },
+  { name: "Monitoramento", href: "/monitoramento", icon: Monitor, liveDot: true },
+  { name: "Alertas", href: "/alertas", icon: Bell, secondary: "Fila operacional" },
+  { name: "Histórico", href: "/historico", icon: History, secondary: "Eventos e ações" },
 ];
 
-function accentClasses(accent: NavAccent, isActive: boolean) {
+function navToneClasses(isActive: boolean) {
   if (!isActive) {
     return {
       item: "text-white/65 hover:bg-white/5 hover:text-white",
@@ -47,39 +44,12 @@ function accentClasses(accent: NavAccent, isActive: boolean) {
     };
   }
 
-  if (accent === "monitor") {
-    return {
-      item: "bg-emerald-500/15 text-emerald-50",
-      marker: "bg-emerald-400",
-      icon: "text-emerald-300",
-      label: "text-emerald-50",
-      secondary: "text-emerald-100/70",
-    };
-  }
-  if (accent === "alerts") {
-    return {
-      item: "bg-amber-500/15 text-amber-50",
-      marker: "bg-red-400",
-      icon: "text-amber-200",
-      label: "text-amber-50",
-      secondary: "text-amber-100/70",
-    };
-  }
-  if (accent === "history") {
-    return {
-      item: "bg-sky-500/15 text-sky-50",
-      marker: "bg-sky-400",
-      icon: "text-sky-200",
-      label: "text-sky-50",
-      secondary: "text-sky-100/70",
-    };
-  }
   return {
-    item: "bg-white/10 text-white",
-    marker: "bg-white/70",
+    item: "bg-white/15 text-white",
+    marker: "bg-white",
     icon: "text-white",
     label: "text-white",
-    secondary: "text-white/55",
+    secondary: "text-white/60",
   };
 }
 
@@ -207,7 +177,7 @@ export function Sidebar({
                   end={item.href === "/"}
                   aria-label={item.secondary ? `${item.name}. ${item.secondary}` : item.name}
                   className={({ isActive }) => {
-                    const tones = accentClasses(item.accent, isActive);
+                    const tones = navToneClasses(isActive);
                     return cn(
                       "group/link relative flex min-h-9 items-center rounded-lg px-1.5 py-1 transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
@@ -216,13 +186,13 @@ export function Sidebar({
                   }}
                 >
                   {({ isActive }) => {
-                    const tones = accentClasses(item.accent, isActive);
+                    const tones = navToneClasses(isActive);
                     return (
                       <>
                         <span
                           aria-hidden="true"
                           className={cn(
-                            "absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full transition-colors",
+                            "absolute left-0 top-1/2 h-7 w-1 -translate-y-1/2 rounded-full transition-colors",
                             tones.marker,
                           )}
                         />
@@ -239,7 +209,7 @@ export function Sidebar({
                           ) : null}
                         </span>
                         <span className="ml-2 min-w-0 flex-1 opacity-0 transition-opacity group-hover:opacity-100">
-                          <span className={cn("block truncate text-sm font-medium", tones.label)}>
+                          <span className={cn("block truncate text-sm", isActive ? "font-semibold" : "font-medium", tones.label)}>
                             {item.name}
                           </span>
                           {item.secondary ? (

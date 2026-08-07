@@ -20,24 +20,24 @@ const TELETEX_LOGO_SRC = "/tltx/clientes/logos/teletex-logo.png";
 
 const CUSTOMER_LOGO_CATALOG = [
   { aliases: ["ailos"], src: "/tltx/clientes/logos/Ailos.png" },
-  { aliases: ["alubauen"], src: "/tltx/clientes/logos/alubauen-logo.png" },
-  { aliases: ["arauco"], src: "/tltx/clientes/logos/arauco-logo.png" },
+  { aliases: ["alubauen"], src: "/tltx/clientes/logos/Alubauem-logo-new.png" },
+  { aliases: ["arauco"], src: "/tltx/clientes/logos/arauco-logo.jpg" },
   { aliases: ["berneck"], src: "/tltx/clientes/logos/berneck-logo.png" },
   { aliases: ["bnb", "banco do nordeste"], src: "/tltx/clientes/logos/bnb-logo.png" },
-  { aliases: ["brinks"], src: "/tltx/clientes/logos/brinks-logo.png" },
+  { aliases: ["brinks"], src: "/tltx/clientes/logos/logo-brinks.png" },
   { aliases: ["castrolanda"], src: "/tltx/clientes/logos/castrolanda-logo.png" },
   { aliases: ["ciser"], src: "/tltx/clientes/logos/ciser-logo.png" },
   { aliases: ["copel"], src: "/tltx/clientes/logos/copel-logo.png" },
   { aliases: ["essentia"], src: "/tltx/clientes/logos/essentia-logo.png" },
   { aliases: ["estacio"], src: "/tltx/clientes/logos/estacio-logo.png" },
-  { aliases: ["fps"], src: "/tltx/clientes/logos/fps-logo.png" },
+  { aliases: ["fps"], src: "/tltx/clientes/logos/FPS.png" },
   { aliases: ["fraport"], src: "/tltx/clientes/logos/fraport-logo.png" },
   { aliases: ["havan"], src: "/tltx/clientes/logos/havan-logo.png" },
   { aliases: ["nissan"], src: "/tltx/clientes/logos/nissan-logo.png" },
   { aliases: ["ntn"], src: "/tltx/clientes/logos/ntn-logo.png" },
   { aliases: ["osasco"], src: "/tltx/clientes/logos/osasco-logo.png" },
-  { aliases: ["sanepar"], src: "/tltx/clientes/logos/sanepar.png" },
-  { aliases: ["sapore"], src: "/tltx/clientes/logos/sapore-logo.png" },
+  { aliases: ["sanepar"], src: "/tltx/clientes/logos/logo-sanepar.png" },
+  { aliases: ["sapore"], src: "/tltx/clientes/logos/sapore-logo1.jpg" },
   { aliases: ["sesi"], src: "/tltx/clientes/logos/sesi-logo.png" },
   { aliases: ["teletex"], src: TELETEX_LOGO_SRC },
   { aliases: ["tjba", "tribunal de justica da bahia"], src: "/tltx/clientes/logos/tjba-logo.png" },
@@ -205,7 +205,7 @@ export function ClientIdentity({
 }: ClientIdentityProps) {
   const logo = clientLogoSrc(customer);
   const name = canonicalClientName(customer);
-  const box = size === "md" ? "h-10 w-10" : "h-8 w-8";
+  const box = size === "md" ? "h-11 w-11" : "h-10 w-10";
 
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-2", className)}>
@@ -231,7 +231,7 @@ export function ClientIdentity({
         </span>
       )}
       {showName ? (
-        <span className={cn("min-w-0 truncate text-sm font-medium text-foreground", nameClassName)}>
+        <span className={cn("min-w-0 truncate text-sm font-semibold text-foreground", nameClassName)}>
           {name}
         </span>
       ) : null}

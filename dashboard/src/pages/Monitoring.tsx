@@ -239,25 +239,26 @@ function AlertRow({
         {formatOneViewSeverityLabel(alert.severity)}
       </span>
       <span className="min-w-0">
-        <span className="flex min-w-0 items-center gap-2">
+        <span className="flex min-w-0 items-start gap-2">
           <ClientIdentity
             customer={{
               key: alert.customer_key,
               name: alert.customer_name,
               source: alert.customer_source,
             }}
+            size="sm"
+            className="mt-0.5"
           />
           <span className="min-w-0">
-            <span className="block truncate text-sm font-medium text-foreground">{canonicalHostName(alert)}</span>
-            <span className="block truncate text-xs text-muted-foreground">
+            <span className="block truncate text-sm font-semibold text-foreground">
               {canonicalClientName({
                 key: alert.customer_key,
                 name: alert.customer_name,
                 source: alert.customer_source,
               })}
-              {" · "}
-              {alert.problem_name}
             </span>
+            <span className="block truncate text-xs text-foreground/80">{canonicalHostName(alert)}</span>
+            <span className="block truncate text-xs text-muted-foreground">{alert.problem_name}</span>
           </span>
         </span>
       </span>
@@ -702,12 +703,11 @@ export default function MonitoringPage() {
                         <div className="flex min-w-0 items-center gap-2">
                           <ClientIdentity customer={{ name: item.customer_name }} />
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-foreground">{canonicalHostName(item)}</p>
-                            <p className="truncate text-xs text-muted-foreground">
+                            <p className="truncate text-sm font-semibold text-foreground">
                               {canonicalClientName({ name: item.customer_name })}
-                              {" · "}
-                              {item.problem}
                             </p>
+                            <p className="truncate text-sm font-medium text-foreground">{canonicalHostName(item)}</p>
+                            <p className="truncate text-xs text-muted-foreground">{item.problem}</p>
                           </div>
                         </div>
                         <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-200/90">{attentionReason(item, attention?.thresholds)}</p>
