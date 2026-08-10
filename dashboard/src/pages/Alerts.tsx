@@ -7,12 +7,17 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import {
   ClientIdentity,
+  CLASSIFICATION_PENDING_LABEL,
   UNCLASSIFIED_CLIENT_LABEL,
   canonicalClientName,
   canonicalHostName,
   displayHostField,
+  normalizeOperationalScope,
+  operationalClientLabel,
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
+import { AlertOperationalSummary, safeHostIp } from "@/components/oneview/AlertOperationalSummary";
+import { AlertRelatedIncidentsSection } from "@/components/oneview/AlertRelatedIncidentsSection";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -232,34 +237,6 @@ function safeDisplayText(value: unknown, fallback = "-", maxLength = 500) {
   return cleaned ? cleaned.slice(0, maxLength) : fallback;
 }
 
-function safeHostIp(value: unknown): string | null {
-  const candidate = safeDisplayText(value, "", 64);
-  if (!candidate || ["-", "[redacted]", "[ip_protegido]"].includes(candidate.toLowerCase())) return null;
-
-  const ipv4 = candidate.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const octets = ipv4.slice(1).map(Number);
-    if (octets.some((octet) => octet < 0 || octet > 255)) return null;
-    const [first, second] = octets;
-    if (first === 0 || first === 10 || first === 127 || first >= 224) return null;
-    if (first === 100 && second >= 64 && second <= 127) return null;
-    if (first === 169 && second === 254) return null;
-    if (first === 172 && second >= 16 && second <= 31) return null;
-    if (first === 192 && second === 168) return null;
-    return candidate;
-  }
-
-  const normalizedIpv6 = candidate.toLowerCase();
-  if (/^[0-9a-f:]+$/i.test(normalizedIpv6) && normalizedIpv6.includes(":")) {
-    if (normalizedIpv6 === "::1" || normalizedIpv6.startsWith("fe8") || normalizedIpv6.startsWith("fe9")
-      || normalizedIpv6.startsWith("fea") || normalizedIpv6.startsWith("feb")
-      || normalizedIpv6.startsWith("fc") || normalizedIpv6.startsWith("fd")) return null;
-    return candidate;
-  }
-
-  return null;
-}
-
 function safeActorName(value: unknown) {
   const candidate = safeDisplayText(value, "", 160);
   return candidate && !/^\d+$/.test(candidate) ? candidate : null;
@@ -337,7 +314,7 @@ function sourceAckPresentation(alert: {
   };
 }
 
-/** Comentário oficial Zabbix: rejeita vazio, JSON, backfill/sync e frases genéricas. */
+/** Comentário Zabbix: rejeita vazio, JSON, backfill/sync e frases genéricas. */
 function isValidZabbixAckComment(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const trimmed = value.trim();
@@ -570,13 +547,36 @@ function customerPresentation(alert: OneViewAlert) {
     name: alert.customer_name,
     source: alert.customer_source,
   };
-  const unidentified = isUnclassifiedClient(customer);
+  const scope = normalizeOperationalScope(alert.operational_scope);
+  const label = operationalClientLabel({
+    ...customer,
+    operational_scope: alert.operational_scope,
+    operational_scope_label: alert.operational_scope_label,
+  });
 
+  if (scope === "platform" || scope === "test") {
+    return {
+      name: label,
+      hint: null,
+      enrichment: "complete" as const,
+      unidentified: false,
+    };
+  }
+
+  if (scope === "unknown") {
+    return {
+      name: label,
+      hint: CLASSIFICATION_PENDING_LABEL,
+      enrichment: "unclassified" as const,
+      unidentified: true,
+    };
+  }
+
+  const unidentified = isUnclassifiedClient(customer);
   if (unidentified) {
-    const datasource = safeDisplayText(alert.datasource_name, "Fonte não identificada");
     return {
       name: UNCLASSIFIED_CLIENT_LABEL,
-      hint: `A fonte ${datasource} não forneceu evidências suficientes para associar este alerta automaticamente a um cliente.`,
+      hint: CLASSIFICATION_PENDING_LABEL,
       enrichment: "unclassified" as const,
       unidentified: true,
     };
@@ -2016,10 +2016,12 @@ export default function AlertsPage() {
                 const isActive = !isResolved;
                 const hostLabel = canonicalHostName(alert);
                 const technicalHost = displayHostField(alert.host_technical_name, "");
-                const clientLabel = canonicalClientName({
+                const clientLabel = operationalClientLabel({
                   key: alert.customer_key,
                   name: alert.customer_name,
                   source: alert.customer_source,
+                  operational_scope: alert.operational_scope,
+                  operational_scope_label: alert.operational_scope_label,
                 });
                 const problemLabel = safeDisplayText(alert.problem_name, "Alerta sem descrição", 220);
                 const durationLabel = Number.isFinite(Number(alert.duration_seconds)) && Number(alert.duration_seconds) >= 0
@@ -2052,6 +2054,8 @@ export default function AlertsPage() {
                                 name: alert.customer_name,
                                 source: alert.customer_source,
                               }}
+                              operationalScope={alert.operational_scope}
+                              operationalScopeLabel={alert.operational_scope_label}
                               showName
                               nameClassName="max-w-[9rem] truncate text-left text-xs font-semibold"
                             />
@@ -2159,22 +2163,8 @@ export default function AlertsPage() {
           {selectedAlert ? (
             <div className="flex h-full flex-col">
               <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0 space-y-2">
-                    <SheetTitle className="text-xl">Detalhes do alerta</SheetTitle>
-                    <SheetDescription>Informações operacionais seguras e histórico do OneView.</SheetDescription>
-                    <ClientIdentity
-                      customer={{
-                        key: selectedAlert.customer_key,
-                        name: selectedAlert.customer_name,
-                        source: selectedAlert.customer_source,
-                      }}
-                      size="md"
-                      showName
-                    />
-                  </div>
-                  <Badge className={cn("shrink-0 whitespace-nowrap border hover:bg-inherit", isResolvedAlert(selectedAlert) ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{isResolvedAlert(selectedAlert) ? "Resolvido" : "Em acompanhamento"}</Badge>
-                </div>
+                <SheetTitle className="text-xl">Detalhes do alerta</SheetTitle>
+                <SheetDescription>Informações operacionais seguras e histórico do OneView.</SheetDescription>
               </SheetHeader>
 
               <Tabs defaultValue="summary" className="flex min-h-0 flex-1 flex-col">
@@ -2191,13 +2181,14 @@ export default function AlertsPage() {
                   <TabsContent value="summary" className="mt-4 space-y-4">
                     {isDetailLoading && !detail ? <><Skeleton className="h-28 w-full" /><Skeleton className="h-52 w-full" /></> : (
                       <>
-                        <section aria-label="Resumo" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Resumo</h3>
-                          <Card className="ov-panel p-4"><p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Problema</p><p className="mt-2 text-base font-semibold leading-6">{safeDisplayText(selectedAlert.problem_name, "Alerta sem descrição")}</p></Card>
-                        </section>
+                        <AlertOperationalSummary alert={selectedAlert} />
+                        <AlertRelatedIncidentsSection
+                          sourceEventId={selectedAlert.source_event_id}
+                          severity={selectedAlert.severity}
+                        />
                         {selectedCustomer?.unidentified ? (
-                          <section aria-label={UNCLASSIFIED_CLIENT_LABEL} className="rounded-[10px] border border-border/70 bg-muted/20 p-4 shadow-sm">
-                            <h3 className="text-sm font-semibold">{UNCLASSIFIED_CLIENT_LABEL}</h3>
+                          <section aria-label={selectedCustomer.name} className="rounded-[10px] border border-border/70 bg-muted/20 p-4 shadow-sm">
+                            <h3 className="text-sm font-semibold">{selectedCustomer.name}</h3>
                             <p className="mt-1 text-sm text-muted-foreground">{selectedCustomer.hint}</p>
                             <div className="mt-4 grid gap-3 sm:grid-cols-2">
                               <div><p className="text-[11px] text-muted-foreground">Fonte</p><p className="mt-1 font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></div>
@@ -2218,58 +2209,33 @@ export default function AlertsPage() {
                             <p className="mt-4 border-t border-border/70 pt-3 text-xs text-muted-foreground">Recomendação: revise as tags e os grupos na origem para permitir a associação automática do cliente.</p>
                           </section>
                         ) : null}
-                        <section aria-label="Resumo operacional" className="space-y-2">
+                        <section aria-label="Recovery e fonte" className="space-y-2">
                           <div className="grid gap-3 sm:grid-cols-2">
-                            {[
-                              ["Estado", isResolvedAlert(selectedAlert) ? "Resolvido" : "Ativo"],
-                              ["Severidade", formatOneViewSeverityLabel(selectedAlert.severity)],
-                              ["Início", formatDateTime(selectedAlert.first_seen_at)],
-                              ["Duração", Number.isFinite(Number(selectedAlert.duration_seconds)) && Number(selectedAlert.duration_seconds) >= 0 ? formatDurationSeconds(Number(selectedAlert.duration_seconds)) : "—"],
-                              ["Recovery", selectedAlert.resolved_at ? formatDateTime(selectedAlert.resolved_at) : "Alerta ainda ativo"],
-                              ["Última atualização", formatDateTime(selectedAlert.last_seen_at)],
-                            ].map(([label, value]) => <Card key={label} className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 break-words font-semibold">{safeDisplayText(value, "—")}</p></Card>)}
+                            <Card className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">Recovery</p><p className="mt-1 break-words font-semibold">{selectedAlert.resolved_at ? formatDateTime(selectedAlert.resolved_at) : "Alerta ainda ativo"}</p></Card>
+                            <Card className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">Fonte Zabbix</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></Card>
                           </div>
                         </section>
-                        <section aria-label="Origem" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Origem</h3>
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <Card className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">Fonte Zabbix</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></Card>
+                        {!selectedCustomer?.unidentified ? (
+                          <section aria-label="Host, grupos e tags" className="space-y-2">
+                            <h3 className="text-sm font-semibold">Host, grupos e tags</h3>
                             <Card className="ov-panel p-4">
-                              <p className="text-[11px] text-muted-foreground">Cliente identificado</p>
-                              <div className="mt-1">
-                                <ClientIdentity
-                                  customer={{
-                                    key: selectedAlert.customer_key,
-                                    name: selectedAlert.customer_name,
-                                    source: selectedAlert.customer_source,
-                                  }}
-                                  size="sm"
-                                  showName
-                                  nameClassName="break-words font-semibold"
-                                />
+                              <p className="text-[11px] text-muted-foreground">Host</p>
+                              <p className="mt-1 break-words font-semibold">{canonicalHostName(selectedAlert)}</p>
+                              <div className="mt-4">
+                                <p className="text-[11px] text-muted-foreground">Grupos</p>
+                                <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedAlert.host_groups?.length
+                                  ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? group.name}-${index}`} variant="outline">{safeDisplayText(group.name, "Grupo sem nome")}</Badge>)
+                                  : <span className="text-xs text-muted-foreground">Nenhum grupo disponível.</span>}</div>
+                              </div>
+                              <div className="mt-3">
+                                <p className="text-[11px] text-muted-foreground">Tags</p>
+                                <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedClassificationTags.length
+                                  ? selectedClassificationTags.map((tag, index) => <Badge key={`${tag.tag}-${tag.value}-${index}`} variant="secondary">{tag.tag}{tag.value ? `: ${tag.value}` : ""}</Badge>)
+                                  : <span className="text-xs text-muted-foreground">Nenhuma tag disponível.</span>}</div>
                               </div>
                             </Card>
-                          </div>
-                        </section>
-                        <section aria-label="Host, grupos e tags" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Host, grupos e tags</h3>
-                          <Card className="ov-panel p-4">
-                            <p className="text-[11px] text-muted-foreground">Host</p>
-                            <p className="mt-1 break-words font-semibold">{canonicalHostName(selectedAlert)}</p>
-                            <div className="mt-4">
-                              <p className="text-[11px] text-muted-foreground">Grupos</p>
-                              <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedAlert.host_groups?.length
-                                ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? group.name}-${index}`} variant="outline">{safeDisplayText(group.name, "Grupo sem nome")}</Badge>)
-                                : <span className="text-xs text-muted-foreground">Nenhum grupo disponível.</span>}</div>
-                            </div>
-                            <div className="mt-3">
-                              <p className="text-[11px] text-muted-foreground">Tags</p>
-                              <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedClassificationTags.length
-                                ? selectedClassificationTags.map((tag, index) => <Badge key={`${tag.tag}-${tag.value}-${index}`} variant="secondary">{tag.tag}{tag.value ? `: ${tag.value}` : ""}</Badge>)
-                                : <span className="text-xs text-muted-foreground">Nenhuma tag disponível.</span>}</div>
-                            </div>
-                          </Card>
-                        </section>
+                          </section>
+                        ) : null}
                         <section aria-label="Reconhecimento" className="space-y-2">
                           <h3 className="text-sm font-semibold">Reconhecimento</h3>
                           <div className="grid gap-3">

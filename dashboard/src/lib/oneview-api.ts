@@ -57,6 +57,13 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       authentication_required: "Sua sessão expirou. Entre novamente.",
       database_timeout: "A consulta demorou além do esperado. Tente novamente.",
       database_unavailable: "O banco OneView está temporariamente indisponível.",
+      servicenow_not_configured: "ServiceNow indisponível",
+      servicenow_unavailable: "ServiceNow indisponível",
+      servicenow_timeout: "ServiceNow indisponível",
+      servicenow_rate_limited: "ServiceNow indisponível",
+      servicenow_authentication_failed: "ServiceNow indisponível",
+      servicenow_access_forbidden: "ServiceNow indisponível",
+      servicenow_incidents_disabled: "ServiceNow indisponível",
       insufficient_role: "Seu usuário não possui permissão para solicitar reconhecimento.",
       ack_request_disabled: "A solicitação de reconhecimento está desabilitada.",
       datasource_not_allowed: "Esta fonte ainda não permite solicitação de reconhecimento.",
@@ -77,7 +84,9 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
     ? "snapshot"
     : headerSource === "database" || bodySource === "database"
       ? "database"
-      : undefined;
+      : headerSource === "servicenow" || bodySource === "servicenow"
+        ? "servicenow"
+        : undefined;
 
   return {
     ...record,
@@ -86,7 +95,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   } as T;
 }
 
-export type OneViewDataSourceKind = "database" | "snapshot";
+export type OneViewDataSourceKind = "database" | "snapshot" | "servicenow";
 
 /** Labels oficiais Zabbix (sem tradução). Slugs técnicos permanecem para BFF/filtros. */
 export const ONEVIEW_SEVERITY_CATALOG = {
@@ -272,6 +281,9 @@ export interface OneViewAlert {
   customer_key: string | null;
   customer_source: string | null;
   customer_confidence: string | null;
+  /** OV-P0-56 — escopo operacional derivado no BFF. */
+  operational_scope?: "customer" | "platform" | "test" | "unknown" | null;
+  operational_scope_label?: string | null;
   enrichment_status: "enriched" | "pending";
   enrichment_state: "complete" | "partial" | "legacy" | "unclassified";
   source_type: string;
@@ -561,6 +573,9 @@ export interface GlobalHistoryItem {
   source: string;
   customer_name: string;
   customer_key: string;
+  /** OV-P0-56/61 — apresentação de Eventos (BFF). */
+  operational_scope: "customer" | "platform" | "test" | "unknown";
+  operational_scope_label: string;
   datasource_name: string;
   host_name: string;
   problem_name: string;
@@ -618,8 +633,12 @@ export interface AttentionRequiredResponse extends OneViewResponseMeta {
     id: string;
     customer_name: string | null;
     customer_confidence: string;
+    operational_scope?: "customer" | "platform" | "test" | "unknown" | null;
+    operational_scope_label?: string | null;
     datasource_name: string;
-    host_visible_name: string;
+    host_visible_name: string | null;
+    host_technical_name?: string | null;
+    host_name?: string | null;
     problem: string;
     severity: string;
     first_seen_at: string;
@@ -823,6 +842,173 @@ export async function fetchGlobalHistory(params?: {
   if (params?.occurredTo) search.set("occurred_to", params.occurredTo);
   const query = search.toString();
   return fetchApi<GlobalHistoryResponse>(`/oneview/history${query ? `?${query}` : ""}`, { signal: params?.signal });
+}
+
+export type OneViewIncident = {
+  sys_id: string | null;
+  number: string | null;
+  short_description: string | null;
+  description?: string | null;
+  state: string | null;
+  priority: string | null;
+  caller_id: string | null;
+  contact_type: string | null;
+  assignment_group: string | null;
+  assigned_to: string | null;
+  company: string | null;
+  opened_at: string | null;
+  resolved_at: string | null;
+  closed_at: string | null;
+  sys_created_on: string | null;
+  sys_updated_on: string | null;
+  correlation_id: string | null;
+  u_hostname_zabbix: string | null;
+  u_ip_zabbix: string | null;
+  zabbix_event_id?: string | null;
+  zabbix_host?: string | null;
+  zabbix_ip?: string | null;
+  caller_id_display?: string | null;
+  contact_type_display?: string | null;
+  assignment_group_display?: string | null;
+  assigned_to_display?: string | null;
+  company_display?: string | null;
+  state_display?: string | null;
+  priority_display?: string | null;
+  servicenow_url?: string | null;
+};
+
+export type IncidentRelatedAlert = {
+  id: string;
+  host: string;
+  customer: string;
+  severity: string;
+  status: string;
+  source_event_id?: string | null;
+};
+
+export type IncidentRelatedAlertResponse = {
+  matched: boolean;
+  zabbix_event_id: string | null;
+  alert: IncidentRelatedAlert | null;
+  data_source?: OneViewDataSourceKind | string;
+  checked_at?: string;
+  error?: string;
+};
+
+export type IncidentListResponse = {
+  items: OneViewIncident[];
+  pagination: {
+    page: number;
+    page_size: number;
+    total_items: number;
+    total_pages: number;
+    has_next: boolean;
+    has_previous: boolean;
+  };
+  filters: {
+    caller_id: string | null;
+    contact_type: string | null;
+    number: string | null;
+    state: string | null;
+    priority: string | null;
+    company: string | null;
+    opened_from: string | null;
+    opened_to: string | null;
+    unassigned: boolean;
+    search: string | null;
+  };
+  counts?: {
+    total: number;
+    open: number;
+    in_progress: number;
+    resolved: number;
+    closed: number;
+    unassigned: number;
+  } | null;
+  data_source?: OneViewDataSourceKind | string;
+  checked_at?: string;
+};
+
+export async function fetchIncidents(params?: {
+  page?: number;
+  pageSize?: number;
+  callerId?: string;
+  number?: string;
+  state?: string;
+  priority?: string;
+  company?: string;
+  openedFrom?: string;
+  openedTo?: string;
+  unassigned?: boolean;
+  search?: string;
+  signal?: AbortSignal;
+}): Promise<IncidentListResponse> {
+  // SN-P0-15: filtros allowlisted apenas. Encoded query só no BFF; canal monitoring é fixo no backend.
+  const search = new URLSearchParams();
+  search.set("page", String(Math.max(1, params?.page ?? 1)));
+  search.set("page_size", String(Math.min(Math.max(params?.pageSize ?? 25, 1), 100)));
+  if (params?.callerId) search.set("caller_id", params.callerId);
+  if (params?.number) search.set("number", params.number);
+  if (params?.state) search.set("state", params.state);
+  if (params?.priority) search.set("priority", params.priority);
+  if (params?.company) search.set("company", params.company);
+  if (params?.openedFrom) search.set("opened_from", params.openedFrom);
+  if (params?.openedTo) search.set("opened_to", params.openedTo);
+  if (params?.unassigned) search.set("unassigned", "true");
+  if (params?.search) search.set("search", params.search);
+  const query = search.toString();
+  return fetchApi<IncidentListResponse>(`/oneview/incidents${query ? `?${query}` : ""}`, {
+    signal: params?.signal,
+  });
+}
+
+/** SN-P0-08 — lookup read-only alerta ↔ incidente via zabbix_event_id. */
+export async function fetchIncidentRelatedAlert(
+  zabbixEventId: string,
+  signal?: AbortSignal,
+): Promise<IncidentRelatedAlertResponse> {
+  const search = new URLSearchParams();
+  search.set("zabbix_event_id", zabbixEventId.trim());
+  return fetchApi<IncidentRelatedAlertResponse>(
+    `/oneview/incidents/related-alert?${search.toString()}`,
+    { signal },
+  );
+}
+
+/** SN-P0-16 — incidentes SN relacionados ao alerta (source_event_id). Sem fallback por host. */
+export type AlertRelatedIncident = {
+  sys_id: string | null;
+  number: string | null;
+  state: string | null;
+  state_display?: string | null;
+  priority: string | null;
+  priority_display?: string | null;
+  assignment_group: string | null;
+  assignment_group_display?: string | null;
+  assigned_to: string | null;
+  assigned_to_display?: string | null;
+  sys_updated_on: string | null;
+  zabbix_event_id?: string | null;
+  servicenow_url?: string | null;
+};
+
+export type AlertRelatedIncidentsResponse = OneViewResponseMeta & {
+  matched: boolean;
+  source_event_id: string | null;
+  incidents: AlertRelatedIncident[];
+  error?: string;
+};
+
+export async function fetchAlertRelatedIncidents(
+  sourceEventId: string,
+  signal?: AbortSignal,
+): Promise<AlertRelatedIncidentsResponse> {
+  const search = new URLSearchParams();
+  search.set("source_event_id", sourceEventId.trim());
+  return fetchApi<AlertRelatedIncidentsResponse>(
+    `/oneview/alerts/related-incidents?${search.toString()}`,
+    { signal },
+  );
 }
 
 export async function requestAlertAcknowledgement(

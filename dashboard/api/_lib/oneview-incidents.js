@@ -1,0 +1,634 @@
+/**
+ * SN-P0-02 / SN-P0-07 / SN-P0-15 — GET /api/oneview/incidents (ServiceNow read-only BFF).
+ * Credenciais só server-side. Sem PostgreSQL. Sem POST/PATCH/DELETE.
+ * Encoded query montada só no backend com filtros allowlisted (nunca sysparm_query cru).
+ */
+
+import { methodNotAllowed, sendJson } from "./http.js";
+import { requireOneViewAuth } from "./oneview-auth.js";
+import {
+  getServiceNowConfig,
+  mapAggregateGroupCounts,
+  mapServiceNowErrorToHttpStatus,
+  mapServiceNowErrorToPublicCode,
+  parseAggregateStatsCount,
+  sanitizeServiceNowError,
+  serviceNowGet,
+  serviceNowStats,
+  ServiceNowClientError,
+} from "./servicenow-client.js";
+import {
+  extractServiceNowDisplay,
+  normalizeServiceNowIncident,
+  SERVICENOW_INCIDENT_FIELDS_CSV,
+} from "./servicenow-normalize.js";
+
+const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
+const DEFAULT_PAGE = 1;
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_CONTACT_TYPE = "monitoring";
+const SAFE_FILTER = /^[a-zA-Z0-9._:@/\- ]{1,120}$/;
+const SAFE_STATE = /^[0-9,]{1,40}$/;
+const SAFE_PRIORITY = /^[1-5]$/;
+
+/**
+ * SN-P0-12 — definições explícitas de KPI por state ServiceNow.
+ * Não inferir por short_description. On Hold (3) e Cancelado (8) ficam fora da faixa.
+ *
+ * Abertos      = state=1  (Novo)
+ * Em andamento = state=2  (Em andamento)
+ * Resolvidos   = state=6  (Resolvido) — NÃO inclui Encerrado
+ * Encerrados   = state=7  (Encerrado)
+ */
+export const INCIDENT_STATE_KPI = Object.freeze({
+  open: Object.freeze({ state: "1", label: "Abertos", display: "Novo" }),
+  in_progress: Object.freeze({ state: "2", label: "Em andamento", display: "Em andamento" }),
+  resolved: Object.freeze({ state: "6", label: "Resolvidos", display: "Resolvido(a)" }),
+  closed: Object.freeze({ state: "7", label: "Encerrados", display: "Encerrado(a)" }),
+});
+const SAFE_NUMBER = /^[A-Za-z0-9_-]{1,40}$/;
+const SAFE_SEARCH = /^[a-zA-Z0-9._:@/\- ]{1,80}$/;
+const SAFE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** SN-P0-15 — únicos query params aceitos do frontend. */
+export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
+  "page",
+  "page_size",
+  "caller_id",
+  "contact_type",
+  "number",
+  "state",
+  "priority",
+  "company",
+  "client",
+  "cliente",
+  "opened_from",
+  "opened_to",
+  "unassigned",
+  "search",
+]);
+
+const ALLOWED_QUERY_KEY_SET = new Set(INCIDENT_ALLOWED_QUERY_KEYS);
+
+function oneQuery(req, key) {
+  const value = req?.query?.[key];
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+function asPageInt(value, fallback, { min = 1, max = 10_000 } = {}) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+function cleanOptional(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function booleanFlag(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return ["true", "1", "yes", "sim"].includes(String(value).trim().toLowerCase());
+}
+
+function invalidQuery(code = "invalid_query") {
+  const error = new Error(code);
+  error.code = "invalid_query";
+  return error;
+}
+
+export function isServiceNowIncidentsEnabled(env = process.env) {
+  return booleanFlag(env.SERVICENOW_INCIDENTS_ENABLED, false);
+}
+
+function assertSafeFilter(value, code) {
+  if (value == null) return null;
+  if (!SAFE_FILTER.test(value)) throw invalidQuery(code);
+  return value;
+}
+
+function assertSafeDate(value, code) {
+  if (value == null) return null;
+  if (!SAFE_DATE.test(value)) throw invalidQuery(code);
+  return value;
+}
+
+function escapeLike(value) {
+  return String(value).replace(/([%^@!=<>\\])/g, "\\$1");
+}
+
+/**
+ * SN-P0-15 — rejeita sysparm_query / sysparm_* crus e chaves fora do allowlist.
+ */
+export function assertAllowlistedIncidentQuery(req) {
+  const query = req?.query;
+  if (query == null || typeof query !== "object") return;
+
+  for (const key of Object.keys(query)) {
+    const normalized = String(key || "").trim().toLowerCase();
+    if (!normalized) continue;
+    if (normalized === "sysparm_query" || normalized.startsWith("sysparm_")) {
+      throw invalidQuery("raw_sysparm_not_allowed");
+    }
+    if (!ALLOWED_QUERY_KEY_SET.has(normalized) && !ALLOWED_QUERY_KEY_SET.has(key)) {
+      throw invalidQuery("unknown_query_param");
+    }
+  }
+}
+
+/**
+ * Parseia filtros allowlisted. contact_type é sempre monitoring (base obrigatória).
+ */
+export function parseIncidentFilters(req) {
+  assertAllowlistedIncidentQuery(req);
+
+  const page = asPageInt(oneQuery(req, "page"), DEFAULT_PAGE, { min: 1, max: 10_000 });
+  const pageSize = asPageInt(oneQuery(req, "page_size"), DEFAULT_PAGE_SIZE, {
+    min: 1,
+    max: MAX_PAGE_SIZE,
+  });
+
+  // SN-P0-15: base obrigatória. Aceita omitido ou "monitoring"; qualquer outro valor = 400.
+  const contactTypeRaw = cleanOptional(oneQuery(req, "contact_type"));
+  if (contactTypeRaw != null && contactTypeRaw !== DEFAULT_CONTACT_TYPE) {
+    throw invalidQuery("invalid_contact_type");
+  }
+  const contactType = DEFAULT_CONTACT_TYPE;
+
+  const callerId = assertSafeFilter(cleanOptional(oneQuery(req, "caller_id")), "invalid_caller_id");
+  const stateRaw = cleanOptional(oneQuery(req, "state"));
+  const state = stateRaw
+    ? (SAFE_STATE.test(stateRaw) ? stateRaw : (() => { throw invalidQuery("invalid_state"); })())
+    : null;
+
+  const priorityRaw = cleanOptional(oneQuery(req, "priority"));
+  const priority = priorityRaw
+    ? (SAFE_PRIORITY.test(priorityRaw) ? priorityRaw : (() => { throw invalidQuery("invalid_priority"); })())
+    : null;
+
+  const company = assertSafeFilter(
+    cleanOptional(oneQuery(req, "company") ?? oneQuery(req, "client") ?? oneQuery(req, "cliente")),
+    "invalid_company",
+  );
+  const openedFrom = assertSafeDate(cleanOptional(oneQuery(req, "opened_from")), "invalid_opened_from");
+  const openedTo = assertSafeDate(cleanOptional(oneQuery(req, "opened_to")), "invalid_opened_to");
+  const unassigned = booleanFlag(oneQuery(req, "unassigned"), false);
+
+  const numberRaw = cleanOptional(oneQuery(req, "number"));
+  const number = numberRaw
+    ? (SAFE_NUMBER.test(numberRaw) ? numberRaw : (() => { throw invalidQuery("invalid_number"); })())
+    : null;
+
+  const searchRaw = cleanOptional(oneQuery(req, "search"));
+  const search = searchRaw
+    ? (SAFE_SEARCH.test(searchRaw) ? searchRaw : (() => { throw invalidQuery("invalid_search"); })())
+    : null;
+
+  return {
+    page,
+    page_size: pageSize,
+    caller_id: callerId,
+    contact_type: contactType,
+    number,
+    state,
+    priority,
+    company,
+    opened_from: openedFrom,
+    opened_to: openedTo,
+    unassigned,
+    search,
+  };
+}
+
+function buildAndParts(filters, { stateOverride = undefined, unassignedOverride = undefined } = {}) {
+  const andParts = [];
+
+  // SN-P0-15: contact_type=monitoring sempre na base da encoded query.
+  andParts.push(`contact_type=${DEFAULT_CONTACT_TYPE}`);
+  if (filters.caller_id) andParts.push(`caller_id=${filters.caller_id}`);
+  if (filters.number) andParts.push(`number=${filters.number}`);
+  if (filters.priority) andParts.push(`priority=${filters.priority}`);
+  if (filters.company) andParts.push(`company.nameLIKE${escapeLike(filters.company)}`);
+  if (filters.opened_from) andParts.push(`opened_at>=${filters.opened_from}`);
+  if (filters.opened_to) andParts.push(`opened_at<=${filters.opened_to} 23:59:59`);
+
+  const state = stateOverride === undefined ? filters.state : stateOverride;
+  if (state) {
+    if (String(state).includes(",")) andParts.push(`stateIN${state}`);
+    else andParts.push(`state=${state}`);
+  }
+
+  const unassigned = unassignedOverride === undefined ? filters.unassigned : unassignedOverride;
+  if (unassigned) andParts.push("assigned_toISEMPTY");
+
+  return andParts;
+}
+
+/**
+ * Monta encoded query ServiceNow a partir dos filtros allowlisted (SN-P0-15).
+ * Sempre inclui contact_type=monitoring + ORDERBYDESCsys_updated_on.
+ * Search usa ^NQ para (filtros AND numberLIKE) OR (filtros AND short_descriptionLIKE).
+ */
+export function buildIncidentSysparmQuery(filters, options = {}) {
+  const andParts = buildAndParts(filters, options);
+  const base = andParts.join("^");
+  let query = base;
+
+  if (filters.search && !options.skipSearch) {
+    const term = escapeLike(filters.search);
+    const byNumber = base ? `${base}^numberLIKE${term}` : `numberLIKE${term}`;
+    const byDescription = base ? `${base}^short_descriptionLIKE${term}` : `short_descriptionLIKE${term}`;
+    query = `${byNumber}^NQ${byDescription}`;
+  }
+
+  if (options.skipOrder) return query || "";
+
+  return query
+    ? `${query}^ORDERBYDESCsys_updated_on^ORDERBYsys_id`
+    : "ORDERBYDESCsys_updated_on^ORDERBYsys_id";
+}
+
+function buildServiceNowIncidentUrl(baseUrl, sysId) {
+  const base = String(baseUrl || "").trim().replace(/\/+$/, "");
+  const id = String(sysId || "").trim();
+  if (!base || !id) return null;
+  try {
+    const url = new URL("/incident.do", `${base}/`);
+    url.searchParams.set("sys_id", id);
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** SN-P0-16 — caller fixo "zabbix monitoring" (sem fallback por host). */
+export const ZABBIX_MONITORING_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
+export const RELATED_INCIDENTS_MAX = 50;
+
+export function enrichIncident(raw, config = getServiceNowConfig()) {
+  const base = normalizeServiceNowIncident(raw);
+  return {
+    ...base,
+    caller_id_display: extractServiceNowDisplay(raw?.caller_id),
+    contact_type_display: extractServiceNowDisplay(raw?.contact_type),
+    assignment_group_display: extractServiceNowDisplay(raw?.assignment_group),
+    assigned_to_display: extractServiceNowDisplay(raw?.assigned_to),
+    company_display: extractServiceNowDisplay(raw?.company),
+    state_display: extractServiceNowDisplay(raw?.state),
+    priority_display: extractServiceNowDisplay(raw?.priority),
+    servicenow_url: buildServiceNowIncidentUrl(config.baseUrl, base.sys_id),
+  };
+}
+
+/**
+ * SN-P0-16 — encoded query alerta → incidentes.
+ * contact_type=monitoring + caller zabbix monitoring + description LIKE eventid=
+ * (sem host fallback).
+ */
+export function buildRelatedIncidentsSysparmQuery(sourceEventId) {
+  const eventId = escapeLike(String(sourceEventId || "").trim());
+  return (
+    `contact_type=${DEFAULT_CONTACT_TYPE}`
+    + `^caller_id=${ZABBIX_MONITORING_CALLER_ID}`
+    + `^descriptionLIKEeventid=${eventId}`
+    + "^ORDERBYDESCsys_updated_on^ORDERBYsys_id"
+  );
+}
+
+/**
+ * SN-P0-16 — GET ServiceNow + pós-filtro parser.zabbix_event_id === source_event_id.
+ * Aceita múltiplos incidentes. Sem fallback por host.
+ */
+export async function fetchIncidentsBySourceEventId(sourceEventId, {
+  config = getServiceNowConfig(),
+  fetchImpl,
+  getPage = serviceNowGet,
+  maxRecords = RELATED_INCIDENTS_MAX,
+} = {}) {
+  if (!config.configured) {
+    throw new ServiceNowClientError("servicenow_not_configured");
+  }
+
+  const eventId = String(sourceEventId || "").trim();
+  const pageResult = await getPage("incident", {
+    config,
+    fetchImpl,
+    sysparm_query: buildRelatedIncidentsSysparmQuery(eventId),
+    sysparm_fields: SERVICENOW_INCIDENT_FIELDS_CSV,
+    sysparm_limit: Math.min(Math.max(Number(maxRecords) || RELATED_INCIDENTS_MAX, 1), RELATED_INCIDENTS_MAX),
+    sysparm_offset: 0,
+    sysparm_display_value: "all",
+    sysparm_exclude_reference_link: "true",
+  });
+
+  const candidates = Array.isArray(pageResult.records) ? pageResult.records : [];
+  const incidents = [];
+  for (const raw of candidates) {
+    const item = enrichIncident(raw, config);
+    if (String(item.zabbix_event_id || "") === eventId) {
+      incidents.push(item);
+    }
+  }
+
+  return {
+    source_event_id: eventId,
+    matched: incidents.length > 0,
+    incidents,
+    candidates_returned: candidates.length,
+    data_source: "servicenow",
+    checked_at: new Date().toISOString(),
+  };
+}
+
+function mapServiceNowStatus(error) {
+  return mapServiceNowErrorToHttpStatus(error);
+}
+
+function publicErrorCode(error) {
+  return mapServiceNowErrorToPublicCode(error);
+}
+
+function sendIncidentsJson(res, status, payload, { dataSource = null } = {}) {
+  res.setHeader("Cache-Control", NO_CACHE);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  if (dataSource) res.setHeader("X-OneView-Data-Source", dataSource);
+  return sendJson(res, status, payload);
+}
+
+async function countWithQuery(getPage, config, fetchImpl, sysparmQuery) {
+  const pageResult = await getPage("incident", {
+    config,
+    fetchImpl,
+    sysparm_query: sysparmQuery || "ORDERBYDESCsys_id",
+    sysparm_fields: "sys_id",
+    sysparm_limit: 1,
+    sysparm_offset: 0,
+    sysparm_display_value: "false",
+    sysparm_exclude_reference_link: "true",
+  });
+  if (Number.isFinite(pageResult.totalCount)) return pageResult.totalCount;
+  return pageResult.count || 0;
+}
+
+/**
+ * Contagens via Table API (X-Total-Count) — fallback se Aggregate API falhar/403.
+ */
+async function fetchIncidentCountsViaTable(filters, { config, fetchImpl, getPage }) {
+  const baseFilters = {
+    ...filters,
+    state: null,
+    unassigned: false,
+  };
+
+  const unassignedParts = [
+    ...buildAndParts({ ...baseFilters, unassigned: true }),
+    "stateNOT IN6,7",
+  ];
+
+  const [total, open, inProgress, resolved, closed, unassigned] = await Promise.all([
+    countWithQuery(
+      getPage,
+      config,
+      fetchImpl,
+      buildIncidentSysparmQuery(baseFilters, { skipOrder: true }),
+    ),
+    countWithQuery(
+      getPage,
+      config,
+      fetchImpl,
+      buildIncidentSysparmQuery({ ...baseFilters, state: INCIDENT_STATE_KPI.open.state }, { skipOrder: true }),
+    ),
+    countWithQuery(
+      getPage,
+      config,
+      fetchImpl,
+      buildIncidentSysparmQuery({ ...baseFilters, state: INCIDENT_STATE_KPI.in_progress.state }, { skipOrder: true }),
+    ),
+    countWithQuery(
+      getPage,
+      config,
+      fetchImpl,
+      buildIncidentSysparmQuery({ ...baseFilters, state: INCIDENT_STATE_KPI.resolved.state }, { skipOrder: true }),
+    ),
+    countWithQuery(
+      getPage,
+      config,
+      fetchImpl,
+      buildIncidentSysparmQuery({ ...baseFilters, state: INCIDENT_STATE_KPI.closed.state }, { skipOrder: true }),
+    ),
+    countWithQuery(
+      getPage,
+      config,
+      fetchImpl,
+      unassignedParts.join("^"),
+    ),
+  ]);
+
+  return {
+    total,
+    open,
+    in_progress: inProgress,
+    resolved,
+    closed,
+    unassigned,
+  };
+}
+
+/**
+ * Contagens operacionais via Aggregate API (SN-P0-12B).
+ * Fallback automático para Table API se Aggregate retornar 403/erro.
+ */
+export async function fetchIncidentCounts(filters, {
+  config = getServiceNowConfig(),
+  fetchImpl,
+  getPage = serviceNowGet,
+  getStats = serviceNowStats,
+} = {}) {
+  const baseFilters = {
+    ...filters,
+    state: null,
+    unassigned: false,
+  };
+  const baseQuery = buildIncidentSysparmQuery(baseFilters, { skipOrder: true });
+  const unassignedQuery = [
+    ...buildAndParts({ ...baseFilters, unassigned: true }),
+    "stateNOT IN6,7",
+  ].join("^");
+
+  try {
+    const [totalResult, stateResult, unassignedResult] = await Promise.all([
+      getStats("incident", {
+        config,
+        fetchImpl,
+        sysparm_count: true,
+        sysparm_query: baseQuery,
+      }),
+      getStats("incident", {
+        config,
+        fetchImpl,
+        sysparm_count: true,
+        sysparm_group_by: "state",
+        sysparm_query: baseQuery,
+      }),
+      getStats("incident", {
+        config,
+        fetchImpl,
+        sysparm_count: true,
+        sysparm_query: unassignedQuery,
+      }),
+    ]);
+
+    const byState = mapAggregateGroupCounts(stateResult.rows, "state");
+    const total = parseAggregateStatsCount(totalResult.rows?.[0]);
+    const unassigned = parseAggregateStatsCount(unassignedResult.rows?.[0]);
+
+    if (total == null || unassigned == null) {
+      throw new ServiceNowClientError("servicenow_invalid_response", { status: 502 });
+    }
+
+    return {
+      total,
+      open: byState[INCIDENT_STATE_KPI.open.state] || 0,
+      in_progress: byState[INCIDENT_STATE_KPI.in_progress.state] || 0,
+      resolved: byState[INCIDENT_STATE_KPI.resolved.state] || 0,
+      closed: byState[INCIDENT_STATE_KPI.closed.state] || 0,
+      unassigned,
+    };
+  } catch (error) {
+    // SN-P0-12B: se Aggregate API for negada/indisponível, mantém KPIs via Table API.
+    return fetchIncidentCountsViaTable(filters, { config, fetchImpl, getPage });
+  }
+}
+
+/**
+ * Busca uma página de incidentes no ServiceNow (somente GET).
+ */
+export async function fetchIncidentsPage(filters, {
+  config = getServiceNowConfig(),
+  fetchImpl,
+  getPage = serviceNowGet,
+  getStats = serviceNowStats,
+  includeCounts = true,
+} = {}) {
+  if (!config.configured) {
+    throw new ServiceNowClientError("servicenow_not_configured");
+  }
+
+  const offset = (filters.page - 1) * filters.page_size;
+  const sysparmQuery = buildIncidentSysparmQuery(filters);
+
+  const pageResult = await getPage("incident", {
+    config,
+    fetchImpl,
+    sysparm_query: sysparmQuery,
+    sysparm_fields: SERVICENOW_INCIDENT_FIELDS_CSV,
+    sysparm_limit: filters.page_size,
+    sysparm_offset: offset,
+    sysparm_display_value: "all",
+    sysparm_exclude_reference_link: "true",
+  });
+
+  const totalItems = Number.isFinite(pageResult.totalCount)
+    ? pageResult.totalCount
+    : pageResult.count;
+  const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / filters.page_size);
+
+  const counts = includeCounts
+    ? await fetchIncidentCounts(filters, { config, fetchImpl, getPage, getStats })
+    : null;
+
+  return {
+    items: (pageResult.records || []).map((item) => enrichIncident(item, config)),
+    pagination: {
+      page: filters.page,
+      page_size: filters.page_size,
+      total_items: totalItems,
+      total_pages: totalPages,
+      has_next: filters.page < totalPages,
+      has_previous: filters.page > 1 && totalPages > 0,
+    },
+    filters: {
+      caller_id: filters.caller_id,
+      contact_type: filters.contact_type,
+      number: filters.number,
+      state: filters.state,
+      priority: filters.priority,
+      company: filters.company,
+      opened_from: filters.opened_from,
+      opened_to: filters.opened_to,
+      unassigned: filters.unassigned,
+      search: filters.search,
+    },
+    counts,
+    data_source: "servicenow",
+    checked_at: new Date().toISOString(),
+  };
+}
+
+export function createIncidentsHandler({
+  authorize = (req, res) => requireOneViewAuth(req, res, "viewer"),
+  configProvider = getServiceNowConfig,
+  featureFlagProvider = isServiceNowIncidentsEnabled,
+  getPage = serviceNowGet,
+  getStats = serviceNowStats,
+  fetchImpl,
+  logger = (entry) => console.info(JSON.stringify(entry)),
+} = {}) {
+  return async function incidentsHandler(req, res) {
+    const startedAt = Date.now();
+    res.setHeader("Cache-Control", NO_CACHE);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+
+    if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
+
+    const auth = await authorize(req, res);
+    if (!auth) return;
+
+    if (!featureFlagProvider()) {
+      return sendIncidentsJson(
+        res,
+        403,
+        { error: "servicenow_incidents_disabled", data_source: "servicenow" },
+        { dataSource: "servicenow" },
+      );
+    }
+
+    let filters;
+    try {
+      filters = parseIncidentFilters(req);
+    } catch {
+      return sendIncidentsJson(res, 400, { error: "invalid_query", data_source: "servicenow" }, { dataSource: "servicenow" });
+    }
+
+    try {
+      const config = configProvider();
+      const payload = await fetchIncidentsPage(filters, { config, getPage, getStats, fetchImpl });
+      logger({
+        event: "oneview_request",
+        route: "/api/oneview/incidents",
+        data_source: "servicenow",
+        duration_ms: Math.max(Date.now() - startedAt, 0),
+        rows: payload.items.length,
+        page: payload.pagination.page,
+        page_size: payload.pagination.page_size,
+      });
+      return sendIncidentsJson(res, 200, payload, { dataSource: "servicenow" });
+    } catch (error) {
+      const status = mapServiceNowStatus(error);
+      const code = publicErrorCode(error);
+      logger({
+        event: "oneview_incidents_error",
+        route: "/api/oneview/incidents",
+        error: code,
+        detail: sanitizeServiceNowError(error),
+        duration_ms: Math.max(Date.now() - startedAt, 0),
+      });
+      return sendIncidentsJson(res, status, { error: code, data_source: "servicenow" }, { dataSource: "servicenow" });
+    }
+  };
+}
+
+export default createIncidentsHandler();

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link, useSearchParams } from "react-router-dom";
 import { Eye, History, Loader2 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { ClientIdentity, canonicalClientName, canonicalHostName } from "@/components/oneview/ClientIdentity";
+import { ClientIdentity, CLASSIFICATION_PENDING_LABEL, canonicalClientName, canonicalHostName, normalizeOperationalScope, operationalClientLabel } from "@/components/oneview/ClientIdentity";
+import { AlertOperationalSummary } from "@/components/oneview/AlertOperationalSummary";
+import { AlertRelatedIncidentsSection } from "@/components/oneview/AlertRelatedIncidentsSection";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -215,6 +217,8 @@ function PriorityRow({
     >
       <ClientIdentity
         customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source }}
+        operationalScope={alert.operational_scope}
+        operationalScopeLabel={alert.operational_scope_label}
         size="sm"
       />
       <div className="min-w-0 flex-1">
@@ -227,9 +231,18 @@ function PriorityRow({
           </Badge>
         </div>
         <p className="mt-1 truncate text-sm font-semibold text-foreground">
-          {canonicalClientName({ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source })}
+          {operationalClientLabel({
+            key: alert.customer_key,
+            name: alert.customer_name,
+            source: alert.customer_source,
+            operational_scope: alert.operational_scope,
+            operational_scope_label: alert.operational_scope_label,
+          })}
         </p>
         <p className="truncate text-xs text-foreground/80">{canonicalHostName(alert)}</p>
+        {normalizeOperationalScope(alert.operational_scope) === "unknown" ? (
+          <p className="truncate text-[10px] text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</p>
+        ) : null}
         <p className="truncate text-xs text-muted-foreground">{alert.problem_name}</p>
         <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
           <span>Duração {formatDurationSeconds(alert.duration_seconds)}</span>
@@ -797,6 +810,8 @@ export default function Index() {
                     <div className="flex min-w-0 flex-1 items-center gap-2.5">
                       <ClientIdentity
                         customer={{ key: item.customer_key, name: item.customer_name }}
+                        operationalScope={item.operational_scope}
+                        operationalScopeLabel={item.operational_scope_label}
                         size="sm"
                       />
                       <div className="min-w-0">
@@ -809,7 +824,12 @@ export default function Index() {
                           ) : null}
                         </div>
                         <p className="mt-1 truncate text-sm font-semibold text-foreground">
-                          {canonicalClientName({ key: item.customer_key, name: item.customer_name })}
+                          {operationalClientLabel({
+                            key: item.customer_key,
+                            name: item.customer_name,
+                            operational_scope: item.operational_scope,
+                            operational_scope_label: item.operational_scope_label,
+                          })}
                         </p>
                         <p className="truncate text-xs text-foreground/80">{canonicalHostName(item)}</p>
                         <p className="truncate text-xs text-muted-foreground">{item.problem_name}</p>
@@ -882,24 +902,8 @@ export default function Index() {
           {selectedAlert ? (
             <div className="flex h-full flex-col">
               <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0 space-y-2">
-                    <SheetTitle className="text-xl">Resumo do alerta</SheetTitle>
-                    <SheetDescription>Consulta rápida sem sair da Home.</SheetDescription>
-                    <ClientIdentity
-                      customer={{
-                        key: selectedAlert.customer_key,
-                        name: selectedAlert.customer_name,
-                        source: selectedAlert.customer_source,
-                      }}
-                      size="md"
-                      showName
-                    />
-                  </div>
-                  <Badge variant="outline" className={cn("shrink-0 text-[10px]", severityTone(selectedAlert.severity || "not_classified"))}>
-                    {severityLabel(selectedAlert.severity || "not_classified")}
-                  </Badge>
-                </div>
+                <SheetTitle className="text-xl">Resumo do alerta</SheetTitle>
+                <SheetDescription>Consulta rápida sem sair da Home.</SheetDescription>
               </SheetHeader>
 
               <Tabs key={selectedAlertId ?? "closed"} defaultValue="summary" className="flex min-h-0 flex-1 flex-col">
@@ -916,40 +920,36 @@ export default function Index() {
                       <><Skeleton className="h-28 w-full" /><Skeleton className="h-40 w-full" /></>
                     ) : (
                       <>
-                        <Card className="ov-panel p-4">
-                          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Problema</p>
-                          <p className="mt-2 text-base font-semibold leading-6">{selectedAlert.problem_name || "Alerta sem descrição"}</p>
-                        </Card>
-                        <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                          <div><dt className="text-xs text-muted-foreground">Severidade</dt><dd className="font-semibold">{severityLabel(selectedAlert.severity || "not_classified")}</dd></div>
-                          <div><dt className="text-xs text-muted-foreground">Estado</dt><dd className="font-semibold">{selectedAlert.resolved_at ? "Resolvido" : "Ativo"}</dd></div>
-                          <div><dt className="text-xs text-muted-foreground">Host</dt><dd className="font-semibold">{canonicalHostName(selectedAlert)}</dd></div>
-                          <div><dt className="text-xs text-muted-foreground">Início</dt><dd>{formatDateTime(selectedAlert.first_seen_at)}</dd></div>
-                          <div><dt className="text-xs text-muted-foreground">Duração</dt><dd>{formatDurationSeconds(selectedAlert.duration_seconds)}</dd></div>
-                          <div><dt className="text-xs text-muted-foreground">Última atualização</dt><dd>{formatDateTime(selectedAlert.last_seen_at)}</dd></div>
-                          <div>
-                            <dt className="text-xs text-muted-foreground">ACK da origem</dt>
-                            <dd className={selectedAlert.acknowledged_source ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
-                              {selectedAlert.acknowledged_source ? "Reconhecido" : "Pendente"}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt className="text-xs text-muted-foreground">Responsável</dt>
-                            <dd className="font-semibold">
-                              {safeActorName(selectedAlert.acknowledged_source_by || selectedAlert.acknowledged_by) || "—"}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt className="text-xs text-muted-foreground">Horário do ACK</dt>
-                            <dd>{selectedAlert.acknowledged_source_at || selectedAlert.acknowledged_at ? formatDateTime(selectedAlert.acknowledged_source_at || selectedAlert.acknowledged_at) : "—"}</dd>
-                          </div>
-                          <div className="sm:col-span-2">
-                            <dt className="text-xs text-muted-foreground">Comentário oficial</dt>
-                            <dd className="font-medium">
-                              {historyItems.find((item) => item.comment)?.comment || "—"}
-                            </dd>
-                          </div>
-                        </dl>
+                        <AlertOperationalSummary alert={selectedAlert}>
+                          <dl className="grid gap-3 border-t border-border/60 pt-4 text-sm sm:grid-cols-2">
+                            <div>
+                              <dt className="text-xs text-muted-foreground">ACK da origem</dt>
+                              <dd className={selectedAlert.acknowledged_source ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
+                                {selectedAlert.acknowledged_source ? "Reconhecido" : "Pendente"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-xs text-muted-foreground">Responsável</dt>
+                              <dd className="font-semibold">
+                                {safeActorName(selectedAlert.acknowledged_source_by || selectedAlert.acknowledged_by) || "—"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-xs text-muted-foreground">Horário do ACK</dt>
+                              <dd>{selectedAlert.acknowledged_source_at || selectedAlert.acknowledged_at ? formatDateTime(selectedAlert.acknowledged_source_at || selectedAlert.acknowledged_at) : "—"}</dd>
+                            </div>
+                            <div className="sm:col-span-2">
+                              <dt className="text-xs text-muted-foreground">Comentário</dt>
+                              <dd className="font-medium">
+                                {historyItems.find((item) => item.comment)?.comment || "—"}
+                              </dd>
+                            </div>
+                          </dl>
+                        </AlertOperationalSummary>
+                        <AlertRelatedIncidentsSection
+                          sourceEventId={selectedAlert.source_event_id}
+                          severity={selectedAlert.severity}
+                        />
                       </>
                     )}
                   </TabsContent>

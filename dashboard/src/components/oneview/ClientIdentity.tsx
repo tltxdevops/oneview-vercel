@@ -5,6 +5,8 @@ export type ClientIdentityCustomer = {
   name?: string | null;
   /** `customer_source` do alerta, quando disponível. */
   source?: string | null;
+  operational_scope?: string | null;
+  operational_scope_label?: string | null;
 };
 
 export type HostIdentityFields = {
@@ -14,7 +16,80 @@ export type HostIdentityFields = {
 };
 
 export const UNCLASSIFIED_CLIENT_LABEL = "Cliente não classificado";
+export const CLASSIFICATION_PENDING_LABEL = "Classificação ainda não determinada";
 export const MISSING_HOST_LABEL = "Host não informado";
+export const PLATFORM_SCOPE_LABEL = "Infraestrutura de monitoramento";
+export const TEST_SCOPE_LABEL = "Ambiente de teste";
+export const UNKNOWN_SCOPE_LABEL = "Cliente não identificado";
+
+export type OperationalScope = "customer" | "platform" | "test" | "unknown";
+
+export type OperationalScopeFields = {
+  operational_scope?: string | null;
+  operational_scope_label?: string | null;
+};
+
+/** Escopo não-cliente do BFF (OV-P0-56) — sem inferência no frontend. */
+export function normalizeOperationalScope(value?: string | null): OperationalScope | null {
+  const scope = String(value || "").trim().toLowerCase();
+  if (scope === "customer" || scope === "platform" || scope === "test" || scope === "unknown") {
+    return scope;
+  }
+  return null;
+}
+
+/**
+ * Rótulo operacional vindo do BFF.
+ * HOTFIX-P0-CLIENT-LABEL: customer real sempre prevalece; scope_label só sem cliente.
+ * Nunca infere cliente/plataforma/teste no frontend — só consome campos do BFF.
+ */
+export function operationalClientLabel(
+  entity?: (ClientIdentityCustomer & OperationalScopeFields) | null,
+  fallback = UNCLASSIFIED_CLIENT_LABEL,
+) {
+  // 1) Cliente real/classificado → nunca sobrescrever com operational_scope_label.
+  if (!isUnclassifiedClient(entity)) {
+    return canonicalClientName(entity, fallback);
+  }
+
+  // 2) Sem customer real → operational_scope(_label) decide.
+  const scope = normalizeOperationalScope(entity?.operational_scope);
+  const label = String(entity?.operational_scope_label || "").trim();
+  if (scope === "platform") return label || PLATFORM_SCOPE_LABEL;
+  if (scope === "test") return label || TEST_SCOPE_LABEL;
+  if (scope === "unknown") return label || UNKNOWN_SCOPE_LABEL;
+  if (label === PLATFORM_SCOPE_LABEL || label === TEST_SCOPE_LABEL || label === UNKNOWN_SCOPE_LABEL) {
+    return label;
+  }
+  if (scope === "customer" && label) return label;
+  return fallback;
+}
+
+export function isNonCustomerOperationalScope(scope?: string | null) {
+  const normalized = normalizeOperationalScope(scope);
+  return normalized === "platform" || normalized === "test" || normalized === "unknown";
+}
+
+/**
+ * OV-P0-61 — rótulo de Histórico (Eventos/Alertas).
+ * Customer real prevalece; sem customer usa scope_label; nunca "Cliente não classificado".
+ */
+export function historyEventClientLabel(
+  entity?: OperationalScopeFields & ClientIdentityCustomer | null,
+) {
+  if (!isUnclassifiedClient(entity)) {
+    return canonicalClientName(entity, UNKNOWN_SCOPE_LABEL);
+  }
+  const scope = normalizeOperationalScope(entity?.operational_scope);
+  const label = String(entity?.operational_scope_label || "").trim();
+  if (scope === "platform") return label || PLATFORM_SCOPE_LABEL;
+  if (scope === "test") return label || TEST_SCOPE_LABEL;
+  if (scope === "unknown") return label || UNKNOWN_SCOPE_LABEL;
+  if (label === PLATFORM_SCOPE_LABEL || label === TEST_SCOPE_LABEL || label === UNKNOWN_SCOPE_LABEL) {
+    return label;
+  }
+  return UNKNOWN_SCOPE_LABEL;
+}
 
 const TELETEX_LOGO_SRC = "/tltx/clientes/logos/teletex-logo.png";
 
@@ -190,7 +265,10 @@ function clientInitials(customer?: ClientIdentityCustomer | null) {
 
 type ClientIdentityProps = {
   customer?: ClientIdentityCustomer | null;
-  size?: "sm" | "md";
+  /** OV-P0-56 — escopo operacional do BFF (sem inferência no FE). */
+  operationalScope?: string | null;
+  operationalScopeLabel?: string | null;
+  size?: "sm" | "md" | "lg";
   showName?: boolean;
   className?: string;
   nameClassName?: string;
@@ -198,14 +276,36 @@ type ClientIdentityProps = {
 
 export function ClientIdentity({
   customer,
+  operationalScope,
+  operationalScopeLabel,
   size = "sm",
   showName = false,
   className,
   nameClassName,
 }: ClientIdentityProps) {
-  const logo = clientLogoSrc(customer);
-  const name = canonicalClientName(customer);
-  const box = size === "md" ? "h-11 w-11" : "h-10 w-10";
+  const scope = normalizeOperationalScope(operationalScope ?? (customer as OperationalScopeFields | null)?.operational_scope);
+  const scopedCustomer: ClientIdentityCustomer & OperationalScopeFields = {
+    ...(customer || {}),
+    operational_scope: scope,
+    operational_scope_label: operationalScopeLabel
+      ?? (customer as OperationalScopeFields | null)?.operational_scope_label
+      ?? null,
+  };
+  // HOTFIX-P0-CLIENT-LABEL: cliente real → nome/logo; scope_label só sem customer.
+  const hasRealCustomer = !isUnclassifiedClient(customer);
+  const logo = hasRealCustomer ? clientLogoSrc(customer) : null;
+  const explicitScopeLabel = String(operationalScopeLabel || scopedCustomer.operational_scope_label || "").trim();
+  const name = hasRealCustomer
+    ? canonicalClientName(customer)
+    : (explicitScopeLabel || operationalClientLabel(scopedCustomer));
+  const box = size === "lg" ? "h-14 w-14" : size === "md" ? "h-11 w-11" : "h-10 w-10";
+  const initials = hasRealCustomer
+    ? clientInitials(customer)
+    : (scope === "platform" || explicitScopeLabel === PLATFORM_SCOPE_LABEL
+      ? "IN"
+      : scope === "test" || explicitScopeLabel === TEST_SCOPE_LABEL
+        ? "TS"
+        : "CL");
 
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-2", className)}>
@@ -227,7 +327,7 @@ export function ClientIdentity({
           )}
           aria-hidden="true"
         >
-          {clientInitials(customer)}
+          {initials}
         </span>
       )}
       {showName ? (

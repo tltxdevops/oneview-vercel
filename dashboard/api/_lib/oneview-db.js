@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
+import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
 
 const { Pool } = pg;
@@ -122,6 +123,23 @@ function replaceInternalHost(value, rawHost, hostAlias, fallback = "", maxLength
 
 function genericFailureDetail(error) {
   return textValue(error) ? "Falha registrada; detalhes técnicos protegidos." : null;
+}
+
+/**
+ * OV-P0-52 — host operacional (sem "Host protegido").
+ * Cadeia de apresentação: visible → technical → name (FE aplica "Host não informado").
+ * Redação técnica permanece em histórico/logs via aliasForHost.
+ */
+function operationalHostFields(row) {
+  return {
+    host_visible_name: nullableText(sanitizeText(row?.host_visible_name, "", 240)),
+    host_technical_name: nullableText(sanitizeText(row?.host_technical_name, "", 240)),
+    host_name: nullableText(sanitizeText(row?.host_name, "", 240)),
+  };
+}
+
+function operationalProblemName(row, fallback = "Alerta sincronizado") {
+  return sanitizeText(row?.problem_name, fallback, 700);
 }
 
 function aliasMapFromHosts(hosts) {
@@ -751,11 +769,18 @@ export function classifyAlertEnrichment(alert) {
 }
 
 function mapAlertRows(rows) {
-  const aliases = aliasMapFromHosts(rows.map((row) => row.host_name));
   return rows.map((row) => {
-    const hostAlias = aliasForHost(row.host_name, aliases);
+    const hosts = operationalHostFields(row);
     const enrichmentState = classifyAlertEnrichment(row);
     const customerIdentity = safeCustomerIdentity(row);
+    // Escopo derivado no BFF (OV-P0-56) — usa evidência do row original; não reescreve customer_name.
+    const operationalScope = deriveOperationalScope({
+      ...row,
+      host_name: hosts.host_name,
+      host_visible_name: hosts.host_visible_name,
+      host_technical_name: hosts.host_technical_name,
+      host_groups: mapSafeGroups(row.host_groups),
+    });
     return {
       id: textValue(row.id),
       data_source_id: textValue(row.data_source_id),
@@ -765,6 +790,8 @@ function mapAlertRows(rows) {
       customer_key: nullableText(sanitizeText(customerIdentity.customerKey, "", 160)),
       customer_source: nullableText(sanitizeText(row.customer_source, "", 120)),
       customer_confidence: nullableText(sanitizeText(row.customer_confidence, "", 40)),
+      operational_scope: operationalScope.operational_scope,
+      operational_scope_label: operationalScope.operational_scope_label,
       enrichment_status: ["complete", "partial"].includes(enrichmentState) ? "enriched" : "pending",
       enrichment_state: enrichmentState,
       source_type: "zabbix",
@@ -772,21 +799,21 @@ function mapAlertRows(rows) {
       source_problem_id: nullableText(row.source_problem_id),
       source_trigger_id: nullableText(row.source_trigger_id),
       source_host_id: null,
-      host_name: hostAlias,
-      host_visible_name: nullableText(sanitizeText(row.host_visible_name, "", 240)),
-      host_technical_name: nullableText(sanitizeText(row.host_technical_name, "", 240)),
+      host_name: hosts.host_name,
+      host_visible_name: hosts.host_visible_name,
+      host_technical_name: hosts.host_technical_name,
       host_ip: null,
       host_group: null,
       host_groups: mapSafeGroups(row.host_groups),
       event_tags: mapSafeTags(row.event_tags),
       trigger_tags: mapSafeTags(row.trigger_tags),
       host_tags: mapSafeTags(row.host_tags),
-      service_name: nullableText(replaceInternalHost(row.service_name, row.host_name, hostAlias, "", 240)),
+      service_name: nullableText(sanitizeText(row.service_name, "", 240)),
       item_name: nullableText(sanitizeText(row.item_name, "", 300)),
       item_key: nullableText(sanitizeText(row.item_key, "", 300)),
       trigger_description: nullableText(sanitizeText(row.trigger_description, "", 700)),
       operational_data: nullableText(sanitizeText(row.operational_data, "", 700)),
-      problem_name: replaceInternalHost(row.problem_name, row.host_name, hostAlias, "Alerta sincronizado", 700),
+      problem_name: operationalProblemName(row),
       severity: textValue(row.severity, "not_classified"),
       status_source: textValue(row.status_source, "active"),
       status_internal: textValue(row.status_internal, "new"),
@@ -817,21 +844,24 @@ function mapAlertRows(rows) {
   });
 }
 
-function mapTopHosts(rows, aliases) {
-  return rows.map((row) => ({
-    host_name: aliasForHost(row.host_name, aliases),
-    count: integerValue(row.count ?? row.active_alerts, 0),
-  }));
+function mapTopHosts(rows) {
+  return rows.map((row) => {
+    const hosts = operationalHostFields(row);
+    return {
+      host_name: hosts.host_visible_name || hosts.host_technical_name || hosts.host_name || "Host não informado",
+      count: integerValue(row.count ?? row.active_alerts, 0),
+    };
+  });
 }
 
-function mapLongestDurationRows(rows, aliases) {
+function mapLongestDurationRows(rows) {
   return rows.map((row) => {
-    const hostAlias = aliasForHost(row.host_name, aliases);
+    const hosts = operationalHostFields(row);
     return {
       id: textValue(row.id),
       client_name: sanitizeText(row.client_name, "Cliente OneView", 160),
-      host_name: hostAlias,
-      problem_name: replaceInternalHost(row.problem_name, row.host_name, hostAlias, "Alerta sincronizado", 700),
+      host_name: hosts.host_visible_name || hosts.host_technical_name || hosts.host_name || "Host não informado",
+      problem_name: operationalProblemName(row),
       severity: textValue(row.severity, "not_classified"),
       duration_seconds: integerValue(row.duration_seconds, 0),
       first_seen_at: isoDate(row.first_seen_at, generatedAt()),
@@ -1004,6 +1034,7 @@ async function fetchAlertList(req, config, primaryDataSourceName) {
           a.host_name,
           a.host_visible_name,
           a.host_technical_name,
+          a.host_groups,
           a.service_name,
           a.problem_name,
           a.severity,
@@ -1088,18 +1119,26 @@ function attentionThresholdPayload(thresholds) {
 }
 
 function mapAttentionRows(rows) {
-  const aliases = aliasMapFromHosts(rows.map((row) => row.host_name));
   return rows.map((row) => {
-    const hostAlias = aliasForHost(row.host_name, aliases);
+    const hosts = operationalHostFields(row);
+    const operationalScope = deriveOperationalScope({
+      ...row,
+      host_name: hosts.host_name,
+      host_visible_name: hosts.host_visible_name,
+      host_technical_name: hosts.host_technical_name,
+      host_groups: mapSafeGroups(row.host_groups),
+    });
     return {
       id: textValue(row.id),
       customer_name: nullableText(sanitizeText(row.customer_name, "", 160)),
       customer_confidence: sanitizeText(row.customer_confidence, "unclassified", 40),
+      operational_scope: operationalScope.operational_scope,
+      operational_scope_label: operationalScope.operational_scope_label,
       datasource_name: sanitizeText(row.datasource_name, "Datasource OneView", 160),
-      host_visible_name: row.host_visible_name
-        ? sanitizeText(row.host_visible_name, hostAlias, 240)
-        : hostAlias,
-      problem: replaceInternalHost(row.problem_name, row.host_name, hostAlias, "Alerta sincronizado", 700),
+      host_visible_name: hosts.host_visible_name,
+      host_technical_name: hosts.host_technical_name,
+      host_name: hosts.host_name,
+      problem: operationalProblemName(row),
       severity: textValue(row.severity, "average"),
       first_seen_at: isoDate(row.first_seen_at, generatedAt()),
       last_seen_at: isoDate(row.last_seen_at, generatedAt()),
@@ -1151,10 +1190,14 @@ async function fetchAttentionRequiredPayload(
         select
           a.id,
           a.customer_name,
+          a.customer_key,
+          a.customer_source,
           a.customer_confidence,
           d.name as datasource_name,
           a.host_name,
           a.host_visible_name,
+          a.host_technical_name,
+          a.host_groups,
           a.problem_name,
           a.severity,
           a.first_seen_at,
@@ -2042,10 +2085,6 @@ async function fetchDashboardSummaryPayload(
       where d.name = $1 and (a.status_source = 'resolved' or a.status_internal = 'normalized')`, scopeValues),
   ]);
 
-  const aliases = aliasMapFromHosts([
-    ...topHostRows.map((row) => row.host_name),
-    ...longestDurationRows.map((row) => row.host_name),
-  ]);
   const alertsTotal = integerValue(totalAlertsRow?.value, 0);
   const activeTotal = integerValue(activeAlertsRow?.value, 0);
 
@@ -2080,9 +2119,9 @@ async function fetchDashboardSummaryPayload(
       environment: textValue(row.environment, "internal"),
       count: integerValue(row.count, 0),
     })),
-    top_hosts: mapTopHosts(topHostRows, aliases),
+    top_hosts: mapTopHosts(topHostRows),
     unacknowledged_total: integerValue(unacknowledgedRow?.value, 0),
-    longest_duration: mapLongestDurationRows(longestDurationRows, aliases),
+    longest_duration: mapLongestDurationRows(longestDurationRows),
     avg_ack_time_seconds: integerValue(ackMetricsRow?.avg_ack_time_seconds, 0),
     avg_normalization_time_seconds: integerValue(normalizationMetricsRow?.avg_normalization_time_seconds, 0),
   };
@@ -2444,8 +2483,14 @@ async function fetchGlobalHistoryPayload(req, config, primaryDataSourceName) {
         coalesce(h.current_value, to_jsonb(h.new_status)) as current_value,
         ${SAFE_CUSTOMER_NAME_SQL} as customer_name,
         ${SAFE_CUSTOMER_KEY_SQL} as customer_key,
+        a.customer_name as customer_name_raw,
+        a.customer_key as customer_key_raw,
+        a.customer_source,
         coalesce(d.name, 'Fonte não identificada')::text as datasource_name,
         a.host_name,
+        a.host_visible_name,
+        a.host_technical_name,
+        a.host_groups,
         a.problem_name,
         a.severity
       ${fromSql}
@@ -2466,6 +2511,15 @@ async function fetchGlobalHistoryPayload(req, config, primaryDataSourceName) {
     const legacy = historyIsLegacy(row.event_type, row.action_source);
     const previousValue = sanitizeStructuredValue(row.previous_value);
     const currentValue = sanitizeStructuredValue(row.current_value);
+    const operationalScope = deriveHistoryEventOperationalScope({
+      customer_name: row.customer_name_raw,
+      customer_key: row.customer_key_raw,
+      customer_source: row.customer_source,
+      host_name: row.host_name,
+      host_visible_name: row.host_visible_name,
+      host_technical_name: row.host_technical_name,
+      host_groups: row.host_groups,
+    });
     return {
       id: textValue(row.id),
       alert_id: textValue(row.alert_id),
@@ -2475,10 +2529,17 @@ async function fetchGlobalHistoryPayload(req, config, primaryDataSourceName) {
       occurred_at: isoDate(row.occurred_at ?? row.created_at, generatedAt()),
       actor_name: actorName,
       source: historySource(row.source, legacy),
+      // customer_* preservados do contrato SAFE existente (sem reescrever histórico).
       customer_name: sanitizeText(row.customer_name, "Cliente não identificado", 160),
       customer_key: sanitizeText(row.customer_key, "unclassified", 160),
+      operational_scope: operationalScope.operational_scope,
+      operational_scope_label: operationalScope.operational_scope_label,
       datasource_name: sanitizeText(row.datasource_name, "Fonte não identificada", 160),
-      host_name: sanitizeText(row.host_name, "Host não identificado", 200),
+      host_name: sanitizeText(
+        row.host_visible_name || row.host_technical_name || row.host_name,
+        "Host não identificado",
+        200,
+      ),
       problem_name: sanitizeText(row.problem_name, "Alerta sem descrição", 300),
       severity: sanitizeText(row.severity, "not_classified", 40),
       previous_value: legacy && !historyValueIsMeaningful(previousValue) ? null : previousValue,
@@ -2622,4 +2683,69 @@ export async function resetOneViewDbPoolForTests() {
   }
   pool = undefined;
   poolKey = "";
+}
+
+/**
+ * SN-P0-08 — lookup read-only por source_event_id (sem gravar relação).
+ * Match estrito: alerts.source_event_id = zabbix_event_id.
+ */
+export async function findAlertBySourceEventId(
+  sourceEventId,
+  config = getOneViewDbConfig(),
+  primaryDataSourceName = getPrimaryDataSourceName(),
+) {
+  const eventId = String(sourceEventId || "").trim();
+  if (!eventId || !/^[A-Za-z0-9._:-]{1,80}$/.test(eventId)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
+
+  const row = await queryRow(
+    config,
+    `
+    select
+      a.id::text as id,
+      a.source_event_id,
+      a.host_name,
+      a.host_visible_name,
+      a.host_technical_name,
+      a.customer_name,
+      a.client_name,
+      a.severity,
+      a.status_source,
+      a.resolved_at
+    from alerts a
+    join data_sources d on d.id = a.data_source_id
+    where a.source_event_id = $1
+      and d.name = $2
+    order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
+    limit 1
+    `,
+    [eventId, primaryDataSourceName],
+  );
+
+  if (!row) return null;
+
+  const host = nullableText(
+    sanitizeText(
+      row.host_visible_name || row.host_technical_name || row.host_name,
+      "",
+      240,
+    ),
+  );
+  const customer = nullableText(
+    sanitizeText(row.customer_name || row.client_name, "", 160),
+  );
+  const statusSource = textValue(row.status_source, row.resolved_at ? "resolved" : "active").toLowerCase();
+  const status = statusSource === "resolved" || row.resolved_at ? "resolved" : "active";
+
+  return {
+    id: textValue(row.id),
+    source_event_id: textValue(row.source_event_id, eventId),
+    host: host || "—",
+    customer: customer || "—",
+    severity: textValue(row.severity, "not_classified"),
+    status,
+  };
 }

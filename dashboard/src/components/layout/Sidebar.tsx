@@ -1,9 +1,10 @@
-import { Home, Bell, History, Moon, Sun, Monitor, ChevronLeft, ChevronRight, type LucideIcon } from "lucide-react";
+import { Home, Bell, History, Moon, Sun, Monitor, ChevronLeft, ChevronRight, Ticket, type LucideIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { isServiceNowIncidentsUiEnabled } from "@/lib/servicenow-features";
 
 const MONITOR_SIDEBAR_STORAGE_KEY = "oneview-monitor-sidebar-open";
 
@@ -26,12 +27,20 @@ type NavItem = {
 };
 
 // OV-P0-18/19/20: /config fora do menu; estado ativo neutro (sem cor por rota).
-const navigation: NavItem[] = [
+// SN-P0-07: /chamados só entra no menu com VITE_SERVICENOW_INCIDENTS_ENABLED=true.
+const baseNavigation: NavItem[] = [
   { name: "Início", href: "/", icon: Home },
   { name: "Monitoramento", href: "/monitoramento", icon: Monitor, liveDot: true },
   { name: "Alertas", href: "/alertas", icon: Bell, secondary: "Fila operacional" },
   { name: "Histórico", href: "/historico", icon: History, secondary: "Eventos e ações" },
 ];
+
+const chamadosNavItem: NavItem = {
+  name: "Chamados",
+  href: "/chamados",
+  icon: Ticket,
+  secondary: "ServiceNow DEV",
+};
 
 function navToneClasses(isActive: boolean) {
   if (!isActive) {
@@ -126,6 +135,17 @@ export function Sidebar({
       .join("");
     return letters.toUpperCase();
   }, [displayUser?.name, displayUser?.email]);
+
+  const navigation = useMemo(() => {
+    if (!isServiceNowIncidentsUiEnabled()) return baseNavigation;
+    const historicoIndex = baseNavigation.findIndex((item) => item.href === "/historico");
+    if (historicoIndex < 0) return [...baseNavigation, chamadosNavItem];
+    return [
+      ...baseNavigation.slice(0, historicoIndex + 1),
+      chamadosNavItem,
+      ...baseNavigation.slice(historicoIndex + 1),
+    ];
+  }, []);
 
   if (monitoringCollapse && !navOpen) {
     return (

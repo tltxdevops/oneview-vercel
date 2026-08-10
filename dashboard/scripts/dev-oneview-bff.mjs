@@ -32,6 +32,14 @@ for (const file of [
   "api/oneview/attention-required.js",
   "api/oneview/history.js",
   "api/oneview/clients-summary.js",
+  "api/oneview/incidents.js",
+  "api/oneview/incidents/related-alert.js",
+  "api/oneview/alerts/related-incidents.js",
+  "api/_lib/oneview-incidents.js",
+  "api/_lib/oneview-incident-relation.js",
+  "api/_lib/oneview-alert-incidents.js",
+  "api/_lib/servicenow-client.js",
+  "api/_lib/servicenow-normalize.js",
 ]) codeHash.update(readFileSync(path.join(rootDir, file)));
 const codeVersion = codeHash.digest("hex").slice(0, 16);
 const loadState = {
@@ -46,12 +54,15 @@ const routes = new Map([
   ["/api/oneview/dashboard-summary", "dashboard-summary"],
   ["/api/oneview/grafana-summary", "grafana-summary"],
   ["/api/oneview/alerts", "alerts"],
+  ["/api/oneview/alerts/related-incidents", "alert-related-incidents"],
   ["/api/oneview/attention-required", "attention-required"],
   ["/api/oneview/clients-summary", "clients-summary"],
   ["/api/oneview/history", "history"],
   ["/api/oneview/data-sources", "data-sources"],
   ["/api/oneview/sync-logs", "sync-logs"],
   ["/api/oneview/operations/health", "operations-health"],
+  ["/api/oneview/incidents", "incidents"],
+  ["/api/oneview/incidents/related-alert", "incident-related-alert"],
 ]);
 
 const handlers = new Map();
@@ -66,6 +77,10 @@ async function getHandler(routeName) {
           ? path.join("alerts", "[id]", "ack-request.js")
         : routeName === "operations-health"
           ? path.join("operations", "health.js")
+          : routeName === "incident-related-alert"
+            ? path.join("incidents", "related-alert.js")
+          : routeName === "alert-related-incidents"
+            ? path.join("alerts", "related-incidents.js")
           : `${routeName}.js`;
     const moduleUrl = pathToFileURL(path.join(rootDir, "api", "oneview", modulePath)).href;
     const module = await import(moduleUrl);
@@ -93,6 +108,9 @@ function routeTemplate(routeName) {
   if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
   if (routeName === "alert-ack-request") return "/api/oneview/alerts/:id/ack-request";
   if (routeName === "operations-health") return "/api/oneview/operations/health";
+  if (routeName === "incidents") return "/api/oneview/incidents";
+  if (routeName === "incident-related-alert") return "/api/oneview/incidents/related-alert";
+  if (routeName === "alert-related-incidents") return "/api/oneview/alerts/related-incidents";
   return `/api/oneview/${routeName}`;
 }
 

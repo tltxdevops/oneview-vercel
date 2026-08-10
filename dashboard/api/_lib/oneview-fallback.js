@@ -13,6 +13,7 @@ import {
   operationalDayBounds,
   safeCustomerIdentity,
 } from "./oneview-db.js";
+import { deriveOperationalScope } from "./oneview-operational-scope.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
@@ -55,6 +56,15 @@ function snapshotAlert(alert, generatedAt) {
     customer_confidence: alert.customer_confidence,
   });
   const customerIdentity = safeCustomerIdentity(alert);
+  const operationalScope = deriveOperationalScope({
+    customer_name: alert.customer_name,
+    customer_key: alert.customer_key,
+    customer_source: alert.customer_source,
+    host_name: alert.host_name,
+    host_visible_name: alert.host_visible_name,
+    host_technical_name: alert.host_technical_name,
+    host_groups: alert.host_groups,
+  });
   return {
     id: String(alert.id || ""),
     data_source_id: String(alert.data_source_id || ""),
@@ -64,6 +74,8 @@ function snapshotAlert(alert, generatedAt) {
     customer_key: customerIdentity.customerKey,
     customer_source: alert.customer_source ? String(alert.customer_source) : null,
     customer_confidence: alert.customer_confidence ? String(alert.customer_confidence) : null,
+    operational_scope: operationalScope.operational_scope,
+    operational_scope_label: operationalScope.operational_scope_label,
     enrichment_status: ["complete", "partial"].includes(enrichmentState) ? "enriched" : "pending",
     enrichment_state: enrichmentState,
     source_type: "zabbix",
@@ -188,7 +200,12 @@ function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresh
       customer_name: alert.customer_name,
       customer_confidence: alert.customer_confidence || "unclassified",
       datasource_name: alert.datasource_name,
-      host_visible_name: alert.host_visible_name || alert.host_name,
+      // OV-P0-52 — não promover "Host protegido" para host_visible_name.
+      host_visible_name: alert.host_visible_name || null,
+      host_technical_name: alert.host_technical_name || null,
+      host_name: /^host protegido\b/i.test(String(alert.host_name || ""))
+        ? null
+        : (alert.host_name || null),
       problem: alert.problem_name,
       severity: alert.severity,
       first_seen_at: alert.first_seen_at,

@@ -7,9 +7,12 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import {
   ClientIdentity,
+  CLASSIFICATION_PENDING_LABEL,
   UNCLASSIFIED_CLIENT_LABEL,
   canonicalClientName,
   canonicalHostName,
+  normalizeOperationalScope,
+  operationalClientLabel,
 } from "@/components/oneview/ClientIdentity";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
@@ -246,18 +249,25 @@ function AlertRow({
               name: alert.customer_name,
               source: alert.customer_source,
             }}
+            operationalScope={alert.operational_scope}
+            operationalScopeLabel={alert.operational_scope_label}
             size="sm"
             className="mt-0.5"
           />
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold text-foreground">
-              {canonicalClientName({
+              {operationalClientLabel({
                 key: alert.customer_key,
                 name: alert.customer_name,
                 source: alert.customer_source,
+                operational_scope: alert.operational_scope,
+                operational_scope_label: alert.operational_scope_label,
               })}
             </span>
             <span className="block truncate text-xs text-foreground/80">{canonicalHostName(alert)}</span>
+            {normalizeOperationalScope(alert.operational_scope) === "unknown" ? (
+              <span className="block truncate text-[10px] text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</span>
+            ) : null}
             <span className="block truncate text-xs text-muted-foreground">{alert.problem_name}</span>
           </span>
         </span>
@@ -701,10 +711,18 @@ export default function MonitoringPage() {
                       </span>
                       <div className="min-w-0">
                         <div className="flex min-w-0 items-center gap-2">
-                          <ClientIdentity customer={{ name: item.customer_name }} />
+                          <ClientIdentity
+                            customer={{ name: item.customer_name }}
+                            operationalScope={item.operational_scope}
+                            operationalScopeLabel={item.operational_scope_label}
+                          />
                           <div className="min-w-0">
                             <p className="truncate text-sm font-semibold text-foreground">
-                              {canonicalClientName({ name: item.customer_name })}
+                              {operationalClientLabel({
+                                name: item.customer_name,
+                                operational_scope: item.operational_scope,
+                                operational_scope_label: item.operational_scope_label,
+                              })}
                             </p>
                             <p className="truncate text-sm font-medium text-foreground">{canonicalHostName(item)}</p>
                             <p className="truncate text-xs text-muted-foreground">{item.problem}</p>

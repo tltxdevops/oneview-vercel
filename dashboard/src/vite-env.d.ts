@@ -11,6 +11,7 @@ interface ImportMetaEnv {
   readonly VITE_AZURE_POST_LOGOUT_URI_LOCAL?: string;
   readonly VITE_AZURE_SCOPES?: string;
   readonly VITE_MSAL_LOG_LEVEL?: string;
+  readonly VITE_SERVICENOW_INCIDENTS_ENABLED?: string;
   readonly MICROSOFT_CLIENT_ID?: string;
   readonly MICROSOFT_TENANT_ID?: string;
   readonly MICROSOFT_AUTHORITY?: string;

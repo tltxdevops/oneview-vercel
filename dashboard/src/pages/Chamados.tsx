@@ -1,8 +1,26 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { format, subDays } from "date-fns";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
+import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { PageHeader } from "@/components/oneview/PageHeader";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -11,17 +29,282 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  fetchIncidentRelatedAlert,
+  fetchIncidents,
+  type IncidentListResponse,
+  type IncidentRelatedAlert,
+  type OneViewIncident,
+} from "@/lib/oneview-api";
 
-const FUTURE_COLUMNS = [
+
+const PAGE_SIZE = 25;
+
+const COLUMNS = [
   "Número",
+  "Cliente",
+  "Descrição",
   "Estado",
-  "Grupo responsável",
+  "Prioridade",
+  "Grupo",
   "Responsável",
-  "SLA",
-  "Última atualização",
+  "Atualização",
 ] as const;
 
+const STATE_OPTIONS = [
+  { value: "all", label: "Todos" },
+  { value: "1", label: "Novo" },
+  { value: "2", label: "Em andamento" },
+  { value: "3", label: "Em espera" },
+  { value: "6", label: "Resolvido" },
+  { value: "7", label: "Encerrado" },
+] as const;
+
+const PRIORITY_OPTIONS = [
+  { value: "all", label: "Todas" },
+  { value: "1", label: "1 - Crítica" },
+  { value: "2", label: "2 - Alta" },
+  { value: "3", label: "3 - Moderada" },
+  { value: "4", label: "4 - Baixa" },
+  { value: "5", label: "5 - Planejamento" },
+] as const;
+
+const CALLER_OPTIONS = [
+  { value: "all", label: "Todos" },
+  { value: "aa62f29f47477610082e3d02e26d4358", label: "zabbix monitoring" },
+  { value: "f83cc28887777250d5fd84c30cbb3545", label: "Gwms Integration" },
+  { value: "50e065b3fb55f210fb0ef9285eefdcee", label: "NOC Protege" },
+  { value: "23396eb73bc83610d6756147f4e45ada", label: "Janine Scavone" },
+] as const;
+
+const PERIOD_OPTIONS = [
+  { value: "all", label: "Todo o período" },
+  { value: "24h", label: "Últimas 24 h" },
+  { value: "7d", label: "Últimos 7 dias" },
+  { value: "30d", label: "Últimos 30 dias" },
+] as const;
+
+type DraftFilters = {
+  search: string;
+  company: string;
+  state: string;
+  priority: string;
+  callerId: string;
+  period: string;
+  unassigned: boolean;
+};
+
+const EMPTY_DRAFT: DraftFilters = {
+  search: "",
+  company: "",
+  state: "all",
+  priority: "all",
+  callerId: "all",
+  period: "all",
+  unassigned: false,
+};
+
+function displayValue(value: string | null | undefined, fallback?: string | null) {
+  const normalize = (raw: unknown) => {
+    if (raw === undefined || raw === null) return "";
+    if (typeof raw === "number" && !Number.isFinite(raw)) return "";
+    const text = String(raw).trim();
+    if (!text || text === "undefined" || text === "null" || text === "NaN") return "";
+    return text;
+  };
+  return normalize(value) || normalize(fallback) || "—";
+}
+
+function formatDateTime(value: string | null | undefined) {
+  return displayValue(value);
+}
+
+function formatCheckedAt(value: string | null | undefined) {
+  const text = displayValue(value);
+  if (text === "—") return text;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return date.toLocaleString("pt-BR");
+}
+
+function safeCount(value: unknown) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return "—";
+  return Math.trunc(parsed).toLocaleString("pt-BR");
+}
+
+function incidentKey(item: OneViewIncident, index: number) {
+  return item.sys_id || item.number || `incident-${index}`;
+}
+
+function periodBounds(period: string): { openedFrom?: string; openedTo?: string } {
+  if (period === "all") return {};
+  const days = period === "24h" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : 0;
+  if (!days) return {};
+  const to = format(new Date(), "yyyy-MM-dd");
+  const from = format(subDays(new Date(), days), "yyyy-MM-dd");
+  return { openedFrom: from, openedTo: to };
+}
+
+function DetailField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="whitespace-pre-wrap break-words text-sm text-foreground">{value}</p>
+    </div>
+  );
+}
+
+function alertSeverityLabel(value: string | null | undefined) {
+  return displayValue(value);
+}
+
+function alertStatusLabel(value: string | null | undefined) {
+  const key = String(value || "").trim().toLowerCase();
+  if (key === "active") return "Ativo";
+  if (key === "resolved") return "Resolvido";
+  return displayValue(value);
+}
+
 export default function ChamadosPage() {
+  const [draft, setDraft] = useState<DraftFilters>(EMPTY_DRAFT);
+  const [applied, setApplied] = useState<DraftFilters>(EMPTY_DRAFT);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [payload, setPayload] = useState<IncidentListResponse | null>(null);
+  const [selected, setSelected] = useState<OneViewIncident | null>(null);
+  const [relatedAlert, setRelatedAlert] = useState<IncidentRelatedAlert | null>(null);
+  const [relatedAlertLoading, setRelatedAlertLoading] = useState(false);
+  const [relatedAlertChecked, setRelatedAlertChecked] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    const period = periodBounds(applied.period);
+
+    fetchIncidents({
+      page,
+      pageSize: PAGE_SIZE,
+      search: applied.search.trim() || undefined,
+      company: applied.company.trim() || undefined,
+      state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
+      priority: applied.priority !== "all" ? applied.priority : undefined,
+      callerId: applied.callerId !== "all" ? applied.callerId : undefined,
+      unassigned: applied.unassigned || undefined,
+      openedFrom: period.openedFrom,
+      openedTo: period.openedTo,
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        setPayload(response);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setPayload(null);
+        setError("ServiceNow indisponível");
+        void err;
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [applied, page]);
+
+  useEffect(() => {
+    if (!selected) {
+      setRelatedAlert(null);
+      setRelatedAlertLoading(false);
+      setRelatedAlertChecked(false);
+      return;
+    }
+
+    const eventId = String(selected.zabbix_event_id || "").trim();
+    if (!eventId) {
+      setRelatedAlert(null);
+      setRelatedAlertLoading(false);
+      setRelatedAlertChecked(true);
+      return;
+    }
+
+    const controller = new AbortController();
+    setRelatedAlert(null);
+    setRelatedAlertLoading(true);
+    setRelatedAlertChecked(false);
+
+    fetchIncidentRelatedAlert(eventId, controller.signal)
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        setRelatedAlert(response.matched && response.alert ? response.alert : null);
+        setRelatedAlertChecked(true);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setRelatedAlert(null);
+        setRelatedAlertChecked(true);
+        void err;
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRelatedAlertLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [selected]);
+
+  const items = payload?.items ?? [];
+  const pagination = payload?.pagination;
+  const counts = payload?.counts;
+  const totalLabel = useMemo(() => {
+    if (error) return "—";
+    if (!pagination) return "—";
+    const total = safeCount(pagination.total_items);
+    if (total === "—") return "—";
+    const count = Math.trunc(Number(pagination.total_items));
+    return `${total} encontrado${count === 1 ? "" : "s"}`;
+  }, [error, pagination]);
+
+  function applyFilters(next: DraftFilters = draft) {
+    setPage(1);
+    setApplied({
+      ...next,
+      search: next.search.trim(),
+      company: next.company.trim(),
+    });
+  }
+
+  function clearFilters() {
+    setDraft(EMPTY_DRAFT);
+    setApplied(EMPTY_DRAFT);
+    setPage(1);
+  }
+
+  function selectMetric(kind: "total" | "open" | "in_progress" | "resolved" | "closed" | "unassigned") {
+    const next: DraftFilters = {
+      ...draft,
+      unassigned: kind === "unassigned",
+      state: kind === "open"
+        ? "1"
+        : kind === "in_progress"
+          ? "2"
+          : kind === "resolved"
+            ? "6"
+            : kind === "closed"
+              ? "7"
+              : "all",
+    };
+    setDraft(next);
+    applyFilters(next);
+  }
+
+  const descriptionText = selected
+    ? displayValue(selected.description, selected.short_description)
+    : "—";
+  const hasZabbixHost = Boolean(String(selected?.u_hostname_zabbix || "").trim());
+  const hasZabbixIp = Boolean(String(selected?.u_ip_zabbix || "").trim());
+
   return (
     <AppLayout
       enableAutoRefresh={false}
@@ -32,29 +315,194 @@ export default function ChamadosPage() {
       <div className="space-y-3">
         <PageHeader
           title="Chamados"
-          description="Integração ServiceNow em preparação."
           aside={(
-            <Badge variant="outline" className="text-[10px]">
-              Em preparação
-            </Badge>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant="outline" className="text-[10px]">
+                ServiceNow DEV
+              </Badge>
+              <span>{loading ? "Carregando…" : totalLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span>Atualizado: {formatCheckedAt(payload?.checked_at)}</span>
+            </div>
           )}
         />
 
-        <SectionPanel bodyClassName="space-y-2 px-6 py-5">
-          <p className="text-sm text-foreground">
-            A integração com o ServiceNow está em preparação.
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Os chamados relacionados aos alertas serão exibidos nesta área após a conclusão do
-            contrato técnico e da integração.
-          </p>
-        </SectionPanel>
+        <CompactMetricStrip
+          aria-label="Indicadores de chamados"
+          items={[
+            {
+              key: "total",
+              label: "Total",
+              value: error ? "—" : safeCount(counts?.total ?? pagination?.total_items),
+              loading,
+              selected: applied.state === "all" && !applied.unassigned,
+              onClick: () => selectMetric("total"),
+            },
+            {
+              key: "open",
+              label: "Abertos",
+              value: error ? "—" : safeCount(counts?.open),
+              loading,
+              selected: applied.state === "1" && !applied.unassigned,
+              onClick: () => selectMetric("open"),
+            },
+            {
+              key: "in_progress",
+              label: "Em andamento",
+              value: error ? "—" : safeCount(counts?.in_progress),
+              loading,
+              selected: applied.state === "2" && !applied.unassigned,
+              onClick: () => selectMetric("in_progress"),
+            },
+            {
+              key: "resolved",
+              label: "Resolvidos",
+              value: error ? "—" : safeCount(counts?.resolved),
+              loading,
+              selected: applied.state === "6" && !applied.unassigned,
+              onClick: () => selectMetric("resolved"),
+            },
+            {
+              key: "closed",
+              label: "Encerrados",
+              value: error ? "—" : safeCount(counts?.closed),
+              loading,
+              selected: applied.state === "7" && !applied.unassigned,
+              onClick: () => selectMetric("closed"),
+            },
+            {
+              key: "unassigned",
+              label: "Não atribuídos",
+              value: error ? "—" : safeCount(counts?.unassigned),
+              loading,
+              selected: applied.unassigned,
+              onClick: () => selectMetric("unassigned"),
+            },
+          ]}
+        />
 
-        <SectionPanel className="overflow-hidden border-dashed" bodyClassName="p-0">
+        <FilterBar
+          aria-label="Filtros de chamados"
+          footer={(
+            <>
+              <Button type="button" size="sm" onClick={() => applyFilters()}>
+                Aplicar
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={clearFilters}>
+                Limpar
+              </Button>
+            </>
+          )}
+        >
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-search">Busca</label>
+              <Input
+                id="chamados-search"
+                value={draft.search}
+                onChange={(event) => setDraft((prev) => ({ ...prev, search: event.target.value }))}
+                onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
+                placeholder="Número ou descrição"
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-client">Cliente</label>
+              <Input
+                id="chamados-client"
+                value={draft.company}
+                onChange={(event) => setDraft((prev) => ({ ...prev, company: event.target.value }))}
+                onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
+                placeholder="Nome do cliente"
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-state">Estado</label>
+              <Select
+                value={draft.unassigned ? "all" : draft.state}
+                onValueChange={(value) => setDraft((prev) => ({ ...prev, state: value, unassigned: false }))}
+              >
+                <SelectTrigger id="chamados-state" className="h-9">
+                  <SelectValue placeholder="Todos" />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-priority">Prioridade</label>
+              <Select
+                value={draft.priority}
+                onValueChange={(value) => setDraft((prev) => ({ ...prev, priority: value }))}
+              >
+                <SelectTrigger id="chamados-priority" className="h-9">
+                  <SelectValue placeholder="Todas" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRIORITY_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-caller">Caller</label>
+              <Select
+                value={draft.callerId}
+                onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}
+              >
+                <SelectTrigger id="chamados-caller" className="h-9">
+                  <SelectValue placeholder="Todos" />
+                </SelectTrigger>
+                <SelectContent>
+                  {CALLER_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-period">Período</label>
+              <Select
+                value={draft.period}
+                onValueChange={(value) => setDraft((prev) => ({ ...prev, period: value }))}
+              >
+                <SelectTrigger id="chamados-period" className="h-9">
+                  <SelectValue placeholder="Todo o período" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PERIOD_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </FilterBar>
+
+        {error ? <OperationalErrorBanner message={error} onRetry={() => applyFilters()} /> : null}
+
+        <SectionPanel
+          className="overflow-hidden"
+          bodyClassName="p-0"
+          title="Incidentes"
+          aside={(
+            <p className="text-xs text-muted-foreground">
+              {loading ? "Carregando…" : totalLabel}
+              {!error && pagination
+                ? ` · página ${safeCount(pagination.page)} de ${safeCount(Math.max(Number(pagination.total_pages) || 0, 1))}`
+                : ""}
+            </p>
+          )}
+        >
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                {FUTURE_COLUMNS.map((column) => (
+                {COLUMNS.map((column) => (
                   <TableHead key={column} className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     {column}
                   </TableHead>
@@ -62,18 +510,166 @@ export default function ChamadosPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={FUTURE_COLUMNS.length} className="p-0">
-                  <OperationalEmptyState
-                    compact
-                    title="Nenhum chamado disponível. Aguardando integração com o ServiceNow."
-                  />
-                </TableCell>
-              </TableRow>
+              {loading ? (
+                Array.from({ length: 6 }).map((_, index) => (
+                  <TableRow key={`skeleton-${index}`} className="hover:bg-transparent">
+                    {COLUMNS.map((column) => (
+                      <TableCell key={`${column}-${index}`}>
+                        <Skeleton className="h-4 w-full max-w-[10rem]" />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : error ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={COLUMNS.length} className="p-4 text-sm text-muted-foreground">
+                    Não foi possível carregar os chamados. Use Tentar novamente.
+                  </TableCell>
+                </TableRow>
+              ) : items.length === 0 ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={COLUMNS.length} className="p-0">
+                    <OperationalEmptyState compact title="Nenhum chamado encontrado" />
+                  </TableCell>
+                </TableRow>
+              ) : (
+                items.map((item, index) => (
+                  <TableRow
+                    key={incidentKey(item, index)}
+                    className="cursor-pointer"
+                    tabIndex={0}
+                    aria-label={`Abrir detalhes de ${displayValue(item.number)}`}
+                    onClick={() => setSelected(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelected(item);
+                      }
+                    }}
+                  >
+                    <TableCell className="whitespace-nowrap font-mono text-xs">{displayValue(item.number)}</TableCell>
+                    <TableCell className="max-w-[14rem] truncate text-sm" title={displayValue(item.company_display, item.company)}>
+                      {displayValue(item.company_display, item.company)}
+                    </TableCell>
+                    <TableCell className="max-w-[22rem] truncate text-sm" title={displayValue(item.short_description)}>
+                      {displayValue(item.short_description)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-sm">{displayValue(item.state_display, item.state)}</TableCell>
+                    <TableCell className="whitespace-nowrap text-sm">{displayValue(item.priority_display, item.priority)}</TableCell>
+                    <TableCell className="max-w-[12rem] truncate text-sm" title={displayValue(item.assignment_group_display, item.assignment_group)}>
+                      {displayValue(item.assignment_group_display, item.assignment_group)}
+                    </TableCell>
+                    <TableCell className="max-w-[12rem] truncate text-sm" title={displayValue(item.assigned_to_display, item.assigned_to)}>
+                      {displayValue(item.assigned_to_display, item.assigned_to)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(item.sys_updated_on)}</TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
+
+          {pagination && pagination.total_pages > 0 ? (
+            <div className="flex items-center justify-end gap-2 border-t border-border/60 px-4 py-3">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={loading || !pagination.has_previous}
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+              >
+                Anterior
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={loading || !pagination.has_next}
+                onClick={() => setPage((current) => current + 1)}
+              >
+                Próxima
+              </Button>
+            </div>
+          ) : null}
         </SectionPanel>
       </div>
+
+      <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>
+        <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-xl">
+          {selected ? (
+            <div className="flex h-full flex-col">
+              <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
+                <SheetTitle className="font-mono text-lg">{displayValue(selected.number)}</SheetTitle>
+                <SheetDescription>{displayValue(selected.company_display, selected.company)}</SheetDescription>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <Badge variant="outline">{displayValue(selected.state_display, selected.state)}</Badge>
+                  <Badge variant="secondary">{displayValue(selected.priority_display, selected.priority)}</Badge>
+                </div>
+              </SheetHeader>
+
+              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
+                <DetailField label="Descrição" value={descriptionText} />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <DetailField label="Grupo" value={displayValue(selected.assignment_group_display, selected.assignment_group)} />
+                  <DetailField label="Responsável" value={displayValue(selected.assigned_to_display, selected.assigned_to)} />
+                  <DetailField label="Abertura" value={formatDateTime(selected.opened_at)} />
+                  <DetailField label="Atualização" value={formatDateTime(selected.sys_updated_on)} />
+                  <DetailField label="Encerramento" value={formatDateTime(selected.closed_at || selected.resolved_at)} />
+                  <DetailField label="Caller" value={displayValue(selected.caller_id_display, selected.caller_id)} />
+                  <DetailField label="Canal" value={displayValue(selected.contact_type_display, selected.contact_type)} />
+                </div>
+
+                {hasZabbixHost || hasZabbixIp ? (
+                  <section aria-label="Dados Zabbix" className="space-y-3 rounded-md border border-border/70 p-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Zabbix</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {hasZabbixHost ? <DetailField label="Hostname Zabbix" value={displayValue(selected.u_hostname_zabbix)} /> : null}
+                      {hasZabbixIp ? <DetailField label="IP Zabbix" value={displayValue(selected.u_ip_zabbix)} /> : null}
+                    </div>
+                  </section>
+                ) : null}
+
+                <section aria-label="Alerta relacionado" className="space-y-3 rounded-md border border-border/70 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Alerta relacionado</p>
+                  {relatedAlertLoading ? (
+                    <div className="space-y-2">
+                      <Skeleton className="h-4 w-2/3" />
+                      <Skeleton className="h-4 w-1/2" />
+                      <Skeleton className="h-4 w-1/3" />
+                    </div>
+                  ) : relatedAlertChecked && relatedAlert ? (
+                    <div className="space-y-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <DetailField label="Cliente" value={displayValue(relatedAlert.customer)} />
+                        <DetailField label="Host" value={displayValue(relatedAlert.host)} />
+                        <DetailField label="Severidade" value={alertSeverityLabel(relatedAlert.severity)} />
+                        <DetailField label="Estado" value={alertStatusLabel(relatedAlert.status)} />
+                      </div>
+                      <Button type="button" variant="secondary" size="sm" className="w-full sm:w-auto" asChild>
+                        <Link to={`/alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
+                          Abrir alerta
+                        </Link>
+                      </Button>
+                    </div>
+                  ) : relatedAlertChecked ? (
+                    <p className="text-sm text-muted-foreground">Alerta relacionado não localizado</p>
+                  ) : null}
+                </section>
+              </div>
+
+              <div className="border-t border-border/70 px-6 py-4">
+                {selected.servicenow_url ? (
+                  <ServiceNowDevLink href={selected.servicenow_url} fullWidth />
+                ) : (
+                  <p className="text-center text-xs text-muted-foreground">
+                    Link do ServiceNow indisponível para este incidente.
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </SheetContent>
+      </Sheet>
     </AppLayout>
   );
 }

@@ -9,6 +9,7 @@ import {
   UNCLASSIFIED_CLIENT_LABEL,
   canonicalClientName,
   canonicalHostName,
+  historyEventClientLabel,
 } from "@/components/oneview/ClientIdentity";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { FilterBar } from "@/components/oneview/FilterBar";
@@ -1010,7 +1011,20 @@ export default function HistoricoPage() {
                           >
                             <TableCell className="max-w-[12rem]">
                               <ClientIdentity
-                                customer={{ key: alert.customer_key, name: alert.customer_name }}
+                                customer={{
+                                  key: alert.customer_key,
+                                  name: alert.customer_name,
+                                  source: alert.customer_source,
+                                  operational_scope: alert.operational_scope,
+                                  operational_scope_label: alert.operational_scope_label,
+                                }}
+                                operationalScope={alert.operational_scope}
+                                operationalScopeLabel={historyEventClientLabel({
+                                  key: alert.customer_key,
+                                  name: alert.customer_name,
+                                  operational_scope: alert.operational_scope,
+                                  operational_scope_label: alert.operational_scope_label,
+                                })}
                                 showName
                                 nameClassName="truncate text-sm"
                               />
@@ -1233,7 +1247,16 @@ export default function HistoricoPage() {
                             <TableRow key={item.id}>
                               <TableCell className="max-w-[12rem]">
                                 <ClientIdentity
-                                  customer={{ key: item.customer_key, name: item.customer_name }}
+                                  customer={{
+                                    key: item.customer_key,
+                                    name: item.customer_name,
+                                    operational_scope: item.operational_scope,
+                                    operational_scope_label: item.operational_scope_label,
+                                  }}
+                                  operationalScope={item.operational_scope}
+                                  operationalScopeLabel={
+                                    item.operational_scope_label || historyEventClientLabel(item)
+                                  }
                                   showName
                                   nameClassName="truncate text-sm"
                                 />
@@ -1279,7 +1302,12 @@ export default function HistoricoPage() {
                             const title = formalOperationalTitle(item);
                             const actorName = safeActorName(item.actor_name);
                             const comment = isValidOperationalComment(item.description) ? item.description.trim() : null;
-                            const customer = canonicalCustomerName(item.customer_name, item.customer_key);
+                            const customer = historyEventClientLabel({
+                              key: item.customer_key,
+                              name: item.customer_name,
+                              operational_scope: item.operational_scope,
+                              operational_scope_label: item.operational_scope_label,
+                            });
                             return (
                               <li key={item.id} className="rounded-[10px] border border-border/60 bg-background/40 px-3 py-2.5">
                                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1374,7 +1402,20 @@ export default function HistoricoPage() {
             ) : detail ? (
               <>
                 <ClientIdentity
-                  customer={{ key: detail.customer_key, name: detail.customer_name }}
+                  customer={{
+                    key: detail.customer_key,
+                    name: detail.customer_name,
+                    source: detail.customer_source,
+                    operational_scope: detail.operational_scope,
+                    operational_scope_label: detail.operational_scope_label,
+                  }}
+                  operationalScope={detail.operational_scope}
+                  operationalScopeLabel={historyEventClientLabel({
+                    key: detail.customer_key,
+                    name: detail.customer_name,
+                    operational_scope: detail.operational_scope,
+                    operational_scope_label: detail.operational_scope_label,
+                  })}
                   size="md"
                   showName
                 />
