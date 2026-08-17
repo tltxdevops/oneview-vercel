@@ -2,11 +2,12 @@
  * SN-P0-04 — Auditoria de correlação Zabbix ↔ ServiceNow (somente GET).
  * Sem frontend/DB/deploy. Nunca imprime senha/token.
  *
- * Query fixa:
- *   contact_type=monitoring^caller_id=aa62f29f47477610082e3d02e26d4358
+ * Query:
+ *   contact_type=monitoring^caller_id=<SERVICENOW_ZABBIX_MONITORING_CALLER_ID>
  *
  * Uso:
  *   node scripts/servicenow-correlation-audit.mjs
+ *   node scripts/servicenow-correlation-audit.mjs --caller-id=<sys_id>
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,8 +23,6 @@ import {
 } from "../api/_lib/servicenow-normalize.js";
 import { loadLocalEnv } from "./_lib/local-env.mjs";
 
-const ZABBIX_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
-const QUERY = `contact_type=monitoring^caller_id=${ZABBIX_CALLER_ID}`;
 const MAX_RECORDS = 500;
 const RECENT_EXAMPLES = 10;
 
@@ -47,6 +46,16 @@ const AUDIT_FIELDS = [
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadLocalEnv(path.join(rootDir, ".env.local"));
+
+function argValue(name) {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3).trim() : "";
+}
+
+/** SN-P0-33 — caller via --caller-id ou SERVICENOW_ZABBIX_MONITORING_CALLER_ID (sem default DEV). */
+function resolveZabbixCallerId(config) {
+  return argValue("caller-id") || String(config.zabbixMonitoringCallerId || "").trim();
+}
 
 function hostOnly(baseUrl) {
   try {
@@ -254,6 +263,18 @@ async function main() {
     return;
   }
 
+  const zabbixCallerId = resolveZabbixCallerId(config);
+  if (!zabbixCallerId) {
+    console.error(JSON.stringify({
+      event: "servicenow_correlation_audit_failed",
+      error: "servicenow_caller_not_configured",
+      hint: "Defina SERVICENOW_ZABBIX_MONITORING_CALLER_ID ou --caller-id=",
+    }, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+
+  const QUERY = `contact_type=monitoring^caller_id=${zabbixCallerId}`;
   const orderedQuery = `${QUERY}^ORDERBYDESCsys_updated_on^ORDERBYsys_id`;
   const startedAt = Date.now();
   let pageResult;
@@ -300,7 +321,7 @@ async function main() {
     mode: "read_only_get",
     base_host: hostOnly(config.baseUrl),
     query: QUERY,
-    caller_id: ZABBIX_CALLER_ID,
+    caller_id: zabbixCallerId,
     caller_display: "zabbix monitoring",
     sample_size: total,
     x_total_count: pageResult.totalCount,

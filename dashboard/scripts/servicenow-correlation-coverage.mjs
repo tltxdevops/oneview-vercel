@@ -2,13 +2,14 @@
  * SN-P0-09 — Coverage de correlação real incidente ↔ alerta (somente leitura).
  *
  * Query:
- *   contact_type=monitoring^caller_id=<zabbix monitoring>
+ *   contact_type=monitoring^caller_id=<SERVICENOW_ZABBIX_MONITORING_CALLER_ID>
  * Amostra: até 500 incidentes.
  * Match estrito: zabbix_event_id ↔ alerts.source_event_id (findAlertBySourceEventId).
  * Sem writes. Sem fallback por host/texto.
  *
  * Uso:
  *   node scripts/servicenow-correlation-coverage.mjs
+ *   node scripts/servicenow-correlation-coverage.mjs --caller-id=<sys_id>
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,14 +32,21 @@ import {
 import { getPrimaryDataSourceName } from "../api/_lib/oneview-scope.js";
 import { loadLocalEnv } from "./_lib/local-env.mjs";
 
-const ZABBIX_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
-const QUERY = `contact_type=monitoring^caller_id=${ZABBIX_CALLER_ID}`;
 const MAX_RECORDS = 500;
 const UNMATCHED_EXAMPLES = 20;
 const LOOKUP_CONCURRENCY = 8;
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadLocalEnv(path.join(rootDir, ".env.local"));
+
+function argValue(name) {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3).trim() : "";
+}
+
+function resolveZabbixCallerId(config) {
+  return argValue("caller-id") || String(config.zabbixMonitoringCallerId || "").trim();
+}
 
 function pct(count, total) {
   if (!total) return 0;
@@ -241,6 +249,17 @@ async function main() {
 
   const primaryDataSourceName = getPrimaryDataSourceName();
   const startedAt = Date.now();
+  const zabbixCallerId = resolveZabbixCallerId(snConfig);
+  if (!zabbixCallerId) {
+    console.error(JSON.stringify({
+      event: "servicenow_correlation_coverage_failed",
+      error: "servicenow_caller_not_configured",
+      hint: "Defina SERVICENOW_ZABBIX_MONITORING_CALLER_ID ou --caller-id=",
+    }, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+  const QUERY = `contact_type=monitoring^caller_id=${zabbixCallerId}`;
   let pageResult;
   try {
     pageResult = await serviceNowGetAll("incident", {

@@ -8,19 +8,21 @@ import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import {
   ClientIdentity,
   CLASSIFICATION_PENDING_LABEL,
-  UNCLASSIFIED_CLIENT_LABEL,
+  UNKNOWN_SCOPE_LABEL,
   canonicalClientName,
   canonicalHostName,
   displayHostField,
+  facetCustomerDisplayName,
   normalizeOperationalScope,
   operationalClientLabel,
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
-import { AlertOperationalSummary, safeHostIp } from "@/components/oneview/AlertOperationalSummary";
-import { AlertRelatedIncidentsSection } from "@/components/oneview/AlertRelatedIncidentsSection";
+import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
+import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -28,10 +30,8 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
@@ -41,9 +41,7 @@ import {
   AlertListResponse,
   AlertMetrics,
   AlertPagination,
-  ONEVIEW_SEVERITY_CATALOG,
   ONEVIEW_V1_FILTER_SEVERITIES,
-  ONEVIEW_READ_ONLY_MESSAGE,
   OneViewAlert,
   OneViewDataSourceKind,
   OneViewSeverity,
@@ -65,6 +63,8 @@ import {
   normalizeOneViewSeverity,
   requestAlertAcknowledgement,
 } from "@/lib/oneview-api";
+import { ONEVIEW_SEVERITY_UI } from "@/lib/oneview-severity-visual";
+import { OV_CTA, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   ALERTS_DATE_FIELD_OPTIONS,
   ALERTS_DATE_PRESET_OPTIONS,
@@ -94,9 +94,7 @@ import {
   CircleAlert,
   Eye,
   History,
-  Info,
   Loader2,
-  MessageSquare,
   RefreshCcw,
   Search,
   ServerCog,
@@ -164,8 +162,8 @@ const VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_cl
   "disaster",
 ];
 
-const SUMMARY_REFRESH_MS = 60_000;
-const ALERTS_REFRESH_MS = 120_000;
+const SUMMARY_REFRESH_MS = 30_000;
+const ALERTS_REFRESH_MS = 30_000;
 
 const emptyPagination: AlertPagination = {
   page: 1,
@@ -213,15 +211,7 @@ function normalizeAlertResponse(response: AlertListResponse, requestedPage: numb
   };
 }
 
-const severityCatalog: Record<OneViewSeverity, { label: string; short: string; tone: string }> = {
-  disaster: { label: ONEVIEW_SEVERITY_CATALOG.disaster.label, short: "P1", tone: "border-red-600 bg-red-100 text-red-950 shadow-sm" },
-  critical: { label: ONEVIEW_SEVERITY_CATALOG.critical.label, short: "P1", tone: "border-red-500 bg-red-50 text-red-900 shadow-sm" },
-  high: { label: ONEVIEW_SEVERITY_CATALOG.high.label, short: "P2", tone: "border-red-200 bg-red-50 text-red-700" },
-  average: { label: ONEVIEW_SEVERITY_CATALOG.average.label, short: "P3", tone: "border-amber-200 bg-amber-50 text-amber-700" },
-  warning: { label: ONEVIEW_SEVERITY_CATALOG.warning.label, short: "P4", tone: "border-yellow-200 bg-yellow-50 text-yellow-800" },
-  information: { label: ONEVIEW_SEVERITY_CATALOG.information.label, short: "P5", tone: "border-sky-200 bg-sky-50 text-sky-700" },
-  not_classified: { label: ONEVIEW_SEVERITY_CATALOG.not_classified.label, short: "N/C", tone: "border-slate-200 bg-slate-50 text-slate-600" },
-};
+const severityCatalog = ONEVIEW_SEVERITY_UI;
 
 /** OV-P0-07 backlog: adicionar ordenação composta no BFF: severity → unacknowledged → duration. */
 const PRIORITY_VIEW_NOTE = "Prioritários usa sort=severity no BFF; desempate global por ACK/duração permanece em backlog.";
@@ -575,7 +565,7 @@ function customerPresentation(alert: OneViewAlert) {
   const unidentified = isUnclassifiedClient(customer);
   if (unidentified) {
     return {
-      name: UNCLASSIFIED_CLIENT_LABEL,
+      name: label || UNKNOWN_SCOPE_LABEL,
       hint: CLASSIFICATION_PENDING_LABEL,
       enrichment: "unclassified" as const,
       unidentified: true,
@@ -806,7 +796,8 @@ export default function AlertsPage() {
     return "desc";
   });
   const [selectedSeverities, setSelectedSeverities] = useState<OneViewSeverity[]>(() => {
-    const fromUrl = initialQuery.getAll("severity").filter(isOneViewSeverity);
+    // OV-P0-102: critical legado entra via expandHighFamilySeverities no fetch — sem chip Critical.
+    const fromUrl = initialQuery.getAll("severity").filter(isOneViewSeverity).filter((s) => s !== "critical");
     if (fromUrl.length) return fromUrl;
     if (initialView === "priority") return ["disaster", "high"];
     return [];
@@ -1056,11 +1047,8 @@ export default function AlertsPage() {
     if (!requestedAlertId || requestedAlertId === selectedAlertId) return;
     setSelectedAlertId(requestedAlertId);
     setSelectedPreview(null);
-    setDetail(null);
-    setHistory(null);
+    // OV-P0-108 — não limpa detail/history no deep-link; loadSelectedAlert atualiza in-place.
     setHistoryFilter("all");
-    setDetailMeta({});
-    setHistoryMeta({});
     setDetailError(null);
     setHistoryLoadError(null);
     void loadSelectedAlert(requestedAlertId);
@@ -1193,9 +1181,10 @@ export default function AlertsPage() {
         alerts_count: allCount,
         enrichment_status: "enriched" as const,
       },
-      ...(facets?.customers ?? []).map((customer) => customer.key === "unclassified"
-        ? { ...customer, name: UNCLASSIFIED_CLIENT_LABEL }
-        : customer),
+      ...(facets?.customers ?? []).map((customer) => ({
+        ...customer,
+        name: facetCustomerDisplayName(customer),
+      })),
     ];
   }, [facets?.customers, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
@@ -1285,7 +1274,7 @@ export default function AlertsPage() {
   const isRefreshing = isAlertsLoading || isSummaryLoading;
   const showAlertsSkeleton = isAlertsLoading && !hasLoadedAlerts && alerts.length === 0;
   const ackRequestsEnabled = health?.capabilities?.acknowledgement === true;
-  const tableColumnCount = 9;
+  const tableColumnCount = 10;
 
   const clearFilters = () => {
     setSelectedCustomerKeys([]);
@@ -1434,11 +1423,10 @@ export default function AlertsPage() {
     setSearchParams(nextSearchParams, { replace: true });
     setSelectedAlertId(alert.id);
     setSelectedPreview(alert);
-    setDetail(null);
-    setHistory(null);
+    // OV-P0-108 — não zera detail/history no open; mantém preview enquanto carrega.
+    if (selectedAlertId !== alert.id) {
     setHistoryFilter("all");
-    setDetailMeta({});
-    setHistoryMeta({});
+    }
     setDetailError(null);
     setHistoryLoadError(null);
     void loadSelectedAlert(alert.id);
@@ -1524,7 +1512,7 @@ export default function AlertsPage() {
   const sortableHeader = (label: string, field: SortField) => (
     <button
       type="button"
-      className="group inline-flex min-w-0 items-center justify-center gap-1 font-semibold text-foreground transition-colors hover:text-primary"
+      className="group inline-flex min-w-0 items-center justify-start gap-1 font-semibold text-foreground transition-colors hover:text-primary"
       onClick={() => toggleColumnSort(field)}
       title={`Ordenar ${label}: ${sortField === field && sortOrder === "asc" ? "Z–A" : "A–Z"}`}
     >
@@ -1666,7 +1654,7 @@ export default function AlertsPage() {
                   type="button"
                   variant="secondary"
                   size="sm"
-                  className="h-7 rounded-full px-2.5 text-[11px]"
+                  className="h-7 rounded-md px-2.5 text-xs"
                   onClick={() => { chip.remove(); setPage(1); }}
                 >
                   {chip.label}<X className="h-3 w-3" />
@@ -1681,7 +1669,7 @@ export default function AlertsPage() {
                 value={statusFilter}
                 onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}
               >
-                <SelectTrigger className="h-8 w-[120px] bg-white text-xs" aria-label="Estado">
+                <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[120px]")} aria-label="Estado">
                   <SelectValue placeholder="Estado" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1695,7 +1683,7 @@ export default function AlertsPage() {
                 value={sourceAckFilter}
                 onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}
               >
-                <SelectTrigger className="h-8 w-[120px] bg-white text-xs" aria-label="ACK da origem">
+                <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[120px]")} aria-label="ACK da origem">
                   <SelectValue placeholder="ACK" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1868,7 +1856,7 @@ export default function AlertsPage() {
               </Popover>
 
               {activeFilterChips.length > 0 ? (
-                <Button type="button" variant="ghost" size="sm" className="h-8 px-2.5 text-xs" onClick={clearFilters}>Limpar</Button>
+                <Button type="button" variant="ghost" size="sm" className={OV_CTA} onClick={clearFilters}>Limpar</Button>
               ) : null}
             </div>
           </div>
@@ -1885,22 +1873,23 @@ export default function AlertsPage() {
           ) : null}
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
           <TooltipProvider delayDuration={250}>
-          <Table className="min-w-[1180px] w-full table-fixed text-[11px]">
+          <Table className="min-w-[1240px] w-full table-fixed text-[11px]">
             <colgroup>
+              <col className="w-[8%]" />
+              <col className="w-[11%]" />
+              <col className="w-[12%]" />
+              <col className="w-[20%]" />
               <col className="w-[9%]" />
-              <col className="w-[12%]" />
-              <col className="w-[13%]" />
-              <col className="w-[22%]" />
-              <col className="w-[10%]" />
-              <col className="w-[8%]" />
-              <col className="w-[12%]" />
-              <col className="w-[8%]" />
+              <col className="w-[7%]" />
+              <col className="w-[11%]" />
+              <col className="w-[9%]" />
+              <col className="w-[7%]" />
               <col className="w-[6%]" />
             </colgroup>
             <TableHeader className="sticky top-0 z-10">
               <TableRow className="border-border/70 bg-muted/80 text-[10px] text-muted-foreground hover:bg-muted/80">
-                <TableHead className="px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
+                <TableHead className="px-3 text-left">
+                  <div className="flex items-center justify-start gap-1">
                     {sortableHeader("Severidade", "severity")}
                     <Popover>
                       <PopoverTrigger asChild>
@@ -1932,9 +1921,9 @@ export default function AlertsPage() {
                     </Popover>
                   </div>
                 </TableHead>
-                <TableHead className="px-3 text-center">Cliente</TableHead>
-                <TableHead className="px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
+                <TableHead className="px-3 text-left">Cliente</TableHead>
+                <TableHead className="px-3 text-left">
+                  <div className="flex items-center justify-start gap-1">
                     {sortableHeader("Host", "host")}
                     <Popover>
                       <PopoverTrigger asChild>
@@ -1961,8 +1950,8 @@ export default function AlertsPage() {
                     </Popover>
                   </div>
                 </TableHead>
-                <TableHead className="px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
+                <TableHead className="px-3 text-left">
+                  <div className="flex items-center justify-start gap-1">
                     {sortableHeader("Problema", "problem")}
                     <Popover>
                       <PopoverTrigger asChild>
@@ -1989,11 +1978,12 @@ export default function AlertsPage() {
                     </Popover>
                   </div>
                 </TableHead>
-                <TableHead className="px-3 text-center">{sortableHeader("Início", "first_seen_at")}</TableHead>
-                <TableHead className="px-3 text-center">{sortableHeader("Duração", "duration")}</TableHead>
-                <TableHead className="px-3 text-center">{sortableHeader("ACK", "acknowledged_source")}</TableHead>
-                <TableHead className="px-3 text-center">{sortableHeader("Estado", "status")}</TableHead>
-                <TableHead className="px-3 text-center">Ações</TableHead>
+                <TableHead className="px-3 text-left">{sortableHeader("Início", "first_seen_at")}</TableHead>
+                <TableHead className="px-3 text-right">{sortableHeader("Duração", "duration")}</TableHead>
+                <TableHead className="px-3 text-left">{sortableHeader("ACK", "acknowledged_source")}</TableHead>
+                <TableHead className="px-3 text-left">Chamado</TableHead>
+                <TableHead className="px-3 text-left">{sortableHeader("Estado", "status")}</TableHead>
+                <TableHead className="px-3 text-right">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -2011,7 +2001,6 @@ export default function AlertsPage() {
                 </TableRow>
               ) : alerts.map((alert) => {
                 const severityKey = normalizeOneViewSeverity(alert.severity);
-                const priority = severityCatalog[severityKey];
                 const isResolved = isResolvedAlert(alert);
                 const isActive = !isResolved;
                 const hostLabel = canonicalHostName(alert);
@@ -2037,14 +2026,10 @@ export default function AlertsPage() {
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openAlert(alert); } }}
                     className={cn("cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60", selectedAlertId === alert.id && "bg-muted/60")}
                   >
-                    <TableCell className="align-middle px-3 py-2.5 text-center">
-                      {severityKey === "not_classified" ? (
-                        <span className="text-[11px] text-muted-foreground">{formatOneViewSeverityLabel("not_classified")}</span>
-                      ) : (
-                        <Badge className={cn("border text-[10px] hover:bg-inherit", priority.tone)}>{formatOneViewSeverityLabel(severityKey)}</Badge>
-                      )}
+                    <TableCell className="align-middle px-3 py-2.5 text-left">
+                      <SeverityBadge severity={severityKey} />
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                    <TableCell className="align-middle px-3 py-2.5 text-left">
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <span className="inline-flex max-w-full justify-center">
@@ -2064,7 +2049,7 @@ export default function AlertsPage() {
                         <TooltipContent side="top" className="max-w-xs break-words">{clientLabel}</TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                    <TableCell className="align-middle px-3 py-2.5 text-left">
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <div className="min-w-0">
@@ -2079,7 +2064,7 @@ export default function AlertsPage() {
                         </TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                    <TableCell className="align-middle px-3 py-2.5 text-left">
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <p className="line-clamp-2 font-medium leading-4">{problemLabel}</p>
@@ -2089,11 +2074,11 @@ export default function AlertsPage() {
                         </TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">
+                    <TableCell className="align-middle px-3 py-2.5 text-left font-mono text-muted-foreground">
                       {alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center font-mono text-muted-foreground">{durationLabel}</TableCell>
-                    <TableCell className="overflow-hidden align-middle px-3 py-2.5 text-center">
+                    <TableCell className="align-middle px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{durationLabel}</TableCell>
+                    <TableCell className="overflow-hidden align-middle px-3 py-2.5 text-left">
                       {(() => {
                         const ack = sourceAckPresentation(alert);
                         if (ack.status !== "acknowledged") {
@@ -2115,11 +2100,14 @@ export default function AlertsPage() {
                         );
                       })()}
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                    <TableCell className="align-middle px-3 py-2.5 text-left">
+                      <AlertServiceNowReferenceCell reference={alert.servicenow_reference} />
+                    </TableCell>
+                    <TableCell className="align-middle px-3 py-2.5 text-left">
                       <p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center">
-                      <div className="flex items-center justify-center gap-1 whitespace-nowrap">
+                    <TableCell className="align-middle px-3 py-2.5 text-right">
+                      <div className="flex items-center justify-end gap-1 whitespace-nowrap">
                         <Button
                           type="button"
                           variant="ghost"
@@ -2158,367 +2146,15 @@ export default function AlertsPage() {
         </div>
       </Card>
 
-      <Sheet open={selectedAlertId !== null} onOpenChange={(open) => { if (!open) closeAlert(); }}>
-        <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-2xl">
-          {selectedAlert ? (
-            <div className="flex h-full flex-col">
-              <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
-                <SheetTitle className="text-xl">Detalhes do alerta</SheetTitle>
-                <SheetDescription>Informações operacionais seguras e histórico do OneView.</SheetDescription>
-              </SheetHeader>
-
-              <Tabs defaultValue="summary" className="flex min-h-0 flex-1 flex-col">
-                <TabsList className="mx-6 mt-4 grid w-auto grid-cols-3">
-                  <TabsTrigger value="summary"><Eye className="mr-1.5 h-4 w-4" />Resumo</TabsTrigger>
-                  <TabsTrigger value="history"><History className="mr-1.5 h-4 w-4" />Histórico</TabsTrigger>
-                  <TabsTrigger value="technical"><Info className="mr-1.5 h-4 w-4" />Informações técnicas</TabsTrigger>
-                </TabsList>
-
-                {detailError ? <OperationalErrorBanner className="mx-6 mt-4 px-3 py-2" message={detailError} /> : null}
-                {historyLoadError && !detailError ? <div className="mx-6 mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{historyLoadError}</div> : null}
-
-                <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
-                  <TabsContent value="summary" className="mt-4 space-y-4">
-                    {isDetailLoading && !detail ? <><Skeleton className="h-28 w-full" /><Skeleton className="h-52 w-full" /></> : (
-                      <>
-                        <AlertOperationalSummary alert={selectedAlert} />
-                        <AlertRelatedIncidentsSection
-                          sourceEventId={selectedAlert.source_event_id}
-                          severity={selectedAlert.severity}
-                        />
-                        {selectedCustomer?.unidentified ? (
-                          <section aria-label={selectedCustomer.name} className="rounded-[10px] border border-border/70 bg-muted/20 p-4 shadow-sm">
-                            <h3 className="text-sm font-semibold">{selectedCustomer.name}</h3>
-                            <p className="mt-1 text-sm text-muted-foreground">{selectedCustomer.hint}</p>
-                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                              <div><p className="text-[11px] text-muted-foreground">Fonte</p><p className="mt-1 font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></div>
-                              <div><p className="text-[11px] text-muted-foreground">Host</p><p className="mt-1 break-words font-semibold">{canonicalHostName(selectedAlert)}</p></div>
-                            </div>
-                            <div className="mt-4">
-                              <p className="text-[11px] text-muted-foreground">Grupos disponíveis</p>
-                              <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedAlert.host_groups?.length
-                                ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? group.name}-${index}`} variant="outline">{safeDisplayText(group.name, "Grupo sem nome")}</Badge>)
-                                : <span className="text-xs text-muted-foreground">Nenhum grupo disponível.</span>}</div>
-                            </div>
-                            <div className="mt-3">
-                              <p className="text-[11px] text-muted-foreground">Tags disponíveis</p>
-                              <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedClassificationTags.length
-                                ? selectedClassificationTags.map((tag, index) => <Badge key={`${tag.tag}-${tag.value}-${index}`} variant="secondary">{tag.tag}{tag.value ? `: ${tag.value}` : ""}</Badge>)
-                                : <span className="text-xs text-muted-foreground">Nenhuma tag disponível.</span>}</div>
-                            </div>
-                            <p className="mt-4 border-t border-border/70 pt-3 text-xs text-muted-foreground">Recomendação: revise as tags e os grupos na origem para permitir a associação automática do cliente.</p>
-                          </section>
-                        ) : null}
-                        <section aria-label="Recovery e fonte" className="space-y-2">
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <Card className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">Recovery</p><p className="mt-1 break-words font-semibold">{selectedAlert.resolved_at ? formatDateTime(selectedAlert.resolved_at) : "Alerta ainda ativo"}</p></Card>
-                            <Card className="ov-panel p-4"><p className="text-[11px] text-muted-foreground">Fonte Zabbix</p><p className="mt-1 break-words font-semibold">{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</p></Card>
-                          </div>
-                        </section>
-                        {!selectedCustomer?.unidentified ? (
-                          <section aria-label="Host, grupos e tags" className="space-y-2">
-                            <h3 className="text-sm font-semibold">Host, grupos e tags</h3>
-                            <Card className="ov-panel p-4">
-                              <p className="text-[11px] text-muted-foreground">Host</p>
-                              <p className="mt-1 break-words font-semibold">{canonicalHostName(selectedAlert)}</p>
-                              <div className="mt-4">
-                                <p className="text-[11px] text-muted-foreground">Grupos</p>
-                                <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedAlert.host_groups?.length
-                                  ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? group.name}-${index}`} variant="outline">{safeDisplayText(group.name, "Grupo sem nome")}</Badge>)
-                                  : <span className="text-xs text-muted-foreground">Nenhum grupo disponível.</span>}</div>
-                              </div>
-                              <div className="mt-3">
-                                <p className="text-[11px] text-muted-foreground">Tags</p>
-                                <div className="mt-1.5 flex flex-wrap gap-1.5">{selectedClassificationTags.length
-                                  ? selectedClassificationTags.map((tag, index) => <Badge key={`${tag.tag}-${tag.value}-${index}`} variant="secondary">{tag.tag}{tag.value ? `: ${tag.value}` : ""}</Badge>)
-                                  : <span className="text-xs text-muted-foreground">Nenhuma tag disponível.</span>}</div>
-                              </div>
-                            </Card>
-                          </section>
-                        ) : null}
-                        <section aria-label="Reconhecimento" className="space-y-2">
-                          <h3 className="text-sm font-semibold">Reconhecimento</h3>
-                          <div className="grid gap-3">
-                            <Card className="ov-panel p-4">
-                              <p className="text-[11px] text-muted-foreground">ACK na origem (Zabbix)</p>
-                              {(() => {
-                                const ack = selectedSourceAck;
-                                if (ack.status === "pending") {
-                                  return <p className="mt-1 break-words font-semibold">Pendente</p>;
-                                }
-                                return (
-                                  <>
-                                    <p className="mt-1 break-words font-semibold">
-                                      {ack.actorLabel
-                                        ? `Reconhecido por ${ack.actorLabel}`
-                                        : "Reconhecido"}
-                                    </p>
-                                    {ack.at && !Number.isNaN(Date.parse(ack.at)) ? (
-                                      <p className="mt-1 break-words text-sm text-muted-foreground">{formatDateTime(ack.at)}</p>
-                                    ) : null}
-                                    {officialAckComment ? (
-                                      <p className="mt-2 break-words text-sm">
-                                        <span className="text-muted-foreground">Comentário:</span>{" "}
-                                        {safeDisplayText(officialAckComment)}
-                                      </p>
-                                    ) : null}
-                                    {sourceAckConfirmedWithoutHistory ? (
-                                      <p className="mt-3 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
-                                        Detalhes históricos deste reconhecimento não estão disponíveis no registro legado.
-                                      </p>
-                                    ) : null}
-                                  </>
-                                );
-                              })()}
-                            </Card>
-                          </div>
-                        </section>
-                        <section aria-label="ServiceNow" className="space-y-2">
-                          <h3 className="text-sm font-semibold">ServiceNow</h3>
-                          <Card className="rounded-[10px] border border-border/70 bg-muted/20 p-4 shadow-sm">
-                            <p className="text-sm text-muted-foreground">Integração ServiceNow em preparação.</p>
-                          </Card>
-                        </section>
-                      </>
-                    )}
-                  </TabsContent>
-
-                  <TabsContent value="history" className="mt-4 space-y-4">
-                    <div className="mb-3 flex items-center justify-between gap-2">
-                      <div>
-                        <h3 className="text-sm font-semibold">Histórico resumido</h3>
-                        <p className="text-xs text-muted-foreground">Linha do tempo do alerta</p>
-                      </div>
-                      {history?.history_available === true ? <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">Histórico do banco</Badge> : null}
-                    </div>
-                    {historyLoadError ? (
-                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{historyLoadError}</div>
-                    ) : null}
-                    {isDetailLoading && !history ? (
-                      <div className="space-y-4"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /></div>
-                    ) : (
-                      <>
-                        <section aria-label="Resumo do histórico" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                          {[
-                            ["Eventos registrados", String(historyRecordCount(v1HistoryGroups.flatMap((group) => group.items)))],
-                            ["Primeira ocorrência", formatDateTime(history?.first_event_at ?? firstHistoryEventAt)],
-                            ["Última ocorrência", formatDateTime(history?.last_event_at ?? lastHistoryEventAt)],
-                            ["ACK atual", sourceAcknowledged(selectedAlert) && !historyHasAck
-                              ? "ACK atual confirmado pela origem"
-                              : ackActorSummary],
-                            ["Recovery", historyHasRecovery ? "Sim" : "Não"],
-                            ["Integridade do histórico", historyQuality.kind === "complete" ? "Completo" : historyQuality.kind === "partial" ? "Parcial" : historyQuality.kind === "legacy" ? "Legado" : "Indisponível"],
-                          ].map(([label, value]) => (
-                            <Card key={label} className="ov-panel p-3">
-                              <p className="text-[10px] text-muted-foreground">{label}</p>
-                              <p className="mt-1 break-words text-xs font-semibold">{value}</p>
-                            </Card>
-                          ))}
-                        </section>
-
-                        <section aria-label="Integridade do histórico" className={cn(
-                          "rounded-[10px] border p-4 shadow-sm",
-                          historyQuality.kind === "complete" && "border-border/70 bg-card",
-                          historyQuality.kind === "partial" && "border-amber-200 bg-amber-50",
-                          historyQuality.kind === "legacy" && "border-orange-200 bg-orange-50",
-                          historyQuality.kind === "unavailable" && "border-border/70 bg-muted/20",
-                        )}>
-                          <h3 className="text-sm font-semibold">{historyQuality.title}</h3>
-                          <p className="mt-1 text-sm text-muted-foreground">{historyQuality.description}</p>
-                        </section>
-
-                        {sourceAckConfirmedWithoutHistory ? (
-                          <section aria-label="ACK atual confirmado pela origem" className="rounded-[10px] border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
-                            <h3 className="text-sm font-semibold text-emerald-900">ACK atual confirmado pela origem</h3>
-                            <p className="mt-1 text-sm text-emerald-800">Detalhes históricos deste reconhecimento não estão disponíveis no registro legado.</p>
-                          </section>
-                        ) : null}
-
-                        {v1HistoryGroups.length ? (
-                          <>
-                            <div className="flex flex-wrap gap-2" aria-label="Filtros rápidos do histórico">
-                              {[
-                                ["all", "Todos"],
-                                ["acknowledgements", "Reconhecimentos"],
-                                ["changes", "Mudanças"],
-                                ["recovery", "Recovery"],
-                                ["legacy", "Legado"],
-                              ].map(([value, label]) => (
-                                <Button
-                                  key={value}
-                                  type="button"
-                                  size="sm"
-                                  variant={historyFilter === value ? "default" : "outline"}
-                                  className="h-8 rounded-full px-3 text-xs"
-                                  onClick={() => setHistoryFilter(value as HistoryFilter)}
-                                >
-                                  {label}
-                                </Button>
-                              ))}
-                            </div>
-
-                            {visibleHistoryGroups.length ? <ol className="relative ml-3 border-l border-border pl-8">
-                              {visibleHistoryGroups.map((group, index) => {
-                                const item = group.primary;
-                                const TimelineIcon = historyEventIcon(item.event_type);
-                                const groupedEventCount = historyGroupEventCount(group);
-                                const isSeenGroup = item.event_type.toLowerCase() === "problem_seen" && groupedEventCount > 1;
-                                const isAckEvent = isAcknowledgementEvent(item.event_type);
-                                const previousValueVisible = historyValueIsMeaningful(item.previous_value);
-                                const currentValueVisible = historyValueIsMeaningful(item.current_value);
-                                const previousSeverity = historySeverityValue(item.previous_value);
-                                const currentSeverity = historySeverityValue(item.current_value);
-                                const ackActor = historyActorLabel(item.ack_actor_name || item.actor_name, { allowWorkerLabel: false });
-                                const nonAckActor = historyActorLabel(item.actor_name);
-                                const occurrenceTimes = group.items
-                                  .flatMap((occurrence) => [occurrence.first_occurred_at, occurrence.last_occurred_at, occurrence.occurred_at])
-                                  .filter((value): value is string => Boolean(value))
-                                  .sort((left, right) => Date.parse(left) - Date.parse(right));
-                                const firstOccurrence = occurrenceTimes[0] ?? item.occurred_at;
-                                const lastOccurrence = occurrenceTimes.at(-1) ?? item.occurred_at;
-                                return (
-                                  <li key={`${group.key}-${item.id}`} className={cn("relative pb-6", index === visibleHistoryGroups.length - 1 && "pb-0")}>
-                                    <span className="absolute -left-[45px] top-0 flex h-7 w-7 items-center justify-center rounded-full border border-primary/25 bg-primary/10 text-primary ring-4 ring-background">
-                                      <TimelineIcon className="h-3.5 w-3.5" />
-                                    </span>
-                                    <div className="ov-panel p-4">
-                                      <div className="flex flex-wrap items-start justify-between gap-2">
-                                        <div className="flex flex-wrap items-center gap-2">
-                                          <p className="font-semibold">{formalHistoryTitle(item, groupedEventCount)}</p>
-                                          {groupedEventCount > 1 ? <Badge variant="secondary" className="text-[10px]">{groupedEventCount} registros consolidados</Badge> : null}
-                                        </div>
-                                        <Badge variant="outline" className="text-[10px]">{formatRelative(item.occurred_at)}</Badge>
-                                      </div>
-
-                                      {item.description ? <p className="mt-3 text-sm text-muted-foreground">{safeDisplayText(item.description)}</p> : null}
-
-                                      {isAckEvent ? (
-                                        <div className="mt-3 space-y-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                                          <p><span className="font-medium">Responsável:</span>{" "}{ackActor || "Responsável não informado pela origem"}</p>
-                                          {isValidZabbixAckComment(item.comment) ? (
-                                            <p><span className="font-medium">Comentário:</span>{" "}{safeDisplayText(item.comment)}</p>
-                                          ) : null}
-                                          <p><span className="font-medium">Horário da origem:</span>{" "}{formatDateTime(item.occurred_at)}</p>
-                                          <p><span className="font-medium">Registrado no OneView:</span>{" "}{formatDateTime(item.created_at)}</p>
-                                          {previousSeverity || currentSeverity ? (
-                                            <p><span className="font-medium">Mudança de severidade:</span>{" "}{previousSeverity ?? "-"} → {currentSeverity ?? "-"}</p>
-                                          ) : null}
-                                        </div>
-                                      ) : null}
-
-                                      {!isAckEvent && (previousValueVisible || currentValueVisible) ? (
-                                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                                          {previousValueVisible ? <div className="rounded-md border border-border/60 bg-muted/20 p-3">
-                                            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Valor anterior</p>
-                                            <p className="mt-1 break-words text-xs">{historyValueText(item.previous_value)}</p>
-                                          </div> : null}
-                                          {currentValueVisible ? <div className="rounded-md border border-border/60 bg-muted/20 p-3">
-                                            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Valor atual</p>
-                                            <p className="mt-1 break-words text-xs">{historyValueText(item.current_value)}</p>
-                                          </div> : null}
-                                        </div>
-                                      ) : null}
-
-                                      <div className="mt-3 space-y-0.5 text-[11px] text-muted-foreground">
-                                        {!isAckEvent ? (
-                                          <>
-                                            <p>Horário da origem: {formatDateTime(item.occurred_at)}</p>
-                                            <p>Registrado no OneView: {formatDateTime(item.created_at)}</p>
-                                            {nonAckActor === "Processado pelo Worker OneView"
-                                              ? <p>Processamento: Processado pelo Worker OneView</p>
-                                              : null}
-                                          </>
-                                        ) : null}
-                                        {isSeenGroup ? <><p>Primeira observação: {formatDateTime(firstOccurrence)}</p><p>Última observação: {formatDateTime(lastOccurrence)}</p></> : null}
-                                      </div>
-
-                                      {group.items.length > 1 ? (
-                                        <details className="mt-3 rounded-md border border-border/60 bg-muted/10 px-3 py-2 text-xs">
-                                          <summary className="cursor-pointer font-medium text-foreground">Ver horários das ocorrências agrupadas</summary>
-                                          <ul className="mt-2 space-y-1 text-muted-foreground">
-                                            {group.items.map((occurrence) => (
-                                              <li key={occurrence.id} className="flex flex-wrap justify-between gap-2 border-t border-border/40 pt-1 first:border-0 first:pt-0">
-                                                <span>{formatDateTime(occurrence.occurred_at)}</span>
-                                                <span>{safeDisplayText(occurrence.source, "OneView")}{occurrence.legacy ? " · legacy" : ""}</span>
-                                              </li>
-                                            ))}
-                                          </ul>
-                                        </details>
-                                      ) : null}
-                                    </div>
-                                  </li>
-                                );
-                              })}
-                            </ol> : (
-                              <Card className="ov-panel border-dashed p-6 text-center">
-                                <p className="text-sm font-semibold">Nenhum evento corresponde ao filtro selecionado.</p>
-                              </Card>
-                            )}
-                          </>
-                        ) : (
-                          <Card className="ov-panel border-dashed p-6 text-center">
-                            <History className="mx-auto h-8 w-8 text-muted-foreground" />
-                            <p className="mt-3 text-sm font-semibold">
-                              {sourceAckConfirmedWithoutHistory
-                                ? "Não há eventos estruturados de reconhecimento no histórico deste alerta."
-                                : "Nenhum evento estruturado foi encontrado para este alerta. O estado atual do alerta continua disponível no resumo."}
-                            </p>
-                          </Card>
-                        )}
-                      </>
-                    )}
-                  </TabsContent>
-
-                  <TabsContent value="technical" className="mt-4 space-y-3">
-                    <p className="text-xs text-muted-foreground">Identificadores e metadados técnicos — seção secundária.</p>
-                    <details className="ov-panel p-4">
-                      <summary className="cursor-pointer text-sm font-semibold">Identificadores técnicos</summary>
-                      <dl className="mt-4 space-y-3 text-sm">
-                        <div><dt className="text-xs text-muted-foreground">Event ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_event_id, "Não informado")}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Problem ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_problem_id, "Não informado")}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Trigger ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_trigger_id, "Não informado")}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Host ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_host_id, "Não informado")}</dd></div>
-                        <div><dt className="text-xs text-muted-foreground">Recovery event ID</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.source_recovery_event_id, "Não informado")}</dd></div>
-                      </dl>
-                    </details>
-                    <details className="ov-panel p-4">
-                      <summary className="cursor-pointer text-sm font-semibold">Origem técnica</summary>
-                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Fonte Zabbix</dt><dd>{safeDisplayText(selectedAlert.datasource_name, "Fonte não identificada")}</dd></div><div><dt className="text-xs text-muted-foreground">Tipo de fonte</dt><dd>{safeDisplayText(selectedAlert.source_type, "Não informado")}</dd></div></dl>
-                    </details>
-                    <details className="ov-panel p-4">
-                      <summary className="cursor-pointer text-sm font-semibold">Host técnico</summary>
-                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Nome visível</dt><dd>{displayHostField(selectedAlert.host_visible_name)}</dd></div><div><dt className="text-xs text-muted-foreground">Nome técnico</dt><dd>{displayHostField(selectedAlert.host_technical_name)}</dd></div><div><dt className="text-xs text-muted-foreground">IP público</dt><dd className="font-mono">{safeHostIp(selectedAlert.host_ip) ?? "Não disponível"}</dd></div><div><dt className="text-xs text-muted-foreground">Grupos</dt><dd className="mt-1 flex flex-wrap gap-2">{selectedAlert.host_groups?.length ? selectedAlert.host_groups.map((group, index) => <Badge key={`${group.id ?? "group"}-${index}`} variant="outline">{safeDisplayText(group.name)}</Badge>) : <span className="text-muted-foreground">Nenhum grupo enriquecido.</span>}</dd></div></dl>
-                    </details>
-                    <details className="ov-panel p-4">
-                      <summary className="cursor-pointer text-sm font-semibold">Trigger e item</summary>
-                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Descrição do trigger</dt><dd>{safeDisplayText(selectedAlert.trigger_description, "Não informada")}</dd></div><div><dt className="text-xs text-muted-foreground">Item</dt><dd>{safeDisplayText(selectedAlert.item_name, "Não informado")}</dd></div><div><dt className="text-xs text-muted-foreground">Chave do item</dt><dd className="break-all font-mono">{safeDisplayText(selectedAlert.item_key, "Não informada")}</dd></div></dl>
-                    </details>
-                    <details className="ov-panel p-4">
-                      <summary className="cursor-pointer text-sm font-semibold">Classificação</summary>
-                      <dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">Cliente interno</dt><dd className="font-semibold">{selectedCustomer?.name ?? UNCLASSIFIED_CLIENT_LABEL}</dd></div><div><dt className="text-xs text-muted-foreground">Enriquecimento</dt><dd>{selectedCustomer ? enrichmentLabels[selectedCustomer.enrichment] : "Não classificado"}</dd></div><div><dt className="text-xs text-muted-foreground">Origem da classificação</dt><dd>{customerSourceLabel(selectedAlert.customer_source)}</dd></div><div><dt className="text-xs text-muted-foreground">Confiança</dt><dd>{confidenceLabel(selectedAlert.customer_confidence)}</dd></div><div><dt className="text-xs text-muted-foreground">Tags seguras</dt><dd className="mt-1 space-y-2">{[["Evento", selectedAlert.event_tags], ["Trigger", selectedAlert.trigger_tags], ["Host", selectedAlert.host_tags]].map(([label, tags]) => <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><div className="mt-1 flex flex-wrap gap-1.5">{Array.isArray(tags) && tags.length ? tags.map((tag, index) => <Badge key={`${tag.tag}-${index}`} variant="secondary">{safeDisplayText(tag.tag)}: {safeDisplayText(tag.value)}</Badge>) : <span className="text-xs text-muted-foreground">Sem tags.</span>}</div></div>)}</dd></div></dl>
-                    </details>
-                    <details className="ov-panel p-4">
-                      <summary className="cursor-pointer text-sm font-semibold">Auditoria temporal</summary>
-                      <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">Primeira ocorrência</dt><dd>{formatDateTime(selectedAlert.first_seen_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Última ocorrência</dt><dd>{formatDateTime(selectedAlert.last_seen_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Persistido no OneView</dt><dd>{formatDateTime(selectedAlert.created_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Eventos históricos</dt><dd>{detail?.item.history_count ?? history?.total_items ?? 0}</dd></div></dl>
-                    </details>
-                  </TabsContent>
-                </div>
-              </Tabs>
-
-              <div className="border-t border-border/70 px-6 py-4">
-                <TooltipProvider>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <Tooltip><TooltipTrigger asChild><span><Button type="button" variant="outline" disabled className="w-full"><UserCheck className="h-4 w-4" />Atribuir</Button></span></TooltipTrigger><TooltipContent>Atribuição operacional em preparação.</TooltipContent></Tooltip>
-                    <Tooltip><TooltipTrigger asChild><span><Button type="button" variant="outline" disabled className="w-full"><MessageSquare className="h-4 w-4" />Comentar</Button></span></TooltipTrigger><TooltipContent>{ONEVIEW_READ_ONLY_MESSAGE}</TooltipContent></Tooltip>
-                  </div>
-                </TooltipProvider>
-              </div>
-            </div>
-          ) : (
-            <div className="flex h-full items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
-          )}
-        </SheetContent>
-      </Sheet>
+      <AlertDetailDrawer
+        open={selectedAlertId !== null}
+        onOpenChange={(next) => { if (!next) closeAlert(); }}
+        alert={selectedAlert}
+        historyItems={history?.items ?? []}
+        isLoading={isDetailLoading}
+        error={detailError || historyLoadError}
+        description="Informações operacionais seguras e histórico do OneView."
+      />
 
     </AppLayout>
   );

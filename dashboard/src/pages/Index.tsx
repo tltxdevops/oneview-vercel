@@ -2,20 +2,39 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link, useSearchParams } from "react-router-dom";
 import { Eye, History, Loader2 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { ClientIdentity, CLASSIFICATION_PENDING_LABEL, canonicalClientName, canonicalHostName, normalizeOperationalScope, operationalClientLabel } from "@/components/oneview/ClientIdentity";
-import { AlertOperationalSummary } from "@/components/oneview/AlertOperationalSummary";
-import { AlertRelatedIncidentsSection } from "@/components/oneview/AlertRelatedIncidentsSection";
+import {
+  ClientIdentity,
+  CLASSIFICATION_PENDING_LABEL,
+  canonicalHostName,
+  facetCustomerDisplayName,
+  normalizeOperationalScope,
+  operationalClientLabel,
+} from "@/components/oneview/ClientIdentity";
+import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
+import { OperationalFilterGroup } from "@/components/oneview/OperationalFilterGroup";
+import { OperationalSegmentedControl } from "@/components/oneview/OperationalSegmentedControl";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { TruncatedText } from "@/components/oneview/TruncatedText";
+import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   AlertDetailResponse,
   AlertHistoryItem,
@@ -23,37 +42,45 @@ import {
   GlobalHistoryItem,
   OneViewAlert,
   OneViewDataSourceKind,
+  OneViewIncident,
   OneViewSeverity,
   fetchAlert,
   fetchAlertHistory,
-  fetchClientsTopSummary,
+  fetchOneViewFacets,
   formatNullableCount,
   formatOneViewSeverityLabel,
-  isWindowedClientsSummary,
-  normalizeOneViewSeverity,
 } from "@/lib/oneview-api";
 import {
-  HOME_WINDOW_OPTIONS,
-  PRIORITY_SEVERITIES,
+  HOME_ALERT_MODE,
+  HOME_ALERTS_PAGE_SIZE,
+  HOME_EVENTS_LIMIT,
+  HOME_INCIDENTS_PAGE_SIZE,
+  HOME_OPERATIONAL_WINDOW_OPTIONS,
+  HOME_SEVERITY_FILTER_OPTIONS,
+  buildHomeAlertsHref,
+  buildHomeUnassignedChamadosHref,
+  fetchHomeAlerts,
+  fetchHomeIncidents,
+  homeOperationalWindowActiveLabel,
+  homeOperationalWindowMs,
+  parseHomeAlertMode,
+  parseHomeOperationalWindow,
+  toggleHomeSeverityFilter,
+  type HomeAlertMode,
+  type HomeAlertSeverity,
+  type HomeOperationalWindowPreset,
+} from "@/lib/oneview-home";
+import {
   RecentOperationalMetrics,
   fetchRecentOperationalEvents,
   fetchRecentOperationalMetrics,
-  fetchRecentPriorityAlerts,
-  homeWindowActiveLabel,
-  homeWindowMs,
-  homeWindowShortLabel,
-  isoAgo,
-  parseHomeWindow,
   queueOverflowLabel,
-  type HomeWindowPreset,
 } from "@/lib/oneview-recent";
+import { isServiceNowIncidentsUiEnabled } from "@/lib/servicenow-features";
 import { toast } from "sonner";
 
-const SUMMARY_REFRESH_MS = 60_000;
-const LIST_REFRESH_MS = 60_000;
-const PRIORITY_PAGE_SIZE = 6;
-const RECENT_EVENTS_LIMIT = 6;
-const CLIENTS_LIMIT = 5;
+const SUMMARY_REFRESH_MS = 30_000;
+const LIST_REFRESH_MS = 30_000;
 
 /** Ordem visual Home OV-P0-42A (sem Not classified — chip no mesmo bloco). */
 const HOME_VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
@@ -83,7 +110,7 @@ const HOME_EVENT_ALLOWLIST = new Set([
 const HOME_EVENT_BLOCKLIST = /upsert|backfill|reconcil|retry|outbox|cache|payload|worker|sync_log|internal_acknowledged/i;
 
 type ResourceMeta = { source?: OneViewDataSourceKind; checkedAt?: string };
-type SectionKey = "summary" | "priority" | "events" | "clients";
+type SectionKey = "summary" | "alerts" | "incidents" | "events";
 
 function safeActorName(value?: string | null) {
   const actor = String(value || "").trim();
@@ -117,20 +144,6 @@ function formatDurationSeconds(seconds: number | null | undefined) {
   const hours = Math.floor(minutes / 60);
   const remMin = minutes % 60;
   return remMin ? `${hours} h ${remMin} min` : `${hours} h`;
-}
-
-function severityLabel(value: string) {
-  return formatOneViewSeverityLabel(value);
-}
-
-function severityTone(value: string) {
-  const severity = normalizeOneViewSeverity(value);
-  if (severity === "disaster") return "border-red-600 bg-red-100 text-red-950";
-  if (severity === "high") return "border-red-200 bg-red-50 text-red-700";
-  if (severity === "average") return "border-amber-200 bg-amber-50 text-amber-700";
-  if (severity === "warning") return "border-yellow-200 bg-yellow-50 text-yellow-800";
-  if (severity === "information") return "border-sky-200 bg-sky-50 text-sky-700";
-  return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
 function latestCheckedAt(...values: Array<string | undefined | null>) {
@@ -168,12 +181,28 @@ function homeEventLabel(eventType: string) {
   return "Evento operacional";
 }
 
+function displayIncidentField(value?: string | null, fallback?: string | null) {
+  const primary = String(value || "").trim();
+  if (primary && primary !== "undefined" && primary !== "null") return primary;
+  const secondary = String(fallback || "").trim();
+  if (secondary && secondary !== "undefined" && secondary !== "null") return secondary;
+  return "—";
+}
+
+/** OV-P0-73 / OV-P0-78 — classes compartilhadas dos painéis Home. */
+const HOME_PANEL_HEADER_ASIDE = "inline-flex h-7 items-center gap-2";
+const HOME_PANEL_COUNT = "text-xs font-medium tabular-nums text-muted-foreground";
+const HOME_FILTER_ROW = "flex flex-wrap items-center gap-2 border-b border-border/60 py-1.5";
+const HOME_LIST_DIVIDE = "divide-y divide-border/60";
+const HOME_INCIDENT_COLS = "grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)_auto_auto_minmax(0,1fr)] items-center gap-x-2";
+
 function SectionState({
   loading,
   error,
   empty,
   emptyMessage,
   onRetry,
+  emptyClassName,
   children,
 }: {
   loading: boolean;
@@ -181,14 +210,15 @@ function SectionState({
   empty: boolean;
   emptyMessage: string;
   onRetry?: () => void;
+  emptyClassName?: string;
   children: ReactNode;
 }) {
   if (loading) {
     return (
-      <div className="space-y-2 py-4">
-        <Skeleton className="h-12 w-full" />
-        <Skeleton className="h-12 w-full" />
-        <Skeleton className="h-12 w-2/3" />
+      <div className="space-y-1.5 py-2">
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-2/3" />
       </div>
     );
   }
@@ -196,22 +226,34 @@ function SectionState({
     return <OperationalErrorBanner className="my-2" message={error} onRetry={onRetry} />;
   }
   if (empty) {
-    return <OperationalEmptyState compact title={emptyMessage} />;
+    return (
+      <OperationalEmptyState
+        compact
+        title={emptyMessage}
+        className={cn("px-3 py-6 text-xs", emptyClassName)}
+      />
+    );
   }
   return <>{children}</>;
 }
 
-function PriorityRow({
+function HomePanelCount({ value }: { value: number }) {
+  return <span className={HOME_PANEL_COUNT}>{formatMetricCount(value)}</span>;
+}
+
+/** OV-P0-73 / OV-P0-111: cliente > host > problema > severidade + horário + duração. */
+function HomeAlertRow({
   alert,
   onOpen,
 }: {
   alert: OneViewAlert;
   onOpen: (alert: OneViewAlert) => void;
 }) {
+  const startedAt = alert.first_seen_at || alert.started_at;
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2.5 py-2.5 text-left transition-colors hover:bg-muted/30"
+      className="flex w-full items-center gap-2 py-1.5 text-left transition-colors hover:bg-muted/30"
       onClick={() => onOpen(alert)}
       aria-label={`Abrir resumo de ${alert.problem_name || "alerta"}`}
     >
@@ -220,17 +262,10 @@ function PriorityRow({
         operationalScope={alert.operational_scope}
         operationalScopeLabel={alert.operational_scope_label}
         size="sm"
+        className="shrink-0"
       />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Badge variant="outline" className={cn("text-[10px]", severityTone(alert.severity))}>
-            {severityLabel(alert.severity)}
-          </Badge>
-          <Badge variant="outline" className="border-amber-200 bg-amber-50 text-[10px] text-amber-700">
-            Sem ACK
-          </Badge>
-        </div>
-        <p className="mt-1 truncate text-sm font-semibold text-foreground">
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <TruncatedText className="text-[13px] font-semibold leading-tight text-foreground">
           {operationalClientLabel({
             key: alert.customer_key,
             name: alert.customer_name,
@@ -238,43 +273,101 @@ function PriorityRow({
             operational_scope: alert.operational_scope,
             operational_scope_label: alert.operational_scope_label,
           })}
-        </p>
-        <p className="truncate text-xs text-foreground/80">{canonicalHostName(alert)}</p>
+        </TruncatedText>
+        <TruncatedText className="text-[11px] leading-tight text-foreground/80">{canonicalHostName(alert)}</TruncatedText>
         {normalizeOperationalScope(alert.operational_scope) === "unknown" ? (
-          <p className="truncate text-[10px] text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</p>
+          <TruncatedText className="text-[10px] leading-tight text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</TruncatedText>
         ) : null}
-        <p className="truncate text-xs text-muted-foreground">{alert.problem_name}</p>
-        <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
-          <span>Duração {formatDurationSeconds(alert.duration_seconds)}</span>
-          <span>Início {formatDateTime(alert.first_seen_at)}</span>
+        <TruncatedText className="text-[11px] leading-tight text-muted-foreground">{alert.problem_name}</TruncatedText>
+        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+          <SeverityBadge severity={alert.severity} className="h-5 px-1.5" />
+          <span
+            className="text-[10px] font-medium tabular-nums text-foreground/80"
+            title={startedAt ? `Início: ${formatDateTime(startedAt)}` : "Horário de início indisponível"}
+          >
+            {formatClock(startedAt)}
+          </span>
+          <span
+            className="text-[10px] text-muted-foreground"
+            title="Duração: há quanto tempo o alerta está ativo"
+          >
+            · {formatDurationSeconds(alert.duration_seconds)}
+          </span>
         </div>
       </div>
-      <Eye className="h-5 w-5 shrink-0 self-center text-muted-foreground" aria-hidden="true" />
+      <span className="inline-flex h-7 shrink-0 items-center self-center text-xs font-medium text-muted-foreground" aria-hidden="true">
+        <Eye className="h-3.5 w-3.5" />
+      </span>
     </button>
   );
 }
 
+function HomeIncidentRow({ item }: { item: OneViewIncident }) {
+  const href = item.servicenow_url || "/chamados";
+  const external = Boolean(item.servicenow_url);
+  const label = `Abrir chamado ${displayIncidentField(item.number)}`;
+
+  return (
+    <a
+      href={href}
+      target={external ? "_blank" : undefined}
+      rel={external ? "noopener noreferrer" : undefined}
+      className={cn(
+        HOME_INCIDENT_COLS,
+        "w-full border-b border-border/50 py-1.5 last:border-b-0 transition-colors hover:bg-muted/30",
+      )}
+      aria-label={label}
+      title={label}
+    >
+      <p className="truncate text-[13px] font-semibold text-foreground" title={displayIncidentField(item.number)}>
+        {displayIncidentField(item.number)}
+      </p>
+      <p className="truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>
+        {displayIncidentField(item.company_display, item.company)}
+      </p>
+      <Badge variant="outline" className="h-5 justify-self-start px-1.5 text-[10px]">
+        {displayIncidentField(item.state_display, item.state)}
+      </Badge>
+      <Badge variant="secondary" className="h-5 justify-self-start px-1.5 text-[10px]">
+        {displayIncidentField(item.priority_display, item.priority)}
+      </Badge>
+      <p className="truncate text-[11px] text-muted-foreground" title={displayIncidentField(item.assigned_to_display, item.assigned_to)}>
+        {displayIncidentField(item.assigned_to_display, item.assigned_to)}
+      </p>
+    </a>
+  );
+}
+
 export default function Index() {
+  const snIncidentsEnabled = isServiceNowIncidentsUiEnabled();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedAlertId = searchParams.get("alert");
-  const homeWindow = parseHomeWindow(searchParams.get("window"));
-  const windowMs = homeWindowMs(homeWindow);
-  const windowLabel = homeWindowShortLabel(homeWindow);
+  const homeWindow = parseHomeOperationalWindow(searchParams.get("window"));
+  const windowMs = homeOperationalWindowMs(homeWindow);
+
+  const [alertMode, setAlertMode] = useState<HomeAlertMode>(HOME_ALERT_MODE.prioritary);
+  const [severityFilter, setSeverityFilter] = useState<string>("all");
+  const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>([]);
+  const [clientFilterOpen, setClientFilterOpen] = useState(false);
+  const [customerOptions, setCustomerOptions] = useState<ClientFilterOption[]>([
+    { key: "all", name: "Todos" },
+  ]);
+
   const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(null);
-  const [topClients, setTopClients] = useState<Array<{ key: string; name: string; count: number }>>([]);
-  const [unclassifiedClientCount, setUnclassifiedClientCount] = useState<number | null>(null);
-  const [clientsPartial, setClientsPartial] = useState(false);
-  const [hasClientsData, setHasClientsData] = useState(false);
-  const [priorityAlerts, setPriorityAlerts] = useState<OneViewAlert[]>([]);
-  const [priorityTotal, setPriorityTotal] = useState(0);
+  const [homeAlerts, setHomeAlerts] = useState<OneViewAlert[]>([]);
+  const [alertsTotal, setAlertsTotal] = useState(0);
+  const [incidents, setIncidents] = useState<OneViewIncident[]>([]);
+  const [incidentsTotal, setIncidentsTotal] = useState(0);
   const [recentEvents, setRecentEvents] = useState<GlobalHistoryItem[]>([]);
   const [eventsTotal, setEventsTotal] = useState(0);
+
   const [isSummaryLoading, setIsSummaryLoading] = useState(true);
   const [isListsLoading, setIsListsLoading] = useState(true);
   const [isBackgroundUpdating, setIsBackgroundUpdating] = useState(false);
   const [metas, setMetas] = useState<ResourceMeta[]>([]);
   const [listsMeta, setListsMeta] = useState<ResourceMeta>({});
   const [sectionErrors, setSectionErrors] = useState<Partial<Record<SectionKey, string>>>({});
+
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<OneViewAlert | null>(null);
   const [detail, setDetail] = useState<AlertDetailResponse | null>(null);
@@ -286,7 +379,6 @@ export default function Index() {
   const listsRequest = useRef<AbortController | null>(null);
   const listsRequestIdRef = useRef(0);
   const hasSummaryRef = useRef(false);
-  const hasClientsRef = useRef(false);
   const hasListsRef = useRef(false);
   const quietUpdatesRef = useRef(0);
   const detailRequest = useRef<AbortController | null>(null);
@@ -310,83 +402,49 @@ export default function Index() {
     });
   }, []);
 
-  const setHomeWindow = useCallback((preset: HomeWindowPreset) => {
+  const setHomeWindow = useCallback((preset: HomeOperationalWindowPreset) => {
     const next = new URLSearchParams(searchParams);
-    next.set("window", parseHomeWindow(preset));
+    next.set("window", parseHomeOperationalWindow(preset));
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     const raw = searchParams.get("window");
-    const parsed = parseHomeWindow(raw);
+    const parsed = parseHomeOperationalWindow(raw);
     if (raw === parsed) return;
     const next = new URLSearchParams(searchParams);
     next.set("window", parsed);
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const buildAlertsQuery = useCallback((options: {
-    status?: string;
-    severities?: string[];
-    sourceAck?: string;
-    host?: string;
-    sort?: string;
-    order?: string;
-    created?: string;
-    view?: string;
-    dateField?: string;
-    datePreset?: string;
-  }) => {
-    const params = new URLSearchParams();
-    if (options.status) params.set("status", options.status);
-    for (const severity of options.severities ?? []) params.append("severity", severity);
-    if (options.sourceAck) params.set("source_ack", options.sourceAck);
-    if (options.host) params.set("host", options.host);
-    if (options.sort) params.set("sort", options.sort);
-    if (options.order) params.set("order", options.order);
-    if (options.created) params.set("created", options.created);
-    if (options.view) params.set("view", options.view);
-    if (options.dateField) params.set("date_field", options.dateField);
-    if (options.datePreset) params.set("date_preset", options.datePreset);
-    return params;
+  const homeAlertsHref = useMemo(() => buildHomeAlertsHref({
+    mode: alertMode,
+    severity: severityFilter,
+    customers: selectedCustomerKeys,
+    windowPreset: homeWindow,
+  }), [alertMode, homeWindow, selectedCustomerKeys, severityFilter]);
+
+  /** OV-P0-103 — Resumo operacional filtra a lista da Home (toggle local; sem navegar). */
+  const toggleSeverityStrip = useCallback((severity: HomeAlertSeverity) => {
+    setSeverityFilter((current) => toggleHomeSeverityFilter(current, severity));
   }, []);
 
-  const priorityAlertsQuery = useMemo(() => buildAlertsQuery({
-    status: "active",
-    severities: [...PRIORITY_SEVERITIES],
-    sourceAck: "unacknowledged",
-    sort: "severity",
-    order: "desc",
-    dateField: "first_seen",
-    datePreset: homeWindow,
-    view: "priority",
-  }), [buildAlertsQuery, homeWindow]);
+  const selectedCustomerLabel = useMemo(() => {
+    if (selectedCustomerKeys.length === 0) return "TODOS";
+    if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
+    const selected = customerOptions.find((customer) => customer.key === selectedCustomerKeys[0]);
+    return String(selected?.name || "CLIENTE").toUpperCase();
+  }, [customerOptions, selectedCustomerKeys]);
 
-  const priorityAlertsHref = `/alertas?${priorityAlertsQuery.toString()}`;
-
-  /** High visual → high + critical legado (filtro server-side em /alertas). */
-  const severityAlertsHref = useCallback((severity: OneViewSeverity | "not_classified") => {
-    const severities = severity === "high"
-      ? ["high", "critical"]
-      : [severity];
-    return `/alertas?${buildAlertsQuery({
-      status: "active",
-      severities,
-      dateField: "first_seen",
-      datePreset: homeWindow,
-    }).toString()}`;
-  }, [buildAlertsQuery, homeWindow]);
-
-  const customerAlertsHref = (customerKey: string) => {
-    const params = buildAlertsQuery({
-      status: "active",
-      dateField: "first_seen",
-      datePreset: homeWindow,
-    });
-    if (customerKey === "unclassified") params.set("customer", "unclassified");
-    else if (customerKey) params.set("customer", customerKey);
-    return `/alertas?${params.toString()}`;
-  };
+  const toggleCustomer = useCallback((key: string) => {
+    if (key === "all") {
+      setSelectedCustomerKeys([]);
+      return;
+    }
+    setSelectedCustomerKeys((current) => (
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    ));
+  }, []);
 
   const loadSummary = useCallback((mode: "initial" | "quiet" | "manual" = "quiet") => {
     if (summaryInFlight.current) return summaryInFlight.current;
@@ -398,17 +456,12 @@ export default function Index() {
       const now = Date.now();
       const results = await Promise.allSettled([
         fetchRecentOperationalMetrics({ now, windowMs }),
-        fetchClientsTopSummary({
-          status: "active",
-          firstSeenFrom: isoAgo(windowMs, now),
-          limit: CLIENTS_LIMIT,
-        }),
+        fetchOneViewFacets(),
       ]);
 
-      const [metricsResult, clientsResult] = results;
+      const [metricsResult, facetsResult] = results;
       const nextMetas: ResourceMeta[] = [];
       let summaryFailed = true;
-      let clientsFailed = true;
 
       if (metricsResult.status === "fulfilled") {
         setRecentMetrics(metricsResult.value);
@@ -424,45 +477,26 @@ export default function Index() {
         setSectionError("summary", "Falha ao atualizar o resumo. Os valores anteriores foram mantidos.");
       }
 
-      if (clientsResult.status === "fulfilled" && isWindowedClientsSummary(clientsResult.value)) {
-        const payload = clientsResult.value;
-        const rows = payload.top_clients;
-        setTopClients(rows.map((row) => ({
-          key: String(row.customer_key || "").trim() || "unclassified",
-          name: canonicalClientName({
-            key: row.customer_key,
-            name: row.customer_name,
-          }),
-          count: Number.isFinite(Number(row.count)) ? Number(row.count) : 0,
-        })));
-        setUnclassifiedClientCount(payload.unclassified_count);
-        setClientsPartial(Boolean(payload.partial));
-        setHasClientsData(true);
-        hasClientsRef.current = true;
+      if (facetsResult.status === "fulfilled") {
+        const customers = facetsResult.value.customers ?? [];
+        setCustomerOptions([
+          { key: "all", name: "Todos" },
+          ...customers.map((customer) => ({
+            key: customer.key,
+            name: facetCustomerDisplayName(customer),
+            alerts_count: customer.alerts_count,
+          })),
+        ]);
         nextMetas.push({
-          source: payload.data_source as OneViewDataSourceKind | undefined,
-          checkedAt: payload.checked_at,
+          source: facetsResult.value.data_source as OneViewDataSourceKind | undefined,
+          checkedAt: facetsResult.value.checked_at,
         });
-        setSectionError("clients", null);
-        clientsFailed = false;
-      } else if (isInitial && !hasClientsRef.current) {
-        // OV-P0-42B-VALIDATION: contrato ausente/legado ou rejeição → erro, não lista vazia.
-        if (clientsResult.status === "fulfilled") {
-          setTopClients([]);
-          setUnclassifiedClientCount(null);
-          setHasClientsData(false);
-        }
-        setSectionError("clients", "Dados indisponíveis");
-      } else {
-        setSectionError("clients", "Dados indisponíveis");
       }
 
       if (nextMetas.length) setMetas(nextMetas);
       if (!summaryFailed) hasSummaryRef.current = true;
 
-      const hardFailures = [summaryFailed && metricsResult.status === "rejected", clientsFailed && clientsResult.status === "rejected"]
-        .filter(Boolean).length;
-      if (hardFailures === results.length) {
+      if (summaryFailed && metricsResult.status === "rejected" && facetsResult.status === "rejected") {
         toast.error("Não foi possível atualizar a visão operacional.");
       }
     })().catch((error) => {
@@ -489,48 +523,61 @@ export default function Index() {
 
     try {
       const now = Date.now();
-      const results = await Promise.allSettled([
-        fetchRecentPriorityAlerts({
-          limit: PRIORITY_PAGE_SIZE,
+      const tasks: Array<Promise<unknown>> = [
+        fetchHomeAlerts({
+          mode: alertMode,
+          severity: severityFilter,
+          customers: selectedCustomerKeys,
+          limit: HOME_ALERTS_PAGE_SIZE,
+          windowMs,
           signal: controller.signal,
           now,
-          windowMs,
         }),
         fetchRecentOperationalEvents({
-          limit: RECENT_EVENTS_LIMIT,
+          limit: HOME_EVENTS_LIMIT,
+          customers: selectedCustomerKeys,
           signal: controller.signal,
           now,
           windowMs,
         }),
-      ]);
+      ];
+      if (snIncidentsEnabled) {
+        tasks.push(fetchHomeIncidents({
+          pageSize: HOME_INCIDENTS_PAGE_SIZE,
+          signal: controller.signal,
+        }));
+      }
 
+      const results = await Promise.allSettled(tasks);
       if (controller.signal.aborted || requestId !== listsRequestIdRef.current) return;
 
-      const [priorityResult, historyResult] = results;
+      const [alertsResult, historyResult, incidentsResult] = results;
       let anySuccess = false;
 
-      if (priorityResult.status === "fulfilled") {
-        setPriorityAlerts(priorityResult.value.items);
-        setPriorityTotal(priorityResult.value.total);
+      if (alertsResult.status === "fulfilled") {
+        const payload = alertsResult.value as Awaited<ReturnType<typeof fetchHomeAlerts>>;
+        setHomeAlerts(payload.items);
+        setAlertsTotal(payload.total);
         setListsMeta({
-          source: priorityResult.value.data_source as OneViewDataSourceKind | undefined,
-          checkedAt: priorityResult.value.checked_at,
+          source: payload.data_source as OneViewDataSourceKind | undefined,
+          checkedAt: payload.checked_at,
         });
-        setSectionError("priority", null);
+        setSectionError("alerts", null);
         anySuccess = true;
       } else if (isInitial && !hasListsRef.current) {
-        setSectionError("priority", "Não foi possível carregar os alertas prioritários.");
+        setSectionError("alerts", "Não foi possível carregar os alertas.");
       } else {
-        setSectionError("priority", "Falha ao atualizar prioritários. Os valores anteriores foram mantidos.");
+        setSectionError("alerts", "Falha ao atualizar alertas. Os valores anteriores foram mantidos.");
       }
 
       if (historyResult.status === "fulfilled") {
-        const events = (historyResult.value.items ?? []).filter(isAllowedHomeEvent).slice(0, RECENT_EVENTS_LIMIT);
+        const payload = historyResult.value as Awaited<ReturnType<typeof fetchRecentOperationalEvents>>;
+        const events = (payload.items ?? []).filter(isAllowedHomeEvent).slice(0, HOME_EVENTS_LIMIT);
         setRecentEvents(events);
-        setEventsTotal(historyResult.value.total);
+        setEventsTotal(payload.total);
         setListsMeta((current) => ({
-          source: current.source || (historyResult.value.data_source as OneViewDataSourceKind | undefined),
-          checkedAt: latestCheckedAt(current.checkedAt, historyResult.value.checked_at) ?? undefined,
+          source: current.source || (payload.data_source as OneViewDataSourceKind | undefined),
+          checkedAt: latestCheckedAt(current.checkedAt, payload.checked_at) ?? undefined,
         }));
         setSectionError("events", null);
         anySuccess = true;
@@ -538,6 +585,26 @@ export default function Index() {
         setSectionError("events", "Não foi possível carregar os eventos recentes.");
       } else {
         setSectionError("events", "Falha ao atualizar eventos. Os valores anteriores foram mantidos.");
+      }
+
+      if (snIncidentsEnabled) {
+        if (incidentsResult?.status === "fulfilled") {
+          const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchHomeIncidents>>;
+          setIncidents(payload.items ?? []);
+          setIncidentsTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
+          setSectionError("incidents", null);
+          anySuccess = true;
+        } else if (isInitial && !hasListsRef.current) {
+          setIncidents([]);
+          setIncidentsTotal(0);
+          setSectionError("incidents", "ServiceNow indisponível");
+        } else {
+          setSectionError("incidents", "ServiceNow indisponível");
+        }
+      } else {
+        setIncidents([]);
+        setIncidentsTotal(0);
+        setSectionError("incidents", null);
       }
 
       if (anySuccess) hasListsRef.current = true;
@@ -549,7 +616,16 @@ export default function Index() {
       if (requestId === listsRequestIdRef.current) setIsListsLoading(false);
       if (beganQuiet) endQuietUpdate();
     }
-  }, [beginQuietUpdate, endQuietUpdate, setSectionError, windowMs]);
+  }, [
+    alertMode,
+    beginQuietUpdate,
+    endQuietUpdate,
+    selectedCustomerKeys,
+    setSectionError,
+    severityFilter,
+    snIncidentsEnabled,
+    windowMs,
+  ]);
 
   const loadSelectedAlert = useCallback(async (alertId: string) => {
     detailRequest.current?.abort();
@@ -557,8 +633,7 @@ export default function Index() {
     detailRequest.current = controller;
     setIsDetailLoading(true);
     setDetailError(null);
-    setDetail(null);
-    setHistory(null);
+    // OV-P0-108 — mantém preview/detail existente enquanto carrega (sem flicker).
     try {
       const results = await Promise.allSettled([
         fetchAlert(alertId, controller.signal),
@@ -632,10 +707,6 @@ export default function Index() {
     void loadSelectedAlert(requestedAlertId);
   }, [loadSelectedAlert, requestedAlertId, selectedAlertId]);
 
-  const refreshAll = useCallback(async (mode: "quiet" | "manual" = "manual") => {
-    await Promise.all([loadSummary(mode), loadLists(mode)]);
-  }, [loadLists, loadSummary]);
-
   useEffect(() => { void loadSummary(hasSummaryRef.current ? "quiet" : "initial"); }, [loadSummary]);
   useEffect(() => {
     void loadLists(hasListsRef.current ? "quiet" : "initial");
@@ -676,10 +747,11 @@ export default function Index() {
       key: severity,
       label: formatOneViewSeverityLabel(severity),
       value: formatMetricCount(value),
-      description: `${homeWindowActiveLabel(homeWindow)} · ${formatOneViewSeverityLabel(severity)}`,
+      description: `${homeOperationalWindowActiveLabel(homeWindow)} · ${formatOneViewSeverityLabel(severity)}`,
       unknown: value == null && !severityStripLoading,
       loading: severityStripLoading,
-      href: severityAlertsHref(severity),
+      selected: severityFilter === severity,
+      onClick: () => toggleSeverityStrip(severity),
     };
   });
 
@@ -699,21 +771,21 @@ export default function Index() {
   );
 
   const windowSelector = (
-    <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Janela temporal">
-      {HOME_WINDOW_OPTIONS.map((preset) => (
+    <OperationalFilterGroup label="Janela temporal">
+      {HOME_OPERATIONAL_WINDOW_OPTIONS.map((preset) => (
         <Button
           key={preset}
           type="button"
           size="sm"
           variant={homeWindow === preset ? "default" : "outline"}
-          className="h-7 px-2 text-[11px]"
+          className={OV_FILTER_CHIP}
           aria-pressed={homeWindow === preset}
           onClick={() => setHomeWindow(preset)}
         >
           {preset}
         </Button>
       ))}
-    </div>
+    </OperationalFilterGroup>
   );
 
   return (
@@ -726,7 +798,6 @@ export default function Index() {
         </div>
       )}
       topbarRightSection={headerControls}
-      onRefresh={() => refreshAll("quiet")}
       enableAutoRefresh={false}
       showRefreshMeta={false}
       contentClassName="gap-3 p-3 lg:px-4"
@@ -753,246 +824,220 @@ export default function Index() {
           ) : null}
         </SectionPanel>
 
-        <div className="grid items-stretch gap-3 xl:grid-cols-2">
+        {/* OV-P0-69/73: Alertas ~60% | Chamados ~40% — headers alinhados, listas compactas */}
+        <div className="grid items-start gap-3 lg:grid-cols-5">
           <SectionPanel
-            className="flex min-h-0 flex-col overflow-hidden"
-            title="Prioridade agora"
-            description={queueOverflowLabel(priorityTotal, priorityAlerts.length)
-              ? `${windowLabel} · sem ACK · ${queueOverflowLabel(priorityTotal, priorityAlerts.length)}`
-              : `${windowLabel} · Disaster/High · sem ACK`}
+            className="flex min-h-0 flex-col overflow-hidden lg:col-span-3"
+            title="Alertas"
             aside={(
-              <Button variant="ghost" size="sm" asChild>
-                <Link to={priorityAlertsHref}>Abrir todos em Alertas</Link>
-              </Button>
+              <div className={HOME_PANEL_HEADER_ASIDE}>
+                <HomePanelCount value={alertsTotal} />
+                <OperationalCta to={homeAlertsHref}>Ver todos</OperationalCta>
+              </div>
             )}
-            bodyClassName="divide-y divide-border/60 px-3"
+            bodyClassName="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-0"
           >
+            <div className={HOME_FILTER_ROW}>
+              <OperationalFilterGroup label="Modo de alertas">
+                <OperationalSegmentedControl
+                  aria-label="Modo de alertas"
+                  value={alertMode}
+                  onChange={(mode) => setAlertMode(parseHomeAlertMode(mode))}
+                  options={[
+                    { value: HOME_ALERT_MODE.prioritary, label: "Prioritários" },
+                    { value: HOME_ALERT_MODE.all, label: "Todos" },
+                  ]}
+                />
+              </OperationalFilterGroup>
+              <OperationalFilterGroup label="Cliente" showDivider>
+                <ClientFilterCombobox
+                  open={clientFilterOpen}
+                  onOpenChange={setClientFilterOpen}
+                  options={customerOptions}
+                  selectedKeys={selectedCustomerKeys}
+                  selectedLabel={selectedCustomerLabel}
+                  onToggle={toggleCustomer}
+                />
+              </OperationalFilterGroup>
+              <OperationalFilterGroup label="Severidade" showDivider>
+                <Select value={severityFilter} onValueChange={setSeverityFilter}>
+                  <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[9rem]")} aria-label="Filtrar por severidade">
+                    <SelectValue placeholder="Severidade" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {HOME_SEVERITY_FILTER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </OperationalFilterGroup>
+            </div>
+            <div className={cn(HOME_LIST_DIVIDE, "min-h-0")}>
               <SectionState
-                loading={isListsLoading && !priorityAlerts.length}
-                error={sectionErrors.priority ?? null}
-                empty={!priorityAlerts.length}
-                emptyMessage="Nenhum alerta prioritário recente no momento."
+                loading={isListsLoading && !homeAlerts.length}
+                error={sectionErrors.alerts ?? null}
+                empty={!homeAlerts.length}
+                emptyMessage="Nenhum alerta ativo na janela com os filtros atuais."
                 onRetry={() => void loadLists("manual")}
               >
-                {priorityAlerts.map((alert) => (
-                  <PriorityRow key={alert.id} alert={alert} onOpen={openAlert} />
+                {homeAlerts.map((alert) => (
+                  <HomeAlertRow key={alert.id} alert={alert} onOpen={openAlert} />
                 ))}
               </SectionState>
+            </div>
+            {queueOverflowLabel(alertsTotal, homeAlerts.length) ? (
+              <p className="border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">
+                {queueOverflowLabel(alertsTotal, homeAlerts.length)}
+              </p>
+            ) : null}
           </SectionPanel>
 
           <SectionPanel
-            className="flex min-h-0 flex-col overflow-hidden"
-            title="Eventos recentes"
-            description={queueOverflowLabel(eventsTotal, recentEvents.length)
-              ? `${windowLabel} · ${queueOverflowLabel(eventsTotal, recentEvents.length)}`
-              : `${windowLabel} · até ${RECENT_EVENTS_LIMIT} eventos`}
-            aside={(
-              <Button variant="ghost" size="sm" asChild>
-                <Link to="/historico">Abrir histórico</Link>
-              </Button>
-            )}
-            bodyClassName="divide-y divide-border/60 px-3"
+            className="flex min-h-0 flex-col overflow-hidden lg:col-span-2"
+            title="Chamados sem responsável"
+            aside={snIncidentsEnabled ? (
+              <div className={HOME_PANEL_HEADER_ASIDE}>
+                <HomePanelCount value={incidentsTotal} />
+                <OperationalCta to={buildHomeUnassignedChamadosHref()}>Ver todos</OperationalCta>
+              </div>
+            ) : null}
+            bodyClassName="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-0"
           >
-              <SectionState
-                loading={isListsLoading && !recentEvents.length && !sectionErrors.events}
-                error={sectionErrors.events ?? null}
-                empty={!recentEvents.length}
-                emptyMessage="Nenhum evento operacional recente disponível."
-                onRetry={() => void loadLists("manual")}
-              >
-                {recentEvents.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="flex w-full items-start justify-between gap-2.5 py-2.5 text-left transition-colors hover:bg-muted/30"
-                    onClick={() => openHistoryEvent(item)}
+            {!snIncidentsEnabled ? (
+              <p className="flex flex-1 items-center justify-center py-6 text-center text-xs text-muted-foreground">
+                Chamados ServiceNow não estão habilitados neste ambiente.
+              </p>
+            ) : (
+              <>
+                <div className={cn(HOME_INCIDENT_COLS, "border-b border-border/60 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground")}>
+                  <span>Número</span>
+                  <span>Cliente</span>
+                  <span>Estado</span>
+                  <span>Prioridade</span>
+                  <span>Responsável</span>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <SectionState
+                    loading={isListsLoading && !incidents.length && !sectionErrors.incidents}
+                    error={sectionErrors.incidents ?? null}
+                    empty={!incidents.length}
+                    emptyMessage="Nenhum chamado monitoring sem responsável."
+                    emptyClassName="flex h-full min-h-[7rem] items-center justify-center"
+                    onRetry={() => void loadLists("manual")}
                   >
-                    <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                      <ClientIdentity
-                        customer={{ key: item.customer_key, name: item.customer_name }}
-                        operationalScope={item.operational_scope}
-                        operationalScopeLabel={item.operational_scope_label}
-                        size="sm"
-                      />
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Badge variant="outline" className="text-[10px]">{homeEventLabel(item.event_type)}</Badge>
-                          {item.severity ? (
-                            <Badge variant="outline" className={cn("text-[10px]", severityTone(item.severity))}>
-                              {severityLabel(item.severity)}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <p className="mt-1 truncate text-sm font-semibold text-foreground">
-                          {operationalClientLabel({
-                            key: item.customer_key,
-                            name: item.customer_name,
-                            operational_scope: item.operational_scope,
-                            operational_scope_label: item.operational_scope_label,
-                          })}
-                        </p>
-                        <p className="truncate text-xs text-foreground/80">{canonicalHostName(item)}</p>
-                        <p className="truncate text-xs text-muted-foreground">{item.problem_name}</p>
-                        {item.description ? (
-                          <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{item.description}</p>
-                        ) : null}
-                        {safeActorName(item.actor_name) ? (
-                          <p className="mt-1 text-[10px] text-muted-foreground">Por {safeActorName(item.actor_name)}</p>
-                        ) : null}
-                      </div>
-                    </div>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">{formatDateTime(item.occurred_at)}</span>
-                  </button>
-                ))}
-              </SectionState>
+                    {incidents.map((item) => (
+                      <HomeIncidentRow key={item.sys_id || item.number || String(item.opened_at)} item={item} />
+                    ))}
+                  </SectionState>
+                </div>
+                {queueOverflowLabel(incidentsTotal, incidents.length) ? (
+                  <p className="border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">
+                    {queueOverflowLabel(incidentsTotal, incidents.length)}
+                  </p>
+                ) : null}
+              </>
+            )}
           </SectionPanel>
         </div>
 
         <SectionPanel
-          aria-label="Clientes mais impactados"
-          title="Clientes mais impactados"
-          description={clientsPartial
-            ? `Ativos · janela ${windowLabel} · Teletex · ranking limitado`
-            : `Ativos · janela ${windowLabel} · Teletex`}
-          bodyClassName="space-y-2 px-3 py-2.5"
-          aside={sectionErrors.clients ? (
-            <Button type="button" size="sm" variant="outline" className="ov-error-action h-7 px-2 text-xs" onClick={() => void loadSummary("manual")}>
-              Tentar novamente
-            </Button>
-          ) : null}
+          className="flex min-h-0 flex-col overflow-hidden"
+          title="Eventos recentes"
+          aside={(
+            <div className={HOME_PANEL_HEADER_ASIDE}>
+              <HomePanelCount value={eventsTotal} />
+              <OperationalCta to="/historico">Abrir histórico</OperationalCta>
+            </div>
+          )}
+          bodyClassName="px-0 pb-0"
         >
-            <SectionState
-              loading={isSummaryLoading && !hasClientsData}
-              error={sectionErrors.clients ?? null}
-              empty={hasClientsData && !topClients.length && unclassifiedClientCount === 0}
-              emptyMessage="Nenhum cliente"
-              onRetry={() => void loadSummary("manual")}
-            >
-              {topClients.map((client) => (
-                <div key={client.key} className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <ClientIdentity customer={{ key: client.key, name: client.name }} showName nameClassName="font-semibold" />
-                    <p className="shrink-0 text-xs text-muted-foreground">
-                      {formatNullableCount(client.count)} alertas
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" asChild>
-                    <Link to={customerAlertsHref(client.key)}>Abrir em Alertas</Link>
-                  </Button>
-                </div>
-              ))}
-              {hasClientsData && unclassifiedClientCount != null ? (
-                <div className="flex items-center justify-between gap-3 rounded-md border border-dashed border-border/60 px-3 py-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-muted-foreground">Cliente não classificado</p>
-                    <p className="text-xs text-muted-foreground">{formatNullableCount(unclassifiedClientCount)} alertas · fora do ranking</p>
-                  </div>
-                  <Button variant="outline" size="sm" asChild>
-                    <Link to={customerAlertsHref("unclassified")}>Abrir em Alertas</Link>
-                  </Button>
-                </div>
-              ) : null}
-            </SectionState>
+          <SectionState
+            loading={isListsLoading && !recentEvents.length && !sectionErrors.events}
+            error={sectionErrors.events ?? null}
+            empty={!recentEvents.length}
+            emptyMessage="Nenhum evento operacional recente disponível."
+            onRetry={() => void loadLists("manual")}
+          >
+            <div className="max-h-[18rem] overflow-auto xl:max-h-[20rem]">
+              <table className="w-full min-w-[36rem] table-fixed text-left text-sm">
+                <thead className="sticky top-0 z-[1] bg-card">
+                  <tr className="border-b border-border/70 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="w-[18%] px-3 py-1.5 font-semibold">Cliente</th>
+                    <th className="w-[18%] px-3 py-1.5 font-semibold">Host</th>
+                    <th className="w-[32%] px-3 py-1.5 font-semibold">Problema</th>
+                    <th className="w-[16%] px-3 py-1.5 font-semibold">Severidade</th>
+                    <th className="w-[16%] px-3 py-1.5 font-semibold">Horário</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentEvents.map((item) => (
+                    <tr
+                      key={item.id}
+                      className="cursor-pointer border-b border-border/50 last:border-b-0 hover:bg-muted/30"
+                      onClick={() => openHistoryEvent(item)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          openHistoryEvent(item);
+                        }
+                      }}
+                      tabIndex={0}
+                      aria-label={`Abrir alerta de ${item.problem_name || "evento"}`}
+                    >
+                      <td className="truncate px-3 py-1.5 text-[11px] font-semibold text-foreground">
+                        <span className="inline-flex max-w-full items-center gap-1.5">
+                          <ClientIdentity
+                            customer={{
+                              key: item.customer_key,
+                              name: item.customer_name,
+                            }}
+                            operationalScope={item.operational_scope}
+                            operationalScopeLabel={item.operational_scope_label}
+                            size="sm"
+                            className="shrink-0"
+                          />
+                          <TruncatedText className="text-[11px] font-semibold text-foreground">
+                            {operationalClientLabel({
+                              key: item.customer_key,
+                              name: item.customer_name,
+                              operational_scope: item.operational_scope,
+                              operational_scope_label: item.operational_scope_label,
+                            })}
+                          </TruncatedText>
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 text-[11px] text-foreground/80">
+                        <TruncatedText>{canonicalHostName(item)}</TruncatedText>
+                      </td>
+                      <td className="px-3 py-1.5 text-[11px] text-muted-foreground">
+                        <TruncatedText>{item.problem_name || "—"}</TruncatedText>
+                      </td>
+                      <td className="px-3 py-1.5">
+                        {item.severity ? (
+                          <SeverityBadge severity={item.severity} className="h-5 px-1.5" />
+                        ) : "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-[11px] text-muted-foreground">
+                        {formatClock(item.occurred_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </SectionState>
         </SectionPanel>
-
       </div>
 
-      <Sheet open={selectedAlertId !== null} onOpenChange={(open) => { if (!open) closeAlert(); }}>
-        <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-2xl">
-          {selectedAlert ? (
-            <div className="flex h-full flex-col">
-              <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
-                <SheetTitle className="text-xl">Resumo do alerta</SheetTitle>
-                <SheetDescription>Consulta rápida sem sair da Home.</SheetDescription>
-              </SheetHeader>
-
-              <Tabs key={selectedAlertId ?? "closed"} defaultValue="summary" className="flex min-h-0 flex-1 flex-col">
-                <TabsList className="mx-6 mt-4 grid w-auto grid-cols-2">
-                  <TabsTrigger value="summary"><Eye className="mr-1.5 h-4 w-4" />Resumo</TabsTrigger>
-                  <TabsTrigger value="history"><History className="mr-1.5 h-4 w-4" />Histórico</TabsTrigger>
-                </TabsList>
-
-                {detailError ? <OperationalErrorBanner className="mx-6 mt-4 px-3 py-2" message={detailError} /> : null}
-
-                <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
-                  <TabsContent value="summary" className="mt-4 space-y-4">
-                    {isDetailLoading && !detail ? (
-                      <><Skeleton className="h-28 w-full" /><Skeleton className="h-40 w-full" /></>
-                    ) : (
-                      <>
-                        <AlertOperationalSummary alert={selectedAlert}>
-                          <dl className="grid gap-3 border-t border-border/60 pt-4 text-sm sm:grid-cols-2">
-                            <div>
-                              <dt className="text-xs text-muted-foreground">ACK da origem</dt>
-                              <dd className={selectedAlert.acknowledged_source ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
-                                {selectedAlert.acknowledged_source ? "Reconhecido" : "Pendente"}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-xs text-muted-foreground">Responsável</dt>
-                              <dd className="font-semibold">
-                                {safeActorName(selectedAlert.acknowledged_source_by || selectedAlert.acknowledged_by) || "—"}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-xs text-muted-foreground">Horário do ACK</dt>
-                              <dd>{selectedAlert.acknowledged_source_at || selectedAlert.acknowledged_at ? formatDateTime(selectedAlert.acknowledged_source_at || selectedAlert.acknowledged_at) : "—"}</dd>
-                            </div>
-                            <div className="sm:col-span-2">
-                              <dt className="text-xs text-muted-foreground">Comentário</dt>
-                              <dd className="font-medium">
-                                {historyItems.find((item) => item.comment)?.comment || "—"}
-                              </dd>
-                            </div>
-                          </dl>
-                        </AlertOperationalSummary>
-                        <AlertRelatedIncidentsSection
-                          sourceEventId={selectedAlert.source_event_id}
-                          severity={selectedAlert.severity}
-                        />
-                      </>
-                    )}
-                  </TabsContent>
-
-                  <TabsContent value="history" className="mt-4 space-y-3">
-                    {isDetailLoading && !history ? (
-                      <div className="space-y-3"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /></div>
-                    ) : historyItems.length ? (
-                      historyItems.map((item) => (
-                        <Card key={item.id} className="ov-panel p-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant="outline" className="text-[10px]">{item.title || homeEventLabel(item.event_type)}</Badge>
-                            <Badge variant="outline" className="text-[10px]">{historyOrigin(item)}</Badge>
-                            <span className="text-[10px] text-muted-foreground">{formatDateTime(item.occurred_at)}</span>
-                          </div>
-                          {item.description ? <p className="mt-2 text-sm text-muted-foreground">{item.description}</p> : null}
-                          {item.comment ? <p className="mt-1 text-xs text-muted-foreground">Comentário: {item.comment}</p> : null}
-                          {safeActorName(item.ack_actor_name || item.actor_name) ? (
-                            <p className="mt-1 text-[10px] text-muted-foreground">
-                              Reconhecido por {safeActorName(item.ack_actor_name || item.actor_name)}
-                            </p>
-                          ) : null}
-                        </Card>
-                      ))
-                    ) : (
-                      <p className="py-10 text-center text-sm text-muted-foreground">Nenhum evento de histórico disponível para este alerta.</p>
-                    )}
-                  </TabsContent>
-                </div>
-
-                <div className="flex flex-wrap gap-2 border-t border-border/70 px-6 py-4">
-                  <Button variant="outline" size="sm" asChild>
-                    <Link to={`/alertas?alert=${encodeURIComponent(selectedAlert.id)}&from=home`}>Abrir em Alertas</Link>
-                  </Button>
-                  <Button variant="outline" size="sm" asChild>
-                    <Link to={`/historico?alert=${encodeURIComponent(selectedAlert.id)}&from=home`}>Ver histórico</Link>
-                  </Button>
-                </div>
-              </Tabs>
-            </div>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+      <AlertDetailDrawer
+        open={selectedAlertId !== null}
+        onOpenChange={(next) => { if (!next) closeAlert(); }}
+        alert={selectedAlert}
+        historyItems={historyItems}
+        isLoading={isDetailLoading}
+        error={detailError}
+        description="Consulta rápida sem sair da Home."
+      />
     </AppLayout>
   );
 }

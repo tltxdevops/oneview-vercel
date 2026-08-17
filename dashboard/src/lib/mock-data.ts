@@ -26,6 +26,7 @@ export const mockClients: Client[] = [
   { id: "havan", name: "HAVAN", logo: "/tltx/clientes/logos/havan-logo.png" },
   { id: "ntn", name: "NTN", logo: "/tltx/clientes/logos/ntn-logo.png" },
   { id: "osasco", name: "OSASCO", logo: "/tltx/clientes/logos/osasco-logo.png" },
+  { id: "protege", name: "PROTEGE", logo: "/tltx/clientes/logos/Protege-logo.png" },
   { id: "sapore", name: "SAPORE", logo: "/tltx/clientes/logos/sapore-logo1.jpg" },
   { id: "sesi", name: "SESI", logo: "/tltx/clientes/logos/sesi-logo.png" },
   { id: "teletex", name: "TELETEX", logo: "/tltx/clientes/logos/teletex-logo.png" },

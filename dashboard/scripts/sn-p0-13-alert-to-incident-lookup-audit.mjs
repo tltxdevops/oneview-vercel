@@ -21,8 +21,6 @@ import {
 } from "../api/_lib/servicenow-normalize.js";
 import { loadLocalEnv } from "./_lib/local-env.mjs";
 
-const ZABBIX_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
-const BASE = `contact_type=monitoring^caller_id=${ZABBIX_CALLER_ID}`;
 const FIELDS = [
   "sys_id", "number", "short_description", "description", "state",
   "priority", "opened_at", "sys_updated_on", "caller_id", "contact_type",
@@ -35,6 +33,14 @@ function argValue(name, fallback) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.slice(name.length + 3) : fallback;
 }
+
+function resolveZabbixCallerId(config) {
+  return String(argValue("caller-id", "") || config.zabbixMonitoringCallerId || "").trim();
+}
+
+/** Preenchidos em main() a partir de env/--caller-id (SN-P0-33). */
+let ZABBIX_CALLER_ID = "";
+let BASE = "";
 
 const SAMPLE_SIZE = Math.min(12, Math.max(4, Number.parseInt(argValue("sample", "8"), 10) || 8));
 
@@ -244,6 +250,17 @@ async function main() {
     console.log(JSON.stringify({ ok: false, error: "servicenow_not_configured" }, null, 2));
     process.exit(2);
   }
+
+  ZABBIX_CALLER_ID = resolveZabbixCallerId(config);
+  if (!ZABBIX_CALLER_ID) {
+    console.log(JSON.stringify({
+      ok: false,
+      error: "servicenow_caller_not_configured",
+      hint: "Defina SERVICENOW_ZABBIX_MONITORING_CALLER_ID ou --caller-id=",
+    }, null, 2));
+    process.exit(2);
+  }
+  BASE = `contact_type=monitoring^caller_id=${ZABBIX_CALLER_ID}`;
 
   const seedStarted = Date.now();
   const seed = await seedEventIds(config);

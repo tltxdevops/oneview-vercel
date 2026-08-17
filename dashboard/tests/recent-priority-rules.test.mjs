@@ -31,9 +31,9 @@ function canonicalizeSeveritiesForApi(values) {
   for (const value of values) {
     const key = String(value || "").trim().toLowerCase();
     if (!Object.prototype.hasOwnProperty.call(severityRank, key)) continue;
-    if (key === "critical" && !severityRank.critical) continue;
     seen.add(key);
   }
+  if (seen.has("high")) seen.add("critical");
   return [...seen];
 }
 
@@ -58,7 +58,11 @@ test("OV-P0-30 sem Disaster mantém apenas High", () => {
 });
 
 test("OV-P0-30 disaster não é convertido para high", () => {
-  assert.deepEqual(canonicalizeSeveritiesForApi(["disaster", "high"]), ["disaster", "high"]);
+  assert.deepEqual(
+    canonicalizeSeveritiesForApi(["disaster", "high"]).sort(),
+    ["critical", "disaster", "high"],
+  );
+  assert.deepEqual(canonicalizeSeveritiesForApi(["disaster"]), ["disaster"]);
   assert.equal(normalizeOneViewSeverity("disaster"), "disaster");
   assert.notEqual(normalizeOneViewSeverity("disaster"), "high");
 });

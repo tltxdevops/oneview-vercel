@@ -3,27 +3,13 @@ import {
   CLASSIFICATION_PENDING_LABEL,
   ClientIdentity,
   canonicalHostName,
-  isNonCustomerOperationalScope,
   normalizeOperationalScope,
   operationalClientLabel,
 } from "@/components/oneview/ClientIdentity";
+import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import {
-  OneViewAlert,
-  formatOneViewSeverityLabel,
-  normalizeOneViewSeverity,
-} from "@/lib/oneview-api";
-
-const SEVERITY_TONE: Record<string, string> = {
-  disaster: "border-red-600 bg-red-100 text-red-950",
-  critical: "border-red-500 bg-red-50 text-red-900",
-  high: "border-red-200 bg-red-50 text-red-700",
-  average: "border-amber-200 bg-amber-50 text-amber-700",
-  warning: "border-yellow-200 bg-yellow-50 text-yellow-800",
-  information: "border-sky-200 bg-sky-50 text-sky-700",
-  not_classified: "border-slate-200 bg-slate-50 text-slate-700",
-};
+import { OneViewAlert } from "@/lib/oneview-api";
 
 function formatDateTime(value?: string | null) {
   if (!value) return "—";
@@ -135,25 +121,16 @@ export function AlertOperationalSummary({ alert, className, children }: AlertOpe
   });
   const showPending = scope === "unknown" || (!scope && !alert.customer_name);
   const hostName = canonicalHostName(alert);
-  const severityKey = normalizeOneViewSeverity(alert.severity);
-  const severityTone = SEVERITY_TONE[severityKey] ?? SEVERITY_TONE.not_classified;
   const resolved = isResolvedAlert(alert);
   const ackPending = !alert.acknowledged_source;
-  const publicIp = safeHostIp(alert.host_ip);
-  const iface = interfaceFromAlertTags(alert);
 
   const metaRows: Array<[string, string]> = [
     ["Início", formatDateTime(alert.first_seen_at)],
     ["Duração", formatDurationSeconds(alert.duration_seconds)],
     ["Última atualização", formatDateTime(alert.last_seen_at)],
   ];
-  if (publicIp) metaRows.push(["IP", publicIp]);
-  if (iface) metaRows.push(["Interface", iface]);
-  if (!isNonCustomerOperationalScope(scope)) {
-    metaRows.push(
-      ["Origem da classificação", customerSourceLabel(alert.customer_source)],
-      ["Confiança da classificação", confidenceLabel(alert.customer_confidence)],
-    );
+  if (alert.resolved_at) {
+    metaRows.push(["Recovery", formatDateTime(alert.resolved_at)]);
   }
 
   return (
@@ -176,9 +153,7 @@ export function AlertOperationalSummary({ alert, className, children }: AlertOpe
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
-        <Badge variant="outline" className={cn("text-[10px]", severityTone)}>
-          {formatOneViewSeverityLabel(alert.severity)}
-        </Badge>
+        <SeverityBadge severity={alert.severity} />
         <Badge
           variant="outline"
           className={cn(

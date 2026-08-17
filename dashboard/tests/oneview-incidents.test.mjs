@@ -41,6 +41,8 @@ const snConfig = {
   password: "secret",
   timeoutMs: 5000,
   defaultLimit: 100,
+  zabbixMonitoringCallerId: "",
+  callerFilterSeeds: [],
 };
 
 function enabledHandler(overrides = {}) {
@@ -127,6 +129,20 @@ function mockGetStats() {
         count: 4,
         total: null,
         groupBy: "state",
+      };
+    }
+    if (options.sysparm_group_by === "caller_id") {
+      return {
+        table: "incident",
+        rows: [
+          {
+            stats: { count: "42" },
+            groupby_fields: [{ field: "caller_id", value: "caller-zabbix" }],
+          },
+        ],
+        count: 1,
+        total: null,
+        groupBy: "caller_id",
       };
     }
     if (String(options.sysparm_query || "").includes("assigned_toISEMPTY")) {
@@ -298,7 +314,16 @@ test("incidents BFF: lista normalizada com pagination filters counts e data_sour
   assert.equal(listOptions.sysparm_limit, 25);
   assert.equal(listOptions.sysparm_offset, 0);
   assert.match(listOptions.sysparm_query, /^contact_type=monitoring\^/);
-  assert.equal(statsCalls, 3);
+  assert.doesNotMatch(listOptions.sysparm_query, /caller_id=/);
+  // SN-P0-12B counts (3) + callers + assignees + companies + states + priorities
+  assert.equal(statsCalls, 8);
+  assert.ok(Array.isArray(res.body.facets?.callers));
+  assert.ok(res.body.facets.callers.some((item) => item.label === "zabbix monitoring"));
+  assert.ok(Array.isArray(res.body.facets?.assignees));
+  assert.ok(Array.isArray(res.body.facets?.companies));
+  assert.ok(Array.isArray(res.body.facets?.states));
+  assert.ok(Array.isArray(res.body.facets?.priorities));
+  assert.equal(res.body.filters.assigned_to, null);
 
   assert.equal(res.body.items.length, 1);
   assert.equal(res.body.items[0].number, "INC0001");
@@ -417,4 +442,36 @@ test("incidents BFF: nunca passa method diferente de GET ao client", async () =>
   await handler(requestMock({}), res);
   assert.equal(res.statusCode, 200);
   assert.equal(methodSeen, "GET");
+});
+
+test("SN-P0-26 KPI unassigned: query Aggregate inclui search em ambos os ramos NQ", async () => {
+  let unassignedQuery = null;
+  const handler = enabledHandler({
+    authorize: async () => ({ id: "u1" }),
+    configProvider: () => snConfig,
+    getPage: mockGetPage(13),
+    getStats: async (_table, options) => {
+      const q = String(options.sysparm_query || "");
+      if (q.includes("assigned_toISEMPTY")) unassignedQuery = q;
+      return mockGetStats()(_table, options);
+    },
+  });
+
+  const res = responseMock();
+  // SN-P0-28: "INC006" sozinho vira number= exato; usar texto parcial para cobrir NQ LIKE.
+  await handler(requestMock({ search: "INC006 host" }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.ok(unassignedQuery, "esperava stats de unassigned");
+  assert.match(unassignedQuery, /assigned_toISEMPTY/);
+  assert.match(unassignedQuery, /stateNOT IN6,7/);
+  assert.match(unassignedQuery, /numberLIKEINC006 host/);
+  assert.match(unassignedQuery, /short_descriptionLIKEINC006 host/);
+  assert.match(unassignedQuery, /\^NQ/);
+  // Ambos os ramos NQ precisam do stateNOT IN (não só append no final).
+  const [left, right] = unassignedQuery.split("^NQ");
+  assert.match(left, /stateNOT IN6,7/);
+  assert.match(right, /stateNOT IN6,7/);
+  assert.match(left, /assigned_toISEMPTY/);
+  assert.match(right, /assigned_toISEMPTY/);
 });

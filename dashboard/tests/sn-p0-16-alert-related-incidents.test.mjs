@@ -10,11 +10,11 @@ import { fileURLToPath } from "node:url";
 import {
   buildRelatedIncidentsSysparmQuery,
   fetchIncidentsBySourceEventId,
-  ZABBIX_MONITORING_CALLER_ID,
 } from "../api/_lib/oneview-incidents.js";
 import { createRelatedIncidentsHandler } from "../api/_lib/oneview-alert-incidents.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const FIXTURE_ZABBIX_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
 
 async function read(relativePath) {
   return fs.readFile(path.join(root, relativePath), "utf8");
@@ -50,6 +50,8 @@ const snConfig = {
   password: "secret",
   timeoutMs: 5000,
   defaultLimit: 100,
+  zabbixMonitoringCallerId: FIXTURE_ZABBIX_CALLER_ID,
+  callerFilterSeeds: [],
 };
 
 function sampleRaw(overrides = {}) {
@@ -60,7 +62,7 @@ function sampleRaw(overrides = {}) {
     description: "Host: host-a\nID original do problema: 327191633\nhttp://zabbix/?eventid=327191633",
     state: { value: "2", display_value: "Em andamento" },
     priority: { value: "3", display_value: "3 - Moderada" },
-    caller_id: { value: ZABBIX_MONITORING_CALLER_ID, display_value: "zabbix monitoring" },
+    caller_id: { value: FIXTURE_ZABBIX_CALLER_ID, display_value: "zabbix monitoring" },
     contact_type: { value: "monitoring", display_value: "Monitoramento" },
     assignment_group: { value: "g1", display_value: "NOC" },
     assigned_to: { value: "u1", display_value: "Operador" },
@@ -72,9 +74,11 @@ function sampleRaw(overrides = {}) {
 }
 
 test("SN-P0-16 query: monitoring + caller zabbix + descriptionLIKEeventid", () => {
-  const query = buildRelatedIncidentsSysparmQuery("327191633");
+  const query = buildRelatedIncidentsSysparmQuery("327191633", {
+    callerId: FIXTURE_ZABBIX_CALLER_ID,
+  });
   assert.match(query, /^contact_type=monitoring\^/);
-  assert.match(query, new RegExp(`caller_id=${ZABBIX_MONITORING_CALLER_ID}`));
+  assert.match(query, new RegExp(`caller_id=${FIXTURE_ZABBIX_CALLER_ID}`));
   assert.match(query, /descriptionLIKEeventid=327191633/);
   assert.match(query, /ORDERBYDESCsys_updated_on/);
   assert.doesNotMatch(query, /host|u_hostname|cmdb/i);
@@ -192,10 +196,9 @@ test("SN-P0-16 handler: flag off e query inválida", async () => {
 });
 
 test("SN-P0-16 frontend drawer + API + BFF route", async () => {
-  const [api, alerts, index, section, bff, route] = await Promise.all([
+  const [api, drawer, section, bff, route] = await Promise.all([
     read("src/lib/oneview-api.ts"),
-    read("src/pages/Alerts.tsx"),
-    read("src/pages/Index.tsx"),
+    read("src/components/oneview/AlertDetailDrawer.tsx"),
     read("src/components/oneview/AlertRelatedIncidentsSection.tsx"),
     read("scripts/dev-oneview-bff.mjs"),
     read("api/oneview/alerts/related-incidents.js"),
@@ -205,20 +208,19 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
   assert.match(api, /\/oneview\/alerts\/related-incidents/);
   assert.doesNotMatch(api.slice(api.indexOf("fetchAlertRelatedIncidents")), /sysparm_|host_name|host fallback/i);
 
-  assert.match(section, /ServiceNowDevLink|Abrir no ServiceNow DEV/);
+  assert.match(section, /ServiceNowDevLink|Abrir no ServiceNow/);
+  assert.doesNotMatch(section, /Abrir no ServiceNow DEV/);
   assert.match(section, /Grupo/);
   assert.match(section, /Responsável/);
-  assert.match(section, /Atualização/);
+  assert.match(section, /Última atualização|Atualização/);
   assert.match(section, /fetchAlertRelatedIncidents/);
   assert.doesNotMatch(section, /host_name|method:\s*["']POST["']/i);
   assert.doesNotMatch(section, /u_hostname_zabbix|cmdb_ci/);
 
-  assert.match(alerts, /AlertRelatedIncidentsSection/);
-  assert.match(alerts, /sourceEventId=\{selectedAlert\.source_event_id\}/);
-  assert.match(alerts, /severity=\{selectedAlert\.severity\}/);
-  assert.match(index, /AlertRelatedIncidentsSection/);
-  assert.match(index, /sourceEventId=\{selectedAlert\.source_event_id\}/);
-  assert.match(index, /severity=\{selectedAlert\.severity\}/);
+  assert.match(drawer, /AlertRelatedIncidentsSection/);
+  assert.match(drawer, /sourceEventId=\{alert\.source_event_id\}/);
+  assert.match(drawer, /severity=\{alert\.severity\}/);
+  assert.match(drawer, /historyItems=\{historyItems\}/);
   assert.match(section, /Nenhum incidente relacionado localizado/);
   assert.match(section, /isIncidentEligibleSeverity/);
 

@@ -69,8 +69,9 @@ function isUnclassifiedClient(customer) {
   return !normalizedName && !normalizedKey;
 }
 
-function canonicalClientName(customer, fallback = UNCLASSIFIED_CLIENT_LABEL) {
-  if (isUnclassifiedClient(customer)) return fallback;
+function canonicalClientName(customer, fallback = UNKNOWN_SCOPE_LABEL) {
+  const safeFallback = fallback === UNCLASSIFIED_CLIENT_LABEL ? UNKNOWN_SCOPE_LABEL : fallback;
+  if (isUnclassifiedClient(customer)) return safeFallback;
   const name = String(customer?.name || "").trim();
   const key = String(customer?.key || "").trim();
   if (name && !isPlaceholderClientLabel(normalizedClientKey(name)) && !isDatasourceLikeLabel(normalizedClientKey(name))) {
@@ -79,7 +80,7 @@ function canonicalClientName(customer, fallback = UNCLASSIFIED_CLIENT_LABEL) {
   if (key && !isPlaceholderClientLabel(normalizedClientKey(key)) && !isDatasourceLikeLabel(normalizedClientKey(key))) {
     return key;
   }
-  return fallback;
+  return safeFallback;
 }
 
 function normalizeOperationalScope(value) {
@@ -88,8 +89,8 @@ function normalizeOperationalScope(value) {
   return null;
 }
 
-/** Mirror of ClientIdentity helpers after HOTFIX-P0-CLIENT-LABEL. */
-function operationalClientLabel(entity, fallback = UNCLASSIFIED_CLIENT_LABEL) {
+/** Mirror of ClientIdentity helpers after OV-P0-102. */
+function operationalClientLabel(entity, fallback = UNKNOWN_SCOPE_LABEL) {
   if (!isUnclassifiedClient(entity)) return canonicalClientName(entity, fallback);
   const scope = normalizeOperationalScope(entity?.operational_scope);
   const label = String(entity?.operational_scope_label || "").trim();
@@ -97,8 +98,8 @@ function operationalClientLabel(entity, fallback = UNCLASSIFIED_CLIENT_LABEL) {
   if (scope === "test") return label || TEST_SCOPE_LABEL;
   if (scope === "unknown") return label || UNKNOWN_SCOPE_LABEL;
   if (label === PLATFORM_SCOPE_LABEL || label === TEST_SCOPE_LABEL || label === UNKNOWN_SCOPE_LABEL) return label;
-  if (scope === "customer" && label) return label;
-  return fallback;
+  if (scope === "customer" && label && label !== UNCLASSIFIED_CLIENT_LABEL) return label;
+  return fallback === UNCLASSIFIED_CLIENT_LABEL ? UNKNOWN_SCOPE_LABEL : fallback;
 }
 
 function historyEventClientLabel(entity) {

@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
+import { projectServiceNowReferenceFromAlertTags } from "./oneview-inc-correlation.js";
 import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
+import { buildAlertRecurrenceReadModel, hasRecurrenceIdentity } from "./oneview-recurrence.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { getServiceNowConfig } from "./servicenow-client.js";
 
 const { Pool } = pg;
 
@@ -769,6 +772,11 @@ export function classifyAlertEnrichment(alert) {
 }
 
 function mapAlertRows(rows) {
+  // OV-P0-109 — URL deep-link a partir do baseUrl local (sem HTTP ServiceNow por row).
+  // Aceita base URL mesmo sem credenciais API (link abre no browser do usuário).
+  const snConfig = getServiceNowConfig();
+  const snBaseUrl = snConfig.baseUrl
+    || String(process.env.SERVICENOW_BASE_URL || "").trim().replace(/\/+$/, "");
   return rows.map((row) => {
     const hosts = operationalHostFields(row);
     const enrichmentState = classifyAlertEnrichment(row);
@@ -781,6 +789,12 @@ function mapAlertRows(rows) {
       host_technical_name: hosts.host_technical_name,
       host_groups: mapSafeGroups(row.host_groups),
     });
+    // Extrai referência SN das tags cruas (antes do sanitize que mascara URLs).
+    const servicenowReference = projectServiceNowReferenceFromAlertTags({
+      event_tags: row.event_tags,
+      trigger_tags: row.trigger_tags,
+      host_tags: row.host_tags,
+    }, { baseUrl: snBaseUrl });
     return {
       id: textValue(row.id),
       data_source_id: textValue(row.data_source_id),
@@ -808,6 +822,7 @@ function mapAlertRows(rows) {
       event_tags: mapSafeTags(row.event_tags),
       trigger_tags: mapSafeTags(row.trigger_tags),
       host_tags: mapSafeTags(row.host_tags),
+      servicenow_reference: servicenowReference,
       service_name: nullableText(sanitizeText(row.service_name, "", 240)),
       item_name: nullableText(sanitizeText(row.item_name, "", 300)),
       item_key: nullableText(sanitizeText(row.item_key, "", 300)),
@@ -1035,6 +1050,9 @@ async function fetchAlertList(req, config, primaryDataSourceName) {
           a.host_visible_name,
           a.host_technical_name,
           a.host_groups,
+          a.event_tags,
+          a.trigger_tags,
+          a.host_tags,
           a.service_name,
           a.problem_name,
           a.severity,
@@ -1347,7 +1365,35 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
     ),
   ]);
   if (!row) throw requestError("not_found", 404);
+
+  let recurrenceSiblings = [];
+  if (hasRecurrenceIdentity(row)) {
+    recurrenceSiblings = await queryRows(
+      config,
+      `
+      select
+        a.id::text as id,
+        a.data_source_id::text as data_source_id,
+        a.source_host_id::text as source_host_id,
+        a.source_trigger_id::text as source_trigger_id,
+        a.first_seen_at,
+        a.resolved_at
+      from alerts a
+      where a.data_source_id = $1
+        and a.source_host_id = $2
+        and a.source_trigger_id = $3
+      order by a.first_seen_at asc nulls last, a.id asc
+      limit 500
+    `,
+      [row.data_source_id, row.source_host_id, row.source_trigger_id],
+    );
+  }
+
   const item = mapAlertRows([row])[0];
+  const recurrence = buildAlertRecurrenceReadModel({
+    current: row,
+    siblings: recurrenceSiblings,
+  });
   const sourceAckHistoryItems = (ackHistoryRows || []).map((historyRow) => {
     const eventType = textValue(historyRow.event_type, "acknowledged");
     const ackActorName = resolveAckActorName(
@@ -1390,6 +1436,7 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
     generated_at: generatedAt(),
     item: {
       ...item,
+      ...recurrence,
       history_count: integerValue(row.history_count, 0),
       acknowledgement_count: integerValue(row.acknowledgement_count, 0),
       source_ack,

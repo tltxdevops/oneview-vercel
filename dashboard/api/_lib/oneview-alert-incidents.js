@@ -1,38 +1,50 @@
 /**
- * SN-P0-16 — GET incidentes relacionados a um alerta (source_event_id).
- * ServiceNow read-only. Sem fallback por host. Aceita múltiplos INC.
+ * SN-P0-16 / SN-P0-27 / OV-P0-108 — GET incidentes relacionados a um alerta.
+ * Prioridade: __zbx_servicenow_sys_id → __zbx_servicenow_number → INC histórico → event_id → none.
+ * Read model PostgreSQL. Sem fallback por host. Aceita múltiplos INC.
  */
 
 import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { parseZabbixEventId } from "./oneview-incident-relation.js";
-import {
-  fetchIncidentsBySourceEventId,
-  isServiceNowIncidentsEnabled,
-} from "./oneview-incidents.js";
-import {
-  getServiceNowConfig,
-  mapServiceNowErrorToHttpStatus,
-  mapServiceNowErrorToPublicCode,
-  sanitizeServiceNowError,
-  serviceNowGet,
-} from "./servicenow-client.js";
+import { isServiceNowIncidentsEnabled } from "./oneview-incidents.js";
+import { findReadModelRelatedIncidents } from "./oneview-incidents-read-model.js";
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
+const SAFE_EVENT_ID = /^[A-Za-z0-9._:-]{1,80}$/;
 
-function sendRelatedJson(res, status, payload, dataSource = "servicenow") {
+function oneQuery(req, key) {
+  const value = req?.query?.[key];
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+function manyQuery(req, key) {
+  const value = req?.query?.[key];
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function sendRelatedJson(res, status, payload, dataSource = "postgresql") {
   res.setHeader("Cache-Control", NO_CACHE);
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (dataSource) res.setHeader("X-OneView-Data-Source", dataSource);
   return sendJson(res, status, payload);
 }
 
-function mapStatus(error) {
-  return mapServiceNowErrorToHttpStatus(error);
+function normalizeSysId(value) {
+  const id = String(value || "").trim().toLowerCase();
+  return /^[a-f0-9]{32}$/.test(id) ? id : null;
 }
 
-function publicError(error) {
-  return mapServiceNowErrorToPublicCode(error);
+function extractServiceNowIncidentNumbers(values) {
+  const found = new Set();
+  for (const value of values || []) {
+    for (const match of String(value || "").matchAll(/\bINC\d+\b/gi)) {
+      found.add(match[0].toUpperCase());
+    }
+  }
+  return [...found];
 }
 
 function toDrawerIncident(item) {
@@ -53,13 +65,55 @@ function toDrawerIncident(item) {
   };
 }
 
+/** source_event_id opcional quando há INC/sys_id explícito (SN-P0-27 / OV-P0-108). */
+export function parseOptionalZabbixEventId(req) {
+  const raw = oneQuery(req, "zabbix_event_id") ?? oneQuery(req, "source_event_id");
+  const eventId = String(raw || "").trim();
+  if (!eventId) return null;
+  if (!SAFE_EVENT_ID.test(eventId)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
+  return eventId;
+}
+
+/** Números INC do histórico/comentário (?inc= / ?inc_refs= / ?text=). */
+export function parseIncidentCorrelationInputs(req) {
+  const fromInc = extractServiceNowIncidentNumbers([
+    ...manyQuery(req, "inc"),
+    ...manyQuery(req, "inc_refs"),
+  ]);
+  const fromText = extractServiceNowIncidentNumbers(manyQuery(req, "text"));
+  return extractServiceNowIncidentNumbers([...fromInc, ...fromText]);
+}
+
+/** OV-P0-108 — números de __zbx_servicenow_number (?sn_number=). */
+export function parseTagIncidentNumberInputs(req) {
+  return extractServiceNowIncidentNumbers(manyQuery(req, "sn_number"));
+}
+
+/** OV-P0-108 — sys_ids explícitos das tags (__zbx_servicenow_sys_id). */
+export function parseIncidentSysIdInputs(req) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of [
+    ...manyQuery(req, "sys_id"),
+    ...manyQuery(req, "sn_sys_id"),
+  ]) {
+    const id = normalizeSysId(raw);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 export function createRelatedIncidentsHandler({
   authorize = (req, res) => requireOneViewAuth(req, res, "viewer"),
   featureFlagProvider = isServiceNowIncidentsEnabled,
-  configProvider = getServiceNowConfig,
-  getPage = serviceNowGet,
-  fetchImpl,
-  lookup = fetchIncidentsBySourceEventId,
+  lookup = findReadModelRelatedIncidents,
+  lookupOptions,
   logger = (entry) => console.info(JSON.stringify(entry)),
 } = {}) {
   return async function relatedIncidentsHandler(req, res) {
@@ -76,63 +130,90 @@ export function createRelatedIncidentsHandler({
       return sendRelatedJson(res, 403, {
         error: "servicenow_incidents_disabled",
         matched: false,
+        relation_source: "none",
         incidents: [],
         source_event_id: null,
-        data_source: "servicenow",
+        incident_numbers: [],
+        incident_sys_ids: [],
+        data_source: "postgresql",
       });
     }
 
-    let sourceEventId;
+    let sourceEventId = null;
+    let incidentNumbers = [];
+    let tagIncidentNumbers = [];
+    let incidentSysIds = [];
     try {
-      sourceEventId = parseZabbixEventId(req);
+      sourceEventId = parseOptionalZabbixEventId(req);
+      incidentNumbers = parseIncidentCorrelationInputs(req);
+      tagIncidentNumbers = parseTagIncidentNumberInputs(req);
+      incidentSysIds = parseIncidentSysIdInputs(req);
+      if (!sourceEventId && !incidentNumbers.length && !tagIncidentNumbers.length && !incidentSysIds.length) {
+        // Compat SN-P0-16: exige source_event_id quando não há referência explícita.
+        parseZabbixEventId(req);
+      }
     } catch {
       return sendRelatedJson(res, 400, {
         error: "invalid_query",
         matched: false,
+        relation_source: "none",
         incidents: [],
         source_event_id: null,
-        data_source: "servicenow",
+        incident_numbers: [],
+        incident_sys_ids: [],
+        data_source: "postgresql",
       });
     }
 
     try {
-      const config = configProvider();
-      const result = await lookup(sourceEventId, { config, getPage, fetchImpl });
+      const result = await lookup({
+        sourceEventId,
+        incidentNumbers,
+        tagIncidentNumbers,
+        incidentSysIds,
+      }, lookupOptions);
       const incidents = (result.incidents || []).map(toDrawerIncident);
       const payload = {
         matched: incidents.length > 0,
+        relation_source: result.relation_source || "none",
         source_event_id: sourceEventId,
+        incident_numbers: result.incident_numbers || [...tagIncidentNumbers, ...incidentNumbers],
+        incident_sys_ids: result.incident_sys_ids || incidentSysIds,
         incidents,
-        data_source: "servicenow",
+        data_source: "postgresql",
         checked_at: result.checked_at || new Date().toISOString(),
       };
 
       logger({
         event: "oneview_request",
         route: "/api/oneview/alerts/related-incidents",
-        data_source: "servicenow",
+        data_source: "postgresql",
         matched: payload.matched,
+        relation_source: payload.relation_source,
         rows: incidents.length,
         duration_ms: Math.max(Date.now() - startedAt, 0),
       });
 
       return sendRelatedJson(res, 200, payload);
     } catch (error) {
-      const status = mapStatus(error);
-      const code = publicError(error);
+      const status = 503;
+      const code = "database_unavailable";
       logger({
         event: "oneview_related_incidents_error",
         route: "/api/oneview/alerts/related-incidents",
         error: code,
-        detail: sanitizeServiceNowError(error),
+        detail: String(error?.message || "database_unavailable").slice(0, 160),
         duration_ms: Math.max(Date.now() - startedAt, 0),
       });
       return sendRelatedJson(res, status, {
         error: code,
         matched: false,
+        relation_source: "none",
         incidents: [],
         source_event_id: sourceEventId,
-        data_source: "servicenow",
+        incident_numbers: incidentNumbers,
+        incident_sys_ids: incidentSysIds,
+        data_source: "postgresql",
       });
     }
   };

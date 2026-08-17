@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { OV_CLIENT_FILTER_TRIGGER } from "@/lib/oneview-operational-ui";
 
 export type ClientFilterOption = ClientIdentityCustomer & {
   key: string;
@@ -23,6 +24,10 @@ type ClientFilterComboboxProps = {
   emptyLabel?: string;
 };
 
+/**
+ * Filtro Cliente canônico (OV-P0-78/79) — um único controle h-8 alinhado,
+ * sem caixa/ícone desalinhado.
+ */
 export function ClientFilterCombobox({
   open,
   onOpenChange,
@@ -47,21 +52,16 @@ export function ClientFilterCombobox({
           role="combobox"
           aria-expanded={open}
           aria-label={`Filtrar por cliente: ${selectedLabel}`}
-          className={cn(
-            "h-9 min-w-[11.5rem] justify-between rounded-xl border border-border/70 bg-card px-2.5 shadow-sm hover:border-foreground/30 hover:bg-card",
-            triggerClassName,
-          )}
+          className={cn(OV_CLIENT_FILTER_TRIGGER, "items-center gap-2", triggerClassName)}
         >
-          <span className={cn("flex min-w-0 items-center gap-2.5 text-left", className)}>
-            <ClientIdentity customer={selectedCustomer} />
-            <span className="min-w-0">
-              <span className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Cliente</span>
-              <span className="block truncate text-sm font-semibold tracking-wide text-foreground">{selectedLabel}</span>
+          <span className={cn("flex min-w-0 flex-1 items-center gap-2 text-left", className)}>
+            <ClientIdentity customer={selectedCustomer} size="xs" className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-xs leading-none">
+              <span className="font-medium text-muted-foreground">Cliente · </span>
+              <span className="font-semibold text-foreground">{selectedLabel}</span>
             </span>
           </span>
-          <span className="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground">
-            <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
-          </span>
+          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[320px] p-0">
@@ -83,12 +83,12 @@ export function ClientFilterCombobox({
                       if (customer.key === "all") onOpenChange(false);
                     }}
                     className={cn(
-                      "mx-1 my-1 gap-3 rounded-lg border border-transparent px-2 py-2 transition-colors",
+                      "mx-1 my-1 gap-3 rounded-md border border-transparent px-2 py-2 transition-colors",
                       selected && "border-foreground/20 bg-muted/40",
                       "data-[selected=true]:border-foreground/20 data-[selected=true]:bg-muted/40 data-[selected=true]:text-foreground",
                     )}
                   >
-                    <ClientIdentity customer={customer} />
+                    <ClientIdentity customer={customer} size="sm" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium">{customer.name}</span>
                       {customer.alerts_count != null ? (

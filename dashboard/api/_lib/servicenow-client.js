@@ -82,6 +82,7 @@ export function mapServiceNowErrorToHttpStatus(error) {
   if (error?.code === "servicenow_incidents_disabled") return 403;
   if (error instanceof ServiceNowClientError || error?.name === "ServiceNowClientError") {
     if (error.code === "servicenow_not_configured") return 503;
+    if (error.code === "servicenow_caller_not_configured") return 503;
     if (error.code === "servicenow_timeout") return 504;
     if (error.code === "servicenow_authentication_failed") return 502;
     if (error.code === "servicenow_access_forbidden") return 502;
@@ -102,6 +103,7 @@ export function mapServiceNowErrorToPublicCode(error) {
   if (error?.code === "servicenow_incidents_disabled") return "servicenow_incidents_disabled";
   if (error instanceof ServiceNowClientError || error?.name === "ServiceNowClientError") {
     if (error.code === "servicenow_not_configured") return "servicenow_not_configured";
+    if (error.code === "servicenow_caller_not_configured") return "servicenow_caller_not_configured";
     if (error.code === "servicenow_timeout") return "servicenow_timeout";
     if (error.code === "servicenow_authentication_failed") return "servicenow_authentication_failed";
     if (error.code === "servicenow_access_forbidden") return "servicenow_access_forbidden";
@@ -124,6 +126,28 @@ export function isRetryableServiceNowError(error) {
   return false;
 }
 
+/** SN-P0-33 — sys_id ServiceNow (32 hex). Sem fallback para IDs de outro ambiente. */
+const SAFE_SYS_ID = /^[a-f0-9]{32}$/i;
+
+export function normalizeServiceNowSysId(value) {
+  const id = clean(value);
+  // SN sys_id é case-insensitive; normaliza para minúsculas (dedupe OV-P0-108).
+  return SAFE_SYS_ID.test(id) ? id.toLowerCase() : "";
+}
+
+/** CSV opcional de seeds de facet (sys_ids). IDs inválidos são ignorados. */
+export function parseServiceNowSysIdList(value) {
+  const seen = new Set();
+  const out = [];
+  for (const part of String(value || "").split(",")) {
+    const id = normalizeServiceNowSysId(part);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 export function getServiceNowConfig(env = process.env) {
   const baseUrl = clean(env.SERVICENOW_BASE_URL).replace(/\/+$/, "");
   const username = clean(env.SERVICENOW_USERNAME);
@@ -138,6 +162,10 @@ export function getServiceNowConfig(env = process.env) {
     timeoutMs: timeoutMs(env.SERVICENOW_TIMEOUT_MS),
     retryMax: retryMax(env.SERVICENOW_RETRY_MAX),
     defaultLimit: asPositiveInt(env.SERVICENOW_PAGE_LIMIT, DEFAULT_PAGE_LIMIT),
+    // SN-P0-33 — obrigatório só para correlação alerta→INC por eventid (sem default DEV).
+    zabbixMonitoringCallerId: normalizeServiceNowSysId(env.SERVICENOW_ZABBIX_MONITORING_CALLER_ID),
+    // Seeds opcionais de facet (ex.: NOC); /chamados não depende deles.
+    callerFilterSeeds: parseServiceNowSysIdList(env.SERVICENOW_CALLER_FILTER_SEEDS),
   };
 }
 

@@ -246,7 +246,7 @@ test("SN-P0-17 incidents list: 403 SN ≠ feature flag off", async () => {
   assert.equal(resFlag.body.error, "servicenow_incidents_disabled");
 });
 
-test("SN-P0-17 UI/Home/Alertas: seção isolada e páginas sem fetchIncidents", async () => {
+test("SN-P0-17 UI/Home/Alertas: seção isolada; Alertas sem fetchIncidents", async () => {
   const [section, api, index, alerts] = await Promise.all([
     read("src/components/oneview/AlertRelatedIncidentsSection.tsx"),
     read("src/lib/oneview-api.ts"),
@@ -262,7 +262,8 @@ test("SN-P0-17 UI/Home/Alertas: seção isolada e páginas sem fetchIncidents", 
   assert.match(api, /servicenow_authentication_failed:\s*"ServiceNow indisponível"/);
   assert.match(api, /servicenow_access_forbidden:\s*"ServiceNow indisponível"/);
 
-  assert.doesNotMatch(index, /fetchIncidents\b/);
+  // OV-P0-69: Home consome fetchHomeIncidents (wrapper); /alertas não lista incidents.
+  assert.match(index, /fetchHomeIncidents/);
   assert.doesNotMatch(alerts, /fetchIncidents\b/);
   assert.match(index, /AlertRelatedIncidentsSection/);
   assert.match(alerts, /AlertRelatedIncidentsSection/);

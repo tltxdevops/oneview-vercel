@@ -34,16 +34,15 @@ test("SN-P0-21 gate: eligible vs warning/information + mensagens", async () => {
 });
 
 test("SN-P0-21 Home/Alertas passam severity ao drawer", async () => {
-  const [alerts, index] = await Promise.all([
+  const [alerts, index, drawer] = await Promise.all([
     read("src/pages/Alerts.tsx"),
     read("src/pages/Index.tsx"),
+    read("src/components/oneview/AlertDetailDrawer.tsx"),
   ]);
 
-  assert.match(alerts, /AlertRelatedIncidentsSection/);
-  assert.match(alerts, /sourceEventId=\{selectedAlert\.source_event_id\}/);
-  assert.match(alerts, /severity=\{selectedAlert\.severity\}/);
-
-  assert.match(index, /AlertRelatedIncidentsSection/);
-  assert.match(index, /sourceEventId=\{selectedAlert\.source_event_id\}/);
-  assert.match(index, /severity=\{selectedAlert\.severity\}/);
+  assert.match(alerts, /AlertDetailDrawer/);
+  assert.match(index, /AlertDetailDrawer/);
+  assert.match(drawer, /AlertRelatedIncidentsSection/);
+  assert.match(drawer, /sourceEventId=\{alert\.source_event_id\}/);
+  assert.match(drawer, /severity=\{alert\.severity\}/);
 });

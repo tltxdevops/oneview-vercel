@@ -55,8 +55,13 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       invalid_query: "Filtros inválidos. Revise os valores informados.",
       not_found: "Alerta não encontrado.",
       authentication_required: "Sua sessão expirou. Entre novamente.",
-      database_timeout: "A consulta demorou além do esperado. Tente novamente.",
-      database_unavailable: "O banco OneView está temporariamente indisponível.",
+      // OV-P0-100 — estado operacional explícito (sem servir snapshot obsoleto em produção).
+      database_timeout: "Dados temporariamente indisponíveis",
+      database_unavailable: "Dados temporariamente indisponíveis",
+      live_database_disabled: "Dados temporariamente indisponíveis",
+      live_data_not_configured: "Dados temporariamente indisponíveis",
+      snapshot_unavailable: "Dados temporariamente indisponíveis",
+      unsafe_database_user: "Dados temporariamente indisponíveis",
       servicenow_not_configured: "ServiceNow indisponível",
       servicenow_unavailable: "ServiceNow indisponível",
       servicenow_timeout: "ServiceNow indisponível",
@@ -123,6 +128,8 @@ const ZABBIX_SEVERITY_DISPLAY: Record<string, string> = Object.freeze({
   warning: "Warning",
   average: "Average",
   high: "High",
+  /** OV-P0-102 — critical legado apresenta-se como High (persistido continua critical). */
+  critical: "High",
   disaster: "Disaster",
 });
 
@@ -176,22 +183,34 @@ export function normalizeOneViewSeverity(value?: string | null): OneViewSeverity
   return isOneViewSeverity(normalized) ? normalized : "not_classified";
 }
 
-/** Valores canônicos aceitos pelo BFF — nunca labels de apresentação. */
-export function canonicalizeSeveritiesForApi(values: string[]): OneViewSeverity[] {
+/**
+ * OV-P0-102 — família High: filtro/query `high` inclui `critical` legado.
+ * Disaster NÃO inclui critical. Sem chip Critical na UI.
+ */
+export function expandHighFamilySeverities(values: string[]): OneViewSeverity[] {
   const seen = new Set<OneViewSeverity>();
   for (const value of values) {
-    const severity = normalizeOneViewSeverity(value);
-    if (!isOneViewSeverity(String(value || "").trim().toLowerCase())) continue;
-    seen.add(severity);
+    const raw = String(value || "").trim().toLowerCase();
+    if (!isOneViewSeverity(raw)) continue;
+    seen.add(raw);
   }
+  if (seen.has("high")) seen.add("critical");
   return [...seen];
 }
 
-/** Severidades do card/link Disaster: disaster + critical só se houver contagem real. */
-export function disasterFamilySeverities(counts?: Record<string, number>): OneViewSeverity[] {
-  const severities: OneViewSeverity[] = ["disaster"];
-  if (Number(counts?.critical ?? 0) > 0) severities.push("critical");
-  return severities;
+/** Valores canônicos aceitos pelo BFF — nunca labels de apresentação. */
+export function canonicalizeSeveritiesForApi(values: string[]): OneViewSeverity[] {
+  return expandHighFamilySeverities(values);
+}
+
+/** Família High (query): high + critical legado. */
+export function highFamilySeverities(): OneViewSeverity[] {
+  return ["high", "critical"];
+}
+
+/** Família Disaster (query): somente disaster — critical pertence a High (OV-P0-102). */
+export function disasterFamilySeverities(_counts?: Record<string, number>): OneViewSeverity[] {
+  return ["disaster"];
 }
 
 export interface OneViewResponseMeta {
@@ -300,6 +319,14 @@ export interface OneViewAlert {
   event_tags: Array<{ tag: string; value: string }>;
   trigger_tags: Array<{ tag: string; value: string }>;
   host_tags: Array<{ tag: string; value: string }>;
+  /** OV-P0-109 — referência SN das tags Zabbix (sem lookup ServiceNow na listagem). */
+  servicenow_reference?: {
+    number: string | null;
+    sys_id?: string | null;
+    sys_id: string | null;
+    url?: string | null;
+    extra_count?: number;
+  } | null;
   service_name: string | null;
   item_name: string | null;
   item_key: string | null;
@@ -330,6 +357,12 @@ export interface OneViewAlert {
   duration_seconds: number;
   created_at: string;
   updated_at: string;
+  /** OV-P0-87 — read model de recorrência (detail). */
+  recurrence_count_24h?: number;
+  recurrence_count_7d?: number;
+  previous_occurrence_at?: string | null;
+  previous_recovery_at?: string | null;
+  is_recurrent?: boolean;
 }
 
 export interface AlertPagination {
@@ -895,6 +928,21 @@ export type IncidentRelatedAlertResponse = {
   error?: string;
 };
 
+export type IncidentCallerFacet = {
+  value: string;
+  label: string;
+  count: number;
+  display_value?: string;
+};
+
+/** SN-P0-28 — facet de analista (assigned_to). */
+export type IncidentAssigneeFacet = {
+  value: string;
+  label: string;
+  count: number;
+  display_value?: string;
+};
+
 export type IncidentListResponse = {
   items: OneViewIncident[];
   pagination: {
@@ -907,6 +955,7 @@ export type IncidentListResponse = {
   };
   filters: {
     caller_id: string | null;
+    assigned_to: string | null;
     contact_type: string | null;
     number: string | null;
     state: string | null;
@@ -915,6 +964,7 @@ export type IncidentListResponse = {
     opened_from: string | null;
     opened_to: string | null;
     unassigned: boolean;
+    assignment_group?: string | null;
     search: string | null;
   };
   counts?: {
@@ -925,21 +975,36 @@ export type IncidentListResponse = {
     closed: number;
     unassigned: number;
   } | null;
+  /** SN-P0-25 / SN-P0-28 / SN-P0-30 — facets Aggregate no universo monitoring. */
+  facets?: {
+    callers?: IncidentCallerFacet[];
+    assignees?: IncidentAssigneeFacet[];
+    companies?: IncidentAssigneeFacet[];
+    states?: IncidentAssigneeFacet[];
+    priorities?: IncidentAssigneeFacet[];
+  } | null;
   data_source?: OneViewDataSourceKind | string;
   checked_at?: string;
+  freshness?: {
+    last_success_at?: string | null;
+    watermark_sys_updated_on?: string | null;
+  };
 };
 
 export async function fetchIncidents(params?: {
   page?: number;
   pageSize?: number;
   callerId?: string;
+  assignedTo?: string;
   number?: string;
+  sysId?: string;
   state?: string;
   priority?: string;
   company?: string;
   openedFrom?: string;
   openedTo?: string;
   unassigned?: boolean;
+  assignmentGroup?: string;
   search?: string;
   signal?: AbortSignal;
 }): Promise<IncidentListResponse> {
@@ -948,13 +1013,16 @@ export async function fetchIncidents(params?: {
   search.set("page", String(Math.max(1, params?.page ?? 1)));
   search.set("page_size", String(Math.min(Math.max(params?.pageSize ?? 25, 1), 100)));
   if (params?.callerId) search.set("caller_id", params.callerId);
+  if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params?.number) search.set("number", params.number);
+  if (params?.sysId) search.set("sys_id", params.sysId);
   if (params?.state) search.set("state", params.state);
   if (params?.priority) search.set("priority", params.priority);
   if (params?.company) search.set("company", params.company);
   if (params?.openedFrom) search.set("opened_from", params.openedFrom);
   if (params?.openedTo) search.set("opened_to", params.openedTo);
   if (params?.unassigned) search.set("unassigned", "true");
+  if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.search) search.set("search", params.search);
   const query = search.toString();
   return fetchApi<IncidentListResponse>(`/oneview/incidents${query ? `?${query}` : ""}`, {
@@ -975,7 +1043,7 @@ export async function fetchIncidentRelatedAlert(
   );
 }
 
-/** SN-P0-16 — incidentes SN relacionados ao alerta (source_event_id). Sem fallback por host. */
+/** SN-P0-16 / SN-P0-27 — incidentes SN relacionados ao alerta. Sem fallback por host. */
 export type AlertRelatedIncident = {
   sys_id: string | null;
   number: string | null;
@@ -992,19 +1060,61 @@ export type AlertRelatedIncident = {
   servicenow_url?: string | null;
 };
 
+export type AlertRelatedIncidentsRelationSource =
+  | "zabbix_servicenow_sys_id"
+  | "zabbix_servicenow_number"
+  | "zabbix_inc_reference"
+  | "zabbix_event_id"
+  | "none";
+
 export type AlertRelatedIncidentsResponse = OneViewResponseMeta & {
   matched: boolean;
+  relation_source?: AlertRelatedIncidentsRelationSource;
   source_event_id: string | null;
+  incident_numbers?: string[];
+  incident_sys_ids?: string[];
   incidents: AlertRelatedIncident[];
   error?: string;
 };
 
+export type FetchAlertRelatedIncidentsParams = {
+  sourceEventId?: string | null;
+  /** Números INC do histórico/comentário (BFF valida e consulta SN). */
+  incidentNumbers?: string[] | null;
+  /** OV-P0-108 — números de __zbx_servicenow_number. */
+  tagIncidentNumbers?: string[] | null;
+  /** OV-P0-108 — sys_ids de __zbx_servicenow_sys_id. */
+  incidentSysIds?: string[] | null;
+  /** Corpus textual opcional (comentários/ACK/timeline) — BFF extrai INC. */
+  texts?: string[] | null;
+};
+
 export async function fetchAlertRelatedIncidents(
-  sourceEventId: string,
+  sourceEventIdOrParams: string | FetchAlertRelatedIncidentsParams,
   signal?: AbortSignal,
 ): Promise<AlertRelatedIncidentsResponse> {
+  const params: FetchAlertRelatedIncidentsParams = typeof sourceEventIdOrParams === "string"
+    ? { sourceEventId: sourceEventIdOrParams }
+    : (sourceEventIdOrParams || {});
   const search = new URLSearchParams();
-  search.set("source_event_id", sourceEventId.trim());
+  const eventId = String(params.sourceEventId || "").trim();
+  if (eventId) search.set("source_event_id", eventId);
+  for (const number of params.incidentNumbers || []) {
+    const value = String(number || "").trim();
+    if (value) search.append("inc", value);
+  }
+  for (const number of params.tagIncidentNumbers || []) {
+    const value = String(number || "").trim();
+    if (value) search.append("sn_number", value);
+  }
+  for (const sysId of params.incidentSysIds || []) {
+    const value = String(sysId || "").trim();
+    if (value) search.append("sys_id", value);
+  }
+  for (const text of params.texts || []) {
+    const value = String(text || "").trim();
+    if (value) search.append("text", value);
+  }
   return fetchApi<AlertRelatedIncidentsResponse>(
     `/oneview/alerts/related-incidents?${search.toString()}`,
     { signal },

@@ -1,47 +1,27 @@
-import { Severity } from "@/types";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import {
+  formatOneViewSeverityLabel,
+  severityTone,
+} from "@/lib/oneview-severity-visual";
 
 interface SeverityBadgeProps {
-  severity: Severity;
+  /** Valor bruto ou canônico (OneView / Zabbix); labels oficiais sem tradução. */
+  severity?: string | number | null;
   className?: string;
 }
 
-const severityConfig = {
-  Low: {
-    bg: "bg-info/10",
-    text: "text-info",
-    label: "BAIXO",
-  },
-  Average: {
-    bg: "bg-warning/10",
-    text: "text-warning",
-    label: "MÉDIO",
-  },
-  High: {
-    bg: "bg-error/10",
-    text: "text-error",
-    label: "ALTO",
-  },
-  Critical: {
-    bg: "bg-critical/10",
-    text: "text-critical",
-    label: "CRÍTICO",
-  },
-};
-
+/**
+ * Badge canônico de severidade (OV-P0-77).
+ * Cor só no badge — não colorir a linha.
+ */
 export function SeverityBadge({ severity, className }: SeverityBadgeProps) {
-  const config = severityConfig[severity];
-
   return (
-    <span
-      className={cn(
-        "inline-flex h-6 items-center justify-center rounded-full px-3 text-[11px] font-semibold",
-        config.bg,
-        config.text,
-        className
-      )}
+    <Badge
+      variant="outline"
+      className={cn("border text-[10px] hover:bg-inherit", severityTone(severity), className)}
     >
-      <span className="truncate text-center leading-none">{config.label}</span>
-    </span>
+      {formatOneViewSeverityLabel(severity)}
+    </Badge>
   );
 }

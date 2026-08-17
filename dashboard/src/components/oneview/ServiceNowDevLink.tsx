@@ -1,14 +1,20 @@
 /**
- * SN-P0-23 — deep link externo para ServiceNow DEV.
+ * SN-P0-23 / SN-P0-29 — deep link externo para ServiceNow.
  * Abre o incidente no browser do usuário. OneView não faz login SN nem envia credenciais ao navegador.
+ * Ambiente (DEV/prod) não é hardcoded — label operacional neutro "ServiceNow".
  */
 import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-export const SERVICENOW_DEV_LINK_LABEL = "Abrir no ServiceNow DEV";
-export const SERVICENOW_DEV_LINK_TOOLTIP = "Requer acesso ao ServiceNow DEV.";
+export const SERVICENOW_LINK_LABEL = "Abrir no ServiceNow";
+export const SERVICENOW_LINK_TOOLTIP = "Requer acesso ao ServiceNow.";
+
+/** @deprecated SN-P0-29 — use SERVICENOW_LINK_LABEL */
+export const SERVICENOW_DEV_LINK_LABEL = SERVICENOW_LINK_LABEL;
+/** @deprecated SN-P0-29 — use SERVICENOW_LINK_TOOLTIP */
+export const SERVICENOW_DEV_LINK_TOOLTIP = SERVICENOW_LINK_TOOLTIP;
 
 type ServiceNowDevLinkProps = {
   href: string;
@@ -41,15 +47,15 @@ export function ServiceNowDevLink({
               href={url}
               target="_blank"
               rel="noopener noreferrer"
-              title={SERVICENOW_DEV_LINK_TOOLTIP}
+              title={SERVICENOW_LINK_TOOLTIP}
             >
               <ExternalLink className="h-4 w-4" />
-              {SERVICENOW_DEV_LINK_LABEL}
+              {SERVICENOW_LINK_LABEL}
             </a>
           </Button>
         </TooltipTrigger>
         <TooltipContent side="top">
-          <p>{SERVICENOW_DEV_LINK_TOOLTIP}</p>
+          <p>{SERVICENOW_LINK_TOOLTIP}</p>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

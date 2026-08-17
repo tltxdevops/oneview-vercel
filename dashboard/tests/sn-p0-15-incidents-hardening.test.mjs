@@ -98,6 +98,7 @@ test("SN-P0-15 rejeita query params fora do allowlist", () => {
     assert.equal(typeof key, "string");
   }
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("caller_id"));
+  assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("assigned_to"));
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("opened_from"));
   assert.ok(!INCIDENT_ALLOWED_QUERY_KEYS.includes("sysparm_query"));
 });

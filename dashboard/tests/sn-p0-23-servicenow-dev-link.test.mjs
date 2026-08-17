@@ -1,5 +1,6 @@
 /**
- * SN-P0-23 — deep link ServiceNow DEV (label + tooltip; sem Basic Auth no browser).
+ * SN-P0-23 — deep link ServiceNow (label + tooltip; sem Basic Auth no browser).
+ * SN-P0-29 — label operacional sem ambiente hardcoded (DEV/prod).
  */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -13,10 +14,12 @@ async function read(relativePath) {
   return fs.readFile(path.join(root, relativePath), "utf8");
 }
 
-test("SN-P0-23 ServiceNowDevLink: label DEV + tooltip de acesso", async () => {
+test("SN-P0-23 ServiceNowDevLink: label + tooltip de acesso (sem DEV hardcoded)", async () => {
   const link = await read("src/components/oneview/ServiceNowDevLink.tsx");
-  assert.match(link, /Abrir no ServiceNow DEV/);
-  assert.match(link, /Requer acesso ao ServiceNow DEV\./);
+  assert.match(link, /Abrir no ServiceNow/);
+  assert.match(link, /Requer acesso ao ServiceNow\./);
+  assert.doesNotMatch(link, /Abrir no ServiceNow DEV/);
+  assert.doesNotMatch(link, /Requer acesso ao ServiceNow DEV/);
   assert.match(link, /TooltipContent/);
   assert.match(link, /target="_blank"/);
   assert.match(link, /rel="noopener noreferrer"/);
@@ -24,7 +27,7 @@ test("SN-P0-23 ServiceNowDevLink: label DEV + tooltip de acesso", async () => {
   assert.doesNotMatch(link, /acquireToken|loginRequest|msal/i);
 });
 
-test("SN-P0-23 Chamados e drawer de alerta usam o deep link DEV", async () => {
+test("SN-P0-23 Chamados e drawer de alerta usam o deep link ServiceNow", async () => {
   const [chamados, section, link, api] = await Promise.all([
     read("src/pages/Chamados.tsx"),
     read("src/components/oneview/AlertRelatedIncidentsSection.tsx"),
@@ -34,10 +37,9 @@ test("SN-P0-23 Chamados e drawer de alerta usam o deep link DEV", async () => {
 
   assert.match(chamados, /ServiceNowDevLink/);
   assert.match(section, /ServiceNowDevLink/);
-  assert.match(link, /Abrir no ServiceNow DEV/);
-  assert.match(link, /Requer acesso ao ServiceNow DEV/);
-  assert.doesNotMatch(chamados, /Abrir no ServiceNow"/);
-  assert.doesNotMatch(section, /Abrir no ServiceNow"/);
+  assert.match(link, /Abrir no ServiceNow/);
+  assert.match(link, /Requer acesso ao ServiceNow/);
+  assert.doesNotMatch(link, /ServiceNow DEV/);
 
   // FE consome apenas URL pública do incidente — sem credenciais SN.
   const fetchSlice = api.slice(api.indexOf("export async function fetchIncidents"));

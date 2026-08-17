@@ -14,6 +14,7 @@ function createHelpersFromSource(source) {
   assert.match(source, /host_visible_name → host_technical_name → host_name/);
   assert.match(source, /MISSING_HOST_LABEL = "Host não informado"/);
   assert.match(source, /UNCLASSIFIED_CLIENT_LABEL = "Cliente não classificado"/);
+  assert.match(source, /UNKNOWN_SCOPE_LABEL = "Cliente não identificado"/);
   assert.match(source, /Host protegido/);
   assert.match(source, /datasource_fallback/);
   assert.match(source, /nunca exibe "unclassified"/i);
@@ -68,13 +69,14 @@ function createHelpersFromSource(source) {
     return !nName && !nKey;
   };
 
-  const canonicalClientName = (customer, fallback = "Cliente não classificado") => {
-    if (isUnclassifiedClient(customer)) return fallback;
+  const canonicalClientName = (customer, fallback = "Cliente não identificado") => {
+    const safeFallback = fallback === "Cliente não classificado" ? "Cliente não identificado" : fallback;
+    if (isUnclassifiedClient(customer)) return safeFallback;
     const name = String(customer?.name || "").trim();
     const key = String(customer?.key || "").trim();
     if (name && !isPlaceholderClient(normalize(name)) && !isDatasourceLike(normalize(name))) return name;
     if (key && !isPlaceholderClient(normalize(key)) && !isDatasourceLike(normalize(key))) return key;
-    return fallback;
+    return safeFallback;
   };
 
   return { canonicalHostName, canonicalClientName };
@@ -126,21 +128,25 @@ test("OV-P0-40 helpers: cliente real, unclassified e datasource", async () => {
   assert.equal(canonicalClientName({ key: "sanepar", name: "Sanepar" }), "Sanepar");
   assert.equal(
     canonicalClientName({ key: "unclassified", name: null, source: "datasource_fallback" }),
-    "Cliente não classificado",
+    "Cliente não identificado",
   );
   assert.equal(
     canonicalClientName({ key: "cliente-nao-classificado", name: "Cliente não classificado" }),
-    "Cliente não classificado",
+    "Cliente não identificado",
   );
   assert.equal(
     canonicalClientName({ key: "teletex-http", name: "teletex-http" }),
-    "Cliente não classificado",
+    "Cliente não identificado",
   );
   assert.equal(
     canonicalClientName({ key: "unclassified", name: "Sanepar", source: "datasource_fallback" }),
     "Sanepar",
   );
   assert.doesNotMatch(canonicalClientName({ key: "unclassified", name: "unclassified" }), /unclassified/i);
+  assert.doesNotMatch(
+    canonicalClientName({ key: "unclassified", name: null }),
+    /Cliente não classificado/,
+  );
 });
 
 test("OV-P0-40 páginas usam helpers canônicos de host/cliente", async () => {
@@ -170,11 +176,11 @@ test("OV-P0-40 páginas usam helpers canônicos de host/cliente", async () => {
     assert.doesNotMatch(source, /Host não identificado/, `${label} não deve usar label antigo de host`);
   }
 
-  assert.match(index, /canonicalClientName/);
-  assert.match(monitoring, /UNCLASSIFIED_CLIENT_LABEL|canonicalClientName/);
-  assert.match(alerts, /isUnclassifiedClient|UNCLASSIFIED_CLIENT_LABEL/);
-  assert.match(historico, /UNCLASSIFIED_CLIENT_LABEL|canonicalClientName/);
+  assert.match(index, /canonicalClientName|facetCustomerDisplayName|operationalClientLabel/);
+  assert.match(monitoring, /facetCustomerDisplayName|canonicalClientName|operationalClientLabel/);
+  assert.match(alerts, /isUnclassifiedClient|facetCustomerDisplayName|UNKNOWN_SCOPE_LABEL/);
+  assert.match(historico, /facetCustomerDisplayName|canonicalClientName|historyEventClientLabel/);
   assert.match(api, /canonicalHostName\(alert\)/);
   assert.match(api, /canonicalClientName\(\{/);
-  assert.doesNotMatch(api, /Cliente não identificado/);
+  assert.match(api, /expandHighFamilySeverities/);
 });

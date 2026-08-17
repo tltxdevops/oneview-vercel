@@ -14,6 +14,7 @@ import {
   safeCustomerIdentity,
 } from "./oneview-db.js";
 import { deriveOperationalScope } from "./oneview-operational-scope.js";
+import { emptyAlertRecurrenceReadModel } from "./oneview-recurrence.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
@@ -745,6 +746,7 @@ function alertDetailPayload(snapshot, req) {
     generated_at: snapshot.generated_at,
     item: {
       ...item,
+      ...emptyAlertRecurrenceReadModel(),
       history_count: 0,
       acknowledgement_count: 0,
       source_ack,

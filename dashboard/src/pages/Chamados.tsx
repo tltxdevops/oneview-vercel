@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { format, subDays } from "date-fns";
+import { SlidersHorizontal } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { FilterBar } from "@/components/oneview/FilterBar";
@@ -12,6 +13,7 @@ import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -36,6 +38,18 @@ import {
   type IncidentRelatedAlert,
   type OneViewIncident,
 } from "@/lib/oneview-api";
+
+/** SN-P0-28 — busca ^INC\d+$ → number exato no BFF. */
+const INCIDENT_EXACT_NUMBER_SEARCH_RE = /^INC\d+$/i;
+
+function resolveIncidentSearch(search: string): { search?: string; number?: string } {
+  const trimmed = search.trim();
+  if (!trimmed) return {};
+  if (INCIDENT_EXACT_NUMBER_SEARCH_RE.test(trimmed)) {
+    return { number: trimmed.toUpperCase() };
+  }
+  return { search: trimmed };
+}
 
 
 const PAGE_SIZE = 25;
@@ -69,14 +83,6 @@ const PRIORITY_OPTIONS = [
   { value: "5", label: "5 - Planejamento" },
 ] as const;
 
-const CALLER_OPTIONS = [
-  { value: "all", label: "Todos" },
-  { value: "aa62f29f47477610082e3d02e26d4358", label: "zabbix monitoring" },
-  { value: "f83cc28887777250d5fd84c30cbb3545", label: "Gwms Integration" },
-  { value: "50e065b3fb55f210fb0ef9285eefdcee", label: "NOC Protege" },
-  { value: "23396eb73bc83610d6756147f4e45ada", label: "Janine Scavone" },
-] as const;
-
 const PERIOD_OPTIONS = [
   { value: "all", label: "Todo o período" },
   { value: "24h", label: "Últimas 24 h" },
@@ -89,6 +95,7 @@ type DraftFilters = {
   company: string;
   state: string;
   priority: string;
+  assignedTo: string;
   callerId: string;
   period: string;
   unassigned: boolean;
@@ -99,6 +106,7 @@ const EMPTY_DRAFT: DraftFilters = {
   company: "",
   state: "all",
   priority: "all",
+  assignedTo: "all",
   callerId: "all",
   period: "all",
   unassigned: false,
@@ -167,8 +175,14 @@ function alertStatusLabel(value: string | null | undefined) {
 }
 
 export default function ChamadosPage() {
-  const [draft, setDraft] = useState<DraftFilters>(EMPTY_DRAFT);
-  const [applied, setApplied] = useState<DraftFilters>(EMPTY_DRAFT);
+  const [searchParams] = useSearchParams();
+  const initialFilters = useMemo<DraftFilters>(() => (
+    searchParams.get("unassigned") === "true"
+      ? { ...EMPTY_DRAFT, unassigned: true }
+      : EMPTY_DRAFT
+  ), [searchParams]);
+  const [draft, setDraft] = useState<DraftFilters>(initialFilters);
+  const [applied, setApplied] = useState<DraftFilters>(initialFilters);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -183,14 +197,21 @@ export default function ChamadosPage() {
     setLoading(true);
     setError(null);
     const period = periodBounds(applied.period);
+    const searchParams = resolveIncidentSearch(applied.search);
 
     fetchIncidents({
       page,
       pageSize: PAGE_SIZE,
-      search: applied.search.trim() || undefined,
+      search: searchParams.search,
+      number: searchParams.number,
       company: applied.company.trim() || undefined,
       state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
       priority: applied.priority !== "all" ? applied.priority : undefined,
+      // SN-P0-28: assigned_to opcional (Analista).
+      assignedTo: applied.unassigned
+        ? undefined
+        : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
+      // SN-P0-25: caller_id opcional — "Todos" omite o param (universo monitoring).
       callerId: applied.callerId !== "all" ? applied.callerId : undefined,
       unassigned: applied.unassigned || undefined,
       openedFrom: period.openedFrom,
@@ -204,7 +225,7 @@ export default function ChamadosPage() {
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
         setPayload(null);
-        setError("ServiceNow indisponível");
+        setError("Chamados indisponíveis");
         void err;
       })
       .finally(() => {
@@ -266,6 +287,41 @@ export default function ChamadosPage() {
     return `${total} encontrado${count === 1 ? "" : "s"}`;
   }, [error, pagination]);
 
+  const callerOptions = useMemo(() => {
+    const map = new Map<string, { value: string; label: string }>();
+    map.set("all", { value: "all", label: "Todos" });
+    // SN-P0-33: sem seeds hardcoded — só facets do BFF (+ valor aplicado se ausente).
+    for (const facet of payload?.facets?.callers ?? []) {
+      const value = String(facet?.value || "").trim();
+      if (!value) continue;
+      map.set(value, {
+        value,
+        label: String(facet.display_value || facet.label || value).trim() || value,
+      });
+    }
+    if (applied.callerId !== "all" && !map.has(applied.callerId)) {
+      map.set(applied.callerId, { value: applied.callerId, label: applied.callerId });
+    }
+    return [...map.values()];
+  }, [payload?.facets?.callers, applied.callerId]);
+
+  const assigneeOptions = useMemo(() => {
+    const map = new Map<string, { value: string; label: string }>();
+    map.set("all", { value: "all", label: "Todos" });
+    for (const facet of payload?.facets?.assignees ?? []) {
+      const value = String(facet?.value || "").trim();
+      if (!value) continue;
+      map.set(value, {
+        value,
+        label: String(facet.display_value || facet.label || value).trim() || value,
+      });
+    }
+    if (applied.assignedTo !== "all" && !map.has(applied.assignedTo)) {
+      map.set(applied.assignedTo, { value: applied.assignedTo, label: applied.assignedTo });
+    }
+    return [...map.values()];
+  }, [payload?.facets?.assignees, applied.assignedTo]);
+
   function applyFilters(next: DraftFilters = draft) {
     setPage(1);
     setApplied({
@@ -285,6 +341,7 @@ export default function ChamadosPage() {
     const next: DraftFilters = {
       ...draft,
       unassigned: kind === "unassigned",
+      assignedTo: kind === "unassigned" ? "all" : draft.assignedTo,
       state: kind === "open"
         ? "1"
         : kind === "in_progress"
@@ -318,11 +375,11 @@ export default function ChamadosPage() {
           aside={(
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="outline" className="text-[10px]">
-                ServiceNow DEV
+                ServiceNow
               </Badge>
               <span>{loading ? "Carregando…" : totalLabel}</span>
               <span aria-hidden="true">·</span>
-              <span>Atualizado: {formatCheckedAt(payload?.checked_at)}</span>
+              <span>Sync ServiceNow: {formatCheckedAt(payload?.freshness?.last_success_at)}</span>
             </div>
           )}
         />
@@ -372,7 +429,7 @@ export default function ChamadosPage() {
             },
             {
               key: "unassigned",
-              label: "Não atribuídos",
+              label: "Sem responsável",
               value: error ? "—" : safeCount(counts?.unassigned),
               loading,
               selected: applied.unassigned,
@@ -385,6 +442,39 @@ export default function ChamadosPage() {
           aria-label="Filtros de chamados"
           footer={(
             <>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button type="button" size="sm" variant="outline">
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    Mais filtros
+                    {draft.callerId !== "all" ? (
+                      <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">1</Badge>
+                    ) : null}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-[280px] space-y-3 p-3">
+                  <div>
+                    <p className="text-sm font-semibold">Mais filtros</p>
+                    <p className="text-[11px] text-muted-foreground">Caller permanece opcional.</p>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground" htmlFor="chamados-caller">Caller</label>
+                    <Select
+                      value={draft.callerId}
+                      onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}
+                    >
+                      <SelectTrigger id="chamados-caller" className="h-9">
+                        <SelectValue placeholder="Todos" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {callerOptions.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </PopoverContent>
+              </Popover>
               <Button type="button" size="sm" onClick={() => applyFilters()}>
                 Aplicar
               </Button>
@@ -402,7 +492,7 @@ export default function ChamadosPage() {
                 value={draft.search}
                 onChange={(event) => setDraft((prev) => ({ ...prev, search: event.target.value }))}
                 onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
-                placeholder="Número ou descrição"
+                placeholder="INC… ou descrição"
                 className="h-9"
               />
             </div>
@@ -450,16 +540,20 @@ export default function ChamadosPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-caller">Caller</label>
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-analyst">Analista</label>
               <Select
-                value={draft.callerId}
-                onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}
+                value={draft.unassigned ? "all" : draft.assignedTo}
+                onValueChange={(value) => setDraft((prev) => ({
+                  ...prev,
+                  assignedTo: value,
+                  unassigned: false,
+                }))}
               >
-                <SelectTrigger id="chamados-caller" className="h-9">
+                <SelectTrigger id="chamados-analyst" className="h-9">
                   <SelectValue placeholder="Todos" />
                 </SelectTrigger>
                 <SelectContent>
-                  {CALLER_OPTIONS.map((option) => (
+                  {assigneeOptions.map((option) => (
                     <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                   ))}
                 </SelectContent>

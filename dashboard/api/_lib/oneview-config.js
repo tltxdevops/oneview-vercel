@@ -91,16 +91,32 @@ function alertStaleMinutes(value) {
   return Math.min(Math.max(parsed, 1), 1440);
 }
 
+/**
+ * OV-P0-100 — runtime de produção (Vercel production ou override explícito).
+ * Preview/development/local não entram aqui.
+ */
+export function isOneViewProductionRuntime(env = process.env) {
+  const vercelEnv = String(env.VERCEL_ENV || "").trim().toLowerCase();
+  if (vercelEnv === "production") return true;
+  const runtimeEnv = String(env.ONEVIEW_RUNTIME_ENV || "").trim().toLowerCase();
+  return runtimeEnv === "production";
+}
+
 export function getOneViewRoute(name) {
   return ROUTES[name] || null;
 }
 
 export function getOneViewConfig(env = process.env) {
-  const snapshotMode = booleanValue(env.ONEVIEW_SNAPSHOT_MODE, false);
+  const productionRuntime = isOneViewProductionRuntime(env);
+  const snapshotModeRequested = booleanValue(env.ONEVIEW_SNAPSHOT_MODE, false);
+  const snapshotFallbackRequested = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, false);
+  // OV-P0-100: em produção nunca servir snapshot antigo/multi-datasource (silencioso).
+  // Artefatos e caminho local permanecem; só o gate muda o comportamento efetivo.
+  const snapshotMode = productionRuntime ? false : snapshotModeRequested;
+  const snapshotFallbackEnabled = productionRuntime ? false : snapshotFallbackRequested;
   const liveDbEnabled = booleanValue(env.ONEVIEW_LIVE_DB_ENABLED, false);
   const liveMode = liveDbEnabled && !snapshotMode ? "database" : "snapshot";
   const liveEnabled = liveMode === "database";
-  const snapshotFallbackEnabled = booleanValue(env.ONEVIEW_SNAPSHOT_FALLBACK_ENABLED, false);
   const ackRequestEnabled = booleanValue(env.ONEVIEW_ACK_REQUEST_ENABLED, false);
   const ackExecutionEnabled = booleanValue(env.ONEVIEW_ACK_EXECUTION_ENABLED, false);
   const authenticatedActionsEnabled = booleanValue(env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS, false);
@@ -113,17 +129,20 @@ export function getOneViewConfig(env = process.env) {
       dbConfig = getOneViewDbConfig(env);
     } catch (error) {
       // A falha será tratada pelo handler e só usará snapshot quando
-      // ONEVIEW_SNAPSHOT_FALLBACK_ENABLED=true.
+      // ONEVIEW_SNAPSHOT_FALLBACK_ENABLED=true (e fora de produção).
       dbConfig = null;
       dbConfigErrorCode = error?.code === "unsafe_database_user" ? "unsafe_database_user" : null;
     }
   }
 
   return Object.freeze({
+    productionRuntime,
     snapshotMode,
+    snapshotModeRequested,
     liveEnabled,
     liveMode,
     snapshotFallbackEnabled,
+    snapshotFallbackRequested,
     ackRequestEnabled,
     ackExecutionEnabled,
     ackEnabled: authenticatedActionsEnabled && ackRequestEnabled && !ackExecutionEnabled && actionsDatabaseConfigured,

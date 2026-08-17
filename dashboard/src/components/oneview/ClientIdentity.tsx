@@ -15,11 +15,13 @@ export type HostIdentityFields = {
   host_name?: string | null;
 };
 
+/** Legado detectável em dados antigos — nunca exibir em superfícies operacionais (OV-P0-102). */
 export const UNCLASSIFIED_CLIENT_LABEL = "Cliente não classificado";
 export const CLASSIFICATION_PENDING_LABEL = "Classificação ainda não determinada";
 export const MISSING_HOST_LABEL = "Host não informado";
 export const PLATFORM_SCOPE_LABEL = "Infraestrutura de monitoramento";
 export const TEST_SCOPE_LABEL = "Ambiente de teste";
+/** Fallback operacional único para unknown/null (OV-P0-102). */
 export const UNKNOWN_SCOPE_LABEL = "Cliente não identificado";
 
 export type OperationalScope = "customer" | "platform" | "test" | "unknown";
@@ -39,13 +41,13 @@ export function normalizeOperationalScope(value?: string | null): OperationalSco
 }
 
 /**
- * Rótulo operacional vindo do BFF.
- * HOTFIX-P0-CLIENT-LABEL: customer real sempre prevalece; scope_label só sem cliente.
- * Nunca infere cliente/plataforma/teste no frontend — só consome campos do BFF.
+ * Rótulo operacional vindo do BFF (OV-P0-102).
+ * customer real → nome; platform/test → labels de escopo; unknown/null → Cliente não identificado.
+ * Nunca exibe "Cliente não classificado".
  */
 export function operationalClientLabel(
   entity?: (ClientIdentityCustomer & OperationalScopeFields) | null,
-  fallback = UNCLASSIFIED_CLIENT_LABEL,
+  fallback = UNKNOWN_SCOPE_LABEL,
 ) {
   // 1) Cliente real/classificado → nunca sobrescrever com operational_scope_label.
   if (!isUnclassifiedClient(entity)) {
@@ -61,8 +63,22 @@ export function operationalClientLabel(
   if (label === PLATFORM_SCOPE_LABEL || label === TEST_SCOPE_LABEL || label === UNKNOWN_SCOPE_LABEL) {
     return label;
   }
-  if (scope === "customer" && label) return label;
-  return fallback;
+  if (scope === "customer" && label && label !== UNCLASSIFIED_CLIENT_LABEL) return label;
+  return fallback === UNCLASSIFIED_CLIENT_LABEL ? UNKNOWN_SCOPE_LABEL : fallback;
+}
+
+/**
+ * Label de facet/filtro de cliente (OV-P0-102).
+ * key unclassified / placeholder → Cliente não identificado; sem inventar opção artificial.
+ */
+export function facetCustomerDisplayName(
+  customer?: { key?: string | null; name?: string | null; source?: string | null } | null,
+) {
+  if (!customer) return UNKNOWN_SCOPE_LABEL;
+  if (isUnclassifiedClient(customer)) return UNKNOWN_SCOPE_LABEL;
+  const name = String(customer.name || "").trim();
+  if (name && name !== UNCLASSIFIED_CLIENT_LABEL) return name;
+  return UNKNOWN_SCOPE_LABEL;
 }
 
 export function isNonCustomerOperationalScope(scope?: string | null) {
@@ -111,6 +127,7 @@ const CUSTOMER_LOGO_CATALOG = [
   { aliases: ["nissan"], src: "/tltx/clientes/logos/nissan-logo.png" },
   { aliases: ["ntn"], src: "/tltx/clientes/logos/ntn-logo.png" },
   { aliases: ["osasco"], src: "/tltx/clientes/logos/osasco-logo.png" },
+  { aliases: ["protege"], src: "/tltx/clientes/logos/Protege-logo.png" },
   { aliases: ["sanepar"], src: "/tltx/clientes/logos/logo-sanepar.png" },
   { aliases: ["sapore"], src: "/tltx/clientes/logos/sapore-logo1.jpg" },
   { aliases: ["sesi"], src: "/tltx/clientes/logos/sesi-logo.png" },
@@ -191,9 +208,10 @@ export function isUnclassifiedClient(customer?: ClientIdentityCustomer | null) {
 /** Nome de cliente para UI — nunca exibe "unclassified" nem usa datasource como cliente. */
 export function canonicalClientName(
   customer?: ClientIdentityCustomer | null,
-  fallback = UNCLASSIFIED_CLIENT_LABEL,
+  fallback = UNKNOWN_SCOPE_LABEL,
 ) {
-  if (isUnclassifiedClient(customer)) return fallback;
+  const safeFallback = fallback === UNCLASSIFIED_CLIENT_LABEL ? UNKNOWN_SCOPE_LABEL : fallback;
+  if (isUnclassifiedClient(customer)) return safeFallback;
   const name = String(customer?.name || "").trim();
   const key = String(customer?.key || "").trim();
   if (name && !isPlaceholderClientLabel(normalizedClientKey(name)) && !isDatasourceLikeLabel(normalizedClientKey(name))) {
@@ -202,7 +220,7 @@ export function canonicalClientName(
   if (key && !isPlaceholderClientLabel(normalizedClientKey(key)) && !isDatasourceLikeLabel(normalizedClientKey(key))) {
     return key;
   }
-  return fallback;
+  return safeFallback;
 }
 
 /** Valor de host inválido/placeholder — não deve aparecer na UI. */
@@ -252,7 +270,7 @@ export function clientLogoSrc(customer?: ClientIdentityCustomer | null) {
 
 function clientInitials(customer?: ClientIdentityCustomer | null) {
   const source = canonicalClientName(customer, "CL");
-  if (source === UNCLASSIFIED_CLIENT_LABEL) return "CL";
+  if (source === UNCLASSIFIED_CLIENT_LABEL || source === UNKNOWN_SCOPE_LABEL) return "CL";
   return source
     .split(/[\s-]+/)
     .filter(Boolean)
@@ -268,7 +286,7 @@ type ClientIdentityProps = {
   /** OV-P0-56 — escopo operacional do BFF (sem inferência no FE). */
   operationalScope?: string | null;
   operationalScopeLabel?: string | null;
-  size?: "sm" | "md" | "lg";
+  size?: "xs" | "sm" | "md" | "lg";
   showName?: boolean;
   className?: string;
   nameClassName?: string;
@@ -298,7 +316,15 @@ export function ClientIdentity({
   const name = hasRealCustomer
     ? canonicalClientName(customer)
     : (explicitScopeLabel || operationalClientLabel(scopedCustomer));
-  const box = size === "lg" ? "h-14 w-14" : size === "md" ? "h-11 w-11" : "h-10 w-10";
+  // OV-P0-78: listas = 32px (sm); filtro = xs; drawer = md/lg.
+  const box = size === "lg"
+    ? "h-14 w-14"
+    : size === "md"
+      ? "h-11 w-11"
+      : size === "xs"
+        ? "h-6 w-6"
+        : "h-8 w-8";
+  const initialsSize = size === "xs" ? "text-[8px]" : "text-[10px]";
   const initials = hasRealCustomer
     ? clientInitials(customer)
     : (scope === "platform" || explicitScopeLabel === PLATFORM_SCOPE_LABEL
@@ -315,7 +341,7 @@ export function ClientIdentity({
           alt={name}
           className={cn(
             box,
-            "shrink-0 rounded-md border border-border/40 bg-white object-contain p-1 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.02)]",
+            "shrink-0 rounded-md border border-border/40 bg-white object-contain p-0.5 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.02)]",
           )}
           loading="lazy"
         />
@@ -323,7 +349,8 @@ export function ClientIdentity({
         <span
           className={cn(
             box,
-            "flex shrink-0 items-center justify-center rounded-md border border-border/50 bg-muted/40 text-[10px] font-semibold uppercase text-muted-foreground",
+            initialsSize,
+            "flex shrink-0 items-center justify-center rounded-md border border-border/50 bg-muted/40 font-semibold uppercase text-muted-foreground",
           )}
           aria-hidden="true"
         >

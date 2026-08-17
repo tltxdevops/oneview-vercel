@@ -19,7 +19,6 @@ import {
 } from "../api/_lib/servicenow-normalize.js";
 import { loadLocalEnv } from "./_lib/local-env.mjs";
 
-const QUERY = "contact_type=monitoring^caller_id=aa62f29f47477610082e3d02e26d4358";
 const MAX_RECORDS = 500;
 const FIELDS = [
   "sys_id",
@@ -37,6 +36,15 @@ const FIELDS = [
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadLocalEnv(path.join(rootDir, ".env.local"));
+
+function argValue(name) {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3).trim() : "";
+}
+
+function resolveZabbixCallerId(config) {
+  return argValue("caller-id") || String(config.zabbixMonitoringCallerId || "").trim();
+}
 
 function pct(count, total) {
   if (!total) return 0;
@@ -61,6 +69,18 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+
+  const zabbixCallerId = resolveZabbixCallerId(config);
+  if (!zabbixCallerId) {
+    console.error(JSON.stringify({
+      event: "servicenow_parser_coverage_failed",
+      error: "servicenow_caller_not_configured",
+      hint: "Defina SERVICENOW_ZABBIX_MONITORING_CALLER_ID ou --caller-id=",
+    }, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+  const QUERY = `contact_type=monitoring^caller_id=${zabbixCallerId}`;
 
   const startedAt = Date.now();
   let pageResult;

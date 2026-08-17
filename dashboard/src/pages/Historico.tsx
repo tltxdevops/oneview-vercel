@@ -1,21 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { DateRange } from "react-day-picker";
 import { format, isSameDay, startOfDay, endOfDay, subDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { CalendarRange, History, Siren } from "lucide-react";
 import {
   ClientIdentity,
-  UNCLASSIFIED_CLIENT_LABEL,
   canonicalClientName,
   canonicalHostName,
+  facetCustomerDisplayName,
   historyEventClientLabel,
 } from "@/components/oneview/ClientIdentity";
+import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { FilterBar } from "@/components/oneview/FilterBar";
+import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -29,7 +33,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -40,19 +43,21 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
+import { OV_CTA, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   applyHistoryRiskPreset,
   HISTORY_RISK_PRESETS,
   isRiskSummaryPreset,
-  timeToAckSeconds,
   type HistoryRiskPreset,
 } from "@/lib/historico-query";
 import {
+  AlertHistoryItem,
   fetchAlert,
+  fetchAlertHistory,
   fetchAlerts,
   fetchGlobalHistory,
   fetchOneViewFacets,
-  formatDurationSeconds,
   formatOneViewSeverityLabel,
   GlobalHistoryItem,
   ONEVIEW_V1_FILTER_SEVERITIES,
@@ -60,6 +65,8 @@ import {
   OneViewFacetsResponse,
   type OneViewSeverity,
 } from "@/lib/oneview-api";
+
+const HISTORY_REFRESH_MS = 60_000;
 
 const ACTION_EVENT_TYPES = new Set([
   "acknowledged",
@@ -329,7 +336,8 @@ function consolidateAckEvents(items: GlobalHistoryItem[]): GlobalHistoryItem[] {
 }
 
 /**
- * Histórico operacional — base de consulta de riscos e ACK realizados (OV-P0-34).
+ * Histórico operacional — auditoria temporal de riscos e ACK (OV-P0-34 / OV-P0-81).
+ * Clique na linha abre o drawer unificado (aba Histórico); não navega para Alertas.
  */
 export default function HistoricoPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -356,6 +364,7 @@ export default function HistoricoPage() {
   } | null>(null);
 
   const [detail, setDetail] = useState<OneViewAlert | null>(null);
+  const [detailHistory, setDetailHistory] = useState<AlertHistoryItem[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
@@ -365,6 +374,8 @@ export default function HistoricoPage() {
   const eventsRequestRef = useRef<AbortController | null>(null);
   const alertsRequestRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const eventsLoadedRef = useRef(false);
+  const alertsLoadedRef = useRef(false);
 
   const tab = queryEnum(searchParams.get("tab"), ["alertas", "eventos"] as const, "alertas") as HistoryTab;
   const risk = queryEnum(
@@ -470,7 +481,7 @@ export default function HistoricoPage() {
     eventsRequestRef.current?.abort();
     const controller = new AbortController();
     eventsRequestRef.current = controller;
-    const quiet = eventsLoaded;
+    const quiet = eventsLoadedRef.current;
     if (!quiet) setEventsLoading(true);
     try {
       const bounds = periodBounds(period, customRange);
@@ -479,6 +490,7 @@ export default function HistoricoPage() {
         setEventTotal(0);
         setEventPages(1);
         setEventsError(null);
+        eventsLoadedRef.current = true;
         setEventsLoaded(true);
         return;
       }
@@ -499,6 +511,7 @@ export default function HistoricoPage() {
       setEventTotal(response.pagination.total_items);
       setEventPages(response.pagination.total_pages);
       setEventsError(null);
+      eventsLoadedRef.current = true;
       setEventsLoaded(true);
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -507,13 +520,13 @@ export default function HistoricoPage() {
     } finally {
       if (!controller.signal.aborted) setEventsLoading(false);
     }
-  }, [actor, cliente, customRange, eventType, eventsLoaded, page, period, search]);
+  }, [actor, cliente, customRange, eventType, page, period, search]);
 
   const loadAlerts = useCallback(async () => {
     alertsRequestRef.current?.abort();
     const controller = new AbortController();
     alertsRequestRef.current = controller;
-    const quiet = alertsLoaded;
+    const quiet = alertsLoadedRef.current;
     if (!quiet) setAlertsLoading(true);
     try {
       const bounds = periodBounds(period, customRange);
@@ -523,6 +536,7 @@ export default function HistoricoPage() {
         setAlertPages(1);
         setFilteredSummary(null);
         setAlertsError(null);
+        alertsLoadedRef.current = true;
         setAlertsLoaded(true);
         return;
       }
@@ -566,6 +580,7 @@ export default function HistoricoPage() {
         },
       } : null);
       setAlertsError(null);
+      alertsLoadedRef.current = true;
       setAlertsLoaded(true);
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -574,7 +589,7 @@ export default function HistoricoPage() {
     } finally {
       if (!controller.signal.aborted) setAlertsLoading(false);
     }
-  }, [ackFilter, alertStatus, alertsLoaded, cliente, customRange, page, period, risk, search, severities]);
+  }, [ackFilter, alertStatus, cliente, customRange, page, period, risk, search, severities]);
 
   useEffect(() => {
     if (tab !== "eventos") return;
@@ -589,32 +604,55 @@ export default function HistoricoPage() {
   }, [loadAlerts, tab]);
 
   useEffect(() => {
+    const refreshActiveTab = () => {
+      if (document.hidden) return;
+      if (tab === "eventos") void loadEvents();
+      else void loadAlerts();
+    };
+    const timer = window.setInterval(refreshActiveTab, HISTORY_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshActiveTab);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshActiveTab);
+    };
+  }, [loadAlerts, loadEvents, tab]);
+
+  useEffect(() => {
     if (!selectedAlertId) {
       setDetail(null);
+      setDetailHistory([]);
       setDetailError(null);
       return;
     }
     const preview = alertItems.find((item) => item.id === selectedAlertId) || null;
-    if (preview) setDetail(preview);
+    if (preview) setDetail((current) => current?.id === selectedAlertId ? current : preview);
     detailRequestRef.current?.abort();
     const controller = new AbortController();
     detailRequestRef.current = controller;
     setDetailLoading(true);
     setDetailError(null);
-    void fetchAlert(selectedAlertId, controller.signal)
-      .then((response) => {
-        if (controller.signal.aborted) return;
-        setDetail(response.item);
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        setDetailError(error instanceof Error ? error.message : "Não foi possível abrir o detalhe.");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setDetailLoading(false);
-      });
+    void Promise.allSettled([
+      fetchAlert(selectedAlertId, controller.signal),
+      fetchAlertHistory(selectedAlertId, controller.signal),
+    ]).then((results) => {
+      if (controller.signal.aborted) return;
+      if (results[0].status === "fulfilled") {
+        setDetail(results[0].value.item);
+      } else if (!preview) {
+        setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Não foi possível abrir o detalhe.");
+      }
+      if (results[1].status === "fulfilled") {
+        setDetailHistory(results[1].value.items ?? []);
+      }
+      if (results[0].status === "rejected" && results[1].status === "rejected" && !preview) {
+        setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Não foi possível abrir o detalhe.");
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted) setDetailLoading(false);
+    });
     return () => controller.abort();
-  }, [alertItems, selectedAlertId]);
+    // OV-P0-108 — não re-fetch em refresh da tabela (alertItems); só quando o alert ID muda.
+  }, [selectedAlertId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groupedEvents = useMemo(() => {
     const groups: Array<{ key: string; label: string; items: GlobalHistoryItem[] }> = [];
@@ -636,24 +674,13 @@ export default function HistoricoPage() {
     return groups;
   }, [eventItems]);
 
-  const customerOptions = useMemo(() => {
-    const customers = (facets?.customers ?? []).map((customer) => (
-      customer.key === "unclassified"
-        ? { ...customer, name: UNCLASSIFIED_CLIENT_LABEL }
-        : customer
-    ));
-    if (!customers.some((customer) => customer.key === "unclassified")) {
-      customers.push({
-        key: "unclassified",
-        name: UNCLASSIFIED_CLIENT_LABEL,
-        alerts_count: 0,
-        high_confidence_count: 0,
-        low_confidence_count: 0,
-        enrichment_status: "pending",
-      });
-    }
-    return customers;
-  }, [facets?.customers]);
+  const customerOptions = useMemo(() => (
+    // OV-P0-102: só facets reais — sem opção artificial de unclassified.
+    (facets?.customers ?? []).map((customer) => ({
+      ...customer,
+      name: facetCustomerDisplayName(customer),
+    }))
+  ), [facets?.customers]);
 
   const countLabel = tab === "alertas"
     ? (alertsError || alertTotal === null ? "— alertas registrados" : `${alertTotal.toLocaleString("pt-BR")} alertas registrados`)
@@ -816,7 +843,7 @@ export default function HistoricoPage() {
             <FilterBar
               aria-label="Filtros de alertas do histórico"
               footer={(
-                <Button type="button" variant="outline" size="sm" onClick={clearFilters}>
+                <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
                   Limpar filtros
                 </Button>
               )}
@@ -825,7 +852,7 @@ export default function HistoricoPage() {
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-alertas-cliente">Cliente</Label>
                   <Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}>
-                    <SelectTrigger id="historico-alertas-cliente" aria-label="Filtrar por cliente">
+                    <SelectTrigger id="historico-alertas-cliente" aria-label="Filtrar por cliente" className={OV_FILTER_CONTROL}>
                       <SelectValue placeholder="Cliente" />
                     </SelectTrigger>
                     <SelectContent>
@@ -849,7 +876,7 @@ export default function HistoricoPage() {
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-alertas-severidade">Severidade</Label>
                   <Select value={severitySelectValue(severities)} onValueChange={(value) => changeFilter("severity", value)}>
-                    <SelectTrigger id="historico-alertas-severidade" aria-label="Filtrar por severidade">
+                    <SelectTrigger id="historico-alertas-severidade" aria-label="Filtrar por severidade" className={OV_FILTER_CONTROL}>
                       <SelectValue placeholder="Severidade" />
                     </SelectTrigger>
                     <SelectContent>
@@ -862,7 +889,7 @@ export default function HistoricoPage() {
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-alertas-status">Estado</Label>
                   <Select value={alertStatus} onValueChange={(value) => changeFilter("status", value)}>
-                    <SelectTrigger id="historico-alertas-status" aria-label="Filtrar por estado">
+                    <SelectTrigger id="historico-alertas-status" aria-label="Filtrar por estado" className={OV_FILTER_CONTROL}>
                       <SelectValue placeholder="Estado" />
                     </SelectTrigger>
                     <SelectContent>
@@ -875,7 +902,7 @@ export default function HistoricoPage() {
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-alertas-ack">ACK</Label>
                   <Select value={ackFilter} onValueChange={(value) => changeFilter("acknowledged_source", value)}>
-                    <SelectTrigger id="historico-alertas-ack" aria-label="Filtrar por ACK">
+                    <SelectTrigger id="historico-alertas-ack" aria-label="Filtrar por ACK" className={OV_FILTER_CONTROL}>
                       <SelectValue placeholder="ACK" />
                     </SelectTrigger>
                     <SelectContent>
@@ -889,7 +916,7 @@ export default function HistoricoPage() {
                   <Label htmlFor="historico-alertas-periodo">Período</Label>
                   <div className="flex gap-2">
                     <Select value={period} onValueChange={(value) => changeFilter("period", value)}>
-                      <SelectTrigger id="historico-alertas-periodo" aria-label="Filtrar por período" className="flex-1">
+                      <SelectTrigger id="historico-alertas-periodo" aria-label="Filtrar por período" className={cn(OV_FILTER_CONTROL, "flex-1")}>
                         <SelectValue placeholder="Período" />
                       </SelectTrigger>
                       <SelectContent>
@@ -988,13 +1015,18 @@ export default function HistoricoPage() {
                         <TableHead>Host</TableHead>
                         <TableHead>Problema</TableHead>
                         <TableHead>Início</TableHead>
-                        <TableHead>Estado</TableHead>
                         <TableHead>ACK</TableHead>
-                        <TableHead className="text-right">Ação</TableHead>
+                        <TableHead>Chamado</TableHead>
+                        <TableHead>Estado</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {alertItems.map((alert) => (
+                      {alertItems.map((alert) => {
+                        const ackActor = alert.acknowledged_source
+                          ? (safeActorName(alert.acknowledged_source_by) || safeActorName(alert.acknowledged_by) || "Reconhecido")
+                          : null;
+                        const ackAt = alert.acknowledged_source_at || alert.acknowledged_at;
+                        return (
                           <TableRow
                             key={alert.id}
                             className="cursor-pointer hover:bg-muted/40"
@@ -1030,9 +1062,7 @@ export default function HistoricoPage() {
                               />
                             </TableCell>
                             <TableCell>
-                              <Badge variant="outline" className="text-[10px]">
-                                {formatOneViewSeverityLabel(alert.severity)}
-                              </Badge>
+                              <SeverityBadge severity={alert.severity} />
                             </TableCell>
                             <TableCell className="max-w-[12rem] truncate font-medium">
                               {canonicalHostName(alert)}
@@ -1043,23 +1073,32 @@ export default function HistoricoPage() {
                             <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                               {formatWhen(alert.first_seen_at)}
                             </TableCell>
-                            <TableCell>{alertStatusLabel(alert)}</TableCell>
-                            <TableCell>{alert.acknowledged_source ? "Sim" : "Não"}</TableCell>
-                            <TableCell className="text-right">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openAlertDetail(alert.id);
-                                }}
-                              >
-                                Abrir
-                              </Button>
+                            <TableCell className="max-w-[10rem]">
+                              {ackActor ? (
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium leading-tight">{ackActor}</p>
+                                  {ackAt ? (
+                                    <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{formatWhen(ackAt)}</p>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <span className="text-sm font-medium text-amber-800">Pendente</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="max-w-[9rem]">
+                              <AlertServiceNowReferenceCell reference={alert.servicenow_reference} />
+                            </TableCell>
+                            <TableCell>
+                              <p className={cn(
+                                "font-medium",
+                                alertStatusLabel(alert) === "Ativo" ? "text-red-700" : "text-emerald-700",
+                              )}>
+                                {alertStatusLabel(alert)}
+                              </p>
                             </TableCell>
                           </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -1068,7 +1107,7 @@ export default function HistoricoPage() {
                   icon={<Siren className="h-5 w-5" />}
                   title="Nenhum alerta encontrado para os filtros selecionados."
                   action={(
-                    <Button type="button" variant="outline" size="sm" onClick={clearFilters}>
+                    <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
                       Limpar filtros
                     </Button>
                   )}
@@ -1108,7 +1147,7 @@ export default function HistoricoPage() {
             <FilterBar
               aria-label="Filtros de eventos do histórico"
               footer={(
-                <Button type="button" variant="outline" size="sm" onClick={clearFilters}>
+                <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
                   Limpar filtros
                 </Button>
               )}
@@ -1117,7 +1156,7 @@ export default function HistoricoPage() {
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-eventos-cliente">Cliente</Label>
                   <Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}>
-                    <SelectTrigger id="historico-eventos-cliente" aria-label="Filtrar por cliente">
+                    <SelectTrigger id="historico-eventos-cliente" aria-label="Filtrar por cliente" className={OV_FILTER_CONTROL}>
                       <SelectValue placeholder="Cliente" />
                     </SelectTrigger>
                     <SelectContent>
@@ -1141,7 +1180,7 @@ export default function HistoricoPage() {
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-tipo">Tipo</Label>
                   <Select value={eventType} onValueChange={(value) => changeFilter("event_type", value)}>
-                    <SelectTrigger id="historico-tipo" aria-label="Filtrar por tipo de evento">
+                    <SelectTrigger id="historico-tipo" aria-label="Filtrar por tipo de evento" className={OV_FILTER_CONTROL}>
                       <SelectValue placeholder="Tipo de evento" />
                     </SelectTrigger>
                     <SelectContent>
@@ -1155,7 +1194,7 @@ export default function HistoricoPage() {
                   <Label htmlFor="historico-periodo">Período</Label>
                   <div className="flex gap-2">
                     <Select value={period} onValueChange={(value) => changeFilter("period", value)}>
-                      <SelectTrigger id="historico-periodo" aria-label="Filtrar por período" className="flex-1">
+                      <SelectTrigger id="historico-periodo" aria-label="Filtrar por período" className={cn(OV_FILTER_CONTROL, "flex-1")}>
                         <SelectValue placeholder="Período" />
                       </SelectTrigger>
                       <SelectContent>
@@ -1236,7 +1275,6 @@ export default function HistoricoPage() {
                           <TableHead>Comentário</TableHead>
                           <TableHead>Ocorrido em</TableHead>
                           <TableHead>Severidade</TableHead>
-                          <TableHead className="text-right">Alerta</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1244,7 +1282,20 @@ export default function HistoricoPage() {
                           const actorName = safeActorName(item.actor_name);
                           const comment = isValidOperationalComment(item.description) ? item.description.trim() : null;
                           return (
-                            <TableRow key={item.id}>
+                            <TableRow
+                              key={item.id}
+                              className="cursor-pointer hover:bg-muted/40"
+                              tabIndex={0}
+                              role="button"
+                              aria-label={`Abrir detalhe de ${item.problem_name || canonicalHostName(item)}`}
+                              onClick={() => openAlertDetail(item.alert_id)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  openAlertDetail(item.alert_id);
+                                }
+                              }}
+                            >
                               <TableCell className="max-w-[12rem]">
                                 <ClientIdentity
                                   customer={{
@@ -1275,14 +1326,7 @@ export default function HistoricoPage() {
                                 {formatWhen(item.occurred_at)}
                               </TableCell>
                               <TableCell>
-                                <Badge variant="outline" className="text-[10px]">
-                                  {formatOneViewSeverityLabel(item.severity)}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <Button variant="outline" size="sm" type="button" onClick={() => openAlertDetail(item.alert_id)}>
-                                  Abrir alerta
-                                </Button>
+                                <SeverityBadge severity={item.severity} />
                               </TableCell>
                             </TableRow>
                           );
@@ -1309,34 +1353,40 @@ export default function HistoricoPage() {
                               operational_scope_label: item.operational_scope_label,
                             });
                             return (
-                              <li key={item.id} className="rounded-[10px] border border-border/60 bg-background/40 px-3 py-2.5">
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                  <div className="min-w-0 flex-1 space-y-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="text-[11px] tabular-nums text-muted-foreground">
-                                        {formatClock(item.occurred_at)}
-                                      </span>
-                                      <p className="text-sm font-semibold">{title}</p>
-                                      <Badge variant="outline" className="text-[10px]">
-                                        {formatOneViewSeverityLabel(item.severity)}
-                                      </Badge>
-                                    </div>
-                                    <p className="truncate text-sm font-medium">{item.problem_name || "Problema não informado"}</p>
-                                    <p className="truncate text-xs text-muted-foreground">
-                                      Host: {canonicalHostName(item)} · {customer}
-                                    </p>
-                                    {actorName && String(item.event_type || "").toLowerCase() !== "acknowledged" ? (
-                                      <p className="text-[11px] text-muted-foreground">Responsável: {actorName}</p>
-                                    ) : null}
-                                    {comment ? (
-                                      <p className="line-clamp-2 text-xs text-muted-foreground">
-                                        Comentário: {comment}
-                                      </p>
-                                    ) : null}
+                              <li
+                                key={item.id}
+                                className="cursor-pointer rounded-[10px] border border-border/60 bg-background/40 px-3 py-2.5 hover:bg-muted/40"
+                                tabIndex={0}
+                                role="button"
+                                aria-label={`Abrir detalhe de ${item.problem_name || canonicalHostName(item)}`}
+                                onClick={() => openAlertDetail(item.alert_id)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    openAlertDetail(item.alert_id);
+                                  }
+                                }}
+                              >
+                                <div className="min-w-0 space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-[11px] tabular-nums text-muted-foreground">
+                                      {formatClock(item.occurred_at)}
+                                    </span>
+                                    <p className="text-sm font-semibold">{title}</p>
+                                    <SeverityBadge severity={item.severity} />
                                   </div>
-                                  <Button variant="outline" size="sm" type="button" onClick={() => openAlertDetail(item.alert_id)}>
-                                    Abrir alerta
-                                  </Button>
+                                  <p className="truncate text-sm font-medium">{item.problem_name || "Problema não informado"}</p>
+                                  <p className="truncate text-xs text-muted-foreground">
+                                    Host: {canonicalHostName(item)} · {customer}
+                                  </p>
+                                  {actorName && String(item.event_type || "").toLowerCase() !== "acknowledged" ? (
+                                    <p className="text-[11px] text-muted-foreground">Responsável: {actorName}</p>
+                                  ) : null}
+                                  {comment ? (
+                                    <p className="line-clamp-2 text-xs text-muted-foreground">
+                                      Comentário: {comment}
+                                    </p>
+                                  ) : null}
                                 </div>
                               </li>
                             );
@@ -1351,7 +1401,7 @@ export default function HistoricoPage() {
                   icon={<History className="h-5 w-5" />}
                   title="Nenhum evento encontrado para os filtros selecionados."
                   action={(
-                    <Button type="button" variant="outline" size="sm" onClick={clearFilters}>
+                    <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
                       Limpar filtros
                     </Button>
                   )}
@@ -1389,106 +1439,22 @@ export default function HistoricoPage() {
         </Tabs>
       </div>
 
-      <Sheet open={Boolean(selectedAlertId)} onOpenChange={(open) => { if (!open) closeAlertDetail(); }}>
-        <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-xl">
-          <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
-            <SheetTitle className="text-xl">Detalhe do alerta</SheetTitle>
-            <SheetDescription>Consulta sem perder os filtros do Histórico.</SheetDescription>
-          </SheetHeader>
-          <div className="space-y-4 px-6 py-5">
-            {detailError ? <OperationalErrorBanner message={detailError} /> : null}
-            {detailLoading && !detail ? (
-              <div className="space-y-3"><Skeleton className="h-20 w-full" /><Skeleton className="h-32 w-full" /></div>
-            ) : detail ? (
-              <>
-                <ClientIdentity
-                  customer={{
-                    key: detail.customer_key,
-                    name: detail.customer_name,
-                    source: detail.customer_source,
-                    operational_scope: detail.operational_scope,
-                    operational_scope_label: detail.operational_scope_label,
-                  }}
-                  operationalScope={detail.operational_scope}
-                  operationalScopeLabel={historyEventClientLabel({
-                    key: detail.customer_key,
-                    name: detail.customer_name,
-                    operational_scope: detail.operational_scope,
-                    operational_scope_label: detail.operational_scope_label,
-                  })}
-                  size="md"
-                  showName
-                />
-                <p className="text-base font-semibold leading-6">{detail.problem_name || "Alerta sem descrição"}</p>
-                <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Severidade</dt>
-                    <dd className="font-semibold">{formatOneViewSeverityLabel(detail.severity)}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Estado</dt>
-                    <dd className="font-semibold">{alertStatusLabel(detail)}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Host</dt>
-                    <dd className="font-semibold">{canonicalHostName(detail)}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Início</dt>
-                    <dd>{formatWhen(detail.first_seen_at)}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">ACK</dt>
-                    <dd className="font-semibold">{detail.acknowledged_source ? "Sim" : "Não"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Responsável</dt>
-                    <dd className="font-semibold">
-                      {safeActorName(detail.acknowledged_source_by || detail.acknowledged_by) || "—"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Horário do ACK</dt>
-                    <dd>
-                      {(detail.acknowledged_source_at || detail.acknowledged_at)
-                        ? formatWhen(detail.acknowledged_source_at || detail.acknowledged_at)
-                        : "—"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Tempo até ACK</dt>
-                    <dd className="tabular-nums">
-                      {(() => {
-                        const ackWait = timeToAckSeconds(detail);
-                        return ackWait == null ? "—" : formatDurationSeconds(ackWait);
-                      })()}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Duração total</dt>
-                    <dd className="tabular-nums">
-                      {Number.isFinite(Number(detail.duration_seconds))
-                        ? formatDurationSeconds(Number(detail.duration_seconds))
-                        : "—"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Recuperação</dt>
-                    <dd>{detail.resolved_at ? formatWhen(detail.resolved_at) : "—"}</dd>
-                  </div>
-                </dl>
-                <Button variant="outline" size="sm" asChild>
-                  <Link to={`/alertas?alert=${encodeURIComponent(detail.id)}&from=historico`}>
-                    Abrir em Alertas
-                  </Link>
-                </Button>
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">Selecione um alerta para ver o detalhe.</p>
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
+      <AlertDetailDrawer
+        open={Boolean(selectedAlertId)}
+        onOpenChange={(next) => { if (!next) closeAlertDetail(); }}
+        alert={detail}
+        historyItems={detailHistory}
+        isLoading={detailLoading}
+        error={detailError}
+        description="Auditoria temporal do alerta — filtros do Histórico permanecem."
+        defaultTab="history"
+        auditEmphasis
+        alertsQueueHref={
+          detail?.id
+            ? `/alertas?alert=${encodeURIComponent(detail.id)}&from=historico`
+            : (selectedAlertId ? `/alertas?alert=${encodeURIComponent(selectedAlertId)}&from=historico` : null)
+        }
+      />
     </AppLayout>
   );
 }

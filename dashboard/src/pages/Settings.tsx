@@ -1,19 +1,36 @@
-import { useCallback, useState, useEffect } from "react";
+/**
+ * OV-P0-110 — Configurações enxutas: Tema · Saúde da automação · Fontes de dados.
+ * Sem controle falso de intervalo de sync Zabbix; sem banner de modo leitura;
+ * sem ação manual de sync desabilitada nesta tela.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { getStoredTheme, setStoredTheme, getStoredRefreshInterval, setStoredRefreshInterval, Theme } from "@/lib/settings";
+import { getStoredTheme, setStoredTheme, Theme } from "@/lib/settings";
 import {
   DataSource,
   OneViewDataSourceKind,
-  ONEVIEW_READ_ONLY_MESSAGE,
+  OneViewHealthResponse,
+  OneViewSyncLog,
+  OperationsHealthResponse,
   fetchDataSourcesWithMeta,
-  requestDataSourceSync,
+  fetchOneViewHealth,
+  fetchOperationsHealth,
+  fetchSyncLogs,
 } from "@/lib/oneview-api";
+import {
+  DEFAULT_SYNC_INTERVAL_SECONDS,
+  HealthLevel,
+  buildPlatformHealthSnapshot,
+  findTeletexSource,
+  formatPtBrDateTime,
+  resolveSyncIntervalSeconds,
+  statusLabel as platformStatusLabel,
+} from "@/lib/platform-health";
+import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { isReadOnlyMode } from "@/lib/demo-mode";
 
 const sourceStatusLabel: Record<DataSource["status"], string> = {
   active: "Ativa",
@@ -21,47 +38,105 @@ const sourceStatusLabel: Record<DataSource["status"], string> = {
   error: "Erro",
 };
 
-const syncStatusLabel: Record<string, string> = {
-  success: "Sucesso",
-  failed: "Falha",
-  running: "Em execução",
-  pending: "Pendente",
-  test_failed: "Falha no teste",
-};
+/** OV-P0-105 — badges de status com tokens de tema. */
+function sourceStatusClass(status: DataSource["status"]) {
+  if (status === "active") return "border-border bg-success/10 text-success";
+  if (status === "error") return "border-border bg-error/10 text-error";
+  return "border-border bg-muted text-muted-foreground";
+}
+
+const THEME_TOGGLE_BASE =
+  "rounded-md border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
+const SETTINGS_REFRESH_SECONDS = 60;
+
+function settingsHealthLabel(level: HealthLevel) {
+  if (level === "ok") return "Operacional";
+  if (level === "warn") return "Atenção";
+  if (level === "down") return "Crítico";
+  return "Sem informação";
+}
+
+function healthToneClass(level: HealthLevel) {
+  if (level === "ok") return "text-success";
+  if (level === "warn") return "text-amber-700 dark:text-amber-400";
+  if (level === "down") return "text-error";
+  return "text-muted-foreground";
+}
+
+function sourceDisplayName(name: string) {
+  if (String(name || "").toLowerCase() === "teletex-http") return "Teletex";
+  return name || "Fonte";
+}
+
+function formatClock(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function nextExpectedLabel(intervalSeconds: number) {
+  const minutes = Math.max(1, Math.round(Math.max(1, intervalSeconds) / 60));
+  return `~${minutes} min`;
+}
+
+function recoveryLabel(level: HealthLevel, failureCount: number | null | undefined) {
+  const failures = Number.isFinite(failureCount) ? Math.max(0, Number(failureCount)) : 0;
+  if (level === "down" || failures >= 3) return "Manual";
+  if (level === "warn") return "Automático depois";
+  return "Automático";
+}
 
 export default function SettingsPage() {
-  const readOnlyMode = isReadOnlyMode;
-  const hideSensitiveColumns = isReadOnlyMode;
   const [theme, setTheme] = useState<Theme>(getStoredTheme());
-  const [interval, setInterval] = useState<number>(getStoredRefreshInterval());
-  const [saving, setSaving] = useState(false);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [dataSource, setDataSource] = useState<OneViewDataSourceKind | null>(null);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
-  const [loadingSources, setLoadingSources] = useState(false);
-  const [runningAction, setRunningAction] = useState<string | null>(null);
+  const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
+  const [operations, setOperations] = useState<OperationsHealthResponse | null>(null);
+  const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
+  const [loading, setLoading] = useState(false);
+  const loadRequestRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key === "oneview_theme") setTheme(getStoredTheme());
-      if (event.key === "oneview_refresh_interval") setInterval(getStoredRefreshInterval());
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  const loadDataSources = useCallback(async () => {
-    setLoadingSources(true);
-    try {
-      const response = await fetchDataSourcesWithMeta();
-      setDataSources(response.items);
-      setDataSource(response.data_source ?? null);
-      setCheckedAt(response.checked_at ?? null);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao carregar fontes de dados");
-    } finally {
-      setLoadingSources(false);
-    }
+  const loadPage = useCallback(() => {
+    if (loadRequestRef.current) return loadRequestRef.current;
+    setLoading(true);
+    const request = (async () => {
+      const results = await Promise.allSettled([
+        fetchDataSourcesWithMeta(),
+        fetchOneViewHealth(),
+        fetchOperationsHealth(),
+        fetchSyncLogs(20),
+      ]);
+      const [sourcesResult, healthResult, operationsResult, syncResult] = results;
+
+      if (sourcesResult.status === "fulfilled") {
+        setDataSources(sourcesResult.value.items);
+        setDataSource(sourcesResult.value.data_source ?? null);
+        setCheckedAt(sourcesResult.value.checked_at ?? null);
+      } else {
+        toast.error(sourcesResult.reason instanceof Error
+          ? sourcesResult.reason.message
+          : "Erro ao carregar fontes de dados");
+      }
+
+      if (healthResult.status === "fulfilled") setHealth(healthResult.value);
+      if (operationsResult.status === "fulfilled") setOperations(operationsResult.value);
+      if (syncResult.status === "fulfilled") setSyncLogs(syncResult.value.items);
+    })().finally(() => {
+      setLoading(false);
+      loadRequestRef.current = null;
+    });
+    loadRequestRef.current = request;
+    return request;
   }, []);
 
   const applyTheme = (nextTheme: Theme) => {
@@ -69,161 +144,190 @@ export default function SettingsPage() {
     setTheme(nextTheme);
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      setStoredRefreshInterval(interval);
-    } finally {
-      setSaving(false);
-    }
-  };
+  const healthSnapshot = useMemo(
+    () => buildPlatformHealthSnapshot({
+      health,
+      operations,
+      dataSources,
+      syncLogs,
+    }),
+    [health, operations, dataSources, syncLogs],
+  );
 
-  const handleRequestSync = async (source: DataSource) => {
-    setRunningAction(`sync:${source.id}`);
-    try {
-      const result = await requestDataSourceSync(source.id);
-      toast.success(`${source.name}: solicitação enfileirada (${result.outbox_id})`);
-      await loadDataSources();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Erro ao solicitar sincronização");
-    } finally {
-      setRunningAction(null);
-    }
-  };
+  const teletexOps = findTeletexSource(operations?.items);
+  const teletexDs = findTeletexSource(dataSources);
+  const intervalSeconds = resolveSyncIntervalSeconds(
+    teletexOps?.sync_interval_seconds,
+    teletexDs?.sync_interval_seconds,
+    DEFAULT_SYNC_INTERVAL_SECONDS,
+  );
+  const failureCount = teletexOps?.failure_count ?? teletexDs?.failure_count ?? null;
+  const teletexLevel = healthSnapshot.items.find((item) => item.key === "teletex")?.level ?? "unknown";
 
   return (
     <AppLayout
       title="Configurações"
-      description="Ajustes do painel e integrações"
-      onRefresh={loadDataSources}
-      refreshInterval={60}
+      description="Tema, saúde da automação e fontes de dados"
+      onRefresh={loadPage}
+      refreshInterval={SETTINGS_REFRESH_SECONDS}
       showRefreshMeta={false}
       showHealthStrip={false}
       dataSource={dataSource}
       checkedAt={checkedAt}
     >
-      <div className="space-y-6">
-        <Card className="p-6">
-          <h2 className="mb-3 text-lg font-semibold">Tema</h2>
-          <p className="mb-3 text-sm text-muted-foreground">Escolha o tema do painel</p>
-          <div className="flex items-center gap-3">
+      <div className="space-y-6 text-foreground">
+        <Card className="border-border bg-card p-6 text-card-foreground">
+          <h2 className="mb-3 text-lg font-semibold text-foreground">Tema</h2>
+          <p className="mb-3 text-sm text-muted-foreground">Claro / Escuro</p>
+          <div className="flex items-center gap-3" role="group" aria-label="Tema do painel">
             <button
+              type="button"
               onClick={() => applyTheme("light")}
-              className={`rounded px-3 py-1 ${theme === "light" ? "bg-primary text-white" : "bg-gray-100"}`}
+              aria-pressed={theme === "light"}
+              className={cn(
+                THEME_TOGGLE_BASE,
+                theme === "light"
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              )}
             >
               Claro
             </button>
             <button
+              type="button"
               onClick={() => applyTheme("dark")}
-              className={`rounded px-3 py-1 ${theme === "dark" ? "bg-primary text-white" : "bg-gray-100"}`}
+              aria-pressed={theme === "dark"}
+              className={cn(
+                THEME_TOGGLE_BASE,
+                theme === "dark"
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              )}
             >
               Escuro
             </button>
           </div>
         </Card>
 
-        <Card className="p-6">
-          <h2 className="mb-3 text-lg font-semibold">Atualização automática</h2>
-          <p className="mb-3 text-sm text-muted-foreground">Intervalo em segundos para atualização automática (mínimo de 5 segundos)</p>
-          <div className="flex items-center gap-3">
-            <Input
-              type="number"
-              min={5}
-              value={String(interval)}
-              onChange={(event) => setInterval(Math.max(5, Number(event.target.value || 5)))}
-              className="w-32"
-            />
-            <Button onClick={handleSave} disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Button>
-          </div>
-        </Card>
-
-        <Card className="p-6">
+        <Card className="border-border bg-card p-6 text-card-foreground" aria-label="Saúde da automação">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">Fontes de dados Zabbix</h2>
+              <h2 className="text-lg font-semibold text-foreground">Saúde da automação</h2>
               <p className="text-sm text-muted-foreground">
-                {readOnlyMode
-                  ? "Fontes de dados carregadas em modo leitura. A interface não executa sync, ACK ou ações operacionais."
-                  : "Solicitações manuais entram na fila. A sincronização é executada pelo serviço dedicado."}
+                Estado do banco, worker e fonte Teletex. A sincronização é feita pelo worker.
               </p>
             </div>
-            <Button variant="outline" onClick={() => void loadDataSources()} disabled={loadingSources}>
-              {loadingSources ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Atualizando...</> : "Atualizar lista"}
+            <Button variant="outline" onClick={() => void loadPage()} disabled={loading}>
+              {loading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Atualizando...
+                </>
+              ) : (
+                "Atualizar"
+              )}
             </Button>
           </div>
 
-          {readOnlyMode ? (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              {ONEVIEW_READ_ONLY_MESSAGE}
+          <dl className="grid gap-3 sm:grid-cols-2">
+            {healthSnapshot.items.map((item) => (
+              <div
+                key={item.key}
+                className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2"
+              >
+                <dt className="text-sm text-muted-foreground">{item.name}</dt>
+                <dd className={cn("text-sm font-medium", healthToneClass(item.level))}>
+                  {settingsHealthLabel(item.level)}
+                  <span className="sr-only"> ({platformStatusLabel(item.level)})</span>
+                </dd>
+              </div>
+            ))}
+            <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+              <dt className="text-sm text-muted-foreground">Último sync</dt>
+              <dd className="text-sm font-medium tabular-nums text-foreground" title={formatPtBrDateTime(healthSnapshot.lastSyncAt) || undefined}>
+                {formatClock(healthSnapshot.lastSyncAt)}
+              </dd>
             </div>
-          ) : null}
+            <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+              <dt className="text-sm text-muted-foreground">Próximo esperado</dt>
+              <dd className="text-sm font-medium tabular-nums text-foreground">{nextExpectedLabel(intervalSeconds)}</dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+              <dt className="text-sm text-muted-foreground">Falhas seguidas</dt>
+              <dd className="text-sm font-medium tabular-nums text-foreground">
+                {failureCount == null ? "—" : failureCount}
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+              <dt className="text-sm text-muted-foreground">Recovery</dt>
+              <dd className="text-sm font-medium text-foreground">{recoveryLabel(teletexLevel, failureCount)}</dd>
+            </div>
+          </dl>
+        </Card>
 
-          {loadingSources ? (
+        <Card className="border-border bg-card p-6 text-card-foreground">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-foreground">Fontes de dados</h2>
+            <p className="text-sm text-muted-foreground">
+              Status e última sincronização bem-sucedida. Sem ações manuais de sync nesta tela.
+            </p>
+          </div>
+
+          {loading && dataSources.length === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 inline-block h-4 w-4 animate-spin" />
               Carregando fontes de dados...
             </div>
           ) : dataSources.length === 0 ? (
-            <div className="rounded-lg border border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
               Nenhuma fonte de dados disponível na resposta atual.
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className={hideSensitiveColumns ? "w-full min-w-[1050px] text-sm" : "w-full min-w-[1180px] text-sm"}>
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full min-w-[720px] text-sm text-foreground">
                 <thead>
-                  <tr className="border-b border-border/70 text-left text-xs uppercase text-muted-foreground">
-                    <th className="py-3 pr-3">Fonte de dados</th>
-                    <th className="py-3 pr-3">Status</th>
-                    <th className="py-3 pr-3">Sincronização habilitada</th>
-                    {!hideSensitiveColumns ? <th className="py-3 pr-3">URL da API</th> : null}
-                    {!hideSensitiveColumns ? <th className="py-3 pr-3">Token configurado</th> : null}
-                    <th className="py-3 pr-3">Última sincronização</th>
-                    <th className="py-3 pr-3">Alertas / Pendência</th>
-                    <th className="py-3 text-right">Ações</th>
+                  <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
+                    <th className="px-3 py-3">Fonte</th>
+                    <th className="px-3 py-3">Status</th>
+                    <th className="px-3 py-3">Sincronização habilitada</th>
+                    <th className="px-3 py-3">Último sucesso</th>
+                    <th className="px-3 py-3">Alertas ativos</th>
+                    <th className="px-3 py-3">Falhas</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dataSources.map((source) => (
-                    <tr key={source.id} className="border-b border-border/40 last:border-none">
-                      <td className="py-3 pr-3">
+                    <tr
+                      key={source.id}
+                      className="border-b border-border last:border-none hover:bg-muted/30"
+                    >
+                      <td className="px-3 py-3">
                         <div className="flex flex-col">
-                          <span className="font-medium">{source.name}</span>
-                          <span className="font-mono text-xs text-muted-foreground">{source.id}</span>
+                          <span className="font-medium text-foreground">{sourceDisplayName(source.name)}</span>
+                          <span className="font-mono text-xs text-muted-foreground">{source.name}</span>
                         </div>
                       </td>
-                      <td className="py-3 pr-3">
-                        <span className={`rounded px-2 py-1 text-xs font-medium ${
-                          source.status === "active"
-                            ? "bg-green-50 text-green-700"
-                            : source.status === "error"
-                              ? "bg-red-50 text-red-700"
-                              : "bg-muted text-muted-foreground"
-                        }`}>
+                      <td className="px-3 py-3">
+                        <span
+                          className={cn(
+                            "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                            sourceStatusClass(source.status),
+                          )}
+                        >
                           {sourceStatusLabel[source.status]}
                         </span>
                       </td>
-                      <td className="py-3 pr-3 text-xs">{source.sync_enabled ? "Sim" : "Não"}</td>
-                      {!hideSensitiveColumns ? <td className="max-w-[300px] break-all py-3 pr-3 font-mono text-xs">{source.api_url}</td> : null}
-                      {!hideSensitiveColumns ? <td className="py-3 pr-3 text-xs">{source.has_token === undefined ? "-" : source.has_token ? "Sim" : "Não"}</td> : null}
-                      <td className="py-3 pr-3">
-                        <div className="flex flex-col">
-                          <span className={source.last_sync_status === "success" ? "font-medium text-success" : "font-medium text-error"}>{source.last_sync_status ? syncStatusLabel[source.last_sync_status] ?? source.last_sync_status : "-"}</span>
-                          <span className="text-xs text-muted-foreground">{source.last_sync_at ? new Date(source.last_sync_at).toLocaleString("pt-BR") : "-"}</span>
-                        </div>
+                      <td className="px-3 py-3 text-xs text-foreground">{source.sync_enabled ? "Sim" : "Não"}</td>
+                      <td className="px-3 py-3 text-xs text-foreground">
+                        {source.last_success_at || source.last_sync_at
+                          ? formatPtBrDateTime(source.last_success_at || source.last_sync_at)
+                          : "—"}
                       </td>
-                      <td className="max-w-[330px] py-3 pr-3">
-                        <div className="flex flex-col gap-1">
-                          <span className="font-medium">{source.alerts_count ?? "-"} alertas</span>
-                          <span className="text-xs text-muted-foreground">{source.pending_reason ?? source.last_error ?? source.last_sync_error ?? "Sem pendências"}</span>
-                        </div>
+                      <td className="px-3 py-3 font-medium tabular-nums text-foreground">
+                        {source.alerts_count ?? "—"}
                       </td>
-                      <td className="py-3">
-                        <div className="flex justify-end gap-2">
-                          <Button size="sm" onClick={() => void handleRequestSync(source)} disabled={readOnlyMode || runningAction !== null || source.status !== "active" || !source.sync_enabled} title={readOnlyMode ? ONEVIEW_READ_ONLY_MESSAGE : "Enfileirar sincronização"}>
-                            {runningAction === `sync:${source.id}` ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                            Solicitar sincronização
-                          </Button>
-                        </div>
+                      <td className="px-3 py-3 tabular-nums text-foreground">
+                        {Number.isFinite(source.failure_count) ? source.failure_count : "—"}
                       </td>
                     </tr>
                   ))}

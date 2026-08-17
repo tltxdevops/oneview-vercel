@@ -30,8 +30,12 @@ test("OV-P0-61B Histórico Alertas: ClientIdentity consome scope label", async (
   assert.match(alertsSection, /operationalScopeLabel=\{historyEventClientLabel/);
   assert.match(alertsSection, /operational_scope_label: alert\.operational_scope_label/);
 
-  // Drawer do Histórico também.
-  assert.match(historico, /operationalScopeLabel=\{historyEventClientLabel\(\{[\s\S]*?detail\.operational_scope/);
+  // Drawer unificado (OV-P0-80+): escopo via operationalClientLabel no AlertDetailDrawer.
+  assert.match(historico, /AlertDetailDrawer/);
+  assert.match(historico, /defaultTab="history"/);
+  const drawer = await read("src/components/oneview/AlertDetailDrawer.tsx");
+  assert.match(drawer, /operationalClientLabel/);
+  assert.match(drawer, /operational_scope_label: alert\.operational_scope_label/);
 
   // ClientIdentity consome scope label só sem customer real (HOTFIX-P0-CLIENT-LABEL).
   assert.match(identity, /hasRealCustomer/);

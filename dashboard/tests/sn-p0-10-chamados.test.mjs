@@ -58,8 +58,9 @@ test("SN-P0-10 Chamados: drawer completo + alerta + ServiceNow", async () => {
   assert.match(chamados, /ServiceNowDevLink/);
   assert.match(chamados, /servicenow_url/);
   const link = await read("src/components/oneview/ServiceNowDevLink.tsx");
-  assert.match(link, /Abrir no ServiceNow DEV/);
-  assert.match(link, /Requer acesso ao ServiceNow DEV/);
+  assert.match(link, /Abrir no ServiceNow/);
+  assert.match(link, /Requer acesso ao ServiceNow/);
+  assert.doesNotMatch(link, /ServiceNow DEV/);
 });
 
 test("SN-P0-10 Chamados: erro != lista vazia e sem NaN/undefined", async () => {
