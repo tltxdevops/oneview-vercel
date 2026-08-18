@@ -403,11 +403,11 @@ test("Home filtra eventos técnicos e preserva dados no refresh parcial", async 
   assert.match(index, /Tentar novamente/);
 });
 
-test("página de chamados lista incidents ServiceNow read-only", async () => {
-  const [chamados, api, features, app, index, sidebar] = await Promise.all([
+test("página de chamados lista incidents do BFF read-only", async () => {
+  const [chamados, api, incidentsBff, app, index, sidebar] = await Promise.all([
     read("src/pages/Chamados.tsx"),
     read("src/lib/oneview-api.ts"),
-    read("src/lib/servicenow-features.ts"),
+    read("api/_lib/oneview-incidents.js"),
     read("src/App.tsx"),
     read("src/pages/Index.tsx"),
     read("src/components/layout/Sidebar.tsx"),
@@ -464,8 +464,8 @@ test("página de chamados lista incidents ServiceNow read-only", async () => {
   assert.match(api, /\/oneview\/incidents/);
   assert.match(api, /\/oneview\/incidents\/related-alert/);
   assert.match(api, /servicenow/);
-  assert.match(features, /VITE_SERVICENOW_INCIDENTS_ENABLED/);
-  assert.match(sidebar, /isServiceNowIncidentsUiEnabled/);
+  assert.match(incidentsBff, /SERVICENOW_INCIDENTS_ENABLED/);
+  assert.doesNotMatch(`${index}\n${sidebar}`, /isServiceNowIncidentsUiEnabled|VITE_SERVICENOW_INCIDENTS_ENABLED/);
   assert.match(sidebar, /href: "\/chamados"/);
 
   assert.match(app, /path="\/chamados"/);
@@ -486,15 +486,12 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
   const sidebarHrefs = [...sidebar.matchAll(/href: "([^"]+)"/g)].map((match) => match[1]);
   const appRoutes = new Set([...app.matchAll(/path="([^"]+)"/g)].map((match) => match[1]));
 
-  assert.ok(sidebar.includes("isServiceNowIncidentsUiEnabled"), "Sidebar deve proteger Chamados com feature flag");
-  assert.ok(sidebar.includes('href: "/chamados"'), "Sidebar deve declarar /chamados atrás da flag");
-  assert.ok(
-    sidebar.includes("baseNavigation") || sidebar.includes("chamadosNavItem"),
-    "Sidebar deve montar navegação base + Chamados condicional",
-  );
+  assert.ok(!sidebar.includes("isServiceNowIncidentsUiEnabled"), "Sidebar não deve depender de feature flag build-time");
+  assert.ok(sidebar.includes('href: "/chamados"'), "Sidebar deve declarar /chamados");
+  assert.ok(sidebar.includes("baseNavigation"), "Sidebar deve montar navegação operacional estática");
 
-  // Hrefs estáticos da navegação base (Chamados é condicional via flag).
-  for (const preserved of ["/", "/monitoramento", "/alertas", "/historico"]) {
+  // Hrefs estáticos da navegação operacional.
+  for (const preserved of ["/", "/monitoramento", "/alertas", "/historico", "/chamados"]) {
     assert.ok(sidebar.includes(`href: "${preserved}"`), `Sidebar deve preservar ${preserved}`);
     assert.ok(appRoutes.has(preserved), `App deve preservar ${preserved}`);
   }
@@ -524,8 +521,8 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
     assert.doesNotMatch(page, /^(Kpis|KPIs|Relatorios)\.tsx$/i);
   }
 
-  // ServiceNow/Chamados: rota pronta, Sidebar somente com feature flag (SN-P0-07).
-  assert.match(sidebar, /isServiceNowIncidentsUiEnabled/);
+  // ServiceNow/Chamados: rota e Sidebar sempre disponíveis; BFF controla runtime.
+  assert.doesNotMatch(sidebar, /isServiceNowIncidentsUiEnabled|VITE_SERVICENOW_INCIDENTS_ENABLED/);
   assert.match(sidebar, /secondary:\s*"ServiceNow"|href: "\/chamados"/);
   assert.doesNotMatch(sidebar, /ServiceNow DEV/);
   assert.doesNotMatch(index, /A integração com o ServiceNow está em preparação\.|Abrir área de chamados/);
@@ -631,7 +628,8 @@ test("OV-P0-19/38 Monitoramento NOC com Sidebar real, sem scroll e com janela re
   assert.match(monitoring, /ClientIdentity|canonicalClientName|facetCustomerDisplayName|Cliente/);
   assert.match(monitoring, /formatOneViewSeverityLabel/);
   assert.match(monitoring, /buildMonitoringAlertHref|\/alertas\?alert=/);
-  assert.match(monitoring, /isServiceNowIncidentsUiEnabled|ServiceNowDevLink/);
+  assert.match(monitoring, /fetchMonitoringUnassignedIncidents/);
+  assert.doesNotMatch(monitoring, /isServiceNowIncidentsUiEnabled|VITE_SERVICENOW_INCIDENTS_ENABLED/);
   assert.doesNotMatch(monitoring, /Integração ServiceNow em preparação/);
   assert.doesNotMatch(monitoring, /PgBouncer/i);
   assert.doesNotMatch(monitoring, /ranking de clientes|by_client|clientes mais/i);
@@ -895,7 +893,7 @@ test("tabela reserva espaço para ACK e ações; sidebar sem toggle de tema", as
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(alerts, /Reconhecido por \$\{ack\.actorLabel\}/);
   assert.doesNotMatch(alerts, /Integração ServiceNow em preparação/);
-  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /isServiceNowIncidentsUiEnabled/);
+  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
   assert.doesNotMatch(alerts, /sortableHeader\("Cliente", "client"\)|sortableHeader\("Fonte", "datasource"\)/);
   assert.doesNotMatch(alerts, />OneView<\/span>|Não tratado/);
   assert.doesNotMatch(alerts, /CustomerLogo customer=\{\{ key: alert\.customer_key/);
@@ -1097,7 +1095,7 @@ test("fila operacional /alertas cobre contrato OV-P0-07", async () => {
   assert.match(alerts, /ack\.at \? <p[\s\S]*formatDateTime\(ack\.at\)/);
   assert.doesNotMatch(alerts, /RITM\d+|SLA vencido|Sem chamado/);
   assert.doesNotMatch(alerts, /Integração ServiceNow em preparação/);
-  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /isServiceNowIncidentsUiEnabled/);
+  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
   assert.match(alerts, />Chamado</);
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
@@ -1376,7 +1374,7 @@ test("drawer operacional ACK e comentário Zabbix (OV-P0-09)", async () => {
   assert.match(summary, /aria-label="Resumo operacional"/);
   assert.match(summary, /aria-label="Problema"/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /aria-label="Grupos e tags"|host_groups/);
-  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection|isServiceNowIncidentsUiEnabled/);
+  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /Fonte Zabbix/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /Event ID/);
 
@@ -1403,7 +1401,7 @@ test("drawer operacional ACK e comentário Zabbix (OV-P0-09)", async () => {
   assert.match(alerts, /results\[1\]\.status === "fulfilled"/);
 
   assert.doesNotMatch(alerts, /Integração ServiceNow em preparação/);
-  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /isServiceNowIncidentsUiEnabled/);
+  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
   assert.doesNotMatch(alerts, /Frescor|aria-label="Frescor"/);
 });
 

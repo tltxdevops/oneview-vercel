@@ -54,7 +54,8 @@ test("OV-P0-75 Monitoring layout: 72/28 a partir de 1440; empilha em 1366; sem c
   assert.match(monitoring, /Ver todos em Chamados|Ver todos/);
   assert.match(monitoring, /MonitorUnassignedRow/);
   assert.match(monitoring, /sys_updated_on|formatUpdatedAgo/);
-  assert.match(monitoring, /isServiceNowIncidentsUiEnabled/);
+  assert.match(monitoring, /fetchMonitoringUnassignedIncidents/);
+  assert.doesNotMatch(monitoring, /isServiceNowIncidentsUiEnabled|VITE_SERVICENOW_INCIDENTS_ENABLED/);
   // OV-P0-82: faixa de hosts removida do rodapé.
   assert.doesNotMatch(monitoring, /Hosts mais impactados/);
 

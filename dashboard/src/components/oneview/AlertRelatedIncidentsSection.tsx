@@ -19,7 +19,6 @@ import {
   extractServiceNowIncidentNumbersFromHistory,
   extractServiceNowRefsFromAlertTags,
 } from "@/lib/oneview-inc-correlation";
-import { isServiceNowIncidentsUiEnabled } from "@/lib/servicenow-features";
 
 /** Severidades automaticamente elegíveis a incidente (SN-P0-20/21). */
 export const INCIDENT_ELIGIBLE_SEVERITIES = Object.freeze([
@@ -195,7 +194,6 @@ export function AlertRelatedIncidentsSection({
   historyItems = [],
   alert = null,
 }: AlertRelatedIncidentsSectionProps) {
-  const enabled = isServiceNowIncidentsUiEnabled();
   const eligible = isIncidentEligibleSeverity(severity);
   const [loading, setLoading] = useState(false);
   const [checked, setChecked] = useState(false);
@@ -225,16 +223,6 @@ export function AlertRelatedIncidentsSection({
   ].join("|");
 
   useEffect(() => {
-    if (!enabled) {
-      setLoading(false);
-      setChecked(false);
-      setIncidents([]);
-      setRelationSource(null);
-      setError(null);
-      requestKeyRef.current = "";
-      return;
-    }
-
     const eventId = String(sourceEventId || "").trim();
     if (!eventId && !tagRefs.sysIds.length && !tagRefs.numbers.length && !historyNumbers.length) {
       setLoading(false);
@@ -284,7 +272,7 @@ export function AlertRelatedIncidentsSection({
       });
 
     return () => controller.abort();
-  }, [enabled, sourceEventId, correlationKey, tagRefs.sysIds, tagRefs.numbers, historyNumbers]);
+  }, [sourceEventId, correlationKey, tagRefs.sysIds, tagRefs.numbers, historyNumbers]);
 
   const projected = alert?.servicenow_reference
     && (alert.servicenow_reference.number || alert.servicenow_reference.sys_id)
@@ -295,8 +283,7 @@ export function AlertRelatedIncidentsSection({
   const showEmptyEligible = checked && !hasIncidents && !error && eligible && !loading && !projected;
   const hideNonEligibleEmpty = checked && !hasIncidents && !error && !eligible && !loading && !projected;
 
-  if (!enabled && !projected) return null;
-  if (enabled && hideNonEligibleEmpty) return null;
+  if (hideNonEligibleEmpty) return null;
 
   const sourceLabel = relationSourceLabel(relationSource);
 
@@ -323,7 +310,7 @@ export function AlertRelatedIncidentsSection({
           {loading ? <p className="text-[11px] text-muted-foreground">Atualizando…</p> : null}
         </div>
       ) : projected ? (
-        <ProjectedIncidentCard reference={projected} loadingDetails={Boolean(enabled && loading)} />
+        <ProjectedIncidentCard reference={projected} loadingDetails={loading} />
       ) : error ? (
         <p className="text-sm text-muted-foreground">{error}</p>
       ) : loading ? (

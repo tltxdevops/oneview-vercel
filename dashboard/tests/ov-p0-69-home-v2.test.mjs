@@ -98,8 +98,8 @@ test("OV-P0-69 Home layout: Alertas|Chamados|Eventos; drawer/?alert=; sem Client
   assert.match(index, /buildHomeUnassignedChamadosHref|unassigned=true/);
   assert.match(index, /ClientFilterCombobox/);
   assert.match(index, /HOME_SEVERITY_FILTER_OPTIONS|Filtrar por severidade/);
-  assert.match(index, /isServiceNowIncidentsUiEnabled/);
-  assert.match(index, /não estão habilitados|ServiceNow desabilitado/);
+  assert.doesNotMatch(index, /isServiceNowIncidentsUiEnabled|VITE_SERVICENOW_INCIDENTS_ENABLED/);
+  assert.doesNotMatch(index, /não estão habilitados|ServiceNow desabilitado/);
   assert.match(index, /ServiceNow indisponível/);
   assert.match(index, /HOME_OPERATIONAL_WINDOW_OPTIONS/);
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);

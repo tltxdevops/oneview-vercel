@@ -277,7 +277,7 @@ export function AlertDetailDrawer({
                     </dl>
                   </section>
 
-                  {/* isServiceNowIncidentsUiEnabled: fetch SN só no bloco Chamado relacionado. */}
+                  {/* Detalhe correlacionado consultado somente pelo BFF no bloco Chamado relacionado. */}
                   <AlertRelatedIncidentsSection
                     sourceEventId={alert.source_event_id}
                     severity={alert.severity}

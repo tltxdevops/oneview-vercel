@@ -90,7 +90,6 @@ import {
   fetchRecentOperationalMetrics,
   queueOverflowLabel,
 } from "@/lib/oneview-recent";
-import { isServiceNowIncidentsUiEnabled } from "@/lib/servicenow-features";
 
 const REFRESH_MS = 30_000;
 
@@ -439,7 +438,6 @@ function MonitorAlertRow({
 }
 
 export default function MonitoringPage() {
-  const snIncidentsEnabled = isServiceNowIncidentsUiEnabled();
   const [searchParams, setSearchParams] = useSearchParams();
   const tvMode = searchParams.get("tv") === "1";
   const homeWindow = parseMonitorWindow(searchParams.get("window"));
@@ -695,13 +693,11 @@ export default function MonitoringPage() {
           signal: controller.signal,
           now,
         }),
-      ];
-      if (snIncidentsEnabled) {
-        tasks.push(fetchMonitoringUnassignedIncidents({
+        fetchMonitoringUnassignedIncidents({
           limit: MONITOR_UNASSIGNED_LIMIT,
           signal: controller.signal,
-        }));
-      }
+        }),
+      ];
 
       const results = await Promise.allSettled(tasks);
 
@@ -739,22 +735,16 @@ export default function MonitoringPage() {
         );
       }
 
-      if (snIncidentsEnabled) {
-        if (incidentsResult?.status === "fulfilled") {
-          const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchMonitoringUnassignedIncidents>>;
-          setUnassignedIncidents(payload.items ?? []);
-          setUnassignedTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
-          setSectionError("incidents", null);
-          anySuccess = true;
-        } else if (isInitial && !hasDataRef.current) {
-          setSectionError("incidents", "Chamados indisponíveis");
-        } else {
-          setSectionError("incidents", "Falha ao atualizar chamados. Valores anteriores mantidos.");
-        }
-      } else {
-        setUnassignedIncidents([]);
-        setUnassignedTotal(0);
+      if (incidentsResult?.status === "fulfilled") {
+        const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchMonitoringUnassignedIncidents>>;
+        setUnassignedIncidents(payload.items ?? []);
+        setUnassignedTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
         setSectionError("incidents", null);
+        anySuccess = true;
+      } else if (isInitial && !hasDataRef.current) {
+        setSectionError("incidents", "Chamados indisponíveis");
+      } else {
+        setSectionError("incidents", "Falha ao atualizar chamados. Valores anteriores mantidos.");
       }
 
       if (anySuccess) {
@@ -768,7 +758,7 @@ export default function MonitoringPage() {
 
     inFlight.current = request;
     return request;
-  }, [alertMode, queueSort, selectedCustomerKeys, setSectionError, severitySelection, snIncidentsEnabled, windowMs]);
+  }, [alertMode, queueSort, selectedCustomerKeys, setSectionError, severitySelection, windowMs]);
 
   useEffect(() => {
     void refreshAll();

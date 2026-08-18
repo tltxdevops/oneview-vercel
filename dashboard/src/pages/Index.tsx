@@ -76,7 +76,6 @@ import {
   fetchRecentOperationalMetrics,
   queueOverflowLabel,
 } from "@/lib/oneview-recent";
-import { isServiceNowIncidentsUiEnabled } from "@/lib/servicenow-features";
 import { toast } from "sonner";
 
 const SUMMARY_REFRESH_MS = 30_000;
@@ -187,6 +186,13 @@ function displayIncidentField(value?: string | null, fallback?: string | null) {
   const secondary = String(fallback || "").trim();
   if (secondary && secondary !== "undefined" && secondary !== "null") return secondary;
   return "—";
+}
+
+function incidentLoadErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message === "Sua sessão expirou. Entre novamente.") {
+    return error.message;
+  }
+  return "Chamados indisponíveis";
 }
 
 /** OV-P0-73 / OV-P0-78 — classes compartilhadas dos painéis Home. */
@@ -339,7 +345,6 @@ function HomeIncidentRow({ item }: { item: OneViewIncident }) {
 }
 
 export default function Index() {
-  const snIncidentsEnabled = isServiceNowIncidentsUiEnabled();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedAlertId = searchParams.get("alert");
   const homeWindow = parseHomeOperationalWindow(searchParams.get("window"));
@@ -540,13 +545,11 @@ export default function Index() {
           now,
           windowMs,
         }),
-      ];
-      if (snIncidentsEnabled) {
-        tasks.push(fetchHomeIncidents({
+        fetchHomeIncidents({
           pageSize: HOME_INCIDENTS_PAGE_SIZE,
           signal: controller.signal,
-        }));
-      }
+        }),
+      ];
 
       const results = await Promise.allSettled(tasks);
       if (controller.signal.aborted || requestId !== listsRequestIdRef.current) return;
@@ -587,24 +590,18 @@ export default function Index() {
         setSectionError("events", "Falha ao atualizar eventos. Os valores anteriores foram mantidos.");
       }
 
-      if (snIncidentsEnabled) {
-        if (incidentsResult?.status === "fulfilled") {
-          const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchHomeIncidents>>;
-          setIncidents(payload.items ?? []);
-          setIncidentsTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
-          setSectionError("incidents", null);
-          anySuccess = true;
-        } else if (isInitial && !hasListsRef.current) {
-          setIncidents([]);
-          setIncidentsTotal(0);
-          setSectionError("incidents", "ServiceNow indisponível");
-        } else {
-          setSectionError("incidents", "ServiceNow indisponível");
-        }
-      } else {
+      if (incidentsResult?.status === "fulfilled") {
+        const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchHomeIncidents>>;
+        setIncidents(payload.items ?? []);
+        setIncidentsTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
+        setSectionError("incidents", null);
+        anySuccess = true;
+      } else if (isInitial && !hasListsRef.current) {
         setIncidents([]);
         setIncidentsTotal(0);
-        setSectionError("incidents", null);
+        setSectionError("incidents", incidentLoadErrorMessage(incidentsResult?.reason));
+      } else {
+        setSectionError("incidents", incidentLoadErrorMessage(incidentsResult?.reason));
       }
 
       if (anySuccess) hasListsRef.current = true;
@@ -623,7 +620,6 @@ export default function Index() {
     selectedCustomerKeys,
     setSectionError,
     severityFilter,
-    snIncidentsEnabled,
     windowMs,
   ]);
 
@@ -895,48 +891,40 @@ export default function Index() {
           <SectionPanel
             className="flex min-h-0 flex-col overflow-hidden lg:col-span-2"
             title="Chamados sem responsável"
-            aside={snIncidentsEnabled ? (
+            aside={(
               <div className={HOME_PANEL_HEADER_ASIDE}>
                 <HomePanelCount value={incidentsTotal} />
                 <OperationalCta to={buildHomeUnassignedChamadosHref()}>Ver todos</OperationalCta>
               </div>
-            ) : null}
+            )}
             bodyClassName="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-0"
           >
-            {!snIncidentsEnabled ? (
-              <p className="flex flex-1 items-center justify-center py-6 text-center text-xs text-muted-foreground">
-                Chamados ServiceNow não estão habilitados neste ambiente.
+            <div className={cn(HOME_INCIDENT_COLS, "border-b border-border/60 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground")}>
+              <span>Número</span>
+              <span>Cliente</span>
+              <span>Estado</span>
+              <span>Prioridade</span>
+              <span>Responsável</span>
+            </div>
+            <div className="min-h-0 flex-1">
+              <SectionState
+                loading={isListsLoading && !incidents.length && !sectionErrors.incidents}
+                error={sectionErrors.incidents ?? null}
+                empty={!incidents.length}
+                emptyMessage="Nenhum chamado monitoring sem responsável."
+                emptyClassName="flex h-full min-h-[7rem] items-center justify-center"
+                onRetry={() => void loadLists("manual")}
+              >
+                {incidents.map((item) => (
+                  <HomeIncidentRow key={item.sys_id || item.number || String(item.opened_at)} item={item} />
+                ))}
+              </SectionState>
+            </div>
+            {queueOverflowLabel(incidentsTotal, incidents.length) ? (
+              <p className="border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">
+                {queueOverflowLabel(incidentsTotal, incidents.length)}
               </p>
-            ) : (
-              <>
-                <div className={cn(HOME_INCIDENT_COLS, "border-b border-border/60 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground")}>
-                  <span>Número</span>
-                  <span>Cliente</span>
-                  <span>Estado</span>
-                  <span>Prioridade</span>
-                  <span>Responsável</span>
-                </div>
-                <div className="min-h-0 flex-1">
-                  <SectionState
-                    loading={isListsLoading && !incidents.length && !sectionErrors.incidents}
-                    error={sectionErrors.incidents ?? null}
-                    empty={!incidents.length}
-                    emptyMessage="Nenhum chamado monitoring sem responsável."
-                    emptyClassName="flex h-full min-h-[7rem] items-center justify-center"
-                    onRetry={() => void loadLists("manual")}
-                  >
-                    {incidents.map((item) => (
-                      <HomeIncidentRow key={item.sys_id || item.number || String(item.opened_at)} item={item} />
-                    ))}
-                  </SectionState>
-                </div>
-                {queueOverflowLabel(incidentsTotal, incidents.length) ? (
-                  <p className="border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">
-                    {queueOverflowLabel(incidentsTotal, incidents.length)}
-                  </p>
-                ) : null}
-              </>
-            )}
+            ) : null}
           </SectionPanel>
         </div>
 
