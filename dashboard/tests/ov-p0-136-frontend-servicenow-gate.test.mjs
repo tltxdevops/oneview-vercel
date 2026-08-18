@@ -15,7 +15,7 @@ test("OV-P0-136 Chamados não depende de flag Vite e BFF preserva kill-switch ru
   ]);
 
   const frontend = [index, sidebar, monitoring, relatedIncidents].join("\n");
-  assert.doesNotMatch(frontend, /isServiceNowIncidentsUiEnabled|import\.meta\.env\.VITE_SERVICENOW_INCIDENTS_ENABLED/);
+  assert.doesNotMatch(frontend, /isServiceNowIncidentsUiEnabled|snIncidentsEnabled|import\.meta\.env\.VITE_SERVICENOW_INCIDENTS_ENABLED/);
   assert.doesNotMatch(index, /Chamados ServiceNow não estão habilitados neste ambiente\./);
   assert.match(index, /fetchHomeIncidents/);
   assert.match(index, /incidentLoadErrorMessage\(incidentsResult\?\.reason\)/);

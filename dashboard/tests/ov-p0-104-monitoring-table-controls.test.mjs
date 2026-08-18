@@ -23,7 +23,7 @@ function headerSlice(monitoring) {
 
 function queuePanelSlice(monitoring) {
   const start = monitoring.indexOf('title={`Fila · ${modeLabel} · ${windowLabel}`}');
-  const end = monitoring.indexOf('title={snIncidentsEnabled ? unassignedPanelTitle');
+  const end = monitoring.indexOf('title={unassignedPanelTitle}');
   assert.ok(start >= 0 && end > start, "Fila panel not found");
   return monitoring.slice(start, end);
 }

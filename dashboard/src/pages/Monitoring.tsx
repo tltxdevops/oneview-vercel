@@ -1253,23 +1253,17 @@ export default function MonitoringPage() {
           </Panel>
 
           <Panel
-            title={snIncidentsEnabled ? unassignedPanelTitle : "Chamados sem responsável"}
-            error={snIncidentsEnabled ? sectionErrors.incidents : null}
+            title={unassignedPanelTitle}
+            error={sectionErrors.incidents}
             onRetry={() => void refreshAll()}
-            overflow={snIncidentsEnabled
-              ? queueOverflowLabel(unassignedTotal, unassignedIncidents.length)
-              : null}
-            empty={snIncidentsEnabled ? unassignedEmpty : true}
+            overflow={queueOverflowLabel(unassignedTotal, unassignedIncidents.length)}
+            empty={unassignedEmpty}
             className="min-h-0 min-[1440px]:flex-1"
-            aside={snIncidentsEnabled ? (
+            aside={(
               <OperationalCta to={chamadosHref}>Ver todos em Chamados</OperationalCta>
-            ) : null}
+            )}
           >
-            {!snIncidentsEnabled ? (
-              <p className="py-3 text-center text-xs text-muted-foreground">
-                Chamados não estão habilitados neste ambiente.
-              </p>
-            ) : !hasLoaded && !unassignedIncidents.length ? (
+            {!hasLoaded && !unassignedIncidents.length ? (
               <p className="py-2 text-center text-sm text-muted-foreground">Carregando…</p>
             ) : !unassignedIncidents.length ? (
               <p className="py-3 text-center text-xs text-muted-foreground">
