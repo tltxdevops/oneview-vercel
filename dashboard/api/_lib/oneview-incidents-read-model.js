@@ -3,6 +3,7 @@
  * Nunca seleciona raw_payload e nunca faz HTTP para ServiceNow.
  */
 import { getOneViewDbPool } from "./oneview-db.js";
+import { SERVICENOW_PROD_BASE_URL } from "./oneview-inc-correlation.js";
 
 const OPERATIONAL_STATES = ["1", "2", "3"];
 
@@ -27,7 +28,7 @@ function display(row, key) {
   return text(values[`${key}_display`]) || text(values[key]) || text(row[`${key}_display`]) || text(row[key]);
 }
 
-function mapIncident(row, { baseUrl = process.env.SERVICENOW_BASE_URL } = {}) {
+function mapIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL } = {}) {
   const sysId = text(row.sys_id);
   let servicenowUrl = null;
   try {
@@ -151,7 +152,7 @@ async function fetchCounts(pool, filters) {
   return result.rows[0] || { total: 0, open: 0, in_progress: 0, resolved: 0, closed: 0, unassigned: 0 };
 }
 
-export async function fetchReadModelIncidentsPage(filters, { pool = getOneViewDbPool(), baseUrl } = {}) {
+export async function fetchReadModelIncidentsPage(filters, { pool = getOneViewDbPool() } = {}) {
   const values = [];
   const where = buildWhere(filters, values);
   const exactLookup = Boolean(filters.number || filters.sys_id);
@@ -175,7 +176,7 @@ export async function fetchReadModelIncidentsPage(filters, { pool = getOneViewDb
   const totalPages = totalItems ? Math.ceil(totalItems / filters.page_size) : 0;
   const effectivePage = exactLookup ? 1 : filters.page;
   return {
-    items: pageResult.rows.map((row) => mapIncident(row, { baseUrl })),
+    items: pageResult.rows.map((row) => mapIncident(row)),
     pagination: {
       page: effectivePage,
       page_size: filters.page_size,
@@ -196,19 +197,19 @@ export async function fetchReadModelIncidentsPage(filters, { pool = getOneViewDb
   };
 }
 
-async function findBy(pool, where, values, { baseUrl } = {}) {
+async function findBy(pool, where, values) {
   const result = await pool.query(`
     select sys_id, number, state, priority, assigned_to, assignment_group, caller_id, company,
            contact_type, short_description, description, opened_at, sys_updated_on,
            correlation_id, u_hostname_zabbix, u_ip_zabbix, display_values
       from servicenow_incidents where ${where}
      order by sys_updated_on desc nulls last, sys_id asc limit 50`, values);
-  return result.rows.map((row) => mapIncident(row, { baseUrl }));
+  return result.rows.map((row) => mapIncident(row));
 }
 
 export async function findReadModelRelatedIncidents({
   incidentSysIds = [], tagIncidentNumbers = [], incidentNumbers = [], sourceEventId = null,
-} = {}, { pool = getOneViewDbPool(), baseUrl } = {}) {
+} = {}, { pool = getOneViewDbPool() } = {}) {
   const sysIds = [...new Set(incidentSysIds.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))];
   const tagNumbers = [...new Set(tagIncidentNumbers.map((value) => String(value || "").trim().toUpperCase()).filter(Boolean))];
   const historyNumbers = [...new Set(incidentNumbers.map((value) => String(value || "").trim().toUpperCase()).filter(Boolean))];
@@ -220,7 +221,7 @@ export async function findReadModelRelatedIncidents({
   ];
   for (const [relationSource, where, values] of searches) {
     if (!values[0] || (Array.isArray(values[0]) && !values[0].length)) continue;
-    const incidents = await findBy(pool, where, values, { baseUrl });
+    const incidents = await findBy(pool, where, values);
     if (incidents.length) return { matched: true, relation_source: relationSource, incidents };
   }
   return { matched: false, relation_source: "none", incidents: [] };

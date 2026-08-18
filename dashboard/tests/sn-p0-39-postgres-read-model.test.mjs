@@ -63,12 +63,12 @@ test("SN-P0-39 page PostgreSQL usa labels, filtro/período e lookup exato sem of
     page: "3", page_size: "25", number: row.number, state: "1", priority: "2",
     opened_from: "2026-08-01", opened_to: "2026-08-31", unassigned: "true",
   } });
-  const result = await fetchReadModelIncidentsPage(filters, { pool: fakePool(calls), baseUrl: "https://sn.example" });
+  const result = await fetchReadModelIncidentsPage(filters, { pool: fakePool(calls) });
   assert.equal(result.data_source, "postgresql");
   assert.equal(result.pagination.page, 1);
   assert.equal(result.items[0].state_display, "Novo");
   assert.equal(result.items[0].assignment_group_display, "NOC");
-  assert.equal(result.items[0].servicenow_url, `https://sn.example/incident.do?sys_id=${row.sys_id}`);
+  assert.equal(result.items[0].servicenow_url, `https://teletexprod.service-now.com/incident.do?sys_id=${row.sys_id}`);
   assert.equal(result.items[0].raw_payload, undefined);
   const pageCall = calls.find((call) => call.sql.includes("order by sys_updated_on desc"));
   assert.equal(pageCall.values.at(-1), 0);

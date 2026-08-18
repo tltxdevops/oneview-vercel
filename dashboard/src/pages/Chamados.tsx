@@ -243,8 +243,9 @@ export default function ChamadosPage() {
       return;
     }
 
-    const eventId = String(selected.zabbix_event_id || "").trim();
-    if (!eventId) {
+    const sysId = String(selected.sys_id || "").trim();
+    const number = String(selected.number || "").trim();
+    if (!sysId && !number) {
       setRelatedAlert(null);
       setRelatedAlertLoading(false);
       setRelatedAlertChecked(true);
@@ -256,7 +257,7 @@ export default function ChamadosPage() {
     setRelatedAlertLoading(true);
     setRelatedAlertChecked(false);
 
-    fetchIncidentRelatedAlert(eventId, controller.signal)
+    fetchIncidentRelatedAlert({ sysId, number }, controller.signal)
       .then((response) => {
         if (controller.signal.aborted) return;
         setRelatedAlert(response.matched && response.alert ? response.alert : null);
@@ -736,12 +737,14 @@ export default function ChamadosPage() {
                       <div className="grid gap-3 sm:grid-cols-2">
                         <DetailField label="Cliente" value={displayValue(relatedAlert.customer)} />
                         <DetailField label="Host" value={displayValue(relatedAlert.host)} />
+                        <DetailField label="Problema" value={displayValue(relatedAlert.problem)} />
                         <DetailField label="Severidade" value={alertSeverityLabel(relatedAlert.severity)} />
+                        <DetailField label="Início" value={formatDateTime(relatedAlert.first_seen_at)} />
                         <DetailField label="Estado" value={alertStatusLabel(relatedAlert.status)} />
                       </div>
                       <Button type="button" variant="secondary" size="sm" className="w-full sm:w-auto" asChild>
                         <Link to={`/alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
-                          Abrir alerta
+                          Ver alerta
                         </Link>
                       </Button>
                     </div>

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   createRelatedAlertHandler,
+  parseIncidentAlertReference,
   parseZabbixEventId,
 } from "../api/_lib/oneview-incident-relation.js";
 
@@ -52,6 +53,56 @@ test("parseZabbixEventId exige zabbix_event_id válido", () => {
   assert.equal(parseZabbixEventId(requestMock({ source_event_id: "evt-1" })), "evt-1");
   assert.throws(() => parseZabbixEventId(requestMock({})), /invalid_query/);
   assert.throws(() => parseZabbixEventId(requestMock({ zabbix_event_id: "bad id" })), /invalid_query/);
+});
+
+test("OV-P0-137 prioriza sys_id e aceita number explícito", () => {
+  const ref = parseIncidentAlertReference(requestMock({
+    sys_id: "536247C097F24750E580F137F053AF8D",
+    number: "inc0068879",
+  }));
+  assert.equal(ref.sys_id, "536247c097f24750e580f137f053af8d");
+  assert.equal(ref.number, "INC0068879");
+  assert.equal(ref.zabbix_event_id, null);
+  assert.throws(() => parseIncidentAlertReference(requestMock({ sys_id: "invalid" })), /invalid_query/);
+});
+
+test("OV-P0-137 lookup reverso usa sys_id antes de number e inclui alerta resolvido", async () => {
+  const handler = enabledHandler({
+    findAlertByReference: async (reference) => {
+      assert.equal(reference.sysId, "536247c097f24750e580f137f053af8d");
+      assert.equal(reference.number, "INC0068879");
+      return {
+        relation_source: "sys_id",
+        alert: {
+          id: "alert-resolved", source_event_id: "335089530", host: "host-a", customer: "Cliente X",
+          problem: "Falha de serviço", severity: "high", status: "resolved",
+          first_seen_at: "2026-08-14T20:09:24.000Z", resolved_at: "2026-08-14T21:00:00.000Z",
+        },
+      };
+    },
+    findAlert: async () => { throw new Error("event fallback must not run"); },
+  });
+  const res = responseMock();
+  await handler(requestMock({ sys_id: "536247c097f24750e580f137f053af8d", number: "INC0068879" }), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.matched, true);
+  assert.equal(res.body.relation_source, "sys_id");
+  assert.equal(res.body.alert.status, "resolved");
+  assert.equal(res.body.alert.problem, "Falha de serviço");
+});
+
+test("OV-P0-137 lookup reverso por number quando sys_id não existe", async () => {
+  const handler = enabledHandler({
+    findAlertByReference: async (reference) => {
+      assert.equal(reference.sysId, null);
+      assert.equal(reference.number, "INC0068879");
+      return { relation_source: "number", alert: { id: "alert-1", host: "h", customer: "c", problem: "p", severity: "average", status: "active" } };
+    },
+  });
+  const res = responseMock();
+  await handler(requestMock({ number: "INC0068879" }), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.relation_source, "number");
 });
 
 test("related-alert retorna alerta quando source_event_id casa", async () => {
@@ -187,4 +238,16 @@ test("related-alert não grava relação (somente leitura)", async () => {
     dbLookup.slice(dbLookup.indexOf("findAlertBySourceEventId")),
     /\b(insert into|update alerts|delete from)\b/i,
   );
+});
+
+test("OV-P0-137 lookup reverso só consulta tags explícitas, sem paginação ou host fallback", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../api/_lib/oneview-db.js", import.meta.url), "utf8"),
+  );
+  const reverseLookup = source.slice(source.indexOf("const EXPLICIT_SERVICENOW_TAG_SQL"));
+  assert.match(reverseLookup, /__zbx_servicenow_sys_id/);
+  assert.match(reverseLookup, /__zbx_servicenow_number/);
+  assert.match(reverseLookup, /event_tags|trigger_tags|host_tags/);
+  assert.doesNotMatch(reverseLookup, /offset|page_size|host_name\s*=/i);
+  assert.doesNotMatch(reverseLookup, /status_source\s*=/i);
 });

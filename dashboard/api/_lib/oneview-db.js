@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
-import { projectServiceNowReferenceFromAlertTags } from "./oneview-inc-correlation.js";
+import {
+  projectServiceNowReferenceFromAlertTags,
+  SERVICENOW_PROD_BASE_URL,
+} from "./oneview-inc-correlation.js";
 import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
 import { buildAlertRecurrenceReadModel, hasRecurrenceIdentity } from "./oneview-recurrence.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
-import { getServiceNowConfig } from "./servicenow-client.js";
 
 const { Pool } = pg;
 
@@ -774,9 +776,6 @@ export function classifyAlertEnrichment(alert) {
 function mapAlertRows(rows) {
   // OV-P0-109 — URL deep-link a partir do baseUrl local (sem HTTP ServiceNow por row).
   // Aceita base URL mesmo sem credenciais API (link abre no browser do usuário).
-  const snConfig = getServiceNowConfig();
-  const snBaseUrl = snConfig.baseUrl
-    || String(process.env.SERVICENOW_BASE_URL || "").trim().replace(/\/+$/, "");
   return rows.map((row) => {
     const hosts = operationalHostFields(row);
     const enrichmentState = classifyAlertEnrichment(row);
@@ -794,7 +793,10 @@ function mapAlertRows(rows) {
       event_tags: row.event_tags,
       trigger_tags: row.trigger_tags,
       host_tags: row.host_tags,
-    }, { baseUrl: snBaseUrl });
+    }, {
+      baseUrl: SERVICENOW_PROD_BASE_URL,
+      allowLinkTagFallback: false,
+    });
     return {
       id: textValue(row.id),
       data_source_id: textValue(row.data_source_id),
@@ -2795,4 +2797,107 @@ export async function findAlertBySourceEventId(
     severity: textValue(row.severity, "not_classified"),
     status,
   };
+}
+
+const EXPLICIT_SERVICENOW_TAG_SQL = `
+  exists (
+    select 1 from jsonb_array_elements(coalesce(a.event_tags, '[]'::jsonb)) tag
+     where lower(coalesce(tag->>'tag', tag->>'name', '')) = $1
+       and lower(btrim(coalesce(tag->>'value', ''))) = lower($2)
+  )
+  or exists (
+    select 1 from jsonb_array_elements(coalesce(a.trigger_tags, '[]'::jsonb)) tag
+     where lower(coalesce(tag->>'tag', tag->>'name', '')) = $1
+       and lower(btrim(coalesce(tag->>'value', ''))) = lower($2)
+  )
+  or exists (
+    select 1 from jsonb_array_elements(coalesce(a.host_tags, '[]'::jsonb)) tag
+     where lower(coalesce(tag->>'tag', tag->>'name', '')) = $1
+       and lower(btrim(coalesce(tag->>'value', ''))) = lower($2)
+  )
+`;
+
+async function findAlertByExplicitServiceNowTag(tagName, value, config, primaryDataSourceName) {
+  const row = await queryRow(
+    config,
+    `
+    select
+      a.id::text as id,
+      a.source_event_id,
+      a.host_name,
+      a.host_visible_name,
+      a.host_technical_name,
+      a.customer_name,
+      a.client_name,
+      a.problem_name,
+      a.trigger_description,
+      a.severity,
+      a.status_source,
+      a.first_seen_at,
+      a.resolved_at
+    from alerts a
+    join data_sources d on d.id = a.data_source_id
+    where (${EXPLICIT_SERVICENOW_TAG_SQL})
+      and d.name = $3
+    order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
+    limit 1
+    `,
+    [tagName, value, primaryDataSourceName],
+  );
+
+  if (!row) return null;
+  const host = nullableText(sanitizeText(
+    row.host_visible_name || row.host_technical_name || row.host_name,
+    "",
+    240,
+  ));
+  const customer = nullableText(sanitizeText(row.customer_name || row.client_name, "", 160));
+  const problem = nullableText(sanitizeText(row.problem_name || row.trigger_description, "", 700));
+  const statusSource = textValue(row.status_source, row.resolved_at ? "resolved" : "active").toLowerCase();
+
+  return {
+    id: textValue(row.id),
+    source_event_id: textValue(row.source_event_id),
+    host: host || "—",
+    customer: customer || "—",
+    problem: problem || "—",
+    severity: textValue(row.severity, "not_classified"),
+    status: statusSource === "resolved" || row.resolved_at ? "resolved" : "active",
+    first_seen_at: isoDate(row.first_seen_at),
+    resolved_at: isoDate(row.resolved_at),
+  };
+}
+
+/**
+ * OV-P0-137 — relação reversa incidente → alerta por tags explícitas.
+ * Prioridade sys_id → number. Nunca infere por host e inclui alertas resolvidos.
+ */
+export async function findAlertByExplicitServiceNowReference(
+  { sysId = null, number = null } = {},
+  config = getOneViewDbConfig(),
+  primaryDataSourceName = getPrimaryDataSourceName(),
+) {
+  const normalizedSysId = textValue(sysId).toLowerCase();
+  if (/^[a-f0-9]{32}$/.test(normalizedSysId)) {
+    const alert = await findAlertByExplicitServiceNowTag(
+      "__zbx_servicenow_sys_id",
+      normalizedSysId,
+      config,
+      primaryDataSourceName,
+    );
+    if (alert) return { relation_source: "sys_id", alert };
+  }
+
+  const normalizedNumber = textValue(number).toUpperCase();
+  if (/^INC\d{1,32}$/.test(normalizedNumber)) {
+    const alert = await findAlertByExplicitServiceNowTag(
+      "__zbx_servicenow_number",
+      normalizedNumber,
+      config,
+      primaryDataSourceName,
+    );
+    if (alert) return { relation_source: "number", alert };
+  }
+
+  return { relation_source: "none", alert: null };
 }

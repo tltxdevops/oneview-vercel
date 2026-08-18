@@ -914,14 +914,20 @@ export type IncidentRelatedAlert = {
   id: string;
   host: string;
   customer: string;
+  problem: string;
   severity: string;
   status: string;
   source_event_id?: string | null;
+  first_seen_at?: string | null;
+  resolved_at?: string | null;
 };
 
 export type IncidentRelatedAlertResponse = {
   matched: boolean;
+  sys_id?: string | null;
+  number?: string | null;
   zabbix_event_id: string | null;
+  relation_source?: "sys_id" | "number" | "event_id" | "none";
   alert: IncidentRelatedAlert | null;
   data_source?: OneViewDataSourceKind | string;
   checked_at?: string;
@@ -1032,11 +1038,16 @@ export async function fetchIncidents(params?: {
 
 /** SN-P0-08 — lookup read-only alerta ↔ incidente via zabbix_event_id. */
 export async function fetchIncidentRelatedAlert(
-  zabbixEventId: string,
+  reference: string | { sysId?: string | null; number?: string | null },
   signal?: AbortSignal,
 ): Promise<IncidentRelatedAlertResponse> {
   const search = new URLSearchParams();
-  search.set("zabbix_event_id", zabbixEventId.trim());
+  if (typeof reference === "string") {
+    search.set("zabbix_event_id", reference.trim());
+  } else {
+    if (reference.sysId) search.set("sys_id", reference.sysId.trim());
+    if (reference.number) search.set("number", reference.number.trim());
+  }
   return fetchApi<IncidentRelatedAlertResponse>(
     `/oneview/incidents/related-alert?${search.toString()}`,
     { signal },

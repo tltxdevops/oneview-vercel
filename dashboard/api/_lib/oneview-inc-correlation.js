@@ -32,6 +32,9 @@ export const ZBX_SERVICENOW_TAG = Object.freeze({
   LINK: "__zbx_servicenow_link",
 });
 
+/** Base canônica para links externos; não depende do ambiente DEV. */
+export const SERVICENOW_PROD_BASE_URL = "https://teletexprod.service-now.com";
+
 export const RELATION_SOURCE = Object.freeze({
   ZABBIX_SERVICENOW_SYS_ID: "zabbix_servicenow_sys_id",
   ZABBIX_SERVICENOW_NUMBER: "zabbix_servicenow_number",
@@ -464,14 +467,18 @@ export function buildServiceNowIncidentDeepLink(baseUrl, sysId) {
  * Sem consulta ServiceNow (somente metadados explícitos Zabbix).
  * @returns {{ number: string|null, sys_id: string|null, url: string|null, extra_count: number } | null}
  */
-export function projectServiceNowReferenceFromAlertTags(alertOrTags = null, { baseUrl } = {}) {
+export function projectServiceNowReferenceFromAlertTags(alertOrTags = null, {
+  baseUrl,
+  allowLinkTagFallback = true,
+} = {}) {
   const refs = extractServiceNowRefsFromAlertTags(alertOrTags);
   const number = refs.numbers[0] || null;
   const sys_id = refs.sysIds[0] || null;
   if (!number && !sys_id) return null;
 
   const linkFromTag = refs.links.find((link) => /^https?:\/\//i.test(String(link || "").trim())) || null;
-  const url = buildServiceNowIncidentDeepLink(baseUrl, sys_id) || linkFromTag;
+  const url = buildServiceNowIncidentDeepLink(baseUrl, sys_id)
+    || (allowLinkTagFallback ? linkFromTag : null);
 
   return {
     number,

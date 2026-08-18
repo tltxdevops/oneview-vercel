@@ -125,13 +125,12 @@ test("SN-P0-16 handler: múltiplos incidentes no payload do drawer", async () =>
     featureFlagProvider: () => true,
     configProvider: () => snConfig,
     logger: () => undefined,
-    getPage: async () => ({
-      records: [
-        sampleRaw({ sys_id: "a", number: "INC_A" }),
-        sampleRaw({ sys_id: "b", number: "INC_B" }),
+    lookup: async () => ({
+      relation_source: "zabbix_event_id",
+      incidents: [
+        { sys_id: "a", number: "INC_A", state: "2", priority: "3", assignment_group: "g1", assigned_to: "u1", sys_updated_on: "2026-08-07T12:00:00.000Z", servicenow_url: "https://teletexprod.service-now.com/incident.do?sys_id=a" },
+        { sys_id: "b", number: "INC_B", state: "2", priority: "3", assignment_group: "g1", assigned_to: "u1", sys_updated_on: "2026-08-07T12:00:00.000Z", servicenow_url: "https://teletexprod.service-now.com/incident.do?sys_id=b" },
       ],
-      count: 2,
-      totalCount: 2,
     }),
   });
 
@@ -159,7 +158,7 @@ test("SN-P0-16 handler: GET-only e sem host fallback", async () => {
     featureFlagProvider: () => true,
     configProvider: () => snConfig,
     logger: () => undefined,
-    getPage: async () => ({ records: [], count: 0, totalCount: 0 }),
+    lookup: async () => ({ relation_source: "none", incidents: [] }),
   });
 
   for (const method of ["POST", "PATCH", "DELETE"]) {
