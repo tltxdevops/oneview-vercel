@@ -409,6 +409,7 @@ export default function HistoricoPage() {
   const actor = searchParams.get("actor") || "";
   const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
   const selectedAlertId = searchParams.get("alert");
+  const recurrenceKey = searchParams.get("recurrence") || null;
 
   const patchParams = useCallback((patch: Record<string, string | null | string[]>, options?: { resetPage?: boolean }) => {
     setSearchParams((current) => {
@@ -554,6 +555,7 @@ export default function HistoricoPage() {
         sort: "last_seen_at",
         order: "desc",
         signal: controller.signal,
+        recurrenceKey: recurrenceKey || undefined,
       }, risk);
 
       if (bounds.from || bounds.to) {
@@ -589,7 +591,7 @@ export default function HistoricoPage() {
     } finally {
       if (!controller.signal.aborted) setAlertsLoading(false);
     }
-  }, [ackFilter, alertStatus, cliente, customRange, page, period, risk, search, severities]);
+  }, [ackFilter, alertStatus, cliente, customRange, page, period, recurrenceKey, risk, search, severities]);
 
   useEffect(() => {
     if (tab !== "eventos") return;
@@ -826,6 +828,7 @@ export default function HistoricoPage() {
           </TabsList>
 
           <TabsContent value="alertas" className="mt-4 space-y-4">
+            {recurrenceKey ? <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">Histórico completo da reincidência deste ativo (mesma fonte, host e trigger).</div> : null}
             <div className="flex flex-wrap gap-2" role="group" aria-label="Presets de risco">
               {HISTORY_RISK_PRESETS.map((preset) => (
                 <Button

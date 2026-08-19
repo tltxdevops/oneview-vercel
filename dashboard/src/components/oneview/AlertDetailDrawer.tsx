@@ -15,6 +15,7 @@ import {
   safeHostIp,
 } from "@/components/oneview/AlertOperationalSummary";
 import { AlertRecurrenceSignal } from "@/components/oneview/AlertRecurrenceSignal";
+import { AlertRecurrenceInvestigation } from "@/components/oneview/AlertRecurrenceInvestigation";
 import { AlertRelatedIncidentsSection } from "@/components/oneview/AlertRelatedIncidentsSection";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -291,6 +292,7 @@ export function AlertDetailDrawer({
                     <div className="space-y-3"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /></div>
                   ) : (
                     <>
+                      <AlertRecurrenceInvestigation alert={alert} />
                       {auditEmphasis ? (
                         <section aria-label="Auditoria temporal" className="space-y-3 rounded-lg border border-border/70 bg-muted/20 p-3">
                           <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -308,6 +310,8 @@ export function AlertDetailDrawer({
                         </section>
                       ) : null}
 
+                      <section aria-label="Linha do tempo atual" className="space-y-3">
+                        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Linha do tempo atual</h3><span className="text-xs text-muted-foreground">Estado final: {resolved ? "Resolvido" : "Ativo"}</span></div>
                       {timeline.length ? (
                         <div className="space-y-3" aria-label="Timeline do alerta">
                           {timeline.map((item) => (
@@ -343,6 +347,7 @@ export function AlertDetailDrawer({
                           Nenhum evento de histórico disponível para este alerta.
                         </p>
                       )}
+                      </section>
                     </>
                   )}
                 </TabsContent>

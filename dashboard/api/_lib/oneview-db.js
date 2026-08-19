@@ -5,7 +5,7 @@ import {
   SERVICENOW_PROD_BASE_URL,
 } from "./oneview-inc-correlation.js";
 import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
-import { buildAlertRecurrenceReadModel, hasRecurrenceIdentity } from "./oneview-recurrence.js";
+import { buildAlertRecurrenceReadModel, buildRecurrenceKey, hasRecurrenceIdentity, parseRecurrenceKey } from "./oneview-recurrence.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
 
 const { Pool } = pg;
@@ -598,6 +598,8 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
   const sort = (oneQueryValue(req, "sort") || "last_seen_at").toLowerCase();
   const order = (oneQueryValue(req, "order") || "desc").toLowerCase();
   const sortSecondary = (oneQueryValue(req, "sort_secondary") || "").toLowerCase();
+  const recurrenceKeyRaw = oneQueryValue(req, "recurrence_key");
+  const recurrenceKey = recurrenceKeyRaw ? parseRecurrenceKey(recurrenceKeyRaw) : null;
 
   if (severities.some((value) => !ALERT_SEVERITIES.has(value))) throw requestError("invalid_query");
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
@@ -615,10 +617,16 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
   if (lastSeenFrom && lastSeenTo && Date.parse(lastSeenFrom) > Date.parse(lastSeenTo)) throw requestError("invalid_query");
   if (resolvedFrom && resolvedTo && Date.parse(resolvedFrom) > Date.parse(resolvedTo)) throw requestError("invalid_query");
   if (acknowledgedFrom && acknowledgedTo && Date.parse(acknowledgedFrom) > Date.parse(acknowledgedTo)) throw requestError("invalid_query");
+  if (recurrenceKeyRaw && !recurrenceKey) throw requestError("invalid_query");
   const offset = (page - 1) * pageSize;
   if (!Number.isSafeInteger(offset)) throw requestError("invalid_query");
 
   push("d.name = ?", primaryDataSourceName);
+  if (recurrenceKey) {
+    push("a.data_source_id::text = ?", recurrenceKey.data_source_id);
+    push("a.source_host_id::text = ?", recurrenceKey.source_host_id);
+    push("a.source_trigger_id::text = ?", recurrenceKey.source_trigger_id);
+  }
   if (clients.length) push("a.client_name = any(?::text[])", clients);
   if (customers.length) {
     const includesUnidentified = customers.some((value) => value.toLowerCase() === "unclassified");
@@ -734,6 +742,7 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
       sort,
       order,
       sortSecondary,
+      recurrenceKey: recurrenceKeyRaw || null,
     },
   };
 }
@@ -815,6 +824,7 @@ function mapAlertRows(rows) {
       source_problem_id: nullableText(row.source_problem_id),
       source_trigger_id: nullableText(row.source_trigger_id),
       source_host_id: null,
+      recurrence_key: buildRecurrenceKey(row),
       host_name: hosts.host_name,
       host_visible_name: hosts.host_visible_name,
       host_technical_name: hosts.host_technical_name,
@@ -1379,7 +1389,13 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
         a.source_host_id::text as source_host_id,
         a.source_trigger_id::text as source_trigger_id,
         a.first_seen_at,
-        a.resolved_at
+        a.resolved_at,
+        a.duration_seconds,
+        a.acknowledged_at as acknowledged_source_at,
+        a.acknowledged_by as acknowledged_source_by,
+        a.event_tags,
+        a.trigger_tags,
+        a.host_tags
       from alerts a
       where a.data_source_id = $1
         and a.source_host_id = $2
@@ -1396,6 +1412,37 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
     current: row,
     siblings: recurrenceSiblings,
   });
+  const previousEpisode = recurrence.previous_episode_id
+    ? recurrenceSiblings.find((sibling) => textValue(sibling.id) === recurrence.previous_episode_id) || null
+    : null;
+  const recurrence_previous = previousEpisode ? {
+    occurrence_at: recurrence.previous_occurrence_at,
+    recovery_at: recurrence.previous_recovery_at,
+    duration_seconds: recurrence.previous_duration_seconds,
+    acknowledged_at: recurrence.previous_acknowledged_at,
+    acknowledged_by: resolveAckActorName(recurrence.previous_acknowledged_by),
+    incident: projectServiceNowReferenceFromAlertTags(previousEpisode, {
+      baseUrl: SERVICENOW_PROD_BASE_URL,
+      allowLinkTagFallback: false,
+    }),
+  } : null;
+  const same_problem = hasRecurrenceIdentity(row)
+    ? await queryRow(
+      config,
+      `
+      select
+        count(distinct nullif(a.source_host_id::text, ''))::int as other_hosts,
+        count(distinct nullif(coalesce(a.customer_key, a.customer_name, a.client_name), ''))::int as customers,
+        min(a.first_seen_at) as period_from,
+        max(coalesce(a.resolved_at, a.last_seen_at)) as period_to
+      from alerts a
+      where a.data_source_id = $1
+        and a.source_trigger_id = $2
+        and a.source_host_id <> $3
+      `,
+      [row.data_source_id, row.source_trigger_id, row.source_host_id],
+    )
+    : null;
   const sourceAckHistoryItems = (ackHistoryRows || []).map((historyRow) => {
     const eventType = textValue(historyRow.event_type, "acknowledged");
     const ackActorName = resolveAckActorName(
@@ -1439,6 +1486,13 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
     item: {
       ...item,
       ...recurrence,
+      recurrence_previous,
+      same_problem: same_problem ? {
+        other_hosts: integerValue(same_problem.other_hosts, 0),
+        customers: integerValue(same_problem.customers, 0),
+        period_from: isoDate(same_problem.period_from),
+        period_to: isoDate(same_problem.period_to),
+      } : null,
       history_count: integerValue(row.history_count, 0),
       acknowledgement_count: integerValue(row.acknowledgement_count, 0),
       source_ack,

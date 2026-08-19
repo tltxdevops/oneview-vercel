@@ -363,6 +363,21 @@ export interface OneViewAlert {
   previous_occurrence_at?: string | null;
   previous_recovery_at?: string | null;
   is_recurrent?: boolean;
+  recurrence_key?: string | null;
+  recurrence_previous?: {
+    occurrence_at: string | null;
+    recovery_at: string | null;
+    duration_seconds: number | null;
+    acknowledged_at: string | null;
+    acknowledged_by: string | null;
+    incident: OneViewAlert["servicenow_reference"];
+  } | null;
+  same_problem?: {
+    other_hosts: number;
+    customers: number;
+    period_from: string | null;
+    period_to: string | null;
+  } | null;
 }
 
 export interface AlertPagination {
@@ -807,6 +822,7 @@ export interface FetchAlertsParams {
   sort?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source" | "acknowledged_at";
   order?: "asc" | "desc";
   sortSecondary?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source" | "acknowledged_at";
+  recurrenceKey?: string;
   signal?: AbortSignal;
 }
 
@@ -840,6 +856,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   if (params?.sort) search.set("sort", params.sort);
   if (params?.order) search.set("order", params.order);
   if (params?.sortSecondary) search.set("sort_secondary", params.sortSecondary);
+  if (params?.recurrenceKey) search.set("recurrence_key", params.recurrenceKey);
 
   const query = search.toString();
   return fetchApi<AlertListResponse>(`/oneview/alerts${query ? `?${query}` : ""}`, { signal: params?.signal });

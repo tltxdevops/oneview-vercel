@@ -50,6 +50,26 @@ export function hasRecurrenceIdentity(alert) {
   );
 }
 
+/** Chave transportável para filtros: fonte + host + trigger, sem fallback por nome. */
+export function buildRecurrenceKey(alert) {
+  if (!hasRecurrenceIdentity(alert)) return null;
+  return [alert.data_source_id, alert.source_host_id, alert.source_trigger_id]
+    .map((value) => encodeURIComponent(nullableText(value)))
+    .join("|");
+}
+
+export function parseRecurrenceKey(value) {
+  const parts = String(value || "").split("|");
+  if (parts.length !== 3 || parts.some((part) => !part)) return null;
+  try {
+    const [data_source_id, source_host_id, source_trigger_id] = parts.map((part) => decodeURIComponent(part).trim());
+    if (!data_source_id || !source_host_id || !source_trigger_id) return null;
+    return { data_source_id, source_host_id, source_trigger_id };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Seleciona episódios válidos (ordem cronológica).
  * O primeiro alerta da identidade conta; os seguintes só contam quando o
@@ -61,6 +81,9 @@ export function selectRecurrenceEpisodes(alerts = []) {
       id: textValue(alert?.id),
       first_seen_at: toDate(alert?.first_seen_at),
       resolved_at: toDate(alert?.resolved_at),
+      duration_seconds: Number(alert?.duration_seconds) || 0,
+      acknowledged_at: toDate(alert?.acknowledged_source_at ?? alert?.acknowledged_at),
+      acknowledged_by: nullableText(alert?.acknowledged_source_by ?? alert?.acknowledged_by),
     }))
     .filter((alert) => alert.id && alert.first_seen_at)
     .sort((left, right) => {
@@ -133,10 +156,15 @@ export function buildAlertRecurrenceReadModel({ current, siblings = [], now = ne
       : null);
 
   return {
+    recurrence_key: buildRecurrenceKey(current),
     recurrence_count_24h,
     recurrence_count_7d,
     previous_occurrence_at: previous ? toIso(previous.first_seen_at) : null,
     previous_recovery_at: previous ? toIso(previous.resolved_at) : null,
+    previous_episode_id: previous?.id || null,
+    previous_duration_seconds: previous ? previous.duration_seconds : null,
+    previous_acknowledged_at: previous ? toIso(previous.acknowledged_at) : null,
+    previous_acknowledged_by: previous?.acknowledged_by || null,
     is_recurrent: recurrence_count_7d >= 2,
   };
 }
