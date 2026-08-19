@@ -15,11 +15,13 @@ test("OV-P0-141B: mock-only pages are lazy local-only routes", () => {
   }
 
   for (const route of ["/banco-dados", "/certificados", "/workspaces"]) {
-    assert.match(app, new RegExp(`<LocalOnlyRoute path="${route}"`));
+    assert.match(app, new RegExp(`&& <Route path="${route}"`));
   }
 
-  assert.match(app, /if \(!Component\) return null/);
-  assert.match(app, /<Suspense fallback=\{null\}><Component \/><\/Suspense>/);
+  assert.doesNotMatch(app, /<LocalOnlyRoute/);
+  assert.match(app, /<Suspense fallback=\{null\}><BancoDadosPage \/><\/Suspense>/);
+  assert.match(app, /<Suspense fallback=\{null\}><CertificadosPage \/><\/Suspense>/);
+  assert.match(app, /<Suspense fallback=\{null\}><WorkspacesPage \/><\/Suspense>/);
 });
 
 test("OV-P0-141B: the three local-only pages are the mock-data consumers", () => {

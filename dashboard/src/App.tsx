@@ -3,7 +3,6 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense } from "react";
-import type { ComponentType, LazyExoticComponent } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
@@ -28,17 +27,6 @@ const BancoDadosPage = import.meta.env.DEV ? lazy(() => import("@/pages/BancoDad
 const CertificadosPage = import.meta.env.DEV ? lazy(() => import("@/pages/Certificados")) : null;
 const WorkspacesPage = import.meta.env.DEV ? lazy(() => import("@/pages/Workspaces")) : null;
 
-function LocalOnlyRoute({
-  Component,
-  path,
-}: {
-  Component: LazyExoticComponent<ComponentType> | null;
-  path: string;
-}) {
-  if (!Component) return null;
-  return <Route path={path} element={<Suspense fallback={null}><Component /></Suspense>} />;
-}
-
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -54,10 +42,10 @@ const App = () => (
             <Route path="/monitoramento" element={<MonitoringPage />} />
             <Route path="/alertas" element={<AlertsPage />} />
             <Route path="/historico" element={<HistoricoPage />} />
-            <LocalOnlyRoute path="/banco-dados" Component={BancoDadosPage} />
-            <LocalOnlyRoute path="/certificados" Component={CertificadosPage} />
+            {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={null}><BancoDadosPage /></Suspense>} />}
+            {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={null}><CertificadosPage /></Suspense>} />}
             <Route path="/chamados" element={<ChamadosPage />} />
-            <LocalOnlyRoute path="/workspaces" Component={WorkspacesPage} />
+            {WorkspacesPage && <Route path="/workspaces" element={<Suspense fallback={null}><WorkspacesPage /></Suspense>} />}
             <Route path="/config" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<NotFound />} />
