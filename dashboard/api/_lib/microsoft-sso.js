@@ -3,6 +3,9 @@ import { buildClearSessionCookie, buildSessionCookie, createSessionToken, sessio
 const DEFAULT_TENANT_ID = "9c36f529-164f-47cd-bca0-ba7c0d710407";
 const DEFAULT_SCOPE = "openid profile email User.Read";
 const MICROSOFT_CALLBACK_PATH = "/api/auth/microsoft/callback";
+const GRAPH_PROFILE_PHOTO_URL = "https://graph.microsoft.com/v1.0/me/photo/$value";
+const MAX_PROFILE_PHOTO_BYTES = 512 * 1024;
+const PROFILE_PHOTO_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 function clean(value) {
   return String(value || "").trim();
@@ -185,6 +188,35 @@ export async function fetchMicrosoftProfile(accessToken) {
     username: clean(profile.userPrincipalName || email),
     roles: ["viewer"],
   };
+}
+
+// A foto é buscada somente no backend, enquanto o access token obtido no callback
+// ainda está disponível. Nunca a gravamos no cookie/token de sessão.
+export async function fetchMicrosoftProfilePhoto(accessToken) {
+  const response = await fetch(GRAPH_PROFILE_PHOTO_URL, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "image/*",
+    },
+  });
+
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new Error(`microsoft_profile_photo_failed:${response.status}`);
+
+  const contentType = String(response.headers.get("content-type") || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (!PROFILE_PHOTO_CONTENT_TYPES.has(contentType)) {
+    throw new Error("microsoft_profile_photo_invalid_content_type");
+  }
+
+  const photo = Buffer.from(await response.arrayBuffer());
+  if (!photo.length || photo.length > MAX_PROFILE_PHOTO_BYTES) {
+    throw new Error("microsoft_profile_photo_invalid_size");
+  }
+
+  return `data:${contentType};base64,${photo.toString("base64")}`;
 }
 
 export function sessionUserFromRequest(req) {

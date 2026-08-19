@@ -144,6 +144,7 @@ export function Sidebar({
   const [uncontrolledOpen, setUncontrolledOpen] = useState(() => (
     monitoringCollapse ? readMonitorSidebarOpen() : true
   ));
+  const [profilePhotoFailed, setProfilePhotoFailed] = useState(false);
   const { user, logout } = useAuth();
   const displayUser = user;
 
@@ -162,6 +163,10 @@ export function Sidebar({
     if (!monitoringCollapse) return;
     writeMonitorSidebarOpen(navOpen);
   }, [monitoringCollapse, navOpen]);
+
+  useEffect(() => {
+    setProfilePhotoFailed(false);
+  }, [displayUser?.photo]);
 
   const initials = useMemo(() => {
     if (!displayUser?.name && !displayUser?.email) return "--";
@@ -240,8 +245,13 @@ export function Sidebar({
                 className="relative flex h-8 w-8 shrink-0 aspect-square items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/10 text-[11px] font-semibold uppercase text-white"
                 aria-label={displayUser ? `Perfil (${displayUser.email})` : "Usuário não autenticado"}
               >
-                {displayUser?.photo ? (
-                  <img src={displayUser.photo} alt="" className="h-full w-full object-cover" />
+                {displayUser?.photo && !profilePhotoFailed ? (
+                  <img
+                    src={displayUser.photo}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    onError={() => setProfilePhotoFailed(true)}
+                  />
                 ) : (
                   <span>{initials}</span>
                 )}

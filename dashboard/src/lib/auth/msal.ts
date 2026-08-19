@@ -193,10 +193,5 @@ export const loginRequest: RedirectRequest = {
   prompt: "select_account",
 };
 
-export const graphConfig = {
-  userInfo: "https://graph.microsoft.com/v1.0/me",
-  photo: "https://graph.microsoft.com/v1.0/me/photo/$value",
-};
-
 export const appBasePath = baseUrl || "";
 export const postLogoutRedirectUri = resolvedLogoutUri;

@@ -1,5 +1,5 @@
 import { methodNotAllowed, sendJson } from "../../_lib/http.js";
-import { exchangeMicrosoftCode, fetchMicrosoftProfile, publicAppOrigin, setSessionCookie } from "../../_lib/microsoft-sso.js";
+import { exchangeMicrosoftCode, fetchMicrosoftProfile, fetchMicrosoftProfilePhoto, publicAppOrigin, setSessionCookie } from "../../_lib/microsoft-sso.js";
 
 function redirect(res, location) {
   res.statusCode = 302;
@@ -44,8 +44,13 @@ export default async function handler(req, res) {
   try {
     const tokenPayload = await exchangeMicrosoftCode(req, code);
     const user = await fetchMicrosoftProfile(tokenPayload.access_token);
+    const photo = await fetchMicrosoftProfilePhoto(tokenPayload.access_token).catch((error) => {
+      // Ausência/indisponibilidade de avatar não pode impedir o login SSO.
+      console.warn("[sso-profile-photo]", error instanceof Error ? error.message : "unavailable");
+      return undefined;
+    });
     const session = setSessionCookie(res, req, user);
-    return sendJson(res, 200, { user, session });
+    return sendJson(res, 200, { user: photo ? { ...user, photo } : user, session });
   } catch (err) {
     console.error("[sso-callback]", err?.message || err);
     return sendJson(res, 401, { error: "callback_failed", message: "Falha ao concluir SSO Microsoft." });

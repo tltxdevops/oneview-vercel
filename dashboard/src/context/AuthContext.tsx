@@ -3,7 +3,6 @@ import type { AccountInfo } from "@azure/msal-browser";
 import {
   msalInstance,
   loginRequest,
-  graphConfig,
   postLogoutRedirectUri,
   isSsoEnvironmentReady,
   hasConfiguredClient,
@@ -53,8 +52,7 @@ type GraphProfile = {
 
 const STORAGE_KEY = "oneview-auth-user";
 const MSAL_TIMEOUT_MS = 15_000;
-const GRAPH_PROFILE_TIMEOUT_MS = 8_000;
-const GRAPH_PHOTO_TIMEOUT_MS = 5_000;
+const MAX_CACHED_PHOTO_LENGTH = 700_000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout>;
@@ -124,57 +122,23 @@ function persistUser(user: AuthUser | null) {
   }
 }
 
-async function fetchGraphProfile(token: string) {
-  const response = await fetch(graphConfig.userInfo, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Erro Graph /me: ${response.status}`);
+function readCachedPhoto(user: AuthUser | null): string | undefined {
+  if (!user?.email || typeof window === "undefined") return undefined;
+  try {
+    const cached = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "null") as AuthUser | null;
+    const sameUser = cached?.email?.toLowerCase() === user.email.toLowerCase();
+    const photo = cached?.photo;
+    if (!sameUser || !photo || photo.length > MAX_CACHED_PHOTO_LENGTH) return undefined;
+    return /^data:image\/(?:jpeg|png|gif|webp);base64,[a-z0-9+/]+=*$/i.test(photo) ? photo : undefined;
+  } catch {
+    return undefined;
   }
-
-  return response.json();
 }
 
-async function fetchGraphPhoto(token: string): Promise<string | undefined> {
-  const response = await fetch(graphConfig.photo, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "image/*",
-      "Cache-Control": "no-cache",
-    },
-  });
-
-  if (response.status === 404) {
-    return undefined;
-  }
-
-  if (!response.ok) {
-    console.warn("[auth] Falha ao buscar foto do Graph", response.status, response.statusText);
-    return undefined;
-  }
-
-  const contentType = response.headers.get("content-type") ?? "image/jpeg";
-  const arrayBuffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i += 1) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  const base64 =
-    (typeof window !== "undefined" && typeof window.btoa === "function")
-      ? window.btoa(binary)
-      : typeof Buffer !== "undefined"
-        ? Buffer.from(binary, "binary").toString("base64")
-        : "";
-
-  if (!base64) {
-    return undefined;
-  }
-
-  return `data:${contentType};base64,${base64}`;
+function hydrateCachedPhoto(user: AuthUser | null): AuthUser | null {
+  if (!user || user.photo) return user;
+  const photo = readCachedPhoto(user);
+  return photo ? { ...user, photo } : user;
 }
 
 function normalizeUser(account: AccountInfo, profile?: GraphProfile, photo?: string): AuthUser {
@@ -286,7 +250,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (serverAuthEnabled()) {
         try {
           const callbackUser = await completeServerMicrosoftLoginFromUrl();
-          const serverUser = callbackUser ?? (hasActiveServerSession() ? await fetchServerAuthUser() : null);
+          const serverUser = hydrateCachedPhoto(callbackUser ?? (hasActiveServerSession() ? await fetchServerAuthUser() : null));
           if (cancelled || !isMountedRef.current) return;
           setUser(serverUser);
           persistUser(serverUser);
@@ -415,7 +379,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setIsLoading(true);
     if (serverAuthEnabled()) {
       try {
-        const serverUser = hasActiveServerSession() ? await fetchServerAuthUser() : null;
+        const serverUser = hydrateCachedPhoto(hasActiveServerSession() ? await fetchServerAuthUser() : null);
         if (!isMountedRef.current) return;
         setUser(serverUser);
         persistUser(serverUser);
