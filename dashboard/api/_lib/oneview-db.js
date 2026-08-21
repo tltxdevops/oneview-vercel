@@ -2763,6 +2763,8 @@ export async function fetchOneViewDatabase(routeName, req, config) {
         return fetchGlobalHistoryPayload(req, dbConfig, primaryDataSourceName);
       case "operations-health":
         return fetchOperationsHealthPayload(dbConfig, primaryDataSourceName);
+      case "runtime-health":
+        return fetchRuntimeHealthPayload(dbConfig);
       case "clients-summary":
         return fetchClientsSummaryPayload(req, dbConfig, primaryDataSourceName);
       case "data-sources":
@@ -2851,6 +2853,89 @@ export async function findAlertBySourceEventId(
     severity: textValue(row.severity, "not_classified"),
     status,
   };
+}
+
+const RUNTIME_STATUS = Object.freeze({
+  HEALTHY: "HEALTHY", DEGRADED: "DEGRADED", DOWN: "DOWN", STALE: "STALE",
+  READY_DISABLED: "READY_DISABLED", CONFIG_MISSING: "CONFIG_MISSING", UNKNOWN: "UNKNOWN",
+});
+
+function runtimeErrorKind(error) {
+  const value = String(error || "").toLowerCase();
+  return /(auth|token|unauthori[sz]ed|forbidden|tls|certificate|network|econn|timeout)/.test(value);
+}
+
+export function classifyRuntimeHealth({ enabled = true, configured = true, lastSuccessAt = null, intervalSeconds = 60, lastError = null, now = Date.now() } = {}) {
+  if (!configured) return RUNTIME_STATUS.CONFIG_MISSING;
+  if (!enabled) return RUNTIME_STATUS.READY_DISABLED;
+  if (runtimeErrorKind(lastError)) return RUNTIME_STATUS.DOWN;
+  const timestamp = Date.parse(String(lastSuccessAt || ""));
+  if (Number.isNaN(timestamp)) return RUNTIME_STATUS.UNKNOWN;
+  const ratio = Math.max(0, now - timestamp) / (Math.max(1, Number(intervalSeconds) || 60) * 1000);
+  if (ratio <= 2 && !lastError) return RUNTIME_STATUS.HEALTHY;
+  if (ratio <= 3) return RUNTIME_STATUS.DEGRADED;
+  if (ratio <= 5) return RUNTIME_STATUS.STALE;
+  return lastError ? RUNTIME_STATUS.DOWN : RUNTIME_STATUS.STALE;
+}
+
+function runtimeComponent({ id, category, name, enabled = true, status = RUNTIME_STATUS.UNKNOWN, connectivity = "unknown", auth = "unknown", freshness = null, last_success_at = null, last_observed_at = null, interval_seconds = null, duration_ms = null, version = null, failure_count = 0, last_error = null, detail = null }) {
+  return { id, category, name, enabled, status, connectivity, auth, freshness, last_success_at, last_observed_at, interval_seconds, duration_ms, version, failure_count, last_error: sanitizeText(last_error, "", 180) || null, detail };
+}
+
+function runtimeFreshness(lastSuccessAt, intervalSeconds, now = Date.now()) {
+  const timestamp = Date.parse(String(lastSuccessAt || ""));
+  if (Number.isNaN(timestamp)) return { age_seconds: null, ratio: null };
+  const age = Math.max(0, Math.round((now - timestamp) / 1000));
+  return { age_seconds: age, ratio: Number((age / Math.max(1, intervalSeconds)).toFixed(2)) };
+}
+
+export function runtimeOverallStatus(components) {
+  const statuses = components.map((item) => item.status);
+  if (statuses.includes(RUNTIME_STATUS.DOWN)) return RUNTIME_STATUS.DOWN;
+  if (statuses.some((status) => [RUNTIME_STATUS.STALE, RUNTIME_STATUS.DEGRADED, RUNTIME_STATUS.CONFIG_MISSING].includes(status))) return RUNTIME_STATUS.DEGRADED;
+  if (statuses.includes(RUNTIME_STATUS.UNKNOWN)) return RUNTIME_STATUS.UNKNOWN;
+  return RUNTIME_STATUS.HEALTHY;
+}
+
+async function fetchRuntimeHealthPayload(config) {
+  const startedAt = Date.now();
+  const now = Date.now();
+  const [probe, sources, serviceNow, outbox] = await Promise.all([
+    queryRow(config, "select 1 as reachable"),
+    queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
+    queryRows(config, `select s.last_success_at, s.watermark_sys_updated_on, to_jsonb(s)->>'last_error' as last_error, to_jsonb(s)->>'status' as status from servicenow_sync_state s where s.sync_key = 'incident' limit 1`),
+    queryRow(config, `select count(*) filter (where status in ('pending','processing'))::int as pending, count(*) filter (where status = 'failed')::int as failed, max(created_at) filter (where status in ('success','done')) as last_success_at from integration_outbox where action_type like 'webex_%' or action_type like 'theo_%'`),
+  ]);
+  const components = [];
+  const duration = Date.now() - startedAt;
+  const reachable = integerValue(probe?.reachable, 0) === 1;
+  components.push(runtimeComponent({ id: "vercel-bff", category: "PLATFORM", name: "Vercel/BFF", status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN, connectivity: reachable ? "reachable" : "unreachable", auth: "authenticated", last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(), duration_ms: duration, detail: "Observação da requisição BFF" }));
+  components.push(runtimeComponent({ id: "postgresql", category: "PLATFORM", name: "PostgreSQL", status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN, connectivity: reachable ? "reachable" : "unreachable", auth: "configured", last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(), duration_ms: duration, detail: "SELECT 1 pelo pool BFF" }));
+  components.push(runtimeComponent({ id: "pgbouncer", category: "PLATFORM", name: "PgBouncer", status: RUNTIME_STATUS.UNKNOWN, connectivity: "unknown", auth: "unknown", detail: "Sem telemetria independente do pool" }));
+  for (const source of sources) {
+    const interval = integerValue(source.sync_interval_seconds, 60, { min: 15, max: 86400 });
+    const lastSuccess = isoDate(source.last_success_at);
+    const lastError = source.last_error || source.last_sync_error;
+    const configured = Boolean(source.has_token);
+    const status = classifyRuntimeHealth({ enabled: Boolean(source.sync_enabled), configured, lastSuccessAt: lastSuccess, intervalSeconds: interval, lastError, now });
+    components.push(runtimeComponent({ id: `zabbix:${textValue(source.id)}`, category: "ZABBIX", name: sanitizeText(source.name, "Zabbix", 160), enabled: Boolean(source.sync_enabled), status, connectivity: lastError ? "error" : lastSuccess ? "observed" : "unknown", auth: configured ? "configured" : "missing", freshness: runtimeFreshness(lastSuccess, interval, now), last_success_at: lastSuccess, last_observed_at: isoDate(source.last_sync_at), interval_seconds: interval, failure_count: integerValue(source.failure_count, 0), last_error: lastError, detail: "Evidência persistida em data_sources" }));
+  }
+  const sn = serviceNow[0] || {};
+  const snInterval = 30;
+  const snEnabled = String(process.env.SERVICENOW_INCIDENTS_ENABLED || "").toLowerCase() === "true";
+  const snConfigured = snEnabled || Boolean(sn.last_success_at || sn.watermark_sys_updated_on);
+  const snStatus = classifyRuntimeHealth({ enabled: snEnabled, configured: snConfigured, lastSuccessAt: sn.last_success_at, intervalSeconds: snInterval, lastError: sn.last_error, now });
+  const snBase = { enabled: snEnabled, status: snStatus, connectivity: sn.last_success_at ? "observed" : "unknown", auth: snConfigured ? "configured" : "missing", freshness: runtimeFreshness(sn.last_success_at, snInterval, now), last_success_at: isoDate(sn.last_success_at), last_observed_at: isoDate(sn.watermark_sys_updated_on), interval_seconds: snInterval, last_error: sn.last_error };
+  components.push(runtimeComponent({ id: "servicenow-read-model", category: "SERVICENOW", name: "ServiceNow PROD Read Model", ...snBase, detail: "Leitura local PostgreSQL" }));
+  components.push(runtimeComponent({ id: "servicenow-watermark", category: "SERVICENOW", name: "ServiceNow Watermark", ...snBase, status: sn.watermark_sys_updated_on ? snStatus : RUNTIME_STATUS.UNKNOWN, detail: "watermark_sys_updated_on" }));
+  components.push(runtimeComponent({ id: "servicenow-collector", category: "SERVICENOW", name: "ServiceNow Collector", ...snBase, detail: "Sem HTTP ServiceNow nesta requisição" }));
+  for (const name of ["Zabbix Sync", "Recovery", "ServiceNow Sync"]) components.push(runtimeComponent({ id: `timer:${name.toLowerCase().replace(/\s+/g, "-")}`, category: "WORKERS", name, status: RUNTIME_STATUS.UNKNOWN, detail: "Heartbeat individual não persistido" }));
+  const theoEnabled = String(process.env.THEO_ENABLED || process.env.WORKER_WEBEX_NOC_ENABLED || "").toLowerCase() === "true";
+  const theoConfigured = Boolean(String(process.env.THEO_URL || process.env.WEBEX_BOT_TOKEN || "").trim());
+  const theoError = Number(outbox?.failed || 0) > 0 ? "outbox_failed" : null;
+  const theoStatus = !theoConfigured ? RUNTIME_STATUS.CONFIG_MISSING : !theoEnabled ? RUNTIME_STATUS.READY_DISABLED : theoError ? RUNTIME_STATUS.DOWN : Number(outbox?.pending || 0) > 0 ? RUNTIME_STATUS.DEGRADED : classifyRuntimeHealth({ enabled: true, configured: true, lastSuccessAt: outbox?.last_success_at, intervalSeconds: 60, now });
+  components.push(runtimeComponent({ id: "theo-webex", category: "INTEGRATIONS", name: "Theo/Webex", enabled: theoEnabled, status: theoStatus, connectivity: outbox?.last_success_at ? "observed" : "unknown", auth: theoConfigured ? "configured" : "missing", last_success_at: isoDate(outbox?.last_success_at), failure_count: integerValue(outbox?.failed, 0), last_error: theoError, detail: `outbox pending=${integerValue(outbox?.pending, 0)}` }));
+  return { overall_status: runtimeOverallStatus(components), generated_at: generatedAt(), components };
 }
 
 const EXPLICIT_SERVICENOW_TAG_SQL = `

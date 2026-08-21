@@ -18,7 +18,10 @@ import {
   fetchOneViewHealth,
   fetchOperationsHealth,
   fetchSyncLogs,
+  RuntimeHealthResponse,
+  fetchRuntimeHealth,
 } from "@/lib/oneview-api";
+import { runtimeStatusLabel, runtimeStatusTone } from "@/lib/runtime-health";
 import {
   DEFAULT_SYNC_INTERVAL_SECONDS,
   HealthLevel,
@@ -95,6 +98,7 @@ export default function SettingsPage() {
   const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
   const [operations, setOperations] = useState<OperationsHealthResponse | null>(null);
   const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
+  const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const loadRequestRef = useRef<Promise<void> | null>(null);
 
@@ -110,13 +114,8 @@ export default function SettingsPage() {
     if (loadRequestRef.current) return loadRequestRef.current;
     setLoading(true);
     const request = (async () => {
-      const results = await Promise.allSettled([
-        fetchDataSourcesWithMeta(),
-        fetchOneViewHealth(),
-        fetchOperationsHealth(),
-        fetchSyncLogs(20),
-      ]);
-      const [sourcesResult, healthResult, operationsResult, syncResult] = results;
+      const results = await Promise.allSettled([fetchDataSourcesWithMeta(), fetchRuntimeHealth()]);
+      const [sourcesResult, runtimeResult] = results;
 
       if (sourcesResult.status === "fulfilled") {
         setDataSources(sourcesResult.value.items);
@@ -128,9 +127,7 @@ export default function SettingsPage() {
           : "Erro ao carregar fontes de dados");
       }
 
-      if (healthResult.status === "fulfilled") setHealth(healthResult.value);
-      if (operationsResult.status === "fulfilled") setOperations(operationsResult.value);
-      if (syncResult.status === "fulfilled") setSyncLogs(syncResult.value.items);
+      if (runtimeResult.status === "fulfilled") setRuntimeHealth(runtimeResult.value);
     })().finally(() => {
       setLoading(false);
       loadRequestRef.current = null;
@@ -209,7 +206,15 @@ export default function SettingsPage() {
           </div>
         </Card>
 
-        <Card className="border-border bg-card p-6 text-card-foreground" aria-label="Saúde da automação">
+        <Card className="border-border bg-card p-6 text-card-foreground" aria-label="Saúde da aplicação">
+          <div className="mb-4 flex items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Saúde da aplicação</h2><p className="text-sm text-muted-foreground">Contrato Runtime Health V2.</p></div><Button variant="outline" onClick={() => void loadPage()} disabled={loading}>Atualizar</Button></div>
+          {["PLATFORM", "ZABBIX", "SERVICENOW", "WORKERS", "INTEGRATIONS"].map((category) => {
+            const items = runtimeHealth?.components.filter((item) => item.category === category) ?? [];
+            return <section key={category} className="mb-5 last:mb-0"><h3 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground">{category}</h3><div className="grid gap-2 md:grid-cols-2">{items.map((item) => <div key={item.id} className="rounded-md border border-border/70 px-3 py-2 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-medium">{item.name}</span><span className={cn("inline-flex items-center gap-1", runtimeStatusTone(item.status).split(" ")[1])}><span className={cn("h-2 w-2 rounded-full", runtimeStatusTone(item.status).split(" ")[0])} />{runtimeStatusLabel(item.status)}</span></div><p className="mt-1 text-xs text-muted-foreground">Último sucesso: {formatPtBrDateTime(item.last_success_at) ?? "—"} · Intervalo: {item.interval_seconds ? `${item.interval_seconds}s` : "—"}</p>{item.last_error ? <p className="mt-1 text-xs text-error">Erro: {item.last_error}</p> : null}</div>)}{!items.length ? <p className="text-sm text-muted-foreground">Sem componentes observados.</p> : null}</div></section>;
+          })}
+        </Card>
+
+        <Card className="border-border bg-card p-6 text-card-foreground" aria-label="Saúde da automação" hidden>
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-foreground">Saúde da automação</h2>

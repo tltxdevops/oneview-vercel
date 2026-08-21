@@ -60,6 +60,7 @@ function routeTemplate(routeName) {
   if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
   if (routeName === "history") return "/api/oneview/history";
   if (routeName === "operations-health") return "/api/oneview/operations/health";
+  if (routeName === "runtime-health") return "/api/oneview/runtime-health";
   return `/api/oneview/${routeName}`;
 }
 

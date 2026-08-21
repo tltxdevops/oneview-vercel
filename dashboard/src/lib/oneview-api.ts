@@ -697,6 +697,32 @@ export interface AttentionRequiredResponse extends OneViewResponseMeta {
 }
 
 export type OperationalStatus = "healthy" | "warning" | "error" | "stale" | "disabled";
+export type RuntimeHealthStatus = "HEALTHY" | "DEGRADED" | "DOWN" | "STALE" | "READY_DISABLED" | "CONFIG_MISSING" | "UNKNOWN";
+
+export interface RuntimeHealthComponent {
+  id: string;
+  category: "PLATFORM" | "ZABBIX" | "SERVICENOW" | "WORKERS" | "INTEGRATIONS";
+  name: string;
+  enabled: boolean;
+  status: RuntimeHealthStatus;
+  connectivity: string;
+  auth: string;
+  freshness: { age_seconds: number | null; ratio: number | null } | null;
+  last_success_at: string | null;
+  last_observed_at: string | null;
+  interval_seconds: number | null;
+  duration_ms: number | null;
+  version: string | null;
+  failure_count: number;
+  last_error: string | null;
+  detail: string | null;
+}
+
+export interface RuntimeHealthResponse extends OneViewResponseMeta {
+  overall_status: RuntimeHealthStatus;
+  generated_at: string;
+  components: RuntimeHealthComponent[];
+}
 
 export interface OperationsHealthResponse extends OneViewResponseMeta {
   status: OperationalStatus;
@@ -1163,6 +1189,10 @@ export async function requestAlertAcknowledgement(
 
 export async function fetchOperationsHealth(signal?: AbortSignal): Promise<OperationsHealthResponse> {
   return fetchApi<OperationsHealthResponse>("/oneview/operations/health", { signal });
+}
+
+export async function fetchRuntimeHealth(signal?: AbortSignal): Promise<RuntimeHealthResponse> {
+  return fetchApi<RuntimeHealthResponse>("/oneview/runtime-health", { signal });
 }
 
 export async function fetchOneViewFacets(signal?: AbortSignal): Promise<OneViewFacetsResponse> {
