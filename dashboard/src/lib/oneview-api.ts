@@ -714,7 +714,8 @@ export interface RuntimeHealthComponent {
   duration_ms: number | null;
   version: string | null;
   failure_count: number;
-  last_error: string | null;
+  current_error: string | null;
+  last_historical_error: string | null;
   detail: string | null;
 }
 

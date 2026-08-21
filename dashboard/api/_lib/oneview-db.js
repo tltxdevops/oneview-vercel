@@ -2867,8 +2867,10 @@ function runtimeErrorKind(error) {
 
 export function classifyRuntimeHealth({ enabled = true, configured = true, lastSuccessAt = null, intervalSeconds = 60, lastError = null, now = Date.now() } = {}) {
   if (!configured) return RUNTIME_STATUS.CONFIG_MISSING;
+  // A known TLS/auth/network issue blocks a safe activation even while the
+  // source is disabled. It is configuration work, not a healthy ready state.
+  if (runtimeErrorKind(lastError)) return enabled ? RUNTIME_STATUS.DOWN : RUNTIME_STATUS.CONFIG_MISSING;
   if (!enabled) return RUNTIME_STATUS.READY_DISABLED;
-  if (runtimeErrorKind(lastError)) return RUNTIME_STATUS.DOWN;
   const timestamp = Date.parse(String(lastSuccessAt || ""));
   if (Number.isNaN(timestamp)) return RUNTIME_STATUS.UNKNOWN;
   const ratio = Math.max(0, now - timestamp) / (Math.max(1, Number(intervalSeconds) || 60) * 1000);
@@ -2878,8 +2880,24 @@ export function classifyRuntimeHealth({ enabled = true, configured = true, lastS
   return lastError ? RUNTIME_STATUS.DOWN : RUNTIME_STATUS.STALE;
 }
 
-function runtimeComponent({ id, category, name, enabled = true, status = RUNTIME_STATUS.UNKNOWN, connectivity = "unknown", auth = "unknown", freshness = null, last_success_at = null, last_observed_at = null, interval_seconds = null, duration_ms = null, version = null, failure_count = 0, last_error = null, detail = null }) {
-  return { id, category, name, enabled, status, connectivity, auth, freshness, last_success_at, last_observed_at, interval_seconds, duration_ms, version, failure_count, last_error: sanitizeText(last_error, "", 180) || null, detail };
+export function classifyRuntimeDatasource({ enabled = false, configured = false, lastSuccessAt = null, intervalSeconds = 60, lastError = null, now = Date.now() } = {}) {
+  const status = classifyRuntimeHealth({ enabled, configured, lastSuccessAt, intervalSeconds, lastError, now });
+  const activationBlocker = runtimeErrorKind(lastError);
+  return {
+    status,
+    currentError: enabled || activationBlocker ? lastError : null,
+    lastHistoricalError: !enabled && !activationBlocker ? lastError : null,
+  };
+}
+
+function runtimeComponent({ id, category, name, enabled = true, status = RUNTIME_STATUS.UNKNOWN, connectivity = "unknown", auth = "unknown", freshness = null, last_success_at = null, last_observed_at = null, interval_seconds = null, duration_ms = null, version = null, failure_count = 0, current_error = null, last_historical_error = null, detail = null }) {
+  return {
+    id, category, name, enabled, status, connectivity, auth, freshness, last_success_at, last_observed_at,
+    interval_seconds, duration_ms, version, failure_count,
+    current_error: sanitizeText(current_error, "", 180) || null,
+    last_historical_error: sanitizeText(last_historical_error, "", 180) || null,
+    detail,
+  };
 }
 
 function runtimeFreshness(lastSuccessAt, intervalSeconds, now = Date.now()) {
@@ -2897,12 +2915,20 @@ export function runtimeOverallStatus(components) {
   return RUNTIME_STATUS.HEALTHY;
 }
 
+const REQUIRED_ZABBIX_RUNTIME_SOURCES = Object.freeze([
+  "teletex-http", "rhp", "maps", "fraport-for", "fraport-poa", "castrolanda", "zurich",
+]);
+
+// Maps is a placeholder datasource until its dedicated collector configuration
+// is registered. An encrypted legacy token alone is not activation-ready config.
+const ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG = new Set(["maps"]);
+
 async function fetchRuntimeHealthPayload(config) {
   const startedAt = Date.now();
   const now = Date.now();
   const [probe, sources, serviceNow, outbox] = await Promise.all([
     queryRow(config, "select 1 as reachable"),
-    queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
+    queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token, nullif(btrim(d.api_url), '') is not null as has_api_url from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
     queryRows(config, `select s.last_success_at, s.watermark_sys_updated_on, to_jsonb(s)->>'last_error' as last_error, to_jsonb(s)->>'status' as status from servicenow_sync_state s where s.sync_key = 'incident' limit 1`),
     queryRow(config, `select count(*) filter (where status in ('pending','processing'))::int as pending, count(*) filter (where status = 'failed')::int as failed, max(created_at) filter (where status in ('success','done')) as last_success_at from integration_outbox where action_type like 'webex_%' or action_type like 'theo_%'`),
   ]);
@@ -2912,20 +2938,46 @@ async function fetchRuntimeHealthPayload(config) {
   components.push(runtimeComponent({ id: "vercel-bff", category: "PLATFORM", name: "Vercel/BFF", status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN, connectivity: reachable ? "reachable" : "unreachable", auth: "authenticated", last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(), duration_ms: duration, detail: "Observação da requisição BFF" }));
   components.push(runtimeComponent({ id: "postgresql", category: "PLATFORM", name: "PostgreSQL", status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN, connectivity: reachable ? "reachable" : "unreachable", auth: "configured", last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(), duration_ms: duration, detail: "SELECT 1 pelo pool BFF" }));
   components.push(runtimeComponent({ id: "pgbouncer", category: "PLATFORM", name: "PgBouncer", status: RUNTIME_STATUS.UNKNOWN, connectivity: "unknown", auth: "unknown", detail: "Sem telemetria independente do pool" }));
-  for (const source of sources) {
-    const interval = integerValue(source.sync_interval_seconds, 60, { min: 15, max: 86400 });
-    const lastSuccess = isoDate(source.last_success_at);
-    const lastError = source.last_error || source.last_sync_error;
-    const configured = Boolean(source.has_token);
-    const status = classifyRuntimeHealth({ enabled: Boolean(source.sync_enabled), configured, lastSuccessAt: lastSuccess, intervalSeconds: interval, lastError, now });
-    components.push(runtimeComponent({ id: `zabbix:${textValue(source.id)}`, category: "ZABBIX", name: sanitizeText(source.name, "Zabbix", 160), enabled: Boolean(source.sync_enabled), status, connectivity: lastError ? "error" : lastSuccess ? "observed" : "unknown", auth: configured ? "configured" : "missing", freshness: runtimeFreshness(lastSuccess, interval, now), last_success_at: lastSuccess, last_observed_at: isoDate(source.last_sync_at), interval_seconds: interval, failure_count: integerValue(source.failure_count, 0), last_error: lastError, detail: "Evidência persistida em data_sources" }));
+  const sourcesByName = new Map(sources.map((source) => [String(source.name || "").trim().toLowerCase(), source]));
+  const sourceNames = [...new Set([...REQUIRED_ZABBIX_RUNTIME_SOURCES, ...sourcesByName.keys()])];
+  for (const sourceName of sourceNames) {
+    const source = sourcesByName.get(sourceName) || null;
+    const interval = integerValue(source?.sync_interval_seconds, 60, { min: 15, max: 86400 });
+    const lastSuccess = isoDate(source?.last_success_at);
+    const lastError = source?.last_error || source?.last_sync_error || null;
+    const enabled = Boolean(source?.sync_enabled);
+    const configured = Boolean(source?.has_token) && Boolean(source?.has_api_url) && !ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG.has(sourceName);
+    const classification = classifyRuntimeDatasource({ enabled, configured, lastSuccessAt: lastSuccess, intervalSeconds: interval, lastError, now });
+    const missingSource = !source;
+    const detail = missingSource
+      ? "Fonte esperada ainda não cadastrada"
+      : ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG.has(sourceName)
+        ? "Configuração do collector Maps não registrada"
+        : "Evidência persistida em data_sources";
+    components.push(runtimeComponent({
+      id: `zabbix:${textValue(source?.id, sourceName)}`,
+      category: "ZABBIX",
+      name: sanitizeText(source?.name || sourceName, "Zabbix", 160),
+      enabled,
+      status: classification.status,
+      connectivity: classification.currentError ? "error" : lastSuccess ? "observed" : "unknown",
+      auth: configured ? "configured" : "missing",
+      freshness: runtimeFreshness(lastSuccess, interval, now),
+      last_success_at: lastSuccess,
+      last_observed_at: isoDate(source?.last_sync_at),
+      interval_seconds: interval,
+      failure_count: integerValue(source?.failure_count, 0),
+      current_error: classification.currentError,
+      last_historical_error: classification.lastHistoricalError,
+      detail,
+    }));
   }
   const sn = serviceNow[0] || {};
   const snInterval = 30;
   const snEnabled = String(process.env.SERVICENOW_INCIDENTS_ENABLED || "").toLowerCase() === "true";
   const snConfigured = snEnabled || Boolean(sn.last_success_at || sn.watermark_sys_updated_on);
   const snStatus = classifyRuntimeHealth({ enabled: snEnabled, configured: snConfigured, lastSuccessAt: sn.last_success_at, intervalSeconds: snInterval, lastError: sn.last_error, now });
-  const snBase = { enabled: snEnabled, status: snStatus, connectivity: sn.last_success_at ? "observed" : "unknown", auth: snConfigured ? "configured" : "missing", freshness: runtimeFreshness(sn.last_success_at, snInterval, now), last_success_at: isoDate(sn.last_success_at), last_observed_at: isoDate(sn.watermark_sys_updated_on), interval_seconds: snInterval, last_error: sn.last_error };
+  const snBase = { enabled: snEnabled, status: snStatus, connectivity: sn.last_success_at ? "observed" : "unknown", auth: snConfigured ? "configured" : "missing", freshness: runtimeFreshness(sn.last_success_at, snInterval, now), last_success_at: isoDate(sn.last_success_at), last_observed_at: isoDate(sn.watermark_sys_updated_on), interval_seconds: snInterval, current_error: sn.last_error };
   components.push(runtimeComponent({ id: "servicenow-read-model", category: "SERVICENOW", name: "ServiceNow PROD Read Model", ...snBase, detail: "Leitura local PostgreSQL" }));
   components.push(runtimeComponent({ id: "servicenow-watermark", category: "SERVICENOW", name: "ServiceNow Watermark", ...snBase, status: sn.watermark_sys_updated_on ? snStatus : RUNTIME_STATUS.UNKNOWN, detail: "watermark_sys_updated_on" }));
   components.push(runtimeComponent({ id: "servicenow-collector", category: "SERVICENOW", name: "ServiceNow Collector", ...snBase, detail: "Sem HTTP ServiceNow nesta requisição" }));
@@ -2934,7 +2986,7 @@ async function fetchRuntimeHealthPayload(config) {
   const theoConfigured = Boolean(String(process.env.THEO_URL || process.env.WEBEX_BOT_TOKEN || "").trim());
   const theoError = Number(outbox?.failed || 0) > 0 ? "outbox_failed" : null;
   const theoStatus = !theoConfigured ? RUNTIME_STATUS.CONFIG_MISSING : !theoEnabled ? RUNTIME_STATUS.READY_DISABLED : theoError ? RUNTIME_STATUS.DOWN : Number(outbox?.pending || 0) > 0 ? RUNTIME_STATUS.DEGRADED : classifyRuntimeHealth({ enabled: true, configured: true, lastSuccessAt: outbox?.last_success_at, intervalSeconds: 60, now });
-  components.push(runtimeComponent({ id: "theo-webex", category: "INTEGRATIONS", name: "Theo/Webex", enabled: theoEnabled, status: theoStatus, connectivity: outbox?.last_success_at ? "observed" : "unknown", auth: theoConfigured ? "configured" : "missing", last_success_at: isoDate(outbox?.last_success_at), failure_count: integerValue(outbox?.failed, 0), last_error: theoError, detail: `outbox pending=${integerValue(outbox?.pending, 0)}` }));
+  components.push(runtimeComponent({ id: "theo-webex", category: "INTEGRATIONS", name: "Theo/Webex", enabled: theoEnabled, status: theoStatus, connectivity: outbox?.last_success_at ? "observed" : "unknown", auth: theoConfigured ? "configured" : "missing", last_success_at: isoDate(outbox?.last_success_at), failure_count: integerValue(outbox?.failed, 0), current_error: theoError, detail: `outbox pending=${integerValue(outbox?.pending, 0)}` }));
   return { overall_status: runtimeOverallStatus(components), generated_at: generatedAt(), components };
 }
 
