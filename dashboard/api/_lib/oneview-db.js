@@ -232,7 +232,7 @@ const ALERT_SORTS = Object.freeze({
       or lower(coalesce(a.customer_source, '')) = 'datasource_fallback'
       or lower(coalesce(a.customer_key, '')) = 'unclassified'
       then 'Cliente não identificado'
-    else a.customer_name
+    else lower(btrim(a.customer_name))
   end`,
   datasource: "d.name",
   host: "a.host_name",
@@ -266,14 +266,19 @@ const UNIDENTIFIED_CUSTOMER_SQL = `(
   or lower(coalesce(a.customer_key, '')) = 'unclassified'
 )`;
 
-const SAFE_CUSTOMER_NAME_SQL = `case
-  when ${UNIDENTIFIED_CUSTOMER_SQL} then 'Cliente não identificado'
-  else a.customer_name
-end`;
-
+// Identidade de cliente é de leitura: nunca reescreve os alertas históricos.
+// A chave só elimina variações seguras de casing/espaços; não faz fuzzy match.
 const SAFE_CUSTOMER_KEY_SQL = `case
   when ${UNIDENTIFIED_CUSTOMER_SQL} then 'unclassified'
-  else a.customer_key
+  else lower(btrim(a.customer_name))
+end`;
+
+// Preferências oficiais conhecidas; o fallback mantém capitalização determinística.
+const SAFE_CUSTOMER_NAME_SQL = `case
+  when ${UNIDENTIFIED_CUSTOMER_SQL} then 'Cliente não identificado'
+  when lower(btrim(a.customer_name)) = 'ailos' then 'Ailos'
+  when lower(btrim(a.customer_name)) = 'jfsc' then 'JFSC'
+  else initcap(lower(btrim(a.customer_name)))
 end`;
 
 // Reconhecimento interno novo é append-only. O campo legado continua sendo
@@ -632,11 +637,11 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
     const includesUnidentified = customers.some((value) => value.toLowerCase() === "unclassified");
     const identifiedKeys = customers.filter((value) => value.toLowerCase() !== "unclassified");
     if (includesUnidentified && identifiedKeys.length) {
-      push(`(${UNIDENTIFIED_CUSTOMER_SQL} or a.customer_key = any(?::text[]))`, identifiedKeys);
+      push(`(${UNIDENTIFIED_CUSTOMER_SQL} or ${SAFE_CUSTOMER_KEY_SQL} = any(?::text[]))`, identifiedKeys);
     } else if (includesUnidentified) {
       clauses.push(UNIDENTIFIED_CUSTOMER_SQL);
     } else {
-      push("a.customer_key = any(?::text[])", identifiedKeys);
+      push(`${SAFE_CUSTOMER_KEY_SQL} = any(?::text[])`, identifiedKeys);
     }
   }
   if (datasources.length) push("d.name = any(?::text[])", datasources);
@@ -758,18 +763,36 @@ function normalizedCustomerName(value) {
     .toLowerCase();
 }
 
+const CANONICAL_CUSTOMER_DISPLAY_NAMES = Object.freeze({
+  ailos: "Ailos",
+  jfsc: "JFSC",
+});
+
+export function canonicalCustomerKey(value) {
+  return textValue(value).toLowerCase();
+}
+
+export function canonicalCustomerDisplayName(value) {
+  const original = textValue(value);
+  const key = canonicalCustomerKey(original);
+  if (!key) return "";
+  if (CANONICAL_CUSTOMER_DISPLAY_NAMES[key]) return CANONICAL_CUSTOMER_DISPLAY_NAMES[key];
+  return key.replace(/(^|[\s_-])([\p{L}])/gu, (_match, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
+}
+
 export function safeCustomerIdentity(alert) {
-  const customerName = textValue(alert?.customer_name);
-  const normalizedName = normalizedCustomerName(customerName);
+  const customerNameOriginal = textValue(alert?.customer_name);
+  const normalizedName = normalizedCustomerName(customerNameOriginal);
   const source = textValue(alert?.customer_source).toLowerCase();
-  const key = textValue(alert?.customer_key).toLowerCase();
-  const unidentified = !customerName
+  const key = canonicalCustomerKey(alert?.customer_key);
+  const unidentified = !customerNameOriginal
     || source === "datasource_fallback"
     || key === "unclassified"
     || ["cliente nao classificado", "cliente nao identificado"].includes(normalizedName);
   return {
-    customerName: unidentified ? null : customerName,
-    customerKey: unidentified ? "unclassified" : textValue(alert?.customer_key) || null,
+    customerName: unidentified ? null : canonicalCustomerDisplayName(customerNameOriginal),
+    customerNameOriginal: unidentified ? null : customerNameOriginal,
+    customerKey: unidentified ? "unclassified" : canonicalCustomerKey(customerNameOriginal),
     unidentified,
   };
 }
@@ -811,7 +834,9 @@ function mapAlertRows(rows) {
       data_source_id: textValue(row.data_source_id),
       datasource_name: sanitizeText(row.datasource_name ?? row.data_source_name, "Datasource OneView", 160),
       client_name: sanitizeText(row.client_name, "Cliente OneView", 160),
+      client_name_original: sanitizeText(row.client_name, "Cliente OneView", 160),
       customer_name: nullableText(sanitizeText(customerIdentity.customerName, "", 160)),
+      customer_name_original: nullableText(sanitizeText(customerIdentity.customerNameOriginal, "", 160)),
       customer_key: nullableText(sanitizeText(customerIdentity.customerKey, "", 160)),
       customer_source: nullableText(sanitizeText(row.customer_source, "", 120)),
       customer_confidence: nullableText(sanitizeText(row.customer_confidence, "", 40)),
@@ -1432,7 +1457,7 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
       `
       select
         count(distinct nullif(a.source_host_id::text, ''))::int as other_hosts,
-        count(distinct nullif(coalesce(a.customer_key, a.customer_name, a.client_name), ''))::int as customers,
+        count(distinct nullif(lower(btrim(coalesce(a.customer_name, a.client_name))), ''))::int as customers,
         min(a.first_seen_at) as period_from,
         max(coalesce(a.resolved_at, a.last_seen_at)) as period_to
       from alerts a

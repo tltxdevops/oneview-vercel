@@ -296,7 +296,10 @@ export interface OneViewAlert {
   data_source_id: string;
   datasource_name?: string;
   client_name: string;
+  client_name_original?: string;
   customer_name: string | null;
+  /** Valor original persistido; identidade/display usam customer_key/customer_name canônicos. */
+  customer_name_original?: string | null;
   customer_key: string | null;
   customer_source: string | null;
   customer_confidence: string | null;

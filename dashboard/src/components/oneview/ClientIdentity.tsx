@@ -24,6 +24,24 @@ export const TEST_SCOPE_LABEL = "Ambiente de teste";
 /** Fallback operacional único para unknown/null (OV-P0-102). */
 export const UNKNOWN_SCOPE_LABEL = "Cliente não identificado";
 
+const CANONICAL_CLIENT_DISPLAY_NAMES: Record<string, string> = {
+  ailos: "Ailos",
+  jfsc: "JFSC",
+};
+
+/** Chave segura de cliente: somente trim + case-insensitive; sem fuzzy matching. */
+export function canonicalClientKey(value?: string | null): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+/** Display único e determinístico para a mesma client_key. */
+export function canonicalClientDisplayName(value?: string | null): string {
+  const key = canonicalClientKey(value);
+  if (!key) return "";
+  if (CANONICAL_CLIENT_DISPLAY_NAMES[key]) return CANONICAL_CLIENT_DISPLAY_NAMES[key];
+  return key.replace(/(^|[\s_-])([\p{L}])/gu, (_match, prefix: string, letter: string) => `${prefix}${letter.toUpperCase()}`);
+}
+
 export type OperationalScope = "customer" | "platform" | "test" | "unknown";
 
 export type OperationalScopeFields = {
@@ -77,7 +95,7 @@ export function facetCustomerDisplayName(
   if (!customer) return UNKNOWN_SCOPE_LABEL;
   if (isUnclassifiedClient(customer)) return UNKNOWN_SCOPE_LABEL;
   const name = String(customer.name || "").trim();
-  if (name && name !== UNCLASSIFIED_CLIENT_LABEL) return name;
+  if (name && name !== UNCLASSIFIED_CLIENT_LABEL) return canonicalClientDisplayName(name);
   return UNKNOWN_SCOPE_LABEL;
 }
 
@@ -215,10 +233,10 @@ export function canonicalClientName(
   const name = String(customer?.name || "").trim();
   const key = String(customer?.key || "").trim();
   if (name && !isPlaceholderClientLabel(normalizedClientKey(name)) && !isDatasourceLikeLabel(normalizedClientKey(name))) {
-    return name;
+    return canonicalClientDisplayName(name);
   }
   if (key && !isPlaceholderClientLabel(normalizedClientKey(key)) && !isDatasourceLikeLabel(normalizedClientKey(key))) {
-    return key;
+    return canonicalClientDisplayName(key);
   }
   return safeFallback;
 }
