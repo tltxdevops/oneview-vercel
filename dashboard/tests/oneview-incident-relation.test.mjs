@@ -105,6 +105,98 @@ test("OV-P0-137 lookup reverso por number quando sys_id não existe", async () =
   assert.equal(res.body.relation_source, "number");
 });
 
+test("OV-P0-190 resolves INC0074397 and INC0074460 by sys_id", async () => {
+  const cases = [
+    {
+      sys_id: "6050da139736c31030f7f796f053af49",
+      number: "INC0074397",
+      alert_id: "e7b3edf7-7d6d-4613-bb80-2ac0a02e4bbd",
+      source_event_id: "112099002",
+    },
+    {
+      sys_id: "14a1621b97b6c31030f7f796f053af3f",
+      number: "INC0074460",
+      alert_id: "6f321fc5-e376-48bf-aa2a-4205286272a1",
+      source_event_id: "112124137",
+    },
+  ];
+
+  for (const expected of cases) {
+    const handler = enabledHandler({
+      findAlertByReference: async ({ sysId, number }) => {
+        assert.equal(sysId, expected.sys_id);
+        assert.equal(number, expected.number);
+        return {
+          relation_source: "sys_id",
+          alert: {
+            id: expected.alert_id,
+            source_event_id: expected.source_event_id,
+            host: "host", customer: "customer", problem: "problem", severity: "high", status: "active",
+          },
+        };
+      },
+      findAlert: async () => { throw new Error("event fallback must not run"); },
+    });
+    const res = responseMock();
+    await handler(requestMock({ sys_id: expected.sys_id, number: expected.number }), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.matched, true);
+    assert.equal(res.body.relation_source, "sys_id");
+    assert.equal(res.body.alert.id, expected.alert_id);
+    assert.equal(res.body.alert.source_event_id, expected.source_event_id);
+  }
+});
+
+test("OV-P0-190 uses number after sys_id miss and never hostname", async () => {
+  const handler = enabledHandler({
+    findAlertByReference: async (reference) => {
+      assert.deepEqual(reference, {
+        sysId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        number: "INC0074397",
+      });
+      return {
+        relation_source: "number",
+        alert: {
+          id: "e7b3edf7-7d6d-4613-bb80-2ac0a02e4bbd",
+          source_event_id: "112099002",
+          host: "host", customer: "customer", problem: "problem", severity: "high", status: "active",
+        },
+      };
+    },
+  });
+  const res = responseMock();
+  await handler(requestMock({
+    sys_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    number: "INC0074397",
+    hostname: "must-not-be-used",
+  }), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.relation_source, "number");
+  assert.equal(res.body.alert.id, "e7b3edf7-7d6d-4613-bb80-2ac0a02e4bbd");
+});
+
+test("OV-P0-190 returns no match without hostname fallback", async () => {
+  const handler = enabledHandler({
+    findAlertByReference: async (reference) => {
+      assert.deepEqual(reference, {
+        sysId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        number: "INC9999999",
+      });
+      return { relation_source: "none", alert: null };
+    },
+  });
+  const res = responseMock();
+  await handler(requestMock({
+    sys_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    number: "INC9999999",
+    hostname: "must-not-be-used",
+  }), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.matched, false);
+  assert.equal(res.body.alert, null);
+  assert.equal(res.body.relation_source, "none");
+});
+
 test("related-alert retorna alerta quando source_event_id casa", async () => {
   const handler = enabledHandler({
     findAlert: async (eventId) => {

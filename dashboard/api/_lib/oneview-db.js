@@ -3033,7 +3033,7 @@ const EXPLICIT_SERVICENOW_TAG_SQL = `
   )
 `;
 
-async function findAlertByExplicitServiceNowTag(tagName, value, config, primaryDataSourceName) {
+async function findAlertByExplicitServiceNowTag(tagName, value, config) {
   const row = await queryRow(
     config,
     `
@@ -3052,13 +3052,11 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config, primaryD
       a.first_seen_at,
       a.resolved_at
     from alerts a
-    join data_sources d on d.id = a.data_source_id
     where (${EXPLICIT_SERVICENOW_TAG_SQL})
-      and d.name = $3
     order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
     limit 1
     `,
-    [tagName, value, primaryDataSourceName],
+    [tagName, value],
   );
 
   if (!row) return null;
@@ -3091,7 +3089,6 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config, primaryD
 export async function findAlertByExplicitServiceNowReference(
   { sysId = null, number = null } = {},
   config = getOneViewDbConfig(),
-  primaryDataSourceName = getPrimaryDataSourceName(),
 ) {
   const normalizedSysId = textValue(sysId).toLowerCase();
   if (/^[a-f0-9]{32}$/.test(normalizedSysId)) {
@@ -3099,7 +3096,6 @@ export async function findAlertByExplicitServiceNowReference(
       "__zbx_servicenow_sys_id",
       normalizedSysId,
       config,
-      primaryDataSourceName,
     );
     if (alert) return { relation_source: "sys_id", alert };
   }
@@ -3110,7 +3106,6 @@ export async function findAlertByExplicitServiceNowReference(
       "__zbx_servicenow_number",
       normalizedNumber,
       config,
-      primaryDataSourceName,
     );
     if (alert) return { relation_source: "number", alert };
   }
