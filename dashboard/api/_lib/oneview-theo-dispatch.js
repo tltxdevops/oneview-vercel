@@ -1,0 +1,330 @@
+import { randomUUID, timingSafeEqual } from "node:crypto";
+
+import { methodNotAllowed, sendJson } from "./http.js";
+import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
+
+export const THEO_ACTION_TYPE = "theo_webex_notification";
+export const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
+const THEO_TIMEOUT_MS = 10_000;
+const LOCK_TTL_SECONDS = 600;
+const RETRY_DELAYS_SECONDS = [30, 120, 600, 1800, 7200];
+const SAFE_OUTBOX_ID = /^[a-z0-9][a-z0-9-]{7,79}$/i;
+
+function bool(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return ["true", "1", "yes", "sim"].includes(String(value).trim().toLowerCase());
+}
+
+function text(value) {
+  return String(value || "").trim();
+}
+
+function queryValue(req, name) {
+  const value = req?.query?.[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function safeUrl(value) {
+  try {
+    const parsed = new URL(text(value));
+    return parsed.protocol === "https:" ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function authorization(req) {
+  const value = req?.headers?.authorization ?? req?.headers?.Authorization ?? "";
+  return Array.isArray(value) ? String(value[0] || "") : String(value);
+}
+
+function fixedEquals(left, right) {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function payloadObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function cleanPayloadField(value, fallback = "") {
+  return text(value).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 1200) || fallback;
+}
+
+function publicErrorCode(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  if (error?.name === "AbortError" || /abort|timeout|timed out/.test(message)) return "timeout";
+  return "network_error";
+}
+
+function retryDelaySeconds(attempts) {
+  const index = Math.max(0, Math.min(RETRY_DELAYS_SECONDS.length - 1, Number(attempts || 1) - 1));
+  return RETRY_DELAYS_SECONDS[index];
+}
+
+function retryAfterSeconds(response, fallback) {
+  const value = response?.headers?.get?.("retry-after");
+  const seconds = Number.parseInt(String(value || ""), 10);
+  return Number.isFinite(seconds) && seconds >= 1 && seconds <= 7200 ? seconds : fallback;
+}
+
+export function getTheoDispatchConfig(env = process.env) {
+  return Object.freeze({
+    url: safeUrl(env.THEO_ONEVIEW_URL),
+    token: text(env.THEO_ONEVIEW_TOKEN),
+    cronSecret: text(env.CRON_SECRET),
+    automationEnabled: bool(env.THEO_ONEVIEW_AUTOMATION_ENABLED, false),
+    timeoutMs: Math.min(Math.max(Number(env.THEO_ONEVIEW_TIMEOUT_MS) || THEO_TIMEOUT_MS, 1000), 25_000),
+  });
+}
+
+export function theoSmokePayload() {
+  return {
+    titulo: "TESTE OneView - Theo via Vercel",
+    cliente: "OneView",
+    equipamento: "TESTE",
+    ip: "N/A",
+    data_hora: "",
+    acao: "Validação do dispatcher server-side do OneView.",
+    proximos_passos: "Nenhuma ação necessária.",
+    acompanhamento: "Equipe NOC",
+    severidade: "Teste",
+    chamado: "TESTE",
+    link: "https://oneview.teletexdev.com.br",
+  };
+}
+
+/** Builds only the validated Theo contract; no token or dispatcher metadata leaves the BFF. */
+export function buildTheoPayload(payload, now = new Date()) {
+  const source = payloadObject(payload);
+  const smoke = theoSmokePayload();
+  return {
+    titulo: cleanPayloadField(source.titulo, smoke.titulo),
+    cliente: cleanPayloadField(source.cliente, smoke.cliente),
+    equipamento: cleanPayloadField(source.equipamento, smoke.equipamento),
+    ip: cleanPayloadField(source.ip, smoke.ip),
+    data_hora: cleanPayloadField(source.data_hora, now.toISOString()),
+    acao: cleanPayloadField(source.acao, smoke.acao),
+    proximos_passos: cleanPayloadField(source.proximos_passos, smoke.proximos_passos),
+    acompanhamento: cleanPayloadField(source.acompanhamento, smoke.acompanhamento),
+    severidade: cleanPayloadField(source.severidade, smoke.severidade),
+    chamado: cleanPayloadField(source.chamado, smoke.chamado),
+    link: cleanPayloadField(source.link, smoke.link),
+  };
+}
+
+export async function createTheoSmokeOutbox(client, { idFactory = randomUUID, now = new Date() } = {}) {
+  const outboxId = idFactory();
+  const payload = { ...theoSmokePayload(), data_hora: now.toISOString() };
+  const result = await client.query(
+    `
+      insert into integration_outbox (
+        id, aggregate_type, aggregate_id, action_type, status, priority, payload,
+        attempts, max_attempts, available_at, next_attempt_at, idempotency_key,
+        correlation_id, request_id, created_by, created_at, updated_at
+      ) values ($1, 'oneview', $1, $2, 'pending', 100, $3::jsonb, 0, 3, $4, $4, $5, $6, $6, 'ov-p0-192', $4, $4)
+      on conflict (idempotency_key) do update set updated_at = integration_outbox.updated_at
+      returning id, status, attempts, max_attempts, payload, idempotency_key
+    `,
+    [outboxId, THEO_ACTION_TYPE, JSON.stringify(payload), now, THEO_SMOKE_DEDUPE_KEY, `ov-p0-192:${outboxId}`],
+  );
+  return result.rows[0] || null;
+}
+
+/** PostgreSQL claim is the cross-instance idempotency boundary. */
+export async function claimEligibleTheoOutbox(client, {
+  outboxId = null,
+  allowAutomation = false,
+  lockedBy,
+  lockTtlSeconds = LOCK_TTL_SECONDS,
+} = {}) {
+  const result = await client.query(
+    `
+      with candidate as (
+        select o.id
+          from integration_outbox o
+         where o.action_type = $1
+           and ($2::text is null or o.id = $2)
+           and o.status in ('pending', 'failed')
+           and o.attempts < o.max_attempts
+           and o.next_attempt_at <= now()
+           and ($3::boolean or o.idempotency_key = $4)
+         order by o.priority asc, o.next_attempt_at asc, o.created_at asc, o.id asc
+         limit 1
+         for update skip locked
+      )
+      update integration_outbox o
+         set status = 'processing',
+             attempts = o.attempts + 1,
+             locked_at = now(),
+             locked_by = $5,
+             lock_expires_at = now() + make_interval(secs => $6::int),
+             updated_at = now()
+        from candidate
+       where o.id = candidate.id
+      returning o.id, o.payload, o.attempts, o.max_attempts, o.idempotency_key
+    `,
+    [THEO_ACTION_TYPE, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, lockedBy, lockTtlSeconds],
+  );
+  return result.rows[0] || null;
+}
+
+export async function finishTheoOutbox(client, {
+  outboxId,
+  lockedBy,
+  success = false,
+  retryable = false,
+  httpStatus = null,
+  errorCode = null,
+  retryAfterSeconds: retryAfter = 0,
+} = {}) {
+  const result = await client.query(
+    `
+      update integration_outbox
+         set status = case when $3::boolean then 'success' else 'failed' end,
+             attempts = case when $3::boolean or $4::boolean then attempts else max_attempts end,
+             processed_at = case when $3::boolean or not $4::boolean then now() else null end,
+             next_attempt_at = case when $3::boolean or not $4::boolean then now() else now() + make_interval(secs => $7::int) end,
+             result_payload = case when $3::boolean then jsonb_build_object('http_status', $5::int) else null end,
+             last_error = case when $3::boolean then null else $6 end,
+             locked_at = null,
+             locked_by = null,
+             lock_expires_at = null,
+             updated_at = now()
+       where id = $1
+         and action_type = $2
+         and status = 'processing'
+         and locked_by = $8
+      returning id, status, attempts, processed_at, next_attempt_at
+    `,
+    [outboxId, THEO_ACTION_TYPE, success, retryable, httpStatus, errorCode, retryAfter, lockedBy],
+  );
+  return result.rows[0] || null;
+}
+
+function internalAuthorized(req, config) {
+  if (!config.cronSecret) return false;
+  return fixedEquals(authorization(req), `Bearer ${config.cronSecret}`);
+}
+
+function isSmokeRequest(req) {
+  return String(queryValue(req, "smoke") || "").trim() === "1";
+}
+
+function requestedOutboxId(req) {
+  const value = text(queryValue(req, "outbox_id"));
+  return SAFE_OUTBOX_ID.test(value) ? value : null;
+}
+
+export function createTheoDispatchHandler({
+  transaction = withOneViewActionsTransaction,
+  configProvider = getTheoDispatchConfig,
+  createSmoke = createTheoSmokeOutbox,
+  claim = claimEligibleTheoOutbox,
+  finish = finishTheoOutbox,
+  fetchFn = globalThis.fetch,
+  idFactory = randomUUID,
+  now = () => new Date(),
+  logger = (entry) => console.info(JSON.stringify(entry)),
+} = {}) {
+  return async function theoDispatchHandler(req, res) {
+    const startedAt = Date.now();
+    if (req.method !== "POST") return methodNotAllowed(res, ["POST"]);
+
+    const config = configProvider();
+    if (!internalAuthorized(req, config)) return sendJson(res, 401, { error: "authentication_required" });
+    if (!config.url || !config.token) return sendJson(res, 503, { error: "theo_dispatch_not_configured" });
+
+    const smoke = isSmokeRequest(req);
+    let targetId = requestedOutboxId(req);
+    if (smoke) {
+      const smokeOutbox = await transaction((client) => createSmoke(client, { idFactory, now: now() }));
+      targetId = smokeOutbox?.id || null;
+    } else if (!config.automationEnabled) {
+      return sendJson(res, 403, { error: "theo_automation_disabled" });
+    }
+
+    const lockId = `vercel-theo:${idFactory()}`;
+    let claimed;
+    try {
+      claimed = await transaction((client) => claim(client, {
+        outboxId: targetId,
+        allowAutomation: config.automationEnabled,
+        lockedBy: lockId,
+      }));
+    } catch {
+      logger({ event: "theo_dispatch", status: "failed", code: "database_unavailable", duration_ms: Date.now() - startedAt });
+      return sendJson(res, 503, { error: "database_unavailable" });
+    }
+
+    if (!claimed) {
+      return sendJson(res, 200, { claimed: false, status: "not_eligible" });
+    }
+
+    const payload = buildTheoPayload(claimed.payload, now());
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+    let response;
+    let failure = null;
+    try {
+      response = await fetchFn(config.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Theo-Token": config.token },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      failure = { code: publicErrorCode(error), retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) };
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const httpStatus = Number(response?.status || 0) || null;
+    if (!failure && !(httpStatus >= 200 && httpStatus < 300)) {
+      const retryable = httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
+      failure = {
+        code: `http_${httpStatus || "error"}`,
+        retryable,
+        retry_after_seconds: retryable ? retryAfterSeconds(response, retryDelaySeconds(claimed.attempts)) : 0,
+      };
+    }
+
+    const succeeded = !failure;
+    await transaction((client) => finish(client, {
+      outboxId: claimed.id,
+      lockedBy: lockId,
+      success: succeeded,
+      retryable: failure?.retryable || false,
+      httpStatus,
+      errorCode: failure?.code || null,
+      retryAfterSeconds: failure?.retry_after_seconds || 0,
+    }));
+
+    const latencyMs = Math.max(Date.now() - startedAt, 0);
+    logger({
+      event: "theo_dispatch",
+      outbox_id: claimed.id,
+      status: succeeded ? "success" : "failed",
+      http_status: httpStatus,
+      code: failure?.code || null,
+      retryable: failure?.retryable || false,
+      latency_ms: latencyMs,
+    });
+    return sendJson(res, succeeded ? 200 : 202, {
+      outbox_id: claimed.id,
+      status: succeeded ? "success" : "failed",
+      http_status: httpStatus,
+      retryable: failure?.retryable || false,
+      latency_ms: latencyMs,
+    });
+  };
+}
+
+export default createTheoDispatchHandler();
