@@ -11,6 +11,7 @@ import {
   THEO_SMOKE_DEDUPE_KEY,
   theoSmokePayload,
 } from "../api/_lib/oneview-theo-dispatch.js";
+import { createOneViewHandler } from "../api/_lib/oneview-response.js";
 
 const SECRET = "theo-dispatch-test-secret";
 const OUTBOX_ID = "0a3be1e9-42de-4a50-b5aa-9ec886971920";
@@ -188,6 +189,44 @@ test("OV-P0-192 normal automation stays disabled without a smoke request", async
   assert.equal(response.statusCode, 403);
   assert.equal(response.body.error, "theo_automation_disabled");
   assert.equal(claimedAny, false);
+});
+
+test("OV-P0-203 Theo route accepts only its CRON_SECRET and does not require an SSO session", async () => {
+  let transactionCalls = 0;
+  const handler = dispatcher({
+    configProvider: () => config({ url: null }),
+    transaction: async () => { transactionCalls += 1; },
+  });
+
+  const missing = res();
+  await handler({ method: "POST", query: {}, headers: {} }, missing);
+  assert.equal(missing.statusCode, 401);
+  assert.deepEqual(missing.body, { error: "authentication_required" });
+
+  const wrong = res();
+  await handler({ method: "POST", query: {}, headers: { authorization: "Bearer wrong-secret" } }, wrong);
+  assert.equal(wrong.statusCode, 401);
+  assert.deepEqual(wrong.body, { error: "authentication_required" });
+
+  const validWithoutSso = res();
+  await handler({ method: "POST", query: {}, headers: { authorization: `Bearer ${SECRET}` } }, validWithoutSso);
+  assert.equal(validWithoutSso.statusCode, 503);
+  assert.deepEqual(validWithoutSso.body, { error: "theo_dispatch_not_configured" });
+  assert.equal(transactionCalls, 0);
+});
+
+test("OV-P0-203 Theo route rejects non-POST before auth and other OneView routes retain SSO", async () => {
+  const theo = dispatcher();
+  const getResponse = res();
+  await theo({ method: "GET", query: {}, headers: {} }, getResponse);
+  assert.equal(getResponse.statusCode, 405);
+  assert.deepEqual(getResponse.body, { error: "method_not_allowed" });
+
+  const oneView = createOneViewHandler("health");
+  const oneViewResponse = res();
+  await oneView({ method: "GET", query: {}, headers: {} }, oneViewResponse);
+  assert.equal(oneViewResponse.statusCode, 401);
+  assert.deepEqual(oneViewResponse.body, { error: "authentication_required" });
 });
 
 test("OV-P0-192 success is never sent again", async () => {
