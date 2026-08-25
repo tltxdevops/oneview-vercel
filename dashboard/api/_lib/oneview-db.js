@@ -3174,3 +3174,45 @@ export async function findAlertByExplicitServiceNowReference(
 
   return { relation_source: "none", alert: null };
 }
+
+/** OV-P0-206 — read-only lookup for the explicit Theo canary target. */
+export async function findTheoCanaryAlert(
+  alertId,
+  config = getOneViewDbConfig(),
+) {
+  const normalizedId = textValue(alertId).toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/.test(normalizedId)) return null;
+  return queryRow(
+    config,
+    `
+    select
+      a.id::text as id,
+      a.client_name,
+      a.customer_name,
+      a.host_name,
+      a.host_visible_name,
+      a.host_technical_name,
+      a.host_ip,
+      a.problem_name,
+      a.trigger_description,
+      a.operational_data,
+      a.severity,
+      a.status_source,
+      a.resolved_at,
+      a.first_seen_at,
+      a.last_seen_at,
+      a.event_tags,
+      a.trigger_tags,
+      a.host_tags
+    from alerts a
+    join data_sources d on d.id = a.data_source_id
+    where a.id = $1
+      and coalesce(d.type, 'zabbix') = 'zabbix'
+      and lower(coalesce(a.status_source, '')) = 'active'
+      and a.resolved_at is null
+      and lower(coalesce(a.severity, '')) in ('high', 'disaster')
+    limit 1
+    `,
+    [normalizedId],
+  );
+}

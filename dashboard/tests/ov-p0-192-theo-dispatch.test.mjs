@@ -3,11 +3,14 @@ import test from "node:test";
 
 import {
   buildTheoPayload,
+  buildTheoAlertPayload,
   claimEligibleTheoOutbox,
+  createTheoCanaryOutbox,
   createTheoSmokeOutbox,
   createTheoDispatchHandler,
   recordTheoDispatcherHeartbeat,
   THEO_DISPATCHER_WORKER_NAME,
+  theoCanaryDedupeKey,
   THEO_SMOKE_DEDUPE_KEY,
   theoSmokePayload,
 } from "../api/_lib/oneview-theo-dispatch.js";
@@ -15,6 +18,7 @@ import { createOneViewHandler } from "../api/_lib/oneview-response.js";
 
 const SECRET = "theo-dispatch-test-secret";
 const OUTBOX_ID = "0a3be1e9-42de-4a50-b5aa-9ec886971920";
+const CANARY_ALERT_ID = "52bfe971-712e-4731-a135-e3d0001ad51c";
 
 function req(query = {}) {
   return {
@@ -53,6 +57,25 @@ function claimed() {
     max_attempts: 3,
     idempotency_key: THEO_SMOKE_DEDUPE_KEY,
     payload: { ...theoSmokePayload(), data_hora: "2026-08-24T21:00:00.000Z" },
+  };
+}
+
+function canaryAlert(severity = "disaster") {
+  return {
+    id: CANARY_ALERT_ID,
+    customer_name: "Sanepar",
+    host_name: "DEO-Cast-Router",
+    host_ip: "192.0.2.10",
+    problem_name: "Roteador indisponível",
+    trigger_description: "Perda de conectividade",
+    operational_data: "Investigar conectividade do equipamento.",
+    severity,
+    status_source: "active",
+    resolved_at: null,
+    first_seen_at: "2026-08-25T17:00:00.000Z",
+    event_tags: [{ tag: "__zbx_servicenow_number", value: "INC0074751" }],
+    trigger_tags: [],
+    host_tags: [],
   };
 }
 
@@ -132,6 +155,115 @@ test("OV-P0-192 creates the fixed smoke payload with the required dedupe key", a
     ...theoSmokePayload(), data_hora: "2026-08-24T21:00:00.000Z",
   });
   assert.match(queries[0].sql, /on conflict \(idempotency_key\)/i);
+});
+
+test("OV-P0-206 valid Disaster canary uses the real alert payload builder", async () => {
+  const alert = canaryAlert();
+  let created;
+  let claimOptions;
+  let sent;
+  const handler = dispatcher({
+    findCanary: async (id) => id === CANARY_ALERT_ID ? alert : null,
+    createCanary: async (_client, options) => {
+      created = options;
+      return { id: OUTBOX_ID, status: "pending" };
+    },
+    claim: async (_client, options) => {
+      claimOptions = options;
+      return { ...claimed(), idempotency_key: theoCanaryDedupeKey(CANARY_ALERT_ID), payload: buildTheoAlertPayload(alert) };
+    },
+    fetchFn: async (url, options) => {
+      sent = { url, options };
+      return { status: 204, headers: { get: () => null } };
+    },
+  });
+  const response = res();
+  await handler(req({ canary_alert_id: CANARY_ALERT_ID }), response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.canary_alert_id, CANARY_ALERT_ID);
+  assert.equal(created.alert, alert);
+  assert.equal(claimOptions.allowedDedupeKey, theoCanaryDedupeKey(CANARY_ALERT_ID));
+  assert.equal(JSON.parse(sent.options.body).cliente, "Sanepar");
+  assert.equal(JSON.parse(sent.options.body).equipamento, "DEO-Cast-Router");
+  assert.equal(JSON.parse(sent.options.body).severidade, "disaster");
+  assert.equal(JSON.parse(sent.options.body).chamado, "INC0074751");
+  assert.equal(JSON.parse(sent.options.body).link, "https://oneview.teletexdev.com.br");
+});
+
+test("OV-P0-206 valid High canary is allowed while Average and missing alerts are blocked", async () => {
+  for (const severity of ["high"]) {
+    let sent = 0;
+    const handler = dispatcher({
+      findCanary: async () => canaryAlert(severity),
+      createCanary: async () => ({ id: OUTBOX_ID, status: "pending" }),
+      fetchFn: async () => { sent += 1; return { status: 200, headers: { get: () => null } }; },
+    });
+    const response = res();
+    await handler(req({ canary_alert_id: CANARY_ALERT_ID }), response);
+    assert.equal(response.statusCode, 200);
+    assert.equal(sent, 1);
+  }
+
+  for (const found of [null, canaryAlert("average")]) {
+    let claimedAny = false;
+    const handler = dispatcher({
+      findCanary: async () => found,
+      claim: async () => { claimedAny = true; return claimed(); },
+    });
+    const response = res();
+    await handler(req({ canary_alert_id: CANARY_ALERT_ID }), response);
+    assert.equal(response.statusCode, 422);
+    assert.equal(response.body.error, "canary_alert_not_eligible");
+    assert.equal(claimedAny, false);
+  }
+});
+
+test("OV-P0-206 canary is rejected when global automation is enabled", async () => {
+  let lookedUp = false;
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    findCanary: async () => { lookedUp = true; return canaryAlert(); },
+  });
+  const response = res();
+  await handler(req({ canary_alert_id: CANARY_ALERT_ID }), response);
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.body.error, "canary_requires_automation_disabled");
+  assert.equal(lookedUp, false);
+});
+
+test("OV-P0-206 canary idempotency prevents a second external send", async () => {
+  let sends = 0;
+  let claims = 0;
+  const alert = canaryAlert();
+  const handler = dispatcher({
+    findCanary: async () => alert,
+    createCanary: async () => ({ id: OUTBOX_ID, status: claims ? "success" : "pending" }),
+    claim: async () => (++claims === 1 ? { ...claimed(), payload: buildTheoAlertPayload(alert) } : null),
+    fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+  });
+  const first = res();
+  const second = res();
+  await handler(req({ canary_alert_id: CANARY_ALERT_ID }), first);
+  await handler(req({ canary_alert_id: CANARY_ALERT_ID }), second);
+  assert.equal(first.body.status, "success");
+  assert.deepEqual(second.body, { claimed: false, status: "not_eligible" });
+  assert.equal(sends, 1);
+});
+
+test("OV-P0-206 canary outbox preserves the exact idempotency key and incident", async () => {
+  const calls = [];
+  const alert = canaryAlert();
+  const created = await createTheoCanaryOutbox({
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return { rows: [{ id: OUTBOX_ID, status: "pending", idempotency_key: theoCanaryDedupeKey(CANARY_ALERT_ID) }] };
+    },
+  }, { alert, alertId: CANARY_ALERT_ID, idFactory: () => OUTBOX_ID, now: new Date("2026-08-25T17:00:00.000Z") });
+  assert.equal(created.idempotency_key, theoCanaryDedupeKey(CANARY_ALERT_ID));
+  assert.equal(calls[0].values[5], `theo:canary:alert:${CANARY_ALERT_ID}`);
+  assert.equal(JSON.parse(calls[0].values[3]).chamado, "INC0074751");
+  assert.match(calls[0].sql, /on conflict \(idempotency_key\)/i);
 });
 
 test("OV-P0-192 timeout is a retryable failure", async () => {

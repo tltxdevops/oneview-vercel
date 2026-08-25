@@ -1,10 +1,13 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import { methodNotAllowed, sendJson } from "./http.js";
+import { projectServiceNowReferenceFromAlertTags } from "./oneview-inc-correlation.js";
+import { findTheoCanaryAlert } from "./oneview-db.js";
 import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
 
 export const THEO_ACTION_TYPE = "theo_webex_notification";
 export const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
+export const THEO_CANARY_DEDUPE_PREFIX = "theo:canary:alert:";
 export const THEO_DISPATCHER_WORKER_NAME = "theo_dispatcher";
 export const THEO_DISPATCHER_CREATED_BY = "vercel-theo-dispatcher";
 const THEO_TIMEOUT_MS = 10_000;
@@ -103,6 +106,31 @@ export function theoSmokePayload() {
   };
 }
 
+export function theoCanaryDedupeKey(alertId) {
+  return `${THEO_CANARY_DEDUPE_PREFIX}${text(alertId).toLowerCase()}`;
+}
+
+/** Maps an eligible database alert to the same contract consumed by automation. */
+export function buildTheoAlertPayload(alert, now = new Date()) {
+  const source = payloadObject(alert);
+  const incident = projectServiceNowReferenceFromAlertTags(source, { allowLinkTagFallback: false });
+  const title = source.titulo || source.problem_name || source.trigger_description;
+  const host = source.equipamento || source.host_visible_name || source.host_technical_name || source.host_name;
+  return {
+    titulo: title,
+    cliente: source.cliente || source.customer_name || source.client_name,
+    equipamento: host,
+    ip: source.ip || source.host_ip,
+    data_hora: source.data_hora || source.first_seen_at || source.last_seen_at || now.toISOString(),
+    acao: source.acao || source.operational_data || source.trigger_description || title,
+    proximos_passos: source.proximos_passos || "Validar o alerta no OneView.",
+    acompanhamento: source.acompanhamento || "Equipe NOC",
+    severidade: source.severidade || source.severity,
+    chamado: source.chamado || incident?.number,
+    link: "https://oneview.teletexdev.com.br",
+  };
+}
+
 /** Builds only the validated Theo contract; no token or dispatcher metadata leaves the BFF. */
 export function buildTheoPayload(payload, now = new Date()) {
   const source = payloadObject(payload);
@@ -140,10 +168,36 @@ export async function createTheoSmokeOutbox(client, { idFactory = randomUUID, no
   return result.rows[0] || null;
 }
 
+export async function createTheoCanaryOutbox(client, {
+  alert,
+  alertId,
+  idFactory = randomUUID,
+  now = new Date(),
+} = {}) {
+  const normalizedAlertId = text(alertId || alert?.id).toLowerCase();
+  const outboxId = idFactory();
+  const payload = buildTheoAlertPayload(alert, now);
+  const dedupeKey = theoCanaryDedupeKey(normalizedAlertId);
+  const result = await client.query(
+    `
+      insert into integration_outbox (
+        id, aggregate_type, aggregate_id, action_type, status, priority, payload,
+        attempts, max_attempts, available_at, next_attempt_at, idempotency_key,
+        correlation_id, request_id, created_by, created_at, updated_at
+      ) values ($1, 'alert', $2, $3, 'pending', 100, $4::jsonb, 0, 3, $5, $5, $6, $7, $7, $8, $5, $5)
+      on conflict (idempotency_key) do update set updated_at = integration_outbox.updated_at
+      returning id, status, attempts, max_attempts, payload, idempotency_key
+    `,
+    [outboxId, normalizedAlertId, THEO_ACTION_TYPE, JSON.stringify(payload), now, dedupeKey, `ov-p0-206:${normalizedAlertId}`, THEO_DISPATCHER_CREATED_BY],
+  );
+  return result.rows[0] || null;
+}
+
 /** PostgreSQL claim is the cross-instance idempotency boundary. */
 export async function claimEligibleTheoOutbox(client, {
   outboxId = null,
   allowAutomation = false,
+  allowedDedupeKey = null,
   lockedBy,
   lockTtlSeconds = LOCK_TTL_SECONDS,
 } = {}) {
@@ -157,7 +211,7 @@ export async function claimEligibleTheoOutbox(client, {
            and o.status in ('pending', 'failed')
            and o.attempts < o.max_attempts
            and o.next_attempt_at <= now()
-           and ($3::boolean or o.idempotency_key = $4)
+           and ($3::boolean or o.idempotency_key = $4 or ($5::text is not null and o.idempotency_key = $5))
          order by o.priority asc, o.next_attempt_at asc, o.created_at asc, o.id asc
          limit 1
          for update skip locked
@@ -166,14 +220,14 @@ export async function claimEligibleTheoOutbox(client, {
          set status = 'processing',
              attempts = o.attempts + 1,
              locked_at = now(),
-             locked_by = $5,
-             lock_expires_at = now() + make_interval(secs => $6::int),
+             locked_by = $6,
+             lock_expires_at = now() + make_interval(secs => $7::int),
              updated_at = now()
         from candidate
        where o.id = candidate.id
       returning o.id, o.payload, o.attempts, o.max_attempts, o.idempotency_key
     `,
-    [THEO_ACTION_TYPE, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, lockedBy, lockTtlSeconds],
+    [THEO_ACTION_TYPE, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, allowedDedupeKey, lockedBy, lockTtlSeconds],
   );
   return result.rows[0] || null;
 }
@@ -259,10 +313,28 @@ function requestedOutboxId(req) {
   return SAFE_OUTBOX_ID.test(value) ? value : null;
 }
 
+function requestedCanaryAlertId(req) {
+  const raw = queryValue(req, "canary_alert_id");
+  if (raw === undefined || raw === null || text(raw) === "") return { present: false, value: null, valid: true };
+  const value = text(raw).toLowerCase();
+  return { present: true, value, valid: /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/.test(value) };
+}
+
+function eligibleCanaryAlert(alert) {
+  const severity = text(alert?.severity || alert?.severidade).toLowerCase();
+  const status = text(alert?.status_source || alert?.status).toLowerCase();
+  return Boolean(alert?.id)
+    && !alert.resolved_at
+    && status === "active"
+    && (severity === "high" || severity === "disaster");
+}
+
 export function createTheoDispatchHandler({
   transaction = withOneViewActionsTransaction,
   configProvider = getTheoDispatchConfig,
   createSmoke = createTheoSmokeOutbox,
+  findCanary = findTheoCanaryAlert,
+  createCanary = createTheoCanaryOutbox,
   claim = claimEligibleTheoOutbox,
   finish = finishTheoOutbox,
   heartbeat = recordTheoDispatcherHeartbeat,
@@ -280,10 +352,38 @@ export function createTheoDispatchHandler({
     if (!config.url || !config.token) return sendJson(res, 503, { error: "theo_dispatch_not_configured" });
 
     const smoke = isSmokeRequest(req);
+    const canary = requestedCanaryAlertId(req);
+    if (canary.present && !canary.valid) return sendJson(res, 400, { error: "invalid_canary_alert_id" });
+    if (smoke && canary.present) return sendJson(res, 400, { error: "ambiguous_dispatch_request" });
+    if (canary.present && config.automationEnabled) return sendJson(res, 403, { error: "canary_requires_automation_disabled" });
     let targetId = requestedOutboxId(req);
+    let allowedDedupeKey = null;
     if (smoke) {
       const smokeOutbox = await transaction((client) => createSmoke(client, { idFactory, now: now() }));
       targetId = smokeOutbox?.id || null;
+    } else if (canary.present) {
+      let alert;
+      try {
+        alert = await findCanary(canary.value);
+      } catch {
+        logger({ event: "theo_dispatch", status: "failed", code: "database_unavailable", duration_ms: Date.now() - startedAt });
+        return sendJson(res, 503, { error: "database_unavailable" });
+      }
+      if (!eligibleCanaryAlert(alert)) return sendJson(res, 422, { error: "canary_alert_not_eligible" });
+      let canaryOutbox;
+      try {
+        canaryOutbox = await transaction((client) => createCanary(client, {
+          alert,
+          alertId: canary.value,
+          idFactory,
+          now: now(),
+        }));
+      } catch {
+        logger({ event: "theo_dispatch", status: "failed", code: "database_unavailable", duration_ms: Date.now() - startedAt });
+        return sendJson(res, 503, { error: "database_unavailable" });
+      }
+      targetId = canaryOutbox?.id || null;
+      allowedDedupeKey = theoCanaryDedupeKey(canary.value);
     } else if (!config.automationEnabled) {
       return sendJson(res, 403, { error: "theo_automation_disabled" });
     }
@@ -294,6 +394,7 @@ export function createTheoDispatchHandler({
       claimed = await transaction((client) => claim(client, {
         outboxId: targetId,
         allowAutomation: config.automationEnabled,
+        allowedDedupeKey,
         lockedBy: lockId,
       }));
     } catch {
@@ -366,6 +467,7 @@ export function createTheoDispatchHandler({
     });
     return sendJson(res, succeeded ? 200 : 202, {
       outbox_id: claimed.id,
+      ...(canary.present ? { canary_alert_id: canary.value } : {}),
       status: succeeded ? "success" : "failed",
       http_status: httpStatus,
       retryable: failure?.retryable || false,
