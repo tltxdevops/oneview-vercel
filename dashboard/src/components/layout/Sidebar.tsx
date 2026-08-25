@@ -1,11 +1,16 @@
-import { Home, Bell, History, Monitor, ChevronLeft, ChevronRight, Ticket, Settings, LogOut, type LucideIcon } from "lucide-react";
+import { Home, Bell, History, Monitor, ChevronLeft, ChevronRight, Ticket, Settings, LogOut, Sun, Moon, type LucideIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { getStoredTheme, setStoredTheme, type Theme } from "@/lib/settings";
 
 const MONITOR_SIDEBAR_STORAGE_KEY = "oneview-monitor-sidebar-open";
+
+const SIDEBAR_ICON_SLOT = "flex h-9 w-14 shrink-0 items-center justify-center";
+const SIDEBAR_LABEL = "flex min-w-0 flex-1 items-center pr-2.5 opacity-0 transition-opacity group-hover:opacity-100";
+const SIDEBAR_LABEL_TEXT = "truncate text-sm leading-none";
 
 type SidebarProps = {
   /**
@@ -23,6 +28,7 @@ type NavItem = {
   icon: LucideIcon;
   secondary?: string;
   liveDot?: boolean;
+  iconClassName?: string;
 };
 
 // OV-P0-18/19/20: /config fora da lista principal; atalho no rodapé (acima do perfil).
@@ -77,6 +83,7 @@ function SidebarNavItem({
   icon: Icon,
   secondary,
   liveDot,
+  iconClassName,
   end,
 }: {
   name: string;
@@ -84,6 +91,7 @@ function SidebarNavItem({
   icon: LucideIcon;
   secondary?: string;
   liveDot?: boolean;
+  iconClassName?: string;
   end?: boolean;
 }) {
   return (
@@ -96,7 +104,7 @@ function SidebarNavItem({
           className={({ isActive }) => {
             const tones = navToneClasses(isActive);
             return cn(
-              "group/link relative flex min-h-9 items-center rounded-xl px-1.5 py-1 transition-colors",
+              "group/link relative flex min-h-9 w-full items-center rounded-xl py-1 text-left transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
               tones.item,
             );
@@ -106,20 +114,20 @@ function SidebarNavItem({
             const tones = navToneClasses(isActive);
             return (
               <>
-                <span className="relative flex h-8 w-8 shrink-0 items-center justify-center">
-                  <Icon className={cn("h-4 w-4 shrink-0 transition-colors", tones.icon)} />
+                <span className={cn(SIDEBAR_ICON_SLOT, "relative")}>
+                  <Icon className={cn("h-4 w-4 shrink-0 transition-colors", tones.icon, iconClassName)} />
                   {liveDot ? (
                     <span
                       aria-hidden="true"
                       className={cn(
-                        "absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full",
+                        "absolute right-3 top-1.5 h-1.5 w-1.5 rounded-full",
                         isActive ? "bg-emerald-300" : "bg-emerald-500/70",
                       )}
                     />
                   ) : null}
                 </span>
-                <span className="ml-2 min-w-0 flex-1 opacity-0 transition-opacity group-hover:opacity-100">
-                  <span className={cn("block truncate text-sm", isActive ? "font-semibold" : "font-medium", tones.label)}>
+                <span className={SIDEBAR_LABEL}>
+                  <span className={cn(SIDEBAR_LABEL_TEXT, isActive ? "font-semibold" : "font-medium", tones.label)}>
                     {name}
                   </span>
                 </span>
@@ -145,6 +153,7 @@ export function Sidebar({
     monitoringCollapse ? readMonitorSidebarOpen() : true
   ));
   const [profilePhotoFailed, setProfilePhotoFailed] = useState(false);
+  const [theme, setTheme] = useState<Theme>(getStoredTheme());
   const { user, logout } = useAuth();
   const displayUser = user;
 
@@ -159,6 +168,12 @@ export function Sidebar({
     onOpenChange?.(next);
   };
 
+  const toggleTheme = () => {
+    const nextTheme: Theme = theme === "light" ? "dark" : "light";
+    setStoredTheme(nextTheme);
+    setTheme(nextTheme);
+  };
+
   useEffect(() => {
     if (!monitoringCollapse) return;
     writeMonitorSidebarOpen(navOpen);
@@ -167,6 +182,14 @@ export function Sidebar({
   useEffect(() => {
     setProfilePhotoFailed(false);
   }, [displayUser?.photo]);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "oneview_theme") setTheme(getStoredTheme());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const initials = useMemo(() => {
     if (!displayUser?.name && !displayUser?.email) return "--";
@@ -179,6 +202,8 @@ export function Sidebar({
       .join("");
     return letters.toUpperCase();
   }, [displayUser?.name, displayUser?.email]);
+
+  const themeLabel = theme === "light" ? "Ativar modo escuro" : "Ativar modo claro";
 
   if (monitoringCollapse && !navOpen) {
     return (
@@ -200,27 +225,29 @@ export function Sidebar({
       className="group fixed inset-y-0 left-0 z-40 flex h-dvh max-h-dvh w-14 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar transition-[width] duration-200 ease-linear hover:w-56"
       data-monitor-sidebar={monitoringCollapse ? "open" : undefined}
     >
-      <div className="relative flex h-14 shrink-0 items-center justify-start border-b border-white/10 px-2.5">
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/5">
+      <div className="relative flex h-14 shrink-0 items-center border-b border-white/10">
+        <div className="flex h-full min-w-0 flex-1 items-center">
+          <span className={cn(SIDEBAR_ICON_SLOT, "h-14")}>
             <img
-              src="/tltx/tltx-t-branco.svg"
+              src="/tltx/tltx-t-branco.png?v=4"
               alt="TLTX"
-              className="h-5 w-5 select-none"
+              width={28}
+              height={28}
+              className="h-[28px] w-[28px] shrink-0 select-none object-contain"
               draggable={false}
             />
           </span>
-          <span className="hidden text-sm font-semibold text-white group-hover:inline-block">
-            OneView
+          <span className={SIDEBAR_LABEL}>
+            <span className={cn(SIDEBAR_LABEL_TEXT, "font-semibold text-white")}>OneView</span>
           </span>
         </div>
       </div>
 
       <nav
-        className="flex min-h-0 flex-1 flex-col items-stretch gap-1 overflow-y-auto overflow-x-hidden px-2.5 py-3"
+        className="flex min-h-0 flex-1 flex-col items-stretch gap-1 overflow-y-auto overflow-x-hidden py-3"
         aria-label="Navegação operacional"
       >
-          {baseNavigation.map((item) => (
+        {baseNavigation.map((item) => (
           <SidebarNavItem
             key={item.name}
             name={item.name}
@@ -228,33 +255,68 @@ export function Sidebar({
             icon={item.icon}
             secondary={item.secondary}
             liveDot={item.liveDot}
+            iconClassName={item.iconClassName}
             end={item.href === "/"}
           />
         ))}
       </nav>
 
-      <div className="shrink-0 border-t border-white/10 px-2.5 py-3">
+      <div className="shrink-0 space-y-1 py-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label={themeLabel}
+              aria-pressed={theme === "dark"}
+              className={cn(
+                "group/link flex min-h-9 w-full items-center rounded-xl py-1 text-left text-white/55 transition-colors",
+                "hover:bg-white/5 hover:text-white",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+              )}
+            >
+              <span className={SIDEBAR_ICON_SLOT}>
+                {theme === "light" ? (
+                  <Moon className="h-4 w-4 shrink-0" />
+                ) : (
+                  <Sun className="h-4 w-4 shrink-0" />
+                )}
+              </span>
+              <span className={SIDEBAR_LABEL}>
+                <span className={cn(SIDEBAR_LABEL_TEXT, "font-medium")}>
+                  {theme === "light" ? "Modo escuro" : "Modo claro"}
+                </span>
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="group-hover:hidden">
+            <p>{themeLabel}</p>
+          </TooltipContent>
+        </Tooltip>
+
         <SidebarNavItem name="Configurações" to="/config" icon={Settings} />
       </div>
 
-      <div className="shrink-0 space-y-1 border-t border-white/10 px-2.5 py-3">
-        <div className="flex items-center gap-2.5 px-1.5">
+      <div className="shrink-0 space-y-1 border-t border-white/10 py-3">
+        <div className="flex min-h-9 w-full items-center">
           <Tooltip>
             <TooltipTrigger asChild>
-              <span
-                className="relative flex h-8 w-8 shrink-0 aspect-square items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/10 text-[11px] font-semibold uppercase text-white"
-                aria-label={displayUser ? `Perfil (${displayUser.email})` : "Usuário não autenticado"}
-              >
-                {displayUser?.photo && !profilePhotoFailed ? (
-                  <img
-                    src={displayUser.photo}
-                    alt=""
-                    className="h-full w-full object-cover"
-                    onError={() => setProfilePhotoFailed(true)}
-                  />
-                ) : (
-                  <span>{initials}</span>
-                )}
+              <span className={cn(SIDEBAR_ICON_SLOT, "relative")}>
+                <span
+                  className="relative flex h-8 w-8 aspect-square items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/10 text-[11px] font-semibold uppercase text-white"
+                  aria-label={displayUser ? `Perfil (${displayUser.email})` : "Usuário não autenticado"}
+                >
+                  {displayUser?.photo && !profilePhotoFailed ? (
+                    <img
+                      src={displayUser.photo}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      onError={() => setProfilePhotoFailed(true)}
+                    />
+                  ) : (
+                    <span>{initials}</span>
+                  )}
+                </span>
               </span>
             </TooltipTrigger>
             <TooltipContent side="right" className="group-hover:hidden">
@@ -269,11 +331,11 @@ export function Sidebar({
             </TooltipContent>
           </Tooltip>
 
-          <div className="hidden min-w-0 flex-1 flex-col group-hover:flex">
-            <span className="truncate text-sm font-semibold text-white">
+          <div className="hidden min-w-0 flex-1 flex-col justify-center pr-2.5 group-hover:flex">
+            <span className="truncate text-sm font-semibold leading-none text-white">
               {displayUser?.name ?? "Usuário"}
             </span>
-            <span className="truncate text-xs text-white/55">
+            <span className="mt-1 truncate text-xs leading-none text-white/55">
               {displayUser?.email ?? "sso@teletex.com"}
             </span>
           </div>
@@ -287,17 +349,17 @@ export function Sidebar({
               disabled={!displayUser}
               aria-label="Sair"
               className={cn(
-                "group/link flex min-h-9 w-full items-center rounded-xl px-1.5 py-1 text-white/55 transition-colors",
+                "group/link flex min-h-9 w-full items-center rounded-xl py-1 text-left text-white/55 transition-colors",
                 "hover:bg-white/5 hover:text-white",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
                 "disabled:cursor-not-allowed disabled:opacity-40",
               )}
             >
-              <span className="relative flex h-8 w-8 shrink-0 items-center justify-center">
+              <span className={SIDEBAR_ICON_SLOT}>
                 <LogOut className="h-4 w-4 shrink-0" />
               </span>
-              <span className="ml-2 min-w-0 flex-1 truncate text-sm font-medium opacity-0 transition-opacity group-hover:opacity-100">
-                Sair
+              <span className={SIDEBAR_LABEL}>
+                <span className={cn(SIDEBAR_LABEL_TEXT, "font-medium")}>Sair</span>
               </span>
             </button>
           </TooltipTrigger>
