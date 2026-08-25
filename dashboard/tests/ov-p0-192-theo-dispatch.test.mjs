@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildTheoPayload,
   buildTheoAlertPayload,
+  buildOneViewAlertDeepLink,
   claimEligibleTheoOutbox,
   createTheoCanaryOutbox,
   createTheoSmokeOutbox,
@@ -188,7 +189,7 @@ test("OV-P0-206 valid Disaster canary uses the real alert payload builder", asyn
   assert.equal(JSON.parse(sent.options.body).equipamento, "DEO-Cast-Router");
   assert.equal(JSON.parse(sent.options.body).severidade, "disaster");
   assert.equal(JSON.parse(sent.options.body).chamado, "INC0074751");
-  assert.equal(JSON.parse(sent.options.body).link, "https://oneview.teletexdev.com.br");
+  assert.equal(JSON.parse(sent.options.body).link, `https://oneview.teletexdev.com.br/alertas?alert=${CANARY_ALERT_ID}`);
 });
 
 test("OV-P0-206 valid High canary is allowed while Average and missing alerts are blocked", async () => {
@@ -264,6 +265,22 @@ test("OV-P0-206 canary outbox preserves the exact idempotency key and incident",
   assert.equal(calls[0].values[5], `theo:canary:alert:${CANARY_ALERT_ID}`);
   assert.equal(JSON.parse(calls[0].values[3]).chamado, "INC0074751");
   assert.match(calls[0].sql, /on conflict \(idempotency_key\)/i);
+});
+
+test("OV-P0-209 emits direct OneView and production ServiceNow links from alert tags", () => {
+  const payload = buildTheoAlertPayload({
+    ...canaryAlert(),
+    event_tags: [
+      { tag: "__zbx_servicenow_number", value: "INC0074751" },
+      { tag: "__zbx_servicenow_sys_id", value: "fdb2c6e797fe0710e580f137f053afe3" },
+    ],
+  });
+  assert.equal(payload.link, `https://oneview.teletexdev.com.br/alertas?alert=${CANARY_ALERT_ID}`);
+  assert.equal(payload.oneview_link, payload.link);
+  assert.equal(payload.servicenow_link, "https://teletexprod.service-now.com/incident.do?sys_id=fdb2c6e797fe0710e580f137f053afe3");
+  assert.equal(payload.chamado, "INC0074751");
+  assert.equal(buildOneViewAlertDeepLink("invalid"), null);
+  assert.equal(Object.hasOwn(buildTheoAlertPayload({ ...canaryAlert(), event_tags: [] }), "servicenow_link"), false);
 });
 
 test("OV-P0-192 timeout is a retryable failure", async () => {
@@ -416,7 +433,7 @@ test("OV-P0-192 payload follows the validated Theo contract", () => {
   });
   assert.deepEqual(Object.keys(payload), [
     "titulo", "cliente", "equipamento", "ip", "data_hora", "acao", "proximos_passos",
-    "acompanhamento", "severidade", "chamado", "link",
+    "acompanhamento", "severidade", "chamado", "link", "oneview_link",
   ]);
   assert.doesNotMatch(JSON.stringify(payload), /must-not-pass-through/);
 });

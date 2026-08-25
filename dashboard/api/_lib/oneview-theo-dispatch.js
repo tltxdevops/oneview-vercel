@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import { methodNotAllowed, sendJson } from "./http.js";
-import { projectServiceNowReferenceFromAlertTags } from "./oneview-inc-correlation.js";
+import { projectServiceNowReferenceFromAlertTags, SERVICENOW_PROD_BASE_URL } from "./oneview-inc-correlation.js";
 import { findTheoCanaryAlert } from "./oneview-db.js";
 import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
 
@@ -14,6 +14,8 @@ const THEO_TIMEOUT_MS = 10_000;
 const LOCK_TTL_SECONDS = 600;
 const RETRY_DELAYS_SECONDS = [30, 120, 600, 1800, 7200];
 const SAFE_OUTBOX_ID = /^[a-z0-9][a-z0-9-]{7,79}$/i;
+const SAFE_ALERT_ID = /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i;
+const ONEVIEW_PRODUCTION_ORIGIN = "https://oneview.teletexdev.com.br";
 
 function bool(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -110,12 +112,21 @@ export function theoCanaryDedupeKey(alertId) {
   return `${THEO_CANARY_DEDUPE_PREFIX}${text(alertId).toLowerCase()}`;
 }
 
+export function buildOneViewAlertDeepLink(alertId) {
+  const id = text(alertId).toLowerCase();
+  return SAFE_ALERT_ID.test(id) ? `${ONEVIEW_PRODUCTION_ORIGIN}/alertas?alert=${encodeURIComponent(id)}` : null;
+}
+
 /** Maps an eligible database alert to the same contract consumed by automation. */
 export function buildTheoAlertPayload(alert, now = new Date()) {
   const source = payloadObject(alert);
-  const incident = projectServiceNowReferenceFromAlertTags(source, { allowLinkTagFallback: false });
+  const incident = projectServiceNowReferenceFromAlertTags(source, {
+    baseUrl: SERVICENOW_PROD_BASE_URL,
+    allowLinkTagFallback: false,
+  });
   const title = source.titulo || source.problem_name || source.trigger_description;
   const host = source.equipamento || source.host_visible_name || source.host_technical_name || source.host_name;
+  const oneviewLink = buildOneViewAlertDeepLink(source.id) || ONEVIEW_PRODUCTION_ORIGIN;
   return {
     titulo: title,
     cliente: source.cliente || source.customer_name || source.client_name,
@@ -127,7 +138,9 @@ export function buildTheoAlertPayload(alert, now = new Date()) {
     acompanhamento: source.acompanhamento || "Equipe NOC",
     severidade: source.severidade || source.severity,
     chamado: source.chamado || incident?.number,
-    link: "https://oneview.teletexdev.com.br",
+    link: oneviewLink,
+    oneview_link: oneviewLink,
+    ...(incident?.url ? { servicenow_link: incident.url } : {}),
   };
 }
 
@@ -135,6 +148,9 @@ export function buildTheoAlertPayload(alert, now = new Date()) {
 export function buildTheoPayload(payload, now = new Date()) {
   const source = payloadObject(payload);
   const smoke = theoSmokePayload();
+  const link = cleanPayloadField(source.link, smoke.link);
+  const oneviewLink = cleanPayloadField(source.oneview_link, link);
+  const servicenowLink = cleanPayloadField(source.servicenow_link);
   return {
     titulo: cleanPayloadField(source.titulo, smoke.titulo),
     cliente: cleanPayloadField(source.cliente, smoke.cliente),
@@ -146,7 +162,9 @@ export function buildTheoPayload(payload, now = new Date()) {
     acompanhamento: cleanPayloadField(source.acompanhamento, smoke.acompanhamento),
     severidade: cleanPayloadField(source.severidade, smoke.severidade),
     chamado: cleanPayloadField(source.chamado, smoke.chamado),
-    link: cleanPayloadField(source.link, smoke.link),
+    link,
+    oneview_link: oneviewLink,
+    ...(servicenowLink ? { servicenow_link: servicenowLink } : {}),
   };
 }
 
