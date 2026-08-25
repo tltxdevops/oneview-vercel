@@ -105,7 +105,7 @@ test("OV-P0-137 lookup reverso por number quando sys_id não existe", async () =
   assert.equal(res.body.relation_source, "number");
 });
 
-test("OV-P0-190 resolves INC0074397 and INC0074460 by sys_id", async () => {
+test("OV-P0-190/197 resolves RHP and Protege incidents by sys_id", async () => {
   const cases = [
     {
       sys_id: "6050da139736c31030f7f796f053af49",
@@ -118,6 +118,12 @@ test("OV-P0-190 resolves INC0074397 and INC0074460 by sys_id", async () => {
       number: "INC0074460",
       alert_id: "6f321fc5-e376-48bf-aa2a-4205286272a1",
       source_event_id: "112124137",
+    },
+    {
+      sys_id: "fdb2c6e797fe0710e580f137f053afe3",
+      number: "INC0074669",
+      alert_id: "0447e697-51f1-4334-84cc-44701c87a254",
+      source_event_id: "338976923",
     },
   ];
 
