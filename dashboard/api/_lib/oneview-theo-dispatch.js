@@ -5,6 +5,8 @@ import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
 
 export const THEO_ACTION_TYPE = "theo_webex_notification";
 export const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
+export const THEO_DISPATCHER_WORKER_NAME = "theo_dispatcher";
+export const THEO_DISPATCHER_CREATED_BY = "vercel-theo-dispatcher";
 const THEO_TIMEOUT_MS = 10_000;
 const LOCK_TTL_SECONDS = 600;
 const RETRY_DELAYS_SECONDS = [30, 120, 600, 1800, 7200];
@@ -129,11 +131,11 @@ export async function createTheoSmokeOutbox(client, { idFactory = randomUUID, no
         id, aggregate_type, aggregate_id, action_type, status, priority, payload,
         attempts, max_attempts, available_at, next_attempt_at, idempotency_key,
         correlation_id, request_id, created_by, created_at, updated_at
-      ) values ($1, 'oneview', $1, $2, 'pending', 100, $3::jsonb, 0, 3, $4, $4, $5, $6, $6, 'ov-p0-192', $4, $4)
+      ) values ($1, 'oneview', $1, $2, 'pending', 100, $3::jsonb, 0, 3, $4, $4, $5, $6, $6, $7, $4, $4)
       on conflict (idempotency_key) do update set updated_at = integration_outbox.updated_at
       returning id, status, attempts, max_attempts, payload, idempotency_key
     `,
-    [outboxId, THEO_ACTION_TYPE, JSON.stringify(payload), now, THEO_SMOKE_DEDUPE_KEY, `ov-p0-192:${outboxId}`],
+    [outboxId, THEO_ACTION_TYPE, JSON.stringify(payload), now, THEO_SMOKE_DEDUPE_KEY, `ov-p0-192:${outboxId}`, THEO_DISPATCHER_CREATED_BY],
   );
   return result.rows[0] || null;
 }
@@ -209,6 +211,40 @@ export async function finishTheoOutbox(client, {
   return result.rows[0] || null;
 }
 
+/** Persists the Vercel dispatcher heartbeat without making its health depend on memory. */
+export async function recordTheoDispatcherHeartbeat(client, {
+  success = false,
+  errorCode = null,
+  hostname = process.env.VERCEL_REGION || "vercel",
+  version = process.env.VERCEL_GIT_COMMIT_SHA || "bff",
+} = {}) {
+  await client.query(
+    `
+      insert into worker_heartbeats (
+        worker_id, status, hostname, version, last_seen_at, last_cycle_at,
+        last_error, metadata, created_at, updated_at
+      ) values (
+        $1, 'running', $2, $3, now(), now(), $4,
+        jsonb_build_object('worker_name', $1, 'last_success_at', case when $5::boolean then now() else null end),
+        now(), now()
+      )
+      on conflict (worker_id) do update
+         set status = 'running',
+             hostname = excluded.hostname,
+             version = excluded.version,
+             last_seen_at = now(),
+             last_cycle_at = now(),
+             last_error = excluded.last_error,
+             metadata = jsonb_build_object(
+               'worker_name', $1,
+               'last_success_at', case when $5::boolean then now() else worker_heartbeats.metadata->>'last_success_at' end
+             ),
+             updated_at = now()
+    `,
+    [THEO_DISPATCHER_WORKER_NAME, text(hostname).slice(0, 160) || "vercel", text(version).slice(0, 160) || "bff", text(errorCode).slice(0, 120) || null, success],
+  );
+}
+
 function internalAuthorized(req, config) {
   if (!config.cronSecret) return false;
   return fixedEquals(authorization(req), `Bearer ${config.cronSecret}`);
@@ -229,6 +265,7 @@ export function createTheoDispatchHandler({
   createSmoke = createTheoSmokeOutbox,
   claim = claimEligibleTheoOutbox,
   finish = finishTheoOutbox,
+  heartbeat = recordTheoDispatcherHeartbeat,
   fetchFn = globalThis.fetch,
   idFactory = randomUUID,
   now = () => new Date(),
@@ -306,6 +343,16 @@ export function createTheoDispatchHandler({
       errorCode: failure?.code || null,
       retryAfterSeconds: failure?.retry_after_seconds || 0,
     }));
+    // Finishing the outbox precedes telemetry: a heartbeat write failure must
+    // never leave a delivered message eligible for another external send.
+    try {
+      await transaction((client) => heartbeat(client, {
+        success: succeeded,
+        errorCode: failure?.code || null,
+      }));
+    } catch {
+      logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
+    }
 
     const latencyMs = Math.max(Date.now() - startedAt, 0);
     logger({

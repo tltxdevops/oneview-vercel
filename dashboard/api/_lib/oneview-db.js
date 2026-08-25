@@ -2905,20 +2905,25 @@ export function classifyRuntimeHealth({ enabled = true, configured = true, lastS
   return lastError ? RUNTIME_STATUS.DOWN : RUNTIME_STATUS.STALE;
 }
 
-export function classifyRuntimeDatasource({ enabled = false, configured = false, lastSuccessAt = null, intervalSeconds = 60, lastError = null, now = Date.now() } = {}) {
-  const status = classifyRuntimeHealth({ enabled, configured, lastSuccessAt, intervalSeconds, lastError, now });
-  const activationBlocker = runtimeErrorKind(lastError);
+export function classifyRuntimeDatasource({ enabled = false, configured = false, lastSuccessAt = null, intervalSeconds = 60, lastError = null, failureCount = 0, now = Date.now() } = {}) {
+  // data_sources preserves the error text after a later successful cycle.
+  // failure_count is the persisted signal that the error is still current.
+  const currentFailure = integerValue(failureCount, 0) > 0;
+  const currentError = currentFailure ? lastError : null;
+  let status = classifyRuntimeHealth({ enabled, configured, lastSuccessAt, intervalSeconds, lastError: currentError, now });
+  if (enabled && configured && currentFailure && status === RUNTIME_STATUS.HEALTHY) status = RUNTIME_STATUS.DEGRADED;
+  const activationBlocker = currentFailure && runtimeErrorKind(lastError);
   return {
     status,
-    currentError: enabled || activationBlocker ? lastError : null,
-    lastHistoricalError: !enabled && !activationBlocker ? lastError : null,
+    currentError: (enabled && currentFailure) || activationBlocker ? lastError : null,
+    lastHistoricalError: lastError && !currentFailure ? lastError : null,
   };
 }
 
-function runtimeComponent({ id, category, name, enabled = true, status = RUNTIME_STATUS.UNKNOWN, connectivity = "unknown", auth = "unknown", freshness = null, last_success_at = null, last_observed_at = null, interval_seconds = null, duration_ms = null, version = null, failure_count = 0, current_error = null, last_historical_error = null, detail = null }) {
+function runtimeComponent({ id, category, name, enabled = true, status = RUNTIME_STATUS.UNKNOWN, connectivity = "unknown", auth = "unknown", freshness = null, last_success_at = null, last_observed_at = null, last_error_at = null, interval_seconds = null, duration_ms = null, hostname = null, version = null, failure_count = 0, current_error = null, last_historical_error = null, detail = null }) {
   return {
     id, category, name, enabled, status, connectivity, auth, freshness, last_success_at, last_observed_at,
-    interval_seconds, duration_ms, version, failure_count,
+    last_error_at, interval_seconds, duration_ms, hostname, version, failure_count,
     current_error: sanitizeText(current_error, "", 180) || null,
     last_historical_error: sanitizeText(last_historical_error, "", 180) || null,
     detail,
@@ -2948,14 +2953,42 @@ const REQUIRED_ZABBIX_RUNTIME_SOURCES = Object.freeze([
 // is registered. An encrypted legacy token alone is not activation-ready config.
 const ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG = new Set(["maps"]);
 
+const RUNTIME_WORKERS = Object.freeze([
+  { workerName: "zabbix_sync", name: "Zabbix Sync", intervalSeconds: 60 },
+  { workerName: "recovery", name: "Recovery", intervalSeconds: 60 },
+  { workerName: "servicenow_sync", name: "ServiceNow Sync", intervalSeconds: 30 },
+  { workerName: "theo_dispatcher", name: "Theo Dispatcher", intervalSeconds: 60 },
+]);
+const THEO_BFF_CREATED_BY = "vercel-theo-dispatcher";
+const THEO_LEGACY_BFF_CREATED_BY = "ov-p0-192";
+const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
+
+function metadataDate(value, key) {
+  return isoDate(value?.[key]);
+}
+
+export function classifyRuntimeWorker({ heartbeatAt = null, lastSuccessAt = null, lastError = null, reportedStatus = null, intervalSeconds = 60, now = Date.now() } = {}) {
+  const heartbeat = Date.parse(String(heartbeatAt || ""));
+  if (Number.isNaN(heartbeat)) return RUNTIME_STATUS.UNKNOWN;
+  if (String(reportedStatus || "").toLowerCase() === "stopped") return RUNTIME_STATUS.DOWN;
+  const heartbeatRatio = Math.max(0, now - heartbeat) / (Math.max(1, Number(intervalSeconds) || 60) * 1000);
+  if (heartbeatRatio > 2) return RUNTIME_STATUS.STALE;
+  if (lastError) return RUNTIME_STATUS.DEGRADED;
+  const success = Date.parse(String(lastSuccessAt || ""));
+  if (Number.isNaN(success)) return RUNTIME_STATUS.UNKNOWN;
+  const successRatio = Math.max(0, now - success) / (Math.max(1, Number(intervalSeconds) || 60) * 1000);
+  return successRatio <= 2 ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.STALE;
+}
+
 async function fetchRuntimeHealthPayload(config) {
   const startedAt = Date.now();
   const now = Date.now();
-  const [probe, sources, serviceNow, outbox] = await Promise.all([
+  const [probe, sources, serviceNow, workerHeartbeats, theoDispatch] = await Promise.all([
     queryRow(config, "select 1 as reachable"),
     queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token, nullif(btrim(d.api_url), '') is not null as has_api_url from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
     queryRows(config, `select s.last_success_at, s.watermark_sys_updated_on, to_jsonb(s)->>'last_error' as last_error, to_jsonb(s)->>'status' as status from servicenow_sync_state s where s.sync_key = 'incident' limit 1`),
-    queryRow(config, `select count(*) filter (where status in ('pending','processing'))::int as pending, count(*) filter (where status = 'failed')::int as failed, max(created_at) filter (where status in ('success','done')) as last_success_at from integration_outbox where action_type like 'webex_%' or action_type like 'theo_%'`),
+    queryRows(config, `select worker_id, status, hostname, version, last_seen_at, last_cycle_at, last_error, metadata, updated_at from worker_heartbeats where worker_id = any($1::text[])`, [RUNTIME_WORKERS.map((worker) => worker.workerName)]),
+    queryRow(config, `select status, processed_at, updated_at, last_error, attempts from integration_outbox where action_type = 'theo_webex_notification' and (created_by in ($1, $2) or idempotency_key = $3) order by coalesce(processed_at, updated_at, created_at) desc, id desc limit 1`, [THEO_BFF_CREATED_BY, THEO_LEGACY_BFF_CREATED_BY, THEO_SMOKE_DEDUPE_KEY]),
   ]);
   const components = [];
   const duration = Date.now() - startedAt;
@@ -2972,12 +3005,13 @@ async function fetchRuntimeHealthPayload(config) {
     const lastError = source?.last_error || source?.last_sync_error || null;
     const enabled = Boolean(source?.sync_enabled);
     const configured = Boolean(source?.has_token) && Boolean(source?.has_api_url) && !ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG.has(sourceName);
-    const classification = classifyRuntimeDatasource({ enabled, configured, lastSuccessAt: lastSuccess, intervalSeconds: interval, lastError, now });
+    const failureCount = integerValue(source?.failure_count, 0);
+    const classification = classifyRuntimeDatasource({ enabled, configured, lastSuccessAt: lastSuccess, intervalSeconds: interval, lastError, failureCount, now });
     const missingSource = !source;
     const detail = missingSource
       ? "Fonte esperada ainda não cadastrada"
       : ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG.has(sourceName)
-        ? "Configuração do collector Maps não registrada"
+        ? "Endpoint/token externo pendente"
         : "Evidência persistida em data_sources";
     components.push(runtimeComponent({
       id: `zabbix:${textValue(source?.id, sourceName)}`,
@@ -2990,8 +3024,9 @@ async function fetchRuntimeHealthPayload(config) {
       freshness: runtimeFreshness(lastSuccess, interval, now),
       last_success_at: lastSuccess,
       last_observed_at: isoDate(source?.last_sync_at),
+      last_error_at: failureCount > 0 ? isoDate(source?.last_sync_at) : null,
       interval_seconds: interval,
-      failure_count: integerValue(source?.failure_count, 0),
+      failure_count: failureCount,
       current_error: classification.currentError,
       last_historical_error: classification.lastHistoricalError,
       detail,
@@ -3006,12 +3041,39 @@ async function fetchRuntimeHealthPayload(config) {
   components.push(runtimeComponent({ id: "servicenow-read-model", category: "SERVICENOW", name: "ServiceNow PROD Read Model", ...snBase, detail: "Leitura local PostgreSQL" }));
   components.push(runtimeComponent({ id: "servicenow-watermark", category: "SERVICENOW", name: "ServiceNow Watermark", ...snBase, status: sn.watermark_sys_updated_on ? snStatus : RUNTIME_STATUS.UNKNOWN, detail: "watermark_sys_updated_on" }));
   components.push(runtimeComponent({ id: "servicenow-collector", category: "SERVICENOW", name: "ServiceNow Collector", ...snBase, detail: "Sem HTTP ServiceNow nesta requisição" }));
-  for (const name of ["Zabbix Sync", "Recovery", "ServiceNow Sync"]) components.push(runtimeComponent({ id: `timer:${name.toLowerCase().replace(/\s+/g, "-")}`, category: "WORKERS", name, status: RUNTIME_STATUS.UNKNOWN, detail: "Heartbeat individual não persistido" }));
-  const theoEnabled = String(process.env.THEO_ENABLED || process.env.WORKER_WEBEX_NOC_ENABLED || "").toLowerCase() === "true";
-  const theoConfigured = Boolean(String(process.env.THEO_URL || process.env.WEBEX_BOT_TOKEN || "").trim());
-  const theoError = Number(outbox?.failed || 0) > 0 ? "outbox_failed" : null;
-  const theoStatus = !theoConfigured ? RUNTIME_STATUS.CONFIG_MISSING : !theoEnabled ? RUNTIME_STATUS.READY_DISABLED : theoError ? RUNTIME_STATUS.DOWN : Number(outbox?.pending || 0) > 0 ? RUNTIME_STATUS.DEGRADED : classifyRuntimeHealth({ enabled: true, configured: true, lastSuccessAt: outbox?.last_success_at, intervalSeconds: 60, now });
-  components.push(runtimeComponent({ id: "theo-webex", category: "INTEGRATIONS", name: "Theo/Webex", enabled: theoEnabled, status: theoStatus, connectivity: outbox?.last_success_at ? "observed" : "unknown", auth: theoConfigured ? "configured" : "missing", last_success_at: isoDate(outbox?.last_success_at), failure_count: integerValue(outbox?.failed, 0), current_error: theoError, detail: `outbox pending=${integerValue(outbox?.pending, 0)}` }));
+  const workersByName = new Map(workerHeartbeats.map((worker) => [String(worker.worker_id || "").toLowerCase(), worker]));
+  for (const definition of RUNTIME_WORKERS) {
+    const worker = workersByName.get(definition.workerName) || null;
+    const lastSuccess = metadataDate(worker?.metadata, "last_success_at");
+    const lastHeartbeat = isoDate(worker?.last_seen_at);
+    const status = classifyRuntimeWorker({ heartbeatAt: lastHeartbeat, lastSuccessAt: lastSuccess, lastError: worker?.last_error, reportedStatus: worker?.status, intervalSeconds: definition.intervalSeconds, now });
+    components.push(runtimeComponent({
+      id: `worker:${definition.workerName}`,
+      category: "WORKERS",
+      name: definition.name,
+      status,
+      connectivity: lastHeartbeat ? "observed" : "unknown",
+      auth: "not_applicable",
+      freshness: runtimeFreshness(lastHeartbeat, definition.intervalSeconds, now),
+      last_success_at: lastSuccess,
+      last_observed_at: lastHeartbeat,
+      hostname: nullableText(sanitizeText(worker?.hostname, "", 160)),
+      version: nullableText(sanitizeText(worker?.version, "", 160)),
+      current_error: worker?.last_error,
+      detail: worker ? "Heartbeat persistido em worker_heartbeats" : "Heartbeat individual ainda não persistido",
+      interval_seconds: definition.intervalSeconds,
+    }));
+  }
+  const theoEnabled = String(process.env.THEO_ONEVIEW_AUTOMATION_ENABLED || "").toLowerCase() === "true";
+  const theoConfigured = Boolean(String(process.env.THEO_ONEVIEW_URL || "").trim() && String(process.env.THEO_ONEVIEW_TOKEN || "").trim() && String(process.env.CRON_SECRET || "").trim());
+  const theoLastSuccess = theoDispatch?.status === "success" ? isoDate(theoDispatch?.processed_at) : null;
+  const theoFailed = theoDispatch?.status === "failed";
+  const theoStatus = !theoConfigured
+    ? RUNTIME_STATUS.CONFIG_MISSING
+    : theoFailed
+      ? RUNTIME_STATUS.DEGRADED
+      : classifyRuntimeHealth({ enabled: true, configured: true, lastSuccessAt: theoLastSuccess, intervalSeconds: 86400, now });
+  components.push(runtimeComponent({ id: "theo-webex", category: "INTEGRATIONS", name: "Theo/Webex", enabled: theoEnabled, status: theoStatus, connectivity: theoDispatch ? "observed" : "unknown", auth: theoConfigured ? "configured" : "missing", last_success_at: theoLastSuccess, last_observed_at: isoDate(theoDispatch?.updated_at), last_error_at: theoFailed ? isoDate(theoDispatch?.updated_at) : null, failure_count: theoFailed ? 1 : 0, current_error: theoFailed ? theoDispatch?.last_error : null, detail: theoConfigured ? (theoEnabled ? "Dispatcher Vercel habilitado" : "Dispatcher Vercel configurado; automações desabilitadas") : "Secrets server-side pendentes" }));
   return { overall_status: runtimeOverallStatus(components), generated_at: generatedAt(), components };
 }
 

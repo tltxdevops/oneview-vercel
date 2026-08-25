@@ -713,8 +713,10 @@ export interface RuntimeHealthComponent {
   freshness: { age_seconds: number | null; ratio: number | null } | null;
   last_success_at: string | null;
   last_observed_at: string | null;
+  last_error_at: string | null;
   interval_seconds: number | null;
   duration_ms: number | null;
+  hostname: string | null;
   version: string | null;
   failure_count: number;
   current_error: string | null;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { classifyRuntimeDatasource, classifyRuntimeHealth, runtimeOverallStatus } from "../api/_lib/oneview-db.js";
+import { classifyRuntimeDatasource, classifyRuntimeHealth, classifyRuntimeWorker, runtimeOverallStatus } from "../api/_lib/oneview-db.js";
 
 const now = Date.parse("2026-08-21T12:00:00.000Z");
 const at = (seconds) => new Date(now - seconds * 1000).toISOString();
@@ -29,7 +29,7 @@ test("OV-P0-166 separates activation blockers from historical disabled-source er
     lastHistoricalError: "column alerts.scope does not exist",
   });
 
-  const tlsBlocker = classifyRuntimeDatasource({ enabled: false, configured: true, lastError: "TLS certificate failure", now });
+  const tlsBlocker = classifyRuntimeDatasource({ enabled: false, configured: true, lastError: "TLS certificate failure", failureCount: 1, now });
   assert.equal(tlsBlocker.status, "CONFIG_MISSING");
   assert.equal(tlsBlocker.currentError, "TLS certificate failure");
   assert.equal(tlsBlocker.lastHistoricalError, null);
@@ -38,6 +38,42 @@ test("OV-P0-166 separates activation blockers from historical disabled-source er
   assert.equal(missingConfig.status, "CONFIG_MISSING");
   assert.equal(missingConfig.currentError, null);
   assert.equal(missingConfig.lastHistoricalError, null);
+});
+
+test("OV-P0-194 keeps historical datasource errors out of the current status", () => {
+  const historical = classifyRuntimeDatasource({
+    enabled: true,
+    configured: true,
+    lastSuccessAt: at(20),
+    intervalSeconds: 60,
+    lastError: "Zabbix API request failed",
+    failureCount: 0,
+    now,
+  });
+  assert.equal(historical.status, "HEALTHY");
+  assert.equal(historical.currentError, null);
+  assert.equal(historical.lastHistoricalError, "Zabbix API request failed");
+
+  const current = classifyRuntimeDatasource({
+    enabled: true,
+    configured: true,
+    lastSuccessAt: at(20),
+    intervalSeconds: 60,
+    lastError: "Zabbix API request failed",
+    failureCount: 1,
+    now,
+  });
+  assert.equal(current.status, "DEGRADED");
+  assert.equal(current.currentError, "Zabbix API request failed");
+  assert.equal(current.lastHistoricalError, null);
+});
+
+test("OV-P0-194 worker status requires an individual persisted heartbeat and success", () => {
+  assert.equal(classifyRuntimeWorker({ now }), "UNKNOWN");
+  assert.equal(classifyRuntimeWorker({ heartbeatAt: at(20), lastSuccessAt: at(20), intervalSeconds: 60, now }), "HEALTHY");
+  assert.equal(classifyRuntimeWorker({ heartbeatAt: at(20), lastSuccessAt: at(20), lastError: "timeout", intervalSeconds: 60, now }), "DEGRADED");
+  assert.equal(classifyRuntimeWorker({ heartbeatAt: at(180), lastSuccessAt: at(180), intervalSeconds: 60, now }), "STALE");
+  assert.equal(classifyRuntimeWorker({ heartbeatAt: at(20), lastSuccessAt: at(20), reportedStatus: "stopped", intervalSeconds: 60, now }), "DOWN");
 });
 
 test("OV-P0-165 runtime health is the single frontend health source", () => {
@@ -49,6 +85,10 @@ test("OV-P0-165 runtime health is the single frontend health source", () => {
   assert.match(db, /from data_sources d where coalesce\(d.type, 'zabbix'\) = 'zabbix'/);
   assert.match(db, /servicenow_sync_state/);
   assert.match(db, /integration_outbox/);
+  assert.match(db, /worker_heartbeats/);
+  assert.match(db, /THEO_ONEVIEW_URL/);
+  assert.match(db, /Endpoint\/token externo pendente/);
+  assert.doesNotMatch(db, /THEO_ENABLED \|\| process\.env\.WORKER_WEBEX_NOC_ENABLED/);
   assert.match(db, /READY_DISABLED/);
   assert.match(db, /fraport-poa/);
   assert.match(db, /ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG/);

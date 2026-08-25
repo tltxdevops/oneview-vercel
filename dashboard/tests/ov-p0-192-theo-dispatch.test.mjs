@@ -6,6 +6,8 @@ import {
   claimEligibleTheoOutbox,
   createTheoSmokeOutbox,
   createTheoDispatchHandler,
+  recordTheoDispatcherHeartbeat,
+  THEO_DISPATCHER_WORKER_NAME,
   THEO_SMOKE_DEDUPE_KEY,
   theoSmokePayload,
 } from "../api/_lib/oneview-theo-dispatch.js";
@@ -60,6 +62,7 @@ function dispatcher(overrides = {}) {
     createSmoke: async () => ({ id: OUTBOX_ID, status: "pending" }),
     claim: async () => claimed(),
     finish: async () => ({ id: OUTBOX_ID, status: "success" }),
+    heartbeat: async () => undefined,
     fetchFn: async () => ({ status: 204, headers: { get: () => null } }),
     idFactory: () => "test-lock-id",
     now: () => new Date("2026-08-24T21:00:00.000Z"),
@@ -245,4 +248,20 @@ test("OV-P0-192 payload follows the validated Theo contract", () => {
     "acompanhamento", "severidade", "chamado", "link",
   ]);
   assert.doesNotMatch(JSON.stringify(payload), /must-not-pass-through/);
+});
+
+test("OV-P0-194 persists a server-side Theo dispatcher heartbeat", async () => {
+  const calls = [];
+  await recordTheoDispatcherHeartbeat({
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return { rows: [] };
+    },
+  }, { success: true, hostname: "vercel-test", version: "c374d34" });
+
+  assert.match(calls[0].sql, /insert into worker_heartbeats/i);
+  assert.match(calls[0].sql, /on conflict \(worker_id\) do update/i);
+  assert.equal(calls[0].values[0], THEO_DISPATCHER_WORKER_NAME);
+  assert.equal(calls[0].values[3], null);
+  assert.equal(calls[0].values[4], true);
 });

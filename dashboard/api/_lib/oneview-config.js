@@ -121,7 +121,7 @@ export function getOneViewConfig(env = process.env) {
   const ackRequestEnabled = booleanValue(env.ONEVIEW_ACK_REQUEST_ENABLED, false);
   const ackExecutionEnabled = booleanValue(env.ONEVIEW_ACK_EXECUTION_ENABLED, false);
   const authenticatedActionsEnabled = booleanValue(env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS, false);
-  const actionsDatabaseConfigured = Boolean(String(env.POSTGRES_ACTIONS_PASSWORD || "").trim());
+  const actionsDatabaseConfigured = Boolean(String(env.POSTGRES_ACTIONS_PASSWORD || env.ONEVIEW_ACTIONS_PASSWORD || "").trim());
   let dbConfig = null;
   let dbConfigErrorCode = null;
 

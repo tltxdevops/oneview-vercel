@@ -408,6 +408,14 @@ test("capacidade de ACK só é exposta quando solicitação está habilitada e e
   }));
   assert.equal(presentationSafe.ackEnabled, true);
 
+  const officialPassword = getOneViewConfig(validDbEnv({
+    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
+    ONEVIEW_ACK_REQUEST_ENABLED: "true",
+    ONEVIEW_ACK_EXECUTION_ENABLED: "false",
+    ONEVIEW_ACTIONS_PASSWORD: "actions-test-value",
+  }));
+  assert.equal(officialPassword.ackEnabled, true);
+
   const executionEnabled = getOneViewConfig(validDbEnv({
     ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",

@@ -329,6 +329,15 @@ test("pool de actions usa role fixa e senha exclusiva", () => {
   }).allowAllAuthenticatedActions, true);
 });
 
+test("pool de actions aceita a senha oficial do projeto", () => {
+  const config = getOneViewActionsDbConfig({
+    ONEVIEW_DB_HOST: "db.example.invalid",
+    ONEVIEW_DB_NAME: "oneview",
+    ONEVIEW_ACTIONS_PASSWORD: "official-actions-secret",
+  });
+  assert.equal(config.password, "official-actions-secret");
+});
+
 test("ACK request: flag geral desabilitada falha fechado antes do banco", async () => {
   let transactionCalled = false;
   const handler = createAckRequestHandler({

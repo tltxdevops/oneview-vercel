@@ -46,7 +46,9 @@ function poolSignature(config) {
 export function getOneViewActionsDbConfig(env = process.env) {
   const host = textValue(env.ONEVIEW_DB_HOST);
   const database = textValue(env.ONEVIEW_DB_NAME);
-  const password = String(env.POSTGRES_ACTIONS_PASSWORD || "");
+  // ONEVIEW_ACTIONS_PASSWORD is the project-standard Production secret.
+  // Keep the former name only as a compatibility fallback for older deploys.
+  const password = String(env.POSTGRES_ACTIONS_PASSWORD || env.ONEVIEW_ACTIONS_PASSWORD || "");
   const sslMode = textValue(env.ONEVIEW_DB_SSLMODE, "require").toLowerCase();
 
   if (!host || !database || !password) {
@@ -119,4 +121,3 @@ export async function resetOneViewActionsPoolForTests() {
   actionsPool = undefined;
   actionsPoolKey = "";
 }
-
