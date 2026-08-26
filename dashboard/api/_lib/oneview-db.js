@@ -3216,3 +3216,52 @@ export async function findTheoCanaryAlert(
     [normalizedId],
   );
 }
+
+/**
+ * OV-P0-214 — resolves only the alert explicitly identified by the Worker
+ * producer. This is read-only enrichment; it never broadens to host/customer
+ * matching and deliberately permits every authorized Zabbix datasource.
+ */
+export async function findTheoProducedAlert(
+  { alertId, dataSourceId = null, sourceEventId = null } = {},
+  config = getOneViewDbConfig(),
+) {
+  const normalizedId = textValue(alertId).toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/.test(normalizedId)) return null;
+  const normalizedDataSourceId = textValue(dataSourceId).toLowerCase() || null;
+  const normalizedSourceEventId = textValue(sourceEventId) || null;
+  return queryRow(
+    config,
+    `
+    select
+      a.id::text as id,
+      a.data_source_id::text as data_source_id,
+      a.source_event_id::text as source_event_id,
+      a.client_name,
+      a.customer_name,
+      a.host_name,
+      a.host_visible_name,
+      a.host_technical_name,
+      a.host_ip,
+      a.problem_name,
+      a.trigger_description,
+      a.operational_data,
+      a.severity,
+      a.status_source,
+      a.resolved_at,
+      a.first_seen_at,
+      a.last_seen_at,
+      a.event_tags,
+      a.trigger_tags,
+      a.host_tags
+    from alerts a
+    join data_sources d on d.id = a.data_source_id
+    where a.id = $1
+      and coalesce(d.type, 'zabbix') = 'zabbix'
+      and ($2::text is null or a.data_source_id::text = $2)
+      and ($3::text is null or a.source_event_id::text = $3)
+    limit 1
+    `,
+    [normalizedId, normalizedDataSourceId, normalizedSourceEventId],
+  );
+}

@@ -10,6 +10,8 @@ import {
   createTheoSmokeOutbox,
   createTheoDispatchHandler,
   recordTheoDispatcherHeartbeat,
+  THEO_ACTION_TYPE,
+  THEO_AUTO_ACTION_TYPE,
   THEO_DISPATCHER_WORKER_NAME,
   theoCanaryDedupeKey,
   THEO_SMOKE_DEDUPE_KEY,
@@ -80,6 +82,21 @@ function canaryAlert(severity = "disaster") {
   };
 }
 
+function producedClaim() {
+  return {
+    id: OUTBOX_ID,
+    action_type: THEO_AUTO_ACTION_TYPE,
+    attempts: 1,
+    max_attempts: 3,
+    idempotency_key: "theo:alert:source-a:338976923",
+    payload: {
+      alert_id: CANARY_ALERT_ID,
+      data_source_id: "source-a",
+      source_event_id: "338976923",
+    },
+  };
+}
+
 function dispatcher(overrides = {}) {
   return createTheoDispatchHandler({
     configProvider: () => config(),
@@ -131,6 +148,7 @@ test("OV-P0-192 completes a claimed smoke outbox after Theo 2xx", async () => {
   assert.equal(sent[0].options.headers["Content-Type"], "application/json");
   assert.equal(sent[0].options.headers["X-Theo-Token"], "server-only-theo-token");
   assert.deepEqual(finished[0], {
+    actionType: THEO_ACTION_TYPE,
     outboxId: OUTBOX_ID,
     lockedBy: "vercel-theo:test-lock-id",
     success: true,
@@ -139,6 +157,128 @@ test("OV-P0-192 completes a claimed smoke outbox after Theo 2xx", async () => {
     errorCode: null,
     retryAfterSeconds: 0,
   });
+});
+
+test("OV-P0-214 automatic claim is limited to pending or failed producer rows", async () => {
+  const calls = [];
+  await claimEligibleTheoOutbox({
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return { rows: [] };
+    },
+  }, {
+    actionType: THEO_AUTO_ACTION_TYPE,
+    allowAutomation: true,
+    lockedBy: "vercel-theo:test",
+  });
+
+  assert.equal(calls[0].values[0], THEO_AUTO_ACTION_TYPE);
+  assert.match(calls[0].sql, /o\.status in \('pending', 'failed'\)/i);
+  assert.match(calls[0].sql, /o\.action_type = \$1/i);
+  assert.doesNotMatch(calls[0].sql, /theo_webex_notification/);
+});
+
+test("OV-P0-214 automatic dispatcher cannot claim legacy smoke, canary, or Theo rows", async () => {
+  let claimOptions;
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    claim: async (_client, options) => { claimOptions = options; return null; },
+  });
+  const response = res();
+  await handler(req(), response);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { claimed: false, status: "not_eligible" });
+  assert.equal(claimOptions.actionType, THEO_AUTO_ACTION_TYPE);
+  assert.equal(claimOptions.allowAutomation, true);
+  assert.equal(claimOptions.allowedDedupeKey, null);
+});
+
+test("OV-P0-214 enriches a producer row into Theo payload with OneView and ServiceNow links", async () => {
+  let sent;
+  let finished;
+  const alert = {
+    ...canaryAlert(),
+    event_tags: [
+      { tag: "__zbx_servicenow_number", value: "INC0074751" },
+      { tag: "__zbx_servicenow_sys_id", value: "fdb2c6e797fe0710e580f137f053afe3" },
+    ],
+  };
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    claim: async () => producedClaim(),
+    findProducedAlert: async (reference) => {
+      assert.deepEqual(reference, { alertId: CANARY_ALERT_ID, dataSourceId: "source-a", sourceEventId: "338976923" });
+      return alert;
+    },
+    finish: async (_client, result) => { finished = result; return { id: OUTBOX_ID, status: "success" }; },
+    fetchFn: async (_url, options) => { sent = JSON.parse(options.body); return { status: 200, headers: { get: () => null } }; },
+  });
+  const response = res();
+  await handler(req(), response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(finished.actionType, THEO_AUTO_ACTION_TYPE);
+  assert.equal(sent.link, `https://oneview.teletexdev.com.br/alertas?alert=${CANARY_ALERT_ID}`);
+  assert.equal(sent.oneview_link, sent.link);
+  assert.equal(sent.servicenow_link, "https://teletexprod.service-now.com/incident.do?sys_id=fdb2c6e797fe0710e580f137f053afe3");
+  assert.equal(sent.chamado, "INC0074751");
+});
+
+test("OV-P0-214 producer payload without an explicit Incident has only the OneView link", async () => {
+  let sent;
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    claim: async () => producedClaim(),
+    findProducedAlert: async () => ({ ...canaryAlert(), event_tags: [], trigger_tags: [], host_tags: [] }),
+    fetchFn: async (_url, options) => { sent = JSON.parse(options.body); return { status: 200, headers: { get: () => null } }; },
+  });
+  const response = res();
+  await handler(req(), response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(sent.link, `https://oneview.teletexdev.com.br/alertas?alert=${CANARY_ALERT_ID}`);
+  assert.equal(Object.hasOwn(sent, "servicenow_link"), false);
+});
+
+test("OV-P0-214 concurrent automatic dispatches claim and send a producer row once", async () => {
+  let claimedOnce = false;
+  let sends = 0;
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    claim: async () => {
+      if (claimedOnce) return null;
+      claimedOnce = true;
+      return producedClaim();
+    },
+    findProducedAlert: async () => canaryAlert(),
+    fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+  });
+  const left = res();
+  const right = res();
+  await Promise.all([handler(req(), left), handler(req(), right)]);
+
+  assert.equal(sends, 1);
+  assert.deepEqual([left.body.status, right.body.status].sort(), ["not_eligible", "success"]);
+});
+
+test("OV-P0-214 a successful producer row is never sent again", async () => {
+  let claims = 0;
+  let sends = 0;
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    claim: async () => (++claims === 1 ? producedClaim() : null),
+    findProducedAlert: async () => canaryAlert(),
+    fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+  });
+  const first = res();
+  const second = res();
+  await handler(req(), first);
+  await handler(req(), second);
+
+  assert.equal(first.body.status, "success");
+  assert.deepEqual(second.body, { claimed: false, status: "not_eligible" });
+  assert.equal(sends, 1);
 });
 
 test("OV-P0-192 creates the fixed smoke payload with the required dedupe key", async () => {

@@ -2,10 +2,13 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import { methodNotAllowed, sendJson } from "./http.js";
 import { projectServiceNowReferenceFromAlertTags, SERVICENOW_PROD_BASE_URL } from "./oneview-inc-correlation.js";
-import { findTheoCanaryAlert } from "./oneview-db.js";
+import { findTheoCanaryAlert, findTheoProducedAlert } from "./oneview-db.js";
 import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
 
+// Legacy type is reserved for explicit smoke/canary operations. Automatic
+// dispatch may claim only rows created by the persisted Worker producer.
 export const THEO_ACTION_TYPE = "theo_webex_notification";
+export const THEO_AUTO_ACTION_TYPE = "theo_alert_notification_v1";
 export const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
 export const THEO_CANARY_DEDUPE_PREFIX = "theo:canary:alert:";
 export const THEO_DISPATCHER_WORKER_NAME = "theo_dispatcher";
@@ -213,6 +216,7 @@ export async function createTheoCanaryOutbox(client, {
 
 /** PostgreSQL claim is the cross-instance idempotency boundary. */
 export async function claimEligibleTheoOutbox(client, {
+  actionType = THEO_ACTION_TYPE,
   outboxId = null,
   allowAutomation = false,
   allowedDedupeKey = null,
@@ -243,14 +247,15 @@ export async function claimEligibleTheoOutbox(client, {
              updated_at = now()
         from candidate
        where o.id = candidate.id
-      returning o.id, o.payload, o.attempts, o.max_attempts, o.idempotency_key
+      returning o.id, o.action_type, o.payload, o.attempts, o.max_attempts, o.idempotency_key
     `,
-    [THEO_ACTION_TYPE, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, allowedDedupeKey, lockedBy, lockTtlSeconds],
+    [actionType, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, allowedDedupeKey, lockedBy, lockTtlSeconds],
   );
   return result.rows[0] || null;
 }
 
 export async function finishTheoOutbox(client, {
+  actionType = THEO_ACTION_TYPE,
   outboxId,
   lockedBy,
   success = false,
@@ -278,7 +283,7 @@ export async function finishTheoOutbox(client, {
          and locked_by = $8
       returning id, status, attempts, processed_at, next_attempt_at
     `,
-    [outboxId, THEO_ACTION_TYPE, success, retryable, httpStatus, errorCode, retryAfter, lockedBy],
+    [outboxId, actionType, success, retryable, httpStatus, errorCode, retryAfter, lockedBy],
   );
   return result.rows[0] || null;
 }
@@ -352,6 +357,7 @@ export function createTheoDispatchHandler({
   configProvider = getTheoDispatchConfig,
   createSmoke = createTheoSmokeOutbox,
   findCanary = findTheoCanaryAlert,
+  findProducedAlert = findTheoProducedAlert,
   createCanary = createTheoCanaryOutbox,
   claim = claimEligibleTheoOutbox,
   finish = finishTheoOutbox,
@@ -376,9 +382,11 @@ export function createTheoDispatchHandler({
     if (canary.present && config.automationEnabled) return sendJson(res, 403, { error: "canary_requires_automation_disabled" });
     let targetId = requestedOutboxId(req);
     let allowedDedupeKey = null;
+    let actionType = THEO_AUTO_ACTION_TYPE;
     if (smoke) {
       const smokeOutbox = await transaction((client) => createSmoke(client, { idFactory, now: now() }));
       targetId = smokeOutbox?.id || null;
+      actionType = THEO_ACTION_TYPE;
     } else if (canary.present) {
       let alert;
       try {
@@ -402,6 +410,7 @@ export function createTheoDispatchHandler({
       }
       targetId = canaryOutbox?.id || null;
       allowedDedupeKey = theoCanaryDedupeKey(canary.value);
+      actionType = THEO_ACTION_TYPE;
     } else if (!config.automationEnabled) {
       return sendJson(res, 403, { error: "theo_automation_disabled" });
     }
@@ -410,8 +419,9 @@ export function createTheoDispatchHandler({
     let claimed;
     try {
       claimed = await transaction((client) => claim(client, {
+        actionType,
         outboxId: targetId,
-        allowAutomation: config.automationEnabled,
+        allowAutomation: actionType === THEO_AUTO_ACTION_TYPE && config.automationEnabled,
         allowedDedupeKey,
         lockedBy: lockId,
       }));
@@ -424,7 +434,53 @@ export function createTheoDispatchHandler({
       return sendJson(res, 200, { claimed: false, status: "not_eligible" });
     }
 
-    const payload = buildTheoPayload(claimed.payload, now());
+    const claimedActionType = text(claimed.action_type) || actionType;
+    let payload;
+    if (claimedActionType === THEO_AUTO_ACTION_TYPE) {
+      const producerPayload = payloadObject(claimed.payload);
+      let alert;
+      let enrichmentFailure = null;
+      try {
+        alert = await findProducedAlert({
+          alertId: producerPayload.alert_id,
+          dataSourceId: producerPayload.data_source_id,
+          sourceEventId: producerPayload.source_event_id,
+        });
+      } catch {
+        enrichmentFailure = { code: "database_unavailable", retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) };
+      }
+      if (!alert && !enrichmentFailure) {
+        enrichmentFailure = { code: "produced_alert_not_found", retryable: false, retry_after_seconds: 0 };
+      }
+      if (enrichmentFailure) {
+        await transaction((client) => finish(client, {
+          actionType: claimedActionType,
+          outboxId: claimed.id,
+          lockedBy: lockId,
+          success: false,
+          retryable: enrichmentFailure.retryable,
+          httpStatus: null,
+          errorCode: enrichmentFailure.code,
+          retryAfterSeconds: enrichmentFailure.retry_after_seconds,
+        }));
+        try {
+          await transaction((client) => heartbeat(client, { success: false, errorCode: enrichmentFailure.code }));
+        } catch {
+          logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
+        }
+        logger({ event: "theo_dispatch", outbox_id: claimed.id, status: "failed", code: enrichmentFailure.code, retryable: enrichmentFailure.retryable, latency_ms: Math.max(Date.now() - startedAt, 0) });
+        return sendJson(res, 202, {
+          outbox_id: claimed.id,
+          status: "failed",
+          http_status: null,
+          retryable: enrichmentFailure.retryable,
+          latency_ms: Math.max(Date.now() - startedAt, 0),
+        });
+      }
+      payload = buildTheoPayload(buildTheoAlertPayload(alert, now()), now());
+    } else {
+      payload = buildTheoPayload(claimed.payload, now());
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
     let response;
@@ -454,6 +510,7 @@ export function createTheoDispatchHandler({
 
     const succeeded = !failure;
     await transaction((client) => finish(client, {
+      actionType: claimedActionType,
       outboxId: claimed.id,
       lockedBy: lockId,
       success: succeeded,
