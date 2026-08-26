@@ -505,6 +505,27 @@ test("OV-P0-203 Theo route accepts only its CRON_SECRET and does not require an 
   assert.equal(transactionCalls, 0);
 });
 
+test("OV-P0-219 Theo webhook token is never accepted as internal CRON authentication", async () => {
+  let transactionCalls = 0;
+  const handler = dispatcher({
+    configProvider: () => config({ url: null }),
+    transaction: async () => { transactionCalls += 1; },
+  });
+
+  const cron = res();
+  await handler(req(), cron);
+  assert.equal(cron.statusCode, 503);
+  assert.deepEqual(cron.body, { error: "theo_dispatch_not_configured" });
+
+  for (const authorization of ["Bearer server-only-theo-token", "Bearer random-token", undefined]) {
+    const rejected = res();
+    await handler({ method: "POST", query: {}, headers: authorization ? { authorization } : {} }, rejected);
+    assert.equal(rejected.statusCode, 401);
+    assert.deepEqual(rejected.body, { error: "authentication_required" });
+  }
+  assert.equal(transactionCalls, 0);
+});
+
 test("OV-P0-203 Theo route rejects non-POST before auth and other OneView routes retain SSO", async () => {
   const theo = dispatcher();
   const getResponse = res();
