@@ -8,7 +8,14 @@ import theoDispatchHandler from "../_lib/oneview-theo-dispatch.js";
 export function createTheoCronHandler({ dispatch = theoDispatchHandler } = {}) {
   return async function theoCronHandler(req, res) {
     if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
-    return dispatch({ ...req, method: "POST" }, res);
+    // IncomingMessage/VercelRequest fields can be inherited getters rather
+    // than enumerable own properties. Forward the auth header explicitly;
+    // spreading the request may otherwise turn a valid Vercel Cron into 401.
+    return dispatch({
+      method: "POST",
+      headers: req.headers,
+      query: req.query,
+    }, res);
   };
 }
 

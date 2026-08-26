@@ -559,6 +559,28 @@ test("OV-P0-217 Vercel Cron accepts only GET and delegates through the existing 
   assert.equal(postResponse.statusCode, 405);
 });
 
+test("OV-P0-224 Cron preserves non-enumerable Vercel request headers for CRON_SECRET auth", async () => {
+  let delegated;
+  const cron = createTheoCronHandler({
+    dispatch: async (request, response) => {
+      delegated = request;
+      response.status(200).end(JSON.stringify({ delegated: true }));
+    },
+  });
+  const productionRequest = { method: "GET" };
+  Object.defineProperties(productionRequest, {
+    headers: { value: { authorization: `Bearer ${SECRET}` }, enumerable: false },
+    query: { value: {}, enumerable: false },
+  });
+  const response = res();
+  await cron(productionRequest, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(delegated.method, "POST");
+  assert.equal(delegated.headers.authorization, `Bearer ${SECRET}`);
+  assert.deepEqual(delegated.query, {});
+});
+
 test("OV-P0-217 production config schedules only the dedicated Theo Cron route", async () => {
   const config = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.deepEqual(config.crons, [{ path: "/api/internal/theo-cron", schedule: "*/5 * * * *" }]);
