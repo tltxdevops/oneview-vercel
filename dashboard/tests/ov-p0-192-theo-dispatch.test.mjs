@@ -18,6 +18,7 @@ import {
   theoSmokePayload,
 } from "../api/_lib/oneview-theo-dispatch.js";
 import { createOneViewHandler } from "../api/_lib/oneview-response.js";
+import { createTheoCronHandler } from "../api/internal/theo-cron.js";
 
 const SECRET = "theo-dispatch-test-secret";
 const OUTBOX_ID = "0a3be1e9-42de-4a50-b5aa-9ec886971920";
@@ -516,6 +517,30 @@ test("OV-P0-203 Theo route rejects non-POST before auth and other OneView routes
   await oneView({ method: "GET", query: {}, headers: {} }, oneViewResponse);
   assert.equal(oneViewResponse.statusCode, 401);
   assert.deepEqual(oneViewResponse.body, { error: "authentication_required" });
+});
+
+test("OV-P0-217 Vercel Cron accepts only GET and delegates through the existing CRON_SECRET dispatcher", async () => {
+  let delegated;
+  const cron = createTheoCronHandler({
+    dispatch: async (request, response) => {
+      delegated = request;
+      response.status(200).end(JSON.stringify({ delegated: true }));
+    },
+  });
+  const getResponse = res();
+  await cron({ method: "GET", query: {}, headers: { authorization: `Bearer ${SECRET}` } }, getResponse);
+  assert.equal(delegated.method, "POST");
+  assert.equal(delegated.headers.authorization, `Bearer ${SECRET}`);
+  assert.equal(getResponse.statusCode, 200);
+
+  const postResponse = res();
+  await cron({ method: "POST", query: {}, headers: {} }, postResponse);
+  assert.equal(postResponse.statusCode, 405);
+});
+
+test("OV-P0-217 production config schedules only the dedicated Theo Cron route", async () => {
+  const config = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+  assert.deepEqual(config.crons, [{ path: "/api/internal/theo-cron", schedule: "*/5 * * * *" }]);
 });
 
 test("OV-P0-192 success is never sent again", async () => {
