@@ -14,6 +14,7 @@ export const THEO_CANARY_DEDUPE_PREFIX = "theo:canary:alert:";
 export const THEO_DISPATCHER_WORKER_NAME = "theo_dispatcher";
 export const THEO_DISPATCHER_CREATED_BY = "vercel-theo-dispatcher";
 const THEO_TIMEOUT_MS = 10_000;
+const THEO_AUTO_BATCH_SIZE = 5;
 const LOCK_TTL_SECONDS = 600;
 const RETRY_DELAYS_SECONDS = [30, 120, 600, 1800, 7200];
 const SAFE_OUTBOX_ID = /^[a-z0-9][a-z0-9-]{7,79}$/i;
@@ -92,6 +93,7 @@ export function getTheoDispatchConfig(env = process.env) {
     cronSecret: text(env.CRON_SECRET),
     automationEnabled: bool(env.THEO_ONEVIEW_AUTOMATION_ENABLED, false),
     timeoutMs: Math.min(Math.max(Number(env.THEO_ONEVIEW_TIMEOUT_MS) || THEO_TIMEOUT_MS, 1000), 25_000),
+    batchSize: Math.min(Math.max(Number(env.THEO_ONEVIEW_DISPATCH_BATCH_SIZE) || THEO_AUTO_BATCH_SIZE, 1), 10),
   });
 }
 
@@ -234,7 +236,7 @@ export async function claimEligibleTheoOutbox(client, {
            and o.attempts < o.max_attempts
            and o.next_attempt_at <= now()
            and ($3::boolean or o.idempotency_key = $4 or ($5::text is not null and o.idempotency_key = $5))
-         order by o.priority asc, o.next_attempt_at asc, o.created_at asc, o.id asc
+         order by o.created_at asc, o.id asc
          limit 1
          for update skip locked
       )
@@ -415,138 +417,151 @@ export function createTheoDispatchHandler({
       return sendJson(res, 403, { error: "theo_automation_disabled" });
     }
 
-    const lockId = `vercel-theo:${idFactory()}`;
-    let claimed;
-    try {
-      claimed = await transaction((client) => claim(client, {
-        actionType,
-        outboxId: targetId,
-        allowAutomation: actionType === THEO_AUTO_ACTION_TYPE && config.automationEnabled,
-        allowedDedupeKey,
-        lockedBy: lockId,
-      }));
-    } catch {
-      logger({ event: "theo_dispatch", status: "failed", code: "database_unavailable", duration_ms: Date.now() - startedAt });
-      return sendJson(res, 503, { error: "database_unavailable" });
-    }
+    const automaticBatch = actionType === THEO_AUTO_ACTION_TYPE && !targetId;
+    const maxItems = automaticBatch ? config.batchSize : 1;
+    const results = [];
 
-    if (!claimed) {
-      return sendJson(res, 200, { claimed: false, status: "not_eligible" });
-    }
-
-    const claimedActionType = text(claimed.action_type) || actionType;
-    let payload;
-    if (claimedActionType === THEO_AUTO_ACTION_TYPE) {
-      const producerPayload = payloadObject(claimed.payload);
-      let alert;
-      let enrichmentFailure = null;
+    for (let item = 0; item < maxItems; item += 1) {
+      const lockId = `vercel-theo:${idFactory()}`;
+      let claimed;
       try {
-        alert = await findProducedAlert({
-          alertId: producerPayload.alert_id,
-          dataSourceId: producerPayload.data_source_id,
-          sourceEventId: producerPayload.source_event_id,
-        });
-      } catch {
-        enrichmentFailure = { code: "database_unavailable", retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) };
-      }
-      if (!alert && !enrichmentFailure) {
-        enrichmentFailure = { code: "produced_alert_not_found", retryable: false, retry_after_seconds: 0 };
-      }
-      if (enrichmentFailure) {
-        await transaction((client) => finish(client, {
-          actionType: claimedActionType,
-          outboxId: claimed.id,
+        claimed = await transaction((client) => claim(client, {
+          actionType,
+          outboxId: targetId,
+          allowAutomation: actionType === THEO_AUTO_ACTION_TYPE && config.automationEnabled,
+          allowedDedupeKey,
           lockedBy: lockId,
-          success: false,
-          retryable: enrichmentFailure.retryable,
-          httpStatus: null,
-          errorCode: enrichmentFailure.code,
-          retryAfterSeconds: enrichmentFailure.retry_after_seconds,
         }));
-        try {
-          await transaction((client) => heartbeat(client, { success: false, errorCode: enrichmentFailure.code }));
-        } catch {
-          logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
-        }
-        logger({ event: "theo_dispatch", outbox_id: claimed.id, status: "failed", code: enrichmentFailure.code, retryable: enrichmentFailure.retryable, latency_ms: Math.max(Date.now() - startedAt, 0) });
-        return sendJson(res, 202, {
-          outbox_id: claimed.id,
-          status: "failed",
-          http_status: null,
-          retryable: enrichmentFailure.retryable,
-          latency_ms: Math.max(Date.now() - startedAt, 0),
-        });
+      } catch {
+        logger({ event: "theo_dispatch", status: "failed", code: "database_unavailable", duration_ms: Date.now() - startedAt });
+        return sendJson(res, 503, { error: "database_unavailable" });
       }
-      payload = buildTheoPayload(buildTheoAlertPayload(alert, now()), now());
-    } else {
-      payload = buildTheoPayload(claimed.payload, now());
-    }
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-    let response;
-    let failure = null;
-    try {
-      response = await fetchFn(config.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Theo-Token": config.token },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      failure = { code: publicErrorCode(error), retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) };
-    } finally {
-      clearTimeout(timeout);
-    }
 
-    const httpStatus = Number(response?.status || 0) || null;
-    if (!failure && !(httpStatus >= 200 && httpStatus < 300)) {
-      const retryable = httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
-      failure = {
-        code: `http_${httpStatus || "error"}`,
-        retryable,
-        retry_after_seconds: retryable ? retryAfterSeconds(response, retryDelaySeconds(claimed.attempts)) : 0,
-      };
-    }
+      if (!claimed) break;
+      const claimedActionType = text(claimed.action_type) || actionType;
+      let payload;
+      if (claimedActionType === THEO_AUTO_ACTION_TYPE) {
+        const producerPayload = payloadObject(claimed.payload);
+        let alert;
+        let enrichmentFailure = null;
+        try {
+          alert = await findProducedAlert({
+            alertId: producerPayload.alert_id,
+            dataSourceId: producerPayload.data_source_id,
+            sourceEventId: producerPayload.source_event_id,
+          });
+        } catch {
+          enrichmentFailure = { code: "database_unavailable", retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) };
+        }
+        if (!alert && !enrichmentFailure) {
+          enrichmentFailure = { code: "produced_alert_not_found", retryable: false, retry_after_seconds: 0 };
+        }
+        if (enrichmentFailure) {
+          await transaction((client) => finish(client, {
+            actionType: claimedActionType,
+            outboxId: claimed.id,
+            lockedBy: lockId,
+            success: false,
+            retryable: enrichmentFailure.retryable,
+            httpStatus: null,
+            errorCode: enrichmentFailure.code,
+            retryAfterSeconds: enrichmentFailure.retry_after_seconds,
+          }));
+          try {
+            await transaction((client) => heartbeat(client, { success: false, errorCode: enrichmentFailure.code }));
+          } catch {
+            logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
+          }
+          const latencyMs = Math.max(Date.now() - startedAt, 0);
+          logger({ event: "theo_dispatch", outbox_id: claimed.id, status: "failed", code: enrichmentFailure.code, retryable: enrichmentFailure.retryable, latency_ms: latencyMs });
+          results.push({
+            outbox_id: claimed.id,
+            status: "failed",
+            http_status: null,
+            retryable: enrichmentFailure.retryable,
+            latency_ms: latencyMs,
+          });
+          continue;
+        }
+        payload = buildTheoPayload(buildTheoAlertPayload(alert, now()), now());
+      } else {
+        payload = buildTheoPayload(claimed.payload, now());
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+      let response;
+      let failure = null;
+      try {
+        response = await fetchFn(config.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Theo-Token": config.token },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        failure = { code: publicErrorCode(error), retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) };
+      } finally {
+        clearTimeout(timeout);
+      }
 
-    const succeeded = !failure;
-    await transaction((client) => finish(client, {
-      actionType: claimedActionType,
-      outboxId: claimed.id,
-      lockedBy: lockId,
-      success: succeeded,
-      retryable: failure?.retryable || false,
-      httpStatus,
-      errorCode: failure?.code || null,
-      retryAfterSeconds: failure?.retry_after_seconds || 0,
-    }));
-    // Finishing the outbox precedes telemetry: a heartbeat write failure must
-    // never leave a delivered message eligible for another external send.
-    try {
-      await transaction((client) => heartbeat(client, {
+      const httpStatus = Number(response?.status || 0) || null;
+      if (!failure && !(httpStatus >= 200 && httpStatus < 300)) {
+        const retryable = httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
+        failure = {
+          code: `http_${httpStatus || "error"}`,
+          retryable,
+          retry_after_seconds: retryable ? retryAfterSeconds(response, retryDelaySeconds(claimed.attempts)) : 0,
+        };
+      }
+
+      const succeeded = !failure;
+      await transaction((client) => finish(client, {
+        actionType: claimedActionType,
+        outboxId: claimed.id,
+        lockedBy: lockId,
         success: succeeded,
+        retryable: failure?.retryable || false,
+        httpStatus,
         errorCode: failure?.code || null,
+        retryAfterSeconds: failure?.retry_after_seconds || 0,
       }));
-    } catch {
-      logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
+      // Finishing the outbox precedes telemetry: a heartbeat write failure must
+      // never leave a delivered message eligible for another external send.
+      try {
+        await transaction((client) => heartbeat(client, {
+          success: succeeded,
+          errorCode: failure?.code || null,
+        }));
+      } catch {
+        logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
+      }
+
+      const latencyMs = Math.max(Date.now() - startedAt, 0);
+      logger({
+        event: "theo_dispatch",
+        outbox_id: claimed.id,
+        status: succeeded ? "success" : "failed",
+        http_status: httpStatus,
+        code: failure?.code || null,
+        retryable: failure?.retryable || false,
+        latency_ms: latencyMs,
+      });
+      results.push({
+        outbox_id: claimed.id,
+        ...(canary.present ? { canary_alert_id: canary.value } : {}),
+        status: succeeded ? "success" : "failed",
+        http_status: httpStatus,
+        retryable: failure?.retryable || false,
+        latency_ms: latencyMs,
+      });
     }
 
-    const latencyMs = Math.max(Date.now() - startedAt, 0);
-    logger({
-      event: "theo_dispatch",
-      outbox_id: claimed.id,
-      status: succeeded ? "success" : "failed",
-      http_status: httpStatus,
-      code: failure?.code || null,
-      retryable: failure?.retryable || false,
-      latency_ms: latencyMs,
-    });
-    return sendJson(res, succeeded ? 200 : 202, {
-      outbox_id: claimed.id,
-      ...(canary.present ? { canary_alert_id: canary.value } : {}),
-      status: succeeded ? "success" : "failed",
-      http_status: httpStatus,
-      retryable: failure?.retryable || false,
-      latency_ms: latencyMs,
+    if (!results.length) return sendJson(res, 200, { claimed: false, status: "not_eligible" });
+    const failures = results.filter((result) => result.status === "failed");
+    const last = results.at(-1);
+    return sendJson(res, failures.length ? 202 : 200, {
+      ...last,
+      ...(automaticBatch ? { processed: results.length, succeeded: results.length - failures.length, failed: failures.length } : {}),
     });
   };
 }

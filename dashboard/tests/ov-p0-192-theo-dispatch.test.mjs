@@ -50,6 +50,7 @@ function config(overrides = {}) {
     cronSecret: SECRET,
     automationEnabled: false,
     timeoutMs: 2_000,
+    batchSize: 1,
     ...overrides,
   };
 }
@@ -177,6 +178,33 @@ test("OV-P0-214 automatic claim is limited to pending or failed producer rows", 
   assert.match(calls[0].sql, /o\.status in \('pending', 'failed'\)/i);
   assert.match(calls[0].sql, /o\.action_type = \$1/i);
   assert.doesNotMatch(calls[0].sql, /theo_webex_notification/);
+  assert.match(calls[0].sql, /order by o\.created_at asc, o\.id asc/i);
+});
+
+test("OV-P0-225 automatic dispatch drains a bounded FIFO batch sequentially", async () => {
+  const claimedRows = ["outbox-1", "outbox-2", "outbox-3"].map((id, index) => ({
+    ...producedClaim(),
+    id,
+    idempotency_key: `theo:alert:source-a:${index + 1}`,
+  }));
+  const finished = [];
+  const sent = [];
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true, batchSize: 5 }),
+    claim: async () => claimedRows.shift() || null,
+    findProducedAlert: async () => canaryAlert(),
+    finish: async (_client, result) => { finished.push(result); return { id: result.outboxId, status: "success" }; },
+    fetchFn: async () => { sent.push("sent"); return { status: 200, headers: { get: () => null } }; },
+  });
+  const response = res();
+  await handler(req(), response);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual({ processed: response.body.processed, succeeded: response.body.succeeded, failed: response.body.failed }, { processed: 3, succeeded: 3, failed: 0 });
+  assert.equal(response.body.outbox_id, "outbox-3");
+  assert.equal(sent.length, 3);
+  assert.equal(finished.length, 3);
+  assert.deepEqual(finished.map((result) => result.outboxId), ["outbox-1", "outbox-2", "outbox-3"]);
 });
 
 test("OV-P0-214 automatic dispatcher cannot claim legacy smoke, canary, or Theo rows", async () => {
