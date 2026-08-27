@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { consumeAuthReturnTo, normalizeAuthReturnTo } from "@/lib/auth/return-url";
 
 interface LocationState {
   from?: string;
@@ -11,6 +12,7 @@ const SsoCallback = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const state = (location.state as LocationState) || {};
+  const returnToRef = useRef(normalizeAuthReturnTo(state.from) || "/");
 
   useEffect(() => {
     if (!isLoading) return undefined;
@@ -19,6 +21,7 @@ const SsoCallback = () => {
       navigate("/login", {
         replace: true,
         state: {
+          from: returnToRef.current,
           authError: "Tempo excedido ao concluir o SSO. Tente entrar novamente.",
         },
       });
@@ -31,23 +34,23 @@ const SsoCallback = () => {
     if (isLoading) return;
 
     if (user) {
-      const redirectTo = state.from && state.from !== "/login" ? state.from : "/";
-      navigate(redirectTo, { replace: true });
+      navigate(consumeAuthReturnTo(returnToRef.current), { replace: true });
       return;
     }
 
     if (error) {
-      navigate("/login", { replace: true, state: { authError: error } });
+      navigate("/login", { replace: true, state: { from: returnToRef.current, authError: error } });
       return;
     }
 
     navigate("/login", {
       replace: true,
       state: {
+        from: returnToRef.current,
         authError: "SSO concluído sem conta ativa. Tente entrar novamente.",
       },
     });
-  }, [isLoading, user, error, navigate, state.from]);
+  }, [isLoading, user, error, navigate]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background text-foreground">

@@ -26,7 +26,7 @@ function cleanCallbackUrl(req) {
   if (code) params.set("code", code);
   if (state) params.set("state", state);
   if (error) params.set("sso_error", error);
-  return `${origin}/?${params.toString()}`;
+  return `${origin}/sso/callback?${params.toString()}`;
 }
 
 export default async function handler(req, res) {

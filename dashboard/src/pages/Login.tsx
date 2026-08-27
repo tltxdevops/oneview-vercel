@@ -4,6 +4,7 @@ import { KeySquare, AlertCircle } from "lucide-react";
 import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { consumeAuthReturnTo, normalizeAuthReturnTo, rememberAuthReturnTo } from "@/lib/auth/return-url";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -11,12 +12,16 @@ export default function Login() {
   const { user, login, isLoading, error } = useAuth();
 
   const authState = location.state as { from?: string; authError?: string } | null;
-  const redirectTo = authState?.from && authState.from !== "/login" ? authState.from : "/";
+  const redirectTo = normalizeAuthReturnTo(authState?.from) || "/";
   const feedbackError = authState?.authError || error;
 
   useEffect(() => {
+    rememberAuthReturnTo(redirectTo);
+  }, [redirectTo]);
+
+  useEffect(() => {
     if (!isLoading && user) {
-      navigate(redirectTo, { replace: true });
+      navigate(consumeAuthReturnTo(redirectTo), { replace: true });
     }
   }, [user, isLoading, navigate, redirectTo]);
 

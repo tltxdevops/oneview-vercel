@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { authReturnToFromLocation } from "@/lib/auth/return-url";
 
 interface ProtectedRouteProps {
   children?: ReactNode;
@@ -21,7 +22,7 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   }
 
   if (!user) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+    return <Navigate to="/login" state={{ from: authReturnToFromLocation(location) }} replace />;
   }
 
   return children ? <>{children}</> : <Outlet />;
