@@ -1,7 +1,11 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import { methodNotAllowed, sendJson } from "./http.js";
-import { projectServiceNowReferenceFromAlertTags, SERVICENOW_PROD_BASE_URL } from "./oneview-inc-correlation.js";
+import {
+  extractServiceNowIncidentNumbers,
+  projectServiceNowReferenceFromAlertTags,
+  SERVICENOW_PROD_BASE_URL,
+} from "./oneview-inc-correlation.js";
 import { findTheoCanaryAlert, findTheoProducedAlert } from "./oneview-db.js";
 import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
 
@@ -69,6 +73,15 @@ function cleanPayloadField(value, fallback = "") {
   return text(value).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 1200) || fallback;
 }
 
+const FAKE_CHAMADO_VALUES = new Set(["teste", "n/a", "n-a", "na", "unknown", "desconhecido"]);
+
+/** Real ServiceNow INC only. Never TESTE, N/A, UNKNOWN, or an empty placeholder. */
+export function normalizeTheoChamado(value) {
+  const cleaned = cleanPayloadField(value);
+  if (!cleaned || FAKE_CHAMADO_VALUES.has(cleaned.toLowerCase())) return null;
+  return extractServiceNowIncidentNumbers(cleaned)[0] || null;
+}
+
 function publicErrorCode(error) {
   const message = String(error?.message || error || "").toLowerCase();
   if (error?.name === "AbortError" || /abort|timeout|timed out/.test(message)) return "timeout";
@@ -132,6 +145,7 @@ export function buildTheoAlertPayload(alert, now = new Date()) {
   const title = source.titulo || source.problem_name || source.trigger_description;
   const host = source.equipamento || source.host_visible_name || source.host_technical_name || source.host_name;
   const oneviewLink = buildOneViewAlertDeepLink(source.id) || ONEVIEW_PRODUCTION_ORIGIN;
+  const chamado = normalizeTheoChamado(source.chamado || incident?.number);
   return {
     titulo: title,
     cliente: source.cliente || source.customer_name || source.client_name,
@@ -142,7 +156,7 @@ export function buildTheoAlertPayload(alert, now = new Date()) {
     proximos_passos: source.proximos_passos || "Validar o alerta no OneView.",
     acompanhamento: source.acompanhamento || "Equipe NOC",
     severidade: source.severidade || source.severity,
-    chamado: source.chamado || incident?.number,
+    ...(chamado ? { chamado } : {}),
     link: oneviewLink,
     oneview_link: oneviewLink,
     ...(incident?.url ? { servicenow_link: incident.url } : {}),
@@ -156,6 +170,7 @@ export function buildTheoPayload(payload, now = new Date()) {
   const link = cleanPayloadField(source.link, smoke.link);
   const oneviewLink = cleanPayloadField(source.oneview_link, link);
   const servicenowLink = cleanPayloadField(source.servicenow_link);
+  const chamado = normalizeTheoChamado(source.chamado);
   return {
     titulo: cleanPayloadField(source.titulo, smoke.titulo),
     cliente: cleanPayloadField(source.cliente, smoke.cliente),
@@ -166,7 +181,7 @@ export function buildTheoPayload(payload, now = new Date()) {
     proximos_passos: cleanPayloadField(source.proximos_passos, smoke.proximos_passos),
     acompanhamento: cleanPayloadField(source.acompanhamento, smoke.acompanhamento),
     severidade: cleanPayloadField(source.severidade, smoke.severidade),
-    chamado: cleanPayloadField(source.chamado, smoke.chamado),
+    ...(chamado ? { chamado } : {}),
     link,
     oneview_link: oneviewLink,
     ...(servicenowLink ? { servicenow_link: servicenowLink } : {}),

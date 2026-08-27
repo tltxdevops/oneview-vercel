@@ -5,6 +5,7 @@ import {
   buildTheoPayload,
   buildTheoAlertPayload,
   buildOneViewAlertDeepLink,
+  normalizeTheoChamado,
   claimEligibleTheoOutbox,
   createTheoCanaryOutbox,
   createTheoSmokeOutbox,
@@ -268,6 +269,8 @@ test("OV-P0-214 producer payload without an explicit Incident has only the OneVi
   assert.equal(response.statusCode, 200);
   assert.equal(sent.link, `https://oneview.teletexdev.com.br/alertas?alert=${CANARY_ALERT_ID}`);
   assert.equal(Object.hasOwn(sent, "servicenow_link"), false);
+  assert.equal(Object.hasOwn(sent, "chamado"), false);
+  assert.doesNotMatch(JSON.stringify(sent), /"chamado"\s*:\s*"(TESTE|N\/A|UNKNOWN)"/i);
 });
 
 test("OV-P0-214 concurrent automatic dispatches claim and send a producer row once", async () => {
@@ -449,7 +452,9 @@ test("OV-P0-209 emits direct OneView and production ServiceNow links from alert 
   assert.equal(payload.servicenow_link, "https://teletexprod.service-now.com/incident.do?sys_id=fdb2c6e797fe0710e580f137f053afe3");
   assert.equal(payload.chamado, "INC0074751");
   assert.equal(buildOneViewAlertDeepLink("invalid"), null);
-  assert.equal(Object.hasOwn(buildTheoAlertPayload({ ...canaryAlert(), event_tags: [] }), "servicenow_link"), false);
+  const withoutIncident = buildTheoAlertPayload({ ...canaryAlert(), event_tags: [] });
+  assert.equal(Object.hasOwn(withoutIncident, "servicenow_link"), false);
+  assert.equal(Object.hasOwn(withoutIncident, "chamado"), false);
 });
 
 test("OV-P0-192 timeout is a retryable failure", async () => {
@@ -672,6 +677,43 @@ test("OV-P0-192 payload follows the validated Theo contract", () => {
     "acompanhamento", "severidade", "chamado", "link", "oneview_link",
   ]);
   assert.doesNotMatch(JSON.stringify(payload), /must-not-pass-through/);
+});
+
+test("OV-P0-237 keeps a real INC and omits fake chamado placeholders", () => {
+  assert.equal(normalizeTheoChamado("INC0074751"), "INC0074751");
+  assert.equal(normalizeTheoChamado("inc001"), "INC001");
+  assert.equal(normalizeTheoChamado("TESTE"), null);
+  assert.equal(normalizeTheoChamado("N/A"), null);
+  assert.equal(normalizeTheoChamado("UNKNOWN"), null);
+  assert.equal(normalizeTheoChamado(""), null);
+  assert.equal(normalizeTheoChamado(null), null);
+
+  const withIncident = buildTheoPayload({
+    titulo: "Title", cliente: "Client", equipamento: "Host", ip: "10.0.0.1",
+    data_hora: "2026-08-24T21:00:00.000Z", acao: "Action", proximos_passos: "Next",
+    acompanhamento: "NOC", severidade: "High", chamado: "INC0074751",
+    link: "https://oneview.teletexdev.com.br/alertas?alert=52bfe971-712e-4731-a135-e3d0001ad51c",
+    oneview_link: "https://oneview.teletexdev.com.br/alertas?alert=52bfe971-712e-4731-a135-e3d0001ad51c",
+    servicenow_link: "https://teletexprod.service-now.com/incident.do?sys_id=fdb2c6e797fe0710e580f137f053afe3",
+  });
+  assert.equal(withIncident.chamado, "INC0074751");
+  assert.equal(withIncident.link, "https://oneview.teletexdev.com.br/alertas?alert=52bfe971-712e-4731-a135-e3d0001ad51c");
+  assert.equal(withIncident.oneview_link, withIncident.link);
+  assert.equal(withIncident.servicenow_link, "https://teletexprod.service-now.com/incident.do?sys_id=fdb2c6e797fe0710e580f137f053afe3");
+
+  const withoutIncident = buildTheoPayload({
+    titulo: "Title", cliente: "Client", equipamento: "Host", ip: "10.0.0.1",
+    data_hora: "2026-08-24T21:00:00.000Z", acao: "Action", proximos_passos: "Next",
+    acompanhamento: "NOC", severidade: "High",
+    link: "https://oneview.teletexdev.com.br/alertas?alert=52bfe971-712e-4731-a135-e3d0001ad51c",
+  });
+  assert.equal(Object.hasOwn(withoutIncident, "chamado"), false);
+  assert.doesNotMatch(JSON.stringify(withoutIncident), /TESTE|N\/A|UNKNOWN/);
+  assert.equal(withoutIncident.link, "https://oneview.teletexdev.com.br/alertas?alert=52bfe971-712e-4731-a135-e3d0001ad51c");
+  assert.equal(Object.hasOwn(withoutIncident, "servicenow_link"), false);
+
+  const smokeBody = buildTheoPayload(theoSmokePayload());
+  assert.equal(Object.hasOwn(smokeBody, "chamado"), false);
 });
 
 test("OV-P0-194 persists a server-side Theo dispatcher heartbeat", async () => {
