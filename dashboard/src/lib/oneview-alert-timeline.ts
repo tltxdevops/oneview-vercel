@@ -20,6 +20,7 @@ export type AlertTimelineEvent = {
   comment?: string | null;
   actor?: string | null;
   incident_number?: string | null;
+  incident_sys_id?: string | null;
   incident_url?: string | null;
 };
 
@@ -160,6 +161,7 @@ export function buildAlertOperationalTimeline(
 
   const reference = alert?.servicenow_reference;
   const incidentNumber = String(reference?.number || "").trim() || null;
+  const incidentSysId = String(reference?.sys_id || "").trim() || null;
   const incidentUrl = String(reference?.url || "").trim() || null;
   if ((incidentNumber || reference?.sys_id) && !hasKind("servicenow")) {
     const extra = Number(reference?.extra_count || 0);
@@ -169,6 +171,7 @@ export function buildAlertOperationalTimeline(
       label: "Vínculo com ServiceNow",
       occurred_at: alert?.first_seen_at || null,
       incident_number: incidentNumber,
+      incident_sys_id: incidentSysId,
       incident_url: incidentUrl,
       description: incidentNumber
         ? extra > 0 ? `${incidentNumber} +${extra}` : incidentNumber

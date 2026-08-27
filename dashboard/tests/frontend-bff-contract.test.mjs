@@ -233,15 +233,13 @@ test("início apresenta Syncs (Banco/Worker/Teletex) sem inventar PgBouncer", as
   assert.match(healthLib, /TELETEX_DATASOURCE_NAME = "teletex-http"/);
   assert.match(healthLib, /toLowerCase\(\) === TELETEX_DATASOURCE_NAME/);
   assert.doesNotMatch(healthLib, /items\?\.\[0\]|items\[0\]/);
-  assert.match(strip, /fetchOneViewHealth/);
-  assert.match(strip, /fetchOperationsHealth/);
-  assert.match(strip, /fetchSyncLogs/);
-  assert.match(strip, /fetchDataSources/);
+  assert.match(strip, /fetchRuntimeHealth/);
+  assert.doesNotMatch(strip, /fetchOneViewHealth|fetchOperationsHealth|fetchSyncLogs|fetchDataSources/);
   assert.match(index, /Tela atualizada:/);
   assert.match(index, /topbarRightSection=\{headerControls\}/);
   assert.doesNotMatch(index, /operations\?\.items \?\? \[\]/);
-  assert.match(strip, /Última sincronização/);
-  assert.match(strip, /Último sync:/);
+  assert.match(strip, /tooltipLines/);
+  assert.match(strip, /operationalToneDotClass/);
   assert.doesNotMatch(index, /PgBouncer|PGBOUNCER|6432/);
   assert.doesNotMatch(`${healthLib}\n${strip}`, /PgBouncer|PGBOUNCER|6432|castrolanda|fraport|zurich/i);
   assert.doesNotMatch(index, /disponibilidade\s*100%|uptime\s*100%/i);
@@ -249,7 +247,7 @@ test("início apresenta Syncs (Banco/Worker/Teletex) sem inventar PgBouncer", as
 });
 
 test("OV-P0-26 saúde Teletex-only e shell denso sem zoom/scale", async () => {
-  const [strip, healthLib, appLayout, sidebar, topbar, pageHeader, metricStrip, filterBar, monitoring, index, alerts, historico] = await Promise.all([
+  const [strip, healthLib, appLayout, sidebar, topbar, pageHeader, metricStrip, filterBar, monitoring, index, alerts, historico, indexCss] = await Promise.all([
     read("src/components/oneview/PlatformHealthStrip.tsx"),
     read("src/lib/platform-health.ts"),
     read("src/components/layout/AppLayout.tsx"),
@@ -262,6 +260,7 @@ test("OV-P0-26 saúde Teletex-only e shell denso sem zoom/scale", async () => {
     read("src/pages/Index.tsx"),
     read("src/pages/Alerts.tsx"),
     read("src/pages/Historico.tsx"),
+    read("src/index.css"),
   ]);
 
   assert.match(healthLib, /name: "Banco"/);
@@ -276,6 +275,7 @@ test("OV-P0-26 saúde Teletex-only e shell denso sem zoom/scale", async () => {
 
   const shell = [appLayout, sidebar, topbar, pageHeader, metricStrip, filterBar, monitoring, index, alerts, historico].join("\n");
   assert.doesNotMatch(shell, /zoom\s*:|transform:\s*scale\(|scale\([0-9.]+\)/);
+  assert.match(indexCss, /html\s*\{[\s\S]*font-size:\s*112\.5%/);
   assert.match(appLayout, /ml-14/);
   assert.doesNotMatch(appLayout, /ml-20/);
   assert.match(appLayout, /gap-3 p-3/);
@@ -440,7 +440,7 @@ test("página de chamados lista incidents do BFF read-only", async () => {
   assert.match(chamados, /ServiceNow indisponível/);
   assert.match(chamados, /Não foi possível carregar os chamados/);
   assert.match(chamados, /safeCount/);
-  assert.match(chamados, /showHealthStrip=\{false\}/);
+  assert.doesNotMatch(chamados, /showHealthStrip=\{false\}/);
   assert.match(chamados, /Sheet|drawer/i);
   assert.match(chamados, /ServiceNowDevLink/);
   assert.match(chamados, /cursor-pointer/);
@@ -507,7 +507,11 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
   assert.match(sidebar, /Configurações/);
   assert.match(sidebar, /Settings/);
   assert.match(sidebar, /aspect-square.*rounded-full|rounded-full.*aspect-square/);
-  assert.doesNotMatch(sidebar, /Ativar modo escuro|Ativar modo claro|Modo escuro|Modo claro/);
+  assert.match(sidebar, /Ativar modo escuro/);
+  assert.match(sidebar, /Ativar modo claro/);
+  assert.match(sidebar, /setStoredTheme/);
+  assert.match(sidebar, /Sun/);
+  assert.match(sidebar, /Moon/);
 
   for (const removed of ["/kpis", "/relatorios"]) {
     assert.ok(!sidebarHrefs.includes(removed), `Sidebar não deve expor ${removed}`);
@@ -617,9 +621,8 @@ test("OV-P0-19/38 Monitoramento NOC com Sidebar real, sem scroll e com janela re
   assert.match(recent, /acknowledgedSource: false/);
   assert.match(recent, /firstSeenFrom: isoAgo\(windowMs|firstSeenFrom: isoAgo\(RECENT_PRIORITY_WINDOW_MS|firstSeenFrom: isoAgo\(priorityWindow/);
   assert.match(recent, /occurredFrom: isoAgo\(windowMs|occurredFrom: isoAgo\(RECENT_EVENTS_WINDOW_MS/);
-  assert.match(healthStrip, /fetchOperationsHealth/);
-  assert.match(healthStrip, /fetchOneViewHealth/);
-  assert.match(healthStrip, /fetchSyncLogs/);
+  assert.match(healthStrip, /fetchRuntimeHealth/);
+  assert.doesNotMatch(healthStrip, /fetchOperationsHealth|fetchOneViewHealth|fetchSyncLogs/);
   assert.doesNotMatch(monitoring, /mock|faker|hardcodedAlerts|DEMO_/i);
 
   assert.doesNotMatch(monitoring, /Fonte Teletex|Banco em tempo real|Contingência/);
@@ -881,7 +884,7 @@ test("coluna IP sanitizada permanece no drawer e fora da tabela operacional", as
   assert.doesNotMatch(alerts, /<TableHead className="px-3 text-center">IP<\/TableHead>/);
 });
 
-test("tabela reserva espaço para ACK e ações; sidebar sem toggle de tema", async () => {
+test("tabela reserva espaço para ACK e ações; sidebar com toggle de tema", async () => {
   const [alerts, sidebar] = await Promise.all([
     read("src/pages/Alerts.tsx"),
     read("src/components/layout/Sidebar.tsx"),
@@ -901,7 +904,10 @@ test("tabela reserva espaço para ACK e ações; sidebar sem toggle de tema", as
   assert.match(alerts, /<Eye className=\"h-3\.5 w-3\.5\" \/>\s*<span className=\"sr-only\">Ver detalhes do alerta<\/span>/);
   assert.doesNotMatch(alerts, /<Eye className=\"h-3\.5 w-3\.5\" \/> Ver/);
   assert.doesNotMatch(alerts, /dataSource=\{currentDataSource\}/);
-  assert.doesNotMatch(sidebar, /Ativar modo escuro|Ativar modo claro|oneview-theme|toggleTheme/);
+  assert.match(sidebar, /Ativar modo escuro/);
+  assert.match(sidebar, /Ativar modo claro/);
+  assert.match(sidebar, /setStoredTheme/);
+  assert.match(sidebar, /toggleTheme/);
 });
 
 test("drawer carrega detalhe e histórico e exibe somente ACK real da origem", async () => {
@@ -1635,8 +1641,8 @@ test("OV-P0-27/38 saúde operacional global + Sidebar real no Monitoramento", as
   assert.doesNotMatch(index, /PlatformHealthStrip|SyncsStatusPanel/);
   assert.doesNotMatch(alerts, /PlatformHealthStrip/);
   assert.doesNotMatch(historico, /showHealthStrip=\{false\}/);
-  assert.match(chamados, /showHealthStrip=\{false\}/);
-  assert.match(settings, /showHealthStrip=\{false\}/);
+  assert.doesNotMatch(chamados, /showHealthStrip=\{false\}/);
+  assert.doesNotMatch(settings, /showHealthStrip=\{false\}/);
   assert.match(monitoring, /PlatformHealthStrip/);
   assert.match(monitoring, /ClientFilterCombobox/);
   assert.doesNotMatch(monitoring, /CustomerLogo|customerLogoCatalog/);
@@ -1676,7 +1682,7 @@ test("OV-P0-27/38 saúde operacional global + Sidebar real no Monitoramento", as
 
   assert.match(strip, /aria-describedby/);
   assert.match(strip, /TooltipTrigger/);
-  assert.match(strip, /fetchDataSources/);
+  assert.match(strip, /fetchRuntimeHealth/);
   assert.match(strip, /aria-label="Saúde operacional"/);
 
   assert.match(sidebar, /w-14/);
@@ -2158,27 +2164,59 @@ test("OV-P0-44 Histórico enxuga colunas e abre drawer na linha", async () => {
 });
 
 test("OV-P0-45 cabeçalhos padronizados na Topbar sem PageHeader duplicado", async () => {
-  const [index, alerts, historico, monitoring, appLayout] = await Promise.all([
+  const [index, alerts, historico, monitoring, chamados, appLayout, topbar] = await Promise.all([
     read("src/pages/Index.tsx"),
     read("src/pages/Alerts.tsx"),
     read("src/pages/Historico.tsx"),
     read("src/pages/Monitoring.tsx"),
+    read("src/pages/Chamados.tsx"),
     read("src/components/layout/AppLayout.tsx"),
+    read("src/components/layout/Topbar.tsx"),
   ]);
 
   assert.match(index, /text-xl font-semibold tracking-tight text-foreground">Início</);
   assert.match(alerts, /text-xl font-semibold tracking-tight text-foreground">Alertas</);
   assert.match(historico, /text-xl font-semibold tracking-tight text-foreground">Histórico</);
   assert.match(monitoring, /text-xl font-semibold tracking-tight text-foreground">Monitoramento</);
+  assert.match(chamados, /text-xl font-semibold tracking-tight text-foreground">Chamados</);
   assert.doesNotMatch(index, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.doesNotMatch(historico, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.doesNotMatch(alerts, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
+  assert.doesNotMatch(chamados, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.match(appLayout, /showHealthStrip \? <PlatformHealthStrip/);
   assert.doesNotMatch(index, /PlatformHealthStrip/);
   assert.doesNotMatch(alerts, /PlatformHealthStrip/);
   assert.doesNotMatch(historico, /PlatformHealthStrip/);
+  assert.doesNotMatch(chamados, /PlatformHealthStrip/);
   assert.match(monitoring, /PlatformHealthStrip/);
   assert.match(index, /clientSelect=\{/);
   assert.match(alerts, /clientSelect=\{/);
   assert.match(historico, /clientSelect=\{/);
+  assert.match(chamados, /clientSelect=\{/);
+  assert.match(topbar, /ml-auto flex min-w-0 flex-wrap items-center justify-end/);
+});
+
+test("faixa de saúde compacta à direita, hover e strip de métricas centrado", async () => {
+  const [runtime, strip, appLayout, monitoring, compact, settings, chamados] = await Promise.all([
+    read("src/lib/runtime-health.ts"),
+    read("src/components/oneview/PlatformHealthStrip.tsx"),
+    read("src/components/layout/AppLayout.tsx"),
+    read("src/pages/Monitoring.tsx"),
+    read("src/components/oneview/CompactMetricStrip.tsx"),
+    read("src/pages/Settings.tsx"),
+    read("src/pages/Chamados.tsx"),
+  ]);
+
+  assert.match(runtime, /STALE_ATTENTION_MS = 14 \* 60 \* 1000/);
+  assert.match(runtime, /bg-white ring-1 ring-foreground/);
+  assert.match(runtime, /operationalToneFromGroup/);
+  assert.match(runtime, /links saudáveis/);
+  assert.match(strip, /operationalToneDotClass/);
+  assert.match(strip, /tooltipLines/);
+  assert.match(appLayout, /\{topbarRightSection\}[\s\S]*\{showHealthStrip \? <PlatformHealthStrip/);
+  assert.match(monitoring, /ml-auto flex min-w-0 shrink-0 items-center gap-2/);
+  assert.match(monitoring, /justify-self-center text-center/);
+  assert.match(compact, /flex-col items-center justify-center/);
+  assert.match(settings, /RUNTIME_CATEGORY_LABELS/);
+  assert.doesNotMatch(chamados, /Sync ServiceNow:/);
 });

@@ -1,5 +1,5 @@
 /**
- * OV-P0-110 — Configurações enxutas: Tema · Saúde da automação · Fontes de dados.
+ * OV-P0-110 — Configurações enxutas: Saúde da automação · Fontes de dados.
  * Sem controle falso de intervalo de sync Zabbix; sem banner de modo leitura;
  * sem ação manual de sync desabilitada nesta tela.
  */
@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { getStoredTheme, setStoredTheme, Theme } from "@/lib/settings";
 import {
   DataSource,
   OneViewDataSourceKind,
@@ -21,7 +20,13 @@ import {
   RuntimeHealthResponse,
   fetchRuntimeHealth,
 } from "@/lib/oneview-api";
-import { runtimeStatusLabel, runtimeStatusTone } from "@/lib/runtime-health";
+import {
+  RUNTIME_CATEGORY_LABELS,
+  operationalToneDotClass,
+  operationalToneFromStatus,
+  operationalToneLabel,
+  operationalToneTextClass,
+} from "@/lib/runtime-health";
 import {
   DEFAULT_SYNC_INTERVAL_SECONDS,
   HealthLevel,
@@ -48,8 +53,6 @@ function sourceStatusClass(status: DataSource["status"]) {
   return "border-border bg-muted text-muted-foreground";
 }
 
-const THEME_TOGGLE_BASE =
-  "rounded-md border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 const SETTINGS_REFRESH_SECONDS = 60;
 
 function settingsHealthLabel(level: HealthLevel) {
@@ -91,7 +94,6 @@ function recoveryLabel(level: HealthLevel, failureCount: number | null | undefin
 }
 
 export default function SettingsPage() {
-  const [theme, setTheme] = useState<Theme>(getStoredTheme());
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [dataSource, setDataSource] = useState<OneViewDataSourceKind | null>(null);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
@@ -101,14 +103,6 @@ export default function SettingsPage() {
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const loadRequestRef = useRef<Promise<void> | null>(null);
-
-  useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === "oneview_theme") setTheme(getStoredTheme());
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
 
   const loadPage = useCallback(() => {
     if (loadRequestRef.current) return loadRequestRef.current;
@@ -136,11 +130,6 @@ export default function SettingsPage() {
     return request;
   }, []);
 
-  const applyTheme = (nextTheme: Theme) => {
-    setStoredTheme(nextTheme);
-    setTheme(nextTheme);
-  };
-
   const healthSnapshot = useMemo(
     () => buildPlatformHealthSnapshot({
       health,
@@ -164,53 +153,64 @@ export default function SettingsPage() {
   return (
     <AppLayout
       title="Configurações"
-      description="Tema, saúde da automação e fontes de dados"
+      description="Saúde da automação e fontes de dados"
       onRefresh={loadPage}
       refreshInterval={SETTINGS_REFRESH_SECONDS}
       showRefreshMeta={false}
-      showHealthStrip={false}
       dataSource={dataSource}
       checkedAt={checkedAt}
     >
       <div className="space-y-6 text-foreground">
-        <Card className="border-border bg-card p-6 text-card-foreground">
-          <h2 className="mb-3 text-lg font-semibold text-foreground">Tema</h2>
-          <p className="mb-3 text-sm text-muted-foreground">Claro / Escuro</p>
-          <div className="flex items-center gap-3" role="group" aria-label="Tema do painel">
-            <button
-              type="button"
-              onClick={() => applyTheme("light")}
-              aria-pressed={theme === "light"}
-              className={cn(
-                THEME_TOGGLE_BASE,
-                theme === "light"
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              )}
-            >
-              Claro
-            </button>
-            <button
-              type="button"
-              onClick={() => applyTheme("dark")}
-              aria-pressed={theme === "dark"}
-              className={cn(
-                THEME_TOGGLE_BASE,
-                theme === "dark"
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              )}
-            >
-              Escuro
-            </button>
-          </div>
-        </Card>
-
         <Card className="border-border bg-card p-6 text-card-foreground" aria-label="Saúde da aplicação">
-          <div className="mb-4 flex items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Saúde da aplicação</h2><p className="text-sm text-muted-foreground">Contrato Runtime Health V2.</p></div><Button variant="outline" onClick={() => void loadPage()} disabled={loading}>Atualizar</Button></div>
-          {["PLATFORM", "ZABBIX", "SERVICENOW", "WORKERS", "INTEGRATIONS"].map((category) => {
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Saúde da aplicação</h2>
+              <p className="text-sm text-muted-foreground">Último sync e estado de cada origem. A faixa do topo é só o resumo.</p>
+            </div>
+            <Button variant="outline" onClick={() => void loadPage()} disabled={loading}>Atualizar</Button>
+          </div>
+          {(["PLATFORM", "ZABBIX", "SERVICENOW", "WORKERS", "INTEGRATIONS"] as const).map((category) => {
             const items = runtimeHealth?.components.filter((item) => item.category === category) ?? [];
-            return <section key={category} className="mb-5 last:mb-0"><h3 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground">{category}</h3><div className="grid gap-2 md:grid-cols-2">{items.map((item) => <div key={item.id} className="rounded-md border border-border/70 px-3 py-2 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-medium">{item.name}</span><span className={cn("inline-flex items-center gap-1", runtimeStatusTone(item.status).split(" ")[1])}><span className={cn("h-2 w-2 rounded-full", runtimeStatusTone(item.status).split(" ")[0])} />{runtimeStatusLabel(item.status)}</span></div><p className="mt-1 text-xs text-muted-foreground">Último sucesso: {formatPtBrDateTime(item.last_success_at) ?? "—"} · Última observação: {formatPtBrDateTime(item.last_observed_at) ?? "—"}</p><p className="mt-1 text-xs text-muted-foreground">Intervalo: {item.interval_seconds ? `${item.interval_seconds}s` : "—"}{item.detail ? ` · ${item.detail}` : ""}</p>{item.current_error ? <p className="mt-1 text-xs text-error">Erro atual: {item.current_error}{item.last_error_at ? ` · ${formatPtBrDateTime(item.last_error_at)}` : ""}</p> : null}{item.last_historical_error ? <p className="mt-1 text-xs text-muted-foreground">Último erro histórico: {item.last_historical_error}</p> : null}</div>)}{!items.length ? <p className="text-sm text-muted-foreground">Sem componentes observados.</p> : null}</div></section>;
+            return (
+              <section key={category} className="mb-5 last:mb-0">
+                <h3 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground">
+                  {RUNTIME_CATEGORY_LABELS[category]}
+                </h3>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {items.map((item) => {
+                    const tone = operationalToneFromStatus(item.status, item.last_success_at);
+                    return (
+                      <div key={item.id} className="rounded-md border border-border/70 px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            <span aria-hidden="true" className={cn("h-2 w-2 shrink-0 rounded-full", operationalToneDotClass(tone))} />
+                            <span className="truncate font-medium">{item.name}</span>
+                          </span>
+                          <span className={cn("shrink-0 text-xs font-medium", operationalToneTextClass(tone))}>
+                            {operationalToneLabel(tone)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Último sucesso: {formatPtBrDateTime(item.last_success_at) ?? "—"} · Última observação: {formatPtBrDateTime(item.last_observed_at) ?? "—"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Intervalo: {item.interval_seconds ? `${item.interval_seconds}s` : "—"}{item.detail ? ` · ${item.detail}` : ""}
+                        </p>
+                        {item.current_error ? (
+                          <p className="mt-1 text-xs text-error">
+                            Erro atual: {item.current_error}{item.last_error_at ? ` · ${formatPtBrDateTime(item.last_error_at)}` : ""}
+                          </p>
+                        ) : null}
+                        {item.last_historical_error ? (
+                          <p className="mt-1 text-xs text-muted-foreground">Último erro histórico: {item.last_historical_error}</p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  {!items.length ? <p className="text-sm text-muted-foreground">Sem componentes observados.</p> : null}
+                </div>
+              </section>
+            );
           })}
         </Card>
 

@@ -109,7 +109,7 @@ type SectionErrors = Partial<Record<"summary" | "queue" | "incidents", string | 
  * Validado mentalmente em 1366×768 e 1920×1080 (problema absorve o restante).
  */
 const QUEUE_GRID =
-  "grid grid-cols-[minmax(9.5rem,13rem)_minmax(8rem,12rem)_minmax(0,1fr)_6.25rem_4.75rem_5.75rem_5.5rem_3.75rem] items-center gap-x-3";
+  "grid grid-cols-[minmax(9.5rem,13rem)_minmax(8rem,12rem)_minmax(0,1fr)_6.25rem_4.75rem_5.75rem_5.5rem_4.5rem] items-center gap-x-3";
 
 /** OV-P0-75 — coluna direita ~28% a partir de 1440px; abaixo empilha (1366). */
 const COMMAND_CENTER_GRID =
@@ -427,8 +427,8 @@ function MonitorAlertRow({
         {formatDurationSeconds(alert.duration_seconds)}
       </span>
 
-      <span className="justify-self-end text-right">
-        <span className="inline-flex h-7 items-center gap-0.5 text-xs font-medium text-primary">
+      <span className="justify-self-center text-center">
+        <span className="inline-flex h-7 items-center justify-center gap-1 text-xs font-medium text-primary">
           Abrir
           <Eye className="h-3 w-3" aria-hidden="true" />
         </span>
@@ -1055,31 +1055,31 @@ export default function MonitoringPage() {
         )}
       >
       <header className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
-        {/* OV-P0-104 — topo: título · health · sync · fullscreen */}
+        {/* OV-P0-104 — topo: título · ações · health à direita */}
         <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Monitoramento</h1>
-        <div className="min-w-0 flex-1">
+        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
+          {isUpdating ? (
+            <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Atualizando
+            </span>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={() => void toggleFullscreen()}
+            aria-label={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
+            aria-pressed={isFullscreen}
+            title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
+          >
+            {isFullscreen
+              ? <Minimize2 className="h-4 w-4" aria-hidden="true" />
+              : <Expand className="h-4 w-4" aria-hidden="true" />}
+          </Button>
           <PlatformHealthStrip />
         </div>
-        {isUpdating ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            Atualizando
-          </span>
-        ) : null}
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          className="ml-auto h-8 w-8 shrink-0"
-          onClick={() => void toggleFullscreen()}
-          aria-label={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
-          aria-pressed={isFullscreen}
-          title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
-        >
-          {isFullscreen
-            ? <Minimize2 className="h-4 w-4" aria-hidden="true" />
-            : <Expand className="h-4 w-4" aria-hidden="true" />}
-        </Button>
       </header>
 
       <div className="mx-auto flex h-0 w-full max-w-[1920px] min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2 sm:p-3">
@@ -1233,7 +1233,7 @@ export default function MonitoringPage() {
                     <span className="text-left">ACK</span>
                     <span className="text-right">Início</span>
                     <span className="text-right">Duração</span>
-                    <span className="text-right">Ação</span>
+                    <span className="text-center">Ação</span>
                   </div>
                   <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
                     {queueAlerts.map((alert) => (
@@ -1371,8 +1371,8 @@ export default function MonitoringPage() {
               </div>
 
               <div className="border-t border-border/70 px-6 py-4">
-                {selectedIncident.servicenow_url ? (
-                  <ServiceNowDevLink href={selectedIncident.servicenow_url} fullWidth />
+                {selectedIncident.sys_id ? (
+                  <ServiceNowDevLink href={selectedIncident.servicenow_url} sysId={selectedIncident.sys_id} fullWidth />
                 ) : (
                   <p className="text-center text-xs text-muted-foreground">
                     Link do ServiceNow indisponível para este incidente.
@@ -1386,3 +1386,4 @@ export default function MonitoringPage() {
     </div>
   );
 }
+

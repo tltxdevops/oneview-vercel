@@ -1,6 +1,6 @@
 /**
  * OV-P0-105 — Settings Dark Mode Fix
- * Tokens de tema em Configurações + Input/Button/Card compartilhados.
+ * Tokens de tema na Sidebar + Input/Button/Card compartilhados.
  */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -14,15 +14,25 @@ async function read(relativePath) {
   return readFile(path.join(root, relativePath), "utf8");
 }
 
-test("OV-P0-105 Settings: Claro/Escuro com tokens; sem bg-gray/text-white/amber-50 fixos", async () => {
+test("OV-P0-105 Sidebar: toggle Claro/Escuro com setStoredTheme e aria-pressed", async () => {
+  const sidebar = await read("src/components/layout/Sidebar.tsx");
+
+  assert.match(sidebar, /aria-pressed=\{theme === "dark"\}/);
+  assert.match(sidebar, /setStoredTheme/);
+  assert.match(sidebar, /getStoredTheme/);
+  assert.match(sidebar, /Ativar modo escuro/);
+  assert.match(sidebar, /Ativar modo claro/);
+  assert.match(sidebar, /Sun/);
+  assert.match(sidebar, /Moon/);
+});
+
+test("OV-P0-105 Settings: sem card de tema; tokens sem bg-gray/text-white/amber-50 fixos", async () => {
   const settings = await read("src/pages/Settings.tsx");
 
-  assert.match(settings, /aria-pressed=\{theme === "light"\}/);
-  assert.match(settings, /aria-pressed=\{theme === "dark"\}/);
-  assert.match(settings, /bg-primary text-primary-foreground/);
-  assert.match(settings, /bg-muted text-muted-foreground/);
-  assert.match(settings, /hover:bg-accent hover:text-accent-foreground/);
-  assert.match(settings, /focus-visible:ring-ring/);
+  assert.doesNotMatch(settings, /aria-pressed=\{theme === "light"\}/);
+  assert.doesNotMatch(settings, /applyTheme/);
+  assert.doesNotMatch(settings, /getStoredTheme|setStoredTheme/);
+  assert.doesNotMatch(settings, /<h2[^>]*>Tema<\/h2>/);
 
   assert.match(settings, /border-border bg-card/);
   assert.match(settings, /text-card-foreground|text-foreground/);
@@ -79,11 +89,8 @@ test("OV-P0-105 escopo: não altera Home/Monitoramento/Alertas páginas", async 
 test("OV-P0-105 funcionalidade Settings preservada", async () => {
   const settings = await read("src/pages/Settings.tsx");
 
-  assert.match(settings, /applyTheme\("light"\)/);
-  assert.match(settings, /applyTheme\("dark"\)/);
-  assert.match(settings, /setStoredTheme|getStoredTheme/);
   assert.match(settings, /fetchDataSourcesWithMeta/);
-  assert.match(settings, /showHealthStrip=\{false\}/);
+  assert.doesNotMatch(settings, /showHealthStrip=\{false\}/);
   assert.doesNotMatch(settings, /setStoredRefreshInterval|getStoredRefreshInterval/);
   assert.doesNotMatch(settings, /requestDataSourceSync/);
   assert.doesNotMatch(settings, /ONEVIEW_READ_ONLY_MESSAGE/);

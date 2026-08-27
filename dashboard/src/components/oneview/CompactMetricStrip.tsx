@@ -35,11 +35,11 @@ export function CompactMetricStrip({
         {items.map((item) => {
           const content = (
             <>
-              <span className="truncate text-[11px] font-medium text-muted-foreground">{item.label}</span>
+              <span className="max-w-full truncate text-center text-[11px] font-medium text-muted-foreground">{item.label}</span>
               {item.loading ? (
                 <Skeleton className="h-4 w-8" />
               ) : (
-                <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
+                <span className="shrink-0 text-center text-sm font-semibold tabular-nums text-foreground">
                   {item.value}
                 </span>
               )}
@@ -47,7 +47,7 @@ export function CompactMetricStrip({
           );
           const interactive = Boolean(item.onClick || item.href);
           const classNameItem = cn(
-            "flex min-w-[5.5rem] flex-1 items-baseline justify-between gap-1.5 px-2 py-1 text-left transition-colors",
+            "flex min-w-[5.5rem] flex-1 flex-col items-center justify-center gap-0.5 px-2 py-1 text-center transition-colors",
             interactive && "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
             item.selected && "bg-muted/50",
           );

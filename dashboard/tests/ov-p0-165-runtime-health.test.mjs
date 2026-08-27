@@ -94,4 +94,12 @@ test("OV-P0-165 runtime health is the single frontend health source", () => {
   assert.match(db, /ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG/);
   assert.match(settings, /Erro atual:/);
   assert.match(settings, /Último erro histórico:/);
+  assert.match(settings, /RUNTIME_CATEGORY_LABELS/);
+  assert.match(settings, /operationalToneFromStatus/);
+  const runtime = read("src/lib/runtime-health.ts");
+  assert.match(runtime, /STALE_ATTENTION_MS = 14 \* 60 \* 1000/);
+  assert.match(runtime, /bg-white ring-1 ring-foreground/);
+  assert.match(runtime, /operationalToneFromGroup/);
+  assert.match(strip, /operationalToneDotClass/);
+  assert.match(strip, /tooltipLines/);
 });

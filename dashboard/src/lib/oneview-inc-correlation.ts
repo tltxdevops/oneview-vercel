@@ -6,6 +6,9 @@ const SERVICENOW_INC_NUMBER_RE = /\bINC\d+\b/gi;
 const SAFE_SYS_ID = /^[a-f0-9]{32}$/i;
 const INTERNAL_TAG_PREFIX = /^__zbx_/i;
 
+/** Production is the only browser destination for OneView ServiceNow incidents. */
+export const SERVICENOW_PROD_BASE_URL = "https://teletexprod.service-now.com";
+
 export const ZBX_SERVICENOW_TAG = {
   SYS_ID: "__zbx_servicenow_sys_id",
   NUMBER: "__zbx_servicenow_number",
@@ -170,6 +173,33 @@ export function buildServiceNowIncidentDeepLink(baseUrl?: string | null, sysId?:
   }
 }
 
+/** Builds the sole accepted browser URL for a concrete ServiceNow incident. */
+export function buildProductionServiceNowIncidentLink(sysId?: string | null): string | null {
+  return buildServiceNowIncidentDeepLink(SERVICENOW_PROD_BASE_URL, sysId);
+}
+
+/**
+ * Accepts only the canonical Production incident URL, then rebuilds it from its
+ * validated sys_id. This prevents stale tags or internal OneView URLs from being
+ * rendered as a ServiceNow action.
+ */
+export function canonicalizeServiceNowIncidentLink(value?: string | null): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const candidate = new URL(raw);
+    const production = new URL(SERVICENOW_PROD_BASE_URL);
+    if (
+      candidate.protocol !== production.protocol
+      || candidate.host !== production.host
+      || candidate.pathname !== "/incident.do"
+    ) return null;
+    return buildProductionServiceNowIncidentLink(candidate.searchParams.get("sys_id"));
+  } catch {
+    return null;
+  }
+}
+
 export type AlertServiceNowReference = {
   number: string | null;
   sys_id: string | null;
@@ -189,8 +219,9 @@ export function projectServiceNowReferenceFromAlertTags(
   const sys_id = refs.sysIds[0] || null;
   if (!number && !sys_id) return null;
 
-  const linkFromTag = refs.links.find((link) => /^https?:\/\//i.test(String(link || "").trim())) || null;
-  const url = buildServiceNowIncidentDeepLink(options.baseUrl, sys_id) || linkFromTag;
+  // `__zbx_servicenow_link` is metadata only; it must never become a browser
+  // action. A direct link exists only when a structured, valid sys_id exists.
+  const url = buildServiceNowIncidentDeepLink(options.baseUrl || SERVICENOW_PROD_BASE_URL, sys_id);
 
   return {
     number,

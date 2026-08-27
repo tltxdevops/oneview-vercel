@@ -34,6 +34,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   AlertDetailResponse,
@@ -301,7 +302,7 @@ function HomeAlertRow({
           </span>
         </div>
       </div>
-      <span className="inline-flex h-7 shrink-0 items-center self-center text-xs font-medium text-muted-foreground" aria-hidden="true">
+      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center self-center text-muted-foreground" aria-hidden="true">
         <Eye className="h-3.5 w-3.5" />
       </span>
     </button>
@@ -309,22 +310,15 @@ function HomeAlertRow({
 }
 
 function HomeIncidentRow({ item }: { item: OneViewIncident }) {
-  const href = item.servicenow_url || "/chamados";
-  const external = Boolean(item.servicenow_url);
+  const href = buildProductionServiceNowIncidentLink(item.sys_id);
   const label = `Abrir chamado ${displayIncidentField(item.number)}`;
+  const className = cn(
+    HOME_INCIDENT_COLS,
+    "w-full border-b border-border/50 py-1.5 last:border-b-0 transition-colors hover:bg-muted/30",
+  );
 
-  return (
-    <a
-      href={href}
-      target={external ? "_blank" : undefined}
-      rel={external ? "noopener noreferrer" : undefined}
-      className={cn(
-        HOME_INCIDENT_COLS,
-        "w-full border-b border-border/50 py-1.5 last:border-b-0 transition-colors hover:bg-muted/30",
-      )}
-      aria-label={label}
-      title={label}
-    >
+  const row = (
+    <>
       <p className="truncate text-[13px] font-semibold text-foreground" title={displayIncidentField(item.number)}>
         {displayIncidentField(item.number)}
       </p>
@@ -340,6 +334,23 @@ function HomeIncidentRow({ item }: { item: OneViewIncident }) {
       <p className="truncate text-[11px] text-muted-foreground" title={displayIncidentField(item.assigned_to_display, item.assigned_to)}>
         {displayIncidentField(item.assigned_to_display, item.assigned_to)}
       </p>
+    </>
+  );
+
+  if (!href) {
+    return <div className={className} aria-label={label} title={label}>{row}</div>;
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+      aria-label={label}
+      title={label}
+    >
+      {row}
     </a>
   );
 }

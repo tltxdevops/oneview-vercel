@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
+import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
 import {
   AlertHistoryItem,
   AlertRelatedIncident,
@@ -69,7 +70,7 @@ function IncidentCard({
   item: AlertRelatedIncident;
   extraCount?: number;
 }) {
-  const url = item.servicenow_url || null;
+  const url = buildProductionServiceNowIncidentLink(item.sys_id);
   const number = displayValue(item.number);
   return (
     <article className="space-y-3 rounded-md border border-border/70 p-3" aria-label="Chamado relacionado">
@@ -118,7 +119,7 @@ function IncidentCard({
         </div>
       </dl>
       {url ? (
-        <ServiceNowDevLink href={url} size="sm" className="sm:w-auto" fullWidth />
+        <ServiceNowDevLink sysId={item.sys_id} size="sm" className="sm:w-auto" fullWidth />
       ) : (
         <p className="text-xs text-muted-foreground">Link do ServiceNow indisponível.</p>
       )}
@@ -300,10 +301,7 @@ export function AlertRelatedIncidentsSection({
           {incidents.map((item, index) => (
             <IncidentCard
               key={item.sys_id || item.number || JSON.stringify(item)}
-              item={{
-                ...item,
-                servicenow_url: item.servicenow_url || projected?.url || null,
-              }}
+              item={item}
               extraCount={index === 0 ? extraCount : 0}
             />
           ))}

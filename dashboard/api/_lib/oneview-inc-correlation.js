@@ -469,7 +469,7 @@ export function buildServiceNowIncidentDeepLink(baseUrl, sysId) {
  */
 export function projectServiceNowReferenceFromAlertTags(alertOrTags = null, {
   baseUrl,
-  allowLinkTagFallback = true,
+  allowLinkTagFallback = false,
 } = {}) {
   const refs = extractServiceNowRefsFromAlertTags(alertOrTags);
   const number = refs.numbers[0] || null;

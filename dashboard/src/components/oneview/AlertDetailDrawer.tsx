@@ -332,7 +332,7 @@ export function AlertDetailDrawer({
                                   <AlertServiceNowReferenceCell
                                     reference={{
                                       number: item.incident_number,
-                                      sys_id: null,
+                                      sys_id: item.incident_sys_id,
                                       url: item.incident_url,
                                       extra_count: 0,
                                     }}

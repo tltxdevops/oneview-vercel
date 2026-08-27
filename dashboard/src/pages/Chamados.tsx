@@ -7,7 +7,6 @@ import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
-import { PageHeader } from "@/components/oneview/PageHeader";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Badge } from "@/components/ui/badge";
@@ -125,14 +124,6 @@ function displayValue(value: string | null | undefined, fallback?: string | null
 
 function formatDateTime(value: string | null | undefined) {
   return displayValue(value);
-}
-
-function formatCheckedAt(value: string | null | undefined) {
-  const text = displayValue(value);
-  if (text === "—") return text;
-  const date = new Date(text);
-  if (Number.isNaN(date.getTime())) return text;
-  return date.toLocaleString("pt-BR");
 }
 
 function safeCount(value: unknown) {
@@ -368,24 +359,17 @@ export default function ChamadosPage() {
     <AppLayout
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      showHealthStrip={false}
       contentClassName="gap-3 p-3 lg:px-4"
+      clientSelect={(
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Chamados</h1>
+          <Badge variant="outline" className="text-[10px]">
+            ServiceNow
+          </Badge>
+        </div>
+      )}
     >
       <div className="space-y-3">
-        <PageHeader
-          title="Chamados"
-          aside={(
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant="outline" className="text-[10px]">
-                ServiceNow
-              </Badge>
-              <span>{loading ? "Carregando…" : totalLabel}</span>
-              <span aria-hidden="true">·</span>
-              <span>Sync ServiceNow: {formatCheckedAt(payload?.freshness?.last_success_at)}</span>
-            </div>
-          )}
-        />
-
         <CompactMetricStrip
           aria-label="Indicadores de chamados"
           items={[
@@ -756,8 +740,8 @@ export default function ChamadosPage() {
               </div>
 
               <div className="border-t border-border/70 px-6 py-4">
-                {selected.servicenow_url ? (
-                  <ServiceNowDevLink href={selected.servicenow_url} fullWidth />
+                {selected.sys_id ? (
+                  <ServiceNowDevLink href={selected.servicenow_url} sysId={selected.sys_id} fullWidth />
                 ) : (
                   <p className="text-center text-xs text-muted-foreground">
                     Link do ServiceNow indisponível para este incidente.

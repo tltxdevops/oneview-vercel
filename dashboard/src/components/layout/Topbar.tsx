@@ -26,7 +26,7 @@ export function Topbar({ clientSection, rightSection, className }: TopbarProps) 
           </div>
         )}
         {rightSection && (
-          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:shrink-0">
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 sm:shrink-0">
             {rightSection}
           </div>
         )}

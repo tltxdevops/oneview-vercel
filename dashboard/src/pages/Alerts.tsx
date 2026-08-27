@@ -1983,7 +1983,7 @@ export default function AlertsPage() {
                 <TableHead className="px-3 text-left">{sortableHeader("ACK", "acknowledged_source")}</TableHead>
                 <TableHead className="px-3 text-left">Chamado</TableHead>
                 <TableHead className="px-3 text-left">{sortableHeader("Estado", "status")}</TableHead>
-                <TableHead className="px-3 text-right">Ações</TableHead>
+                <TableHead className="px-3 text-center">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -2106,8 +2106,8 @@ export default function AlertsPage() {
                     <TableCell className="align-middle px-3 py-2.5 text-left">
                       <p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-right">
-                      <div className="flex items-center justify-end gap-1 whitespace-nowrap">
+                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                      <div className="flex items-center justify-center gap-1 whitespace-nowrap">
                         <Button
                           type="button"
                           variant="ghost"

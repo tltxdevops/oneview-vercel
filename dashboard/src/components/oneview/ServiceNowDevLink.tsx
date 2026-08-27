@@ -6,6 +6,10 @@
 import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  buildProductionServiceNowIncidentLink,
+  canonicalizeServiceNowIncidentLink,
+} from "@/lib/oneview-inc-correlation";
 import { cn } from "@/lib/utils";
 
 export const SERVICENOW_LINK_LABEL = "Abrir no ServiceNow";
@@ -17,7 +21,8 @@ export const SERVICENOW_DEV_LINK_LABEL = SERVICENOW_LINK_LABEL;
 export const SERVICENOW_DEV_LINK_TOOLTIP = SERVICENOW_LINK_TOOLTIP;
 
 type ServiceNowDevLinkProps = {
-  href: string;
+  href?: string | null;
+  sysId?: string | null;
   className?: string;
   size?: "default" | "sm" | "lg" | "icon";
   fullWidth?: boolean;
@@ -25,11 +30,13 @@ type ServiceNowDevLinkProps = {
 
 export function ServiceNowDevLink({
   href,
+  sysId,
   className,
   size = "default",
   fullWidth = false,
 }: ServiceNowDevLinkProps) {
-  const url = String(href || "").trim();
+  const url = buildProductionServiceNowIncidentLink(sysId)
+    || canonicalizeServiceNowIncidentLink(href);
   if (!url) return null;
 
   return (

@@ -43,7 +43,7 @@ test("OV-P0-109 BFF list SELECT inclui tags e mapAlertRows projeta referência s
   const mapper = db.slice(db.indexOf("function mapAlertRows"), db.indexOf("function mapTopHosts"));
   assert.match(mapper, /projectServiceNowReferenceFromAlertTags/);
   assert.match(mapper, /servicenow_reference/);
-  assert.match(mapper, /SERVICENOW_BASE_URL|getServiceNowConfig/);
+  assert.match(mapper, /SERVICENOW_PROD_BASE_URL|SERVICENOW_BASE_URL|getServiceNowConfig/);
   assert.doesNotMatch(mapper, /serviceNowGet|fetchIncidents|correlateAlertRelatedIncidents/);
 });
 

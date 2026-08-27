@@ -129,9 +129,9 @@ export function AppLayout({
   ) : undefined;
 
   const topbarRight = (showHealthStrip || topbarRightSection) ? (
-    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
-      {showHealthStrip ? <PlatformHealthStrip /> : null}
+    <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
       {topbarRightSection}
+      {showHealthStrip ? <PlatformHealthStrip /> : null}
     </div>
   ) : undefined;
 

@@ -107,6 +107,10 @@ All colors MUST be HSL.
     scrollbar-color: hsl(var(--muted-foreground) / 0.25) transparent;
   }
 
+  html {
+    font-size: 112.5%; /* 18px when the browser base is 16px; respects user font preference */
+  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-feature-settings: "tnum";

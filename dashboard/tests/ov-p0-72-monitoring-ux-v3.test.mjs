@@ -134,7 +134,7 @@ test("OV-P0-72 layout: grid cabe em 1366 e 1920 (problema flexível)", async () 
   const monitoring = await read("src/pages/Monitoring.tsx");
   assert.match(
     monitoring,
-    /grid-cols-\[minmax\(9\.5rem,13rem\)_minmax\(8rem,12rem\)_minmax\(0,1fr\)_6\.25rem_4\.75rem_5\.75rem_5\.5rem_3\.75rem\]/,
+    /grid-cols-\[minmax\(9\.5rem,13rem\)_minmax\(8rem,12rem\)_minmax\(0,1fr\)_6\.25rem_4\.75rem_5\.75rem_5\.5rem_4\.5rem\]/,
   );
   assert.match(monitoring, /max-w-\[1920px\]/);
   // Shell sem scroll de página; listas/drawers usam overflow-y-auto interno (OV-P0-82).

@@ -190,7 +190,6 @@ export default function CertificadosPage() {
     <AppLayout
       title="Certificados"
       description="Monitoramento de certificados SSL/TLS e status de expiração."
-      showHealthStrip={false}
       clientSelect={
         <ClientSelect
           clients={mockClients}
