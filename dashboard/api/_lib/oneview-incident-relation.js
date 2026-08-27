@@ -117,19 +117,21 @@ export function createRelatedAlertHandler({
       }
 
       const dbConfig = config.dbConfig || getOneViewDbConfig();
-      const result = reference.sys_id || reference.number
+      let result = reference.sys_id || reference.number
         ? await findAlertByReference({
           sysId: reference.sys_id,
           number: reference.number,
-        }, dbConfig, config.primaryDataSourceName)
+        }, dbConfig)
         : {
           relation_source: "event_id",
-          alert: await findAlert(
-            reference.zabbix_event_id,
-            dbConfig,
-            config.primaryDataSourceName,
-          ),
+          alert: await findAlert(reference.zabbix_event_id, dbConfig),
         };
+      if (!result.alert && reference.zabbix_event_id) {
+        result = {
+          relation_source: "event_id",
+          alert: await findAlert(reference.zabbix_event_id, dbConfig),
+        };
+      }
       const alert = result.alert;
 
       const payload = {
@@ -141,6 +143,7 @@ export function createRelatedAlertHandler({
         alert: alert
           ? {
             id: alert.id,
+            data_source_id: alert.data_source_id,
             host: alert.host,
             customer: alert.customer,
             problem: alert.problem,
@@ -148,7 +151,9 @@ export function createRelatedAlertHandler({
             status: alert.status,
             source_event_id: alert.source_event_id,
             first_seen_at: alert.first_seen_at,
+            created_at: alert.created_at || alert.first_seen_at,
             resolved_at: alert.resolved_at,
+            oneview_link: `/alertas?alert=${encodeURIComponent(alert.id)}`,
           }
           : null,
         data_source: "database",

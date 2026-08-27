@@ -17,7 +17,7 @@ const row = {
   company: "company-1",
   contact_type: "monitoring",
   short_description: "Banco indisponível",
-  description: "Detalhe seguro",
+  description: "ID original do problema: 335113766",
   opened_at: "2026-08-14T20:00:00.000Z",
   sys_updated_on: "2026-08-14T21:00:00.000Z",
   zabbix_event_id: "335113766",
@@ -68,6 +68,7 @@ test("SN-P0-39 page PostgreSQL usa labels, filtro/período e lookup exato sem of
   assert.equal(result.pagination.page, 1);
   assert.equal(result.items[0].state_display, "Novo");
   assert.equal(result.items[0].assignment_group_display, "NOC");
+  assert.equal(result.items[0].zabbix_event_id, "335113766");
   assert.equal(result.items[0].servicenow_url, `https://teletexprod.service-now.com/incident.do?sys_id=${row.sys_id}`);
   assert.equal(result.items[0].raw_payload, undefined);
   const pageCall = calls.find((call) => call.sql.includes("order by sys_updated_on desc"));

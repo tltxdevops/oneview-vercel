@@ -4,6 +4,7 @@
  */
 import { getOneViewDbPool } from "./oneview-db.js";
 import { SERVICENOW_PROD_BASE_URL } from "./oneview-inc-correlation.js";
+import { parseZabbixFieldsFromDescription } from "./servicenow-normalize.js";
 
 const OPERATIONAL_STATES = ["1", "2", "3"];
 
@@ -30,6 +31,7 @@ function display(row, key) {
 
 function mapIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL } = {}) {
   const sysId = text(row.sys_id);
+  const zabbixEventId = parseZabbixFieldsFromDescription(row.description).zabbix_event_id;
   let servicenowUrl = null;
   try {
     if (baseUrl && sysId) {
@@ -61,7 +63,7 @@ function mapIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL } = {}) {
     description: text(row.description),
     opened_at: row.opened_at ? new Date(row.opened_at).toISOString() : null,
     sys_updated_on: row.sys_updated_on ? new Date(row.sys_updated_on).toISOString() : null,
-    zabbix_event_id: text(row.zabbix_event_id),
+    zabbix_event_id: text(zabbixEventId),
     correlation_id: text(row.correlation_id),
     u_hostname_zabbix: text(row.u_hostname_zabbix),
     u_ip_zabbix: text(row.u_ip_zabbix),

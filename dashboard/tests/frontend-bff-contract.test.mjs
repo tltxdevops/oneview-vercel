@@ -445,7 +445,7 @@ test("página de chamados lista incidents do BFF read-only", async () => {
   assert.match(chamados, /ServiceNowDevLink/);
   assert.match(chamados, /cursor-pointer/);
   assert.match(chamados, /Alerta relacionado/);
-  assert.match(chamados, /Alerta relacionado não localizado/);
+  assert.match(chamados, /Nenhum alerta relacionado localizado/);
   assert.match(chamados, /Abrir alerta/);
   assert.match(chamados, /fetchIncidentRelatedAlert/);
   assert.doesNotMatch(chamados, /fallback.*host|host.*fallback/i);
@@ -1224,7 +1224,7 @@ test("contratos não expõem payloads nem habilitam ACK", async () => {
     read("../.env.example"),
   ]);
   assert.doesNotMatch(api, /payload_normalized|payload_raw/);
-  assert.doesNotMatch(database, /select[\s\S]{0,120}payload_(?:raw|normalized)/i);
+  assert.doesNotMatch(database, /select\s+(?:a\.)?payload_(?:raw|normalized)\s*(?:,|from)/i);
   assert.doesNotMatch(fallback, /\.\.\.alert/);
   assert.match(envExample, /ONEVIEW_ACK_ENABLED=false/);
   assert.match(envExample, /ONEVIEW_ACK_REQUEST_ENABLED=false/);

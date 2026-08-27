@@ -203,6 +203,39 @@ test("OV-P0-190 returns no match without hostname fallback", async () => {
   assert.equal(res.body.relation_source, "none");
 });
 
+test("OV-P0-231 uses an explicit original Zabbix problem ID after tag misses", async () => {
+  const handler = enabledHandler({
+    findAlertByReference: async () => ({ relation_source: "none", alert: null }),
+    findAlert: async (eventId) => {
+      assert.equal(eventId, "341462744");
+      return {
+        id: "683a3bf9-5ea6-496f-853e-0ad32d451af4",
+        data_source_id: "20511025-a4a7-466b-80d3-08db08dfa90c",
+        source_event_id: "341462744",
+        host: "TJRS - UMBRELLA-1",
+        customer: "TJRS",
+        problem: "Upload WAN acima de 20 Mbps",
+        severity: "average",
+        status: "active",
+        first_seen_at: "2026-08-27T13:31:34.000Z",
+      };
+    },
+  });
+  const res = responseMock();
+  await handler(requestMock({
+    sys_id: "cf04e09c47c78b106b618ca2036d43fe",
+    number: "INC0075550",
+    source_event_id: "341462744",
+    hostname: "must-not-be-used",
+  }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.relation_source, "event_id");
+  assert.equal(res.body.alert.id, "683a3bf9-5ea6-496f-853e-0ad32d451af4");
+  assert.equal(res.body.alert.data_source_id, "20511025-a4a7-466b-80d3-08db08dfa90c");
+  assert.equal(res.body.alert.oneview_link, "/alertas?alert=683a3bf9-5ea6-496f-853e-0ad32d451af4");
+});
+
 test("related-alert retorna alerta quando source_event_id casa", async () => {
   const handler = enabledHandler({
     findAlert: async (eventId) => {

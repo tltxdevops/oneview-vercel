@@ -245,7 +245,8 @@ export default function ChamadosPage() {
 
     const sysId = String(selected.sys_id || "").trim();
     const number = String(selected.number || "").trim();
-    if (!sysId && !number) {
+    const sourceEventId = String(selected.zabbix_event_id || "").trim();
+    if (!sysId && !number && !sourceEventId) {
       setRelatedAlert(null);
       setRelatedAlertLoading(false);
       setRelatedAlertChecked(true);
@@ -257,7 +258,7 @@ export default function ChamadosPage() {
     setRelatedAlertLoading(true);
     setRelatedAlertChecked(false);
 
-    fetchIncidentRelatedAlert({ sysId, number }, controller.signal)
+    fetchIncidentRelatedAlert({ sysId, number, sourceEventId }, controller.signal)
       .then((response) => {
         if (controller.signal.aborted) return;
         setRelatedAlert(response.matched && response.alert ? response.alert : null);
@@ -739,17 +740,17 @@ export default function ChamadosPage() {
                         <DetailField label="Host" value={displayValue(relatedAlert.host)} />
                         <DetailField label="Problema" value={displayValue(relatedAlert.problem)} />
                         <DetailField label="Severidade" value={alertSeverityLabel(relatedAlert.severity)} />
-                        <DetailField label="Início" value={formatDateTime(relatedAlert.first_seen_at)} />
+                        <DetailField label="Data/Hora" value={formatDateTime(relatedAlert.created_at || relatedAlert.first_seen_at)} />
                         <DetailField label="Estado" value={alertStatusLabel(relatedAlert.status)} />
                       </div>
                       <Button type="button" variant="secondary" size="sm" className="w-full sm:w-auto" asChild>
-                        <Link to={`/alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
-                          Ver alerta
+                        <Link to={relatedAlert.oneview_link || `/alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
+                          Abrir alerta no OneView
                         </Link>
                       </Button>
                     </div>
                   ) : relatedAlertChecked ? (
-                    <p className="text-sm text-muted-foreground">Alerta relacionado não localizado</p>
+                    <p className="text-sm text-muted-foreground">Nenhum alerta relacionado localizado</p>
                   ) : null}
                 </section>
               </div>

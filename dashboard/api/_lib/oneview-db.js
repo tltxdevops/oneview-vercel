@@ -2822,7 +2822,6 @@ export async function resetOneViewDbPoolForTests() {
 export async function findAlertBySourceEventId(
   sourceEventId,
   config = getOneViewDbConfig(),
-  primaryDataSourceName = getPrimaryDataSourceName(),
 ) {
   const eventId = String(sourceEventId || "").trim();
   if (!eventId || !/^[A-Za-z0-9._:-]{1,80}$/.test(eventId)) {
@@ -2836,6 +2835,7 @@ export async function findAlertBySourceEventId(
     `
     select
       a.id::text as id,
+      a.data_source_id::text as data_source_id,
       a.source_event_id,
       a.host_name,
       a.host_visible_name,
@@ -2844,15 +2844,17 @@ export async function findAlertBySourceEventId(
       a.client_name,
       a.severity,
       a.status_source,
+      a.problem_name,
+      a.created_at,
+      a.first_seen_at,
       a.resolved_at
     from alerts a
-    join data_sources d on d.id = a.data_source_id
     where a.source_event_id = $1
-      and d.name = $2
-    order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
+       or a.source_problem_id = $1
+    order by a.first_seen_at desc nulls last, a.last_seen_at desc nulls last, a.id desc
     limit 1
     `,
-    [eventId, primaryDataSourceName],
+    [eventId],
   );
 
   if (!row) return null;
@@ -2872,11 +2874,15 @@ export async function findAlertBySourceEventId(
 
   return {
     id: textValue(row.id),
+    data_source_id: textValue(row.data_source_id),
     source_event_id: textValue(row.source_event_id, eventId),
     host: host || "—",
     customer: customer || "—",
+    problem: nullableText(sanitizeText(row.problem_name, "", 700)) || "—",
     severity: textValue(row.severity, "not_classified"),
     status,
+    created_at: isoDate(row.created_at),
+    first_seen_at: isoDate(row.first_seen_at),
   };
 }
 
@@ -3093,6 +3099,15 @@ const EXPLICIT_SERVICENOW_TAG_SQL = `
      where lower(coalesce(tag->>'tag', tag->>'name', '')) = $1
        and lower(btrim(coalesce(tag->>'value', ''))) = lower($2)
   )
+  or exists (
+    select 1 from jsonb_array_elements(
+      case when jsonb_typeof(a.payload_normalized->'tags') = 'array'
+        then a.payload_normalized->'tags' else '[]'::jsonb end
+    ) tag
+     where lower(coalesce(tag->>'tag', tag->>'name', '')) = $1
+       and lower(btrim(coalesce(tag->>'value', ''))) = lower($2)
+  )
+  or lower(btrim(coalesce(a.payload_normalized->'tags'->>$1, ''))) = lower($2)
 `;
 
 async function findAlertByExplicitServiceNowTag(tagName, value, config) {
@@ -3101,6 +3116,7 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config) {
     `
     select
       a.id::text as id,
+      a.data_source_id::text as data_source_id,
       a.source_event_id,
       a.host_name,
       a.host_visible_name,
@@ -3112,6 +3128,7 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config) {
       a.severity,
       a.status_source,
       a.first_seen_at,
+      a.created_at,
       a.resolved_at
     from alerts a
     where (${EXPLICIT_SERVICENOW_TAG_SQL})
@@ -3133,6 +3150,7 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config) {
 
   return {
     id: textValue(row.id),
+    data_source_id: textValue(row.data_source_id),
     source_event_id: textValue(row.source_event_id),
     host: host || "—",
     customer: customer || "—",
@@ -3140,6 +3158,7 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config) {
     severity: textValue(row.severity, "not_classified"),
     status: statusSource === "resolved" || row.resolved_at ? "resolved" : "active",
     first_seen_at: isoDate(row.first_seen_at),
+    created_at: isoDate(row.created_at),
     resolved_at: isoDate(row.resolved_at),
   };
 }
