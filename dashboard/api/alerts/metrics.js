@@ -86,10 +86,12 @@ export default async function handler(req, res) {
           and acknowledged_internal = false
       `),
       rows(`
-        select id, client_name, host_name, problem_name, severity, duration_seconds, first_seen_at
+        select id, client_name, host_name, problem_name, severity,
+               floor(extract(epoch from (now() - first_seen_at)))::int as duration_seconds, first_seen_at
         from scoped_alerts
         where ${ACTIVE_WHERE}
-        order by duration_seconds desc
+          and first_seen_at is not null and first_seen_at <= now()
+        order by floor(extract(epoch from (now() - first_seen_at))) desc
         limit 10
       `),
       scalar(`
@@ -102,11 +104,16 @@ export default async function handler(req, res) {
         select coalesce(avg(extract(epoch from (first_ack.ack_at - alerts.first_seen_at))), 0)::int as value
         from scoped_alerts alerts
         join first_ack on first_ack.alert_id = alerts.id
+        where first_ack.ack_at >= alerts.first_seen_at
+          and (alerts.resolved_at is null or alerts.resolved_at >= alerts.first_seen_at)
       `),
       scalar(`
-        select coalesce(avg(extract(epoch from ((coalesce(normalized_at, resolved_at, updated_at)) - first_seen_at))), 0)::int as value
+        select coalesce(avg(extract(epoch from (resolved_at - first_seen_at))), 0)::int as value
         from scoped_alerts
-        where status_source = 'resolved' or status_internal = 'normalized'
+        where (status_source = 'resolved' or status_internal = 'normalized')
+          and first_seen_at is not null
+          and resolved_at is not null
+          and resolved_at >= first_seen_at
       `),
     ]);
 

@@ -43,7 +43,7 @@ function formatDateTime(value?: string | null) {
 }
 
 function formatDurationSeconds(seconds: number | null | undefined) {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "Duração indisponível";
   if (seconds < 60) return `${Math.round(seconds)} s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) {
@@ -168,6 +168,7 @@ export function AlertDetailDrawer({
   const hostName = alert ? canonicalHostName(alert) : "—";
   const resolved = alert ? isResolvedAlert(alert) : false;
   const ackPending = alert ? !alert.acknowledged_source : true;
+  const temporalInconsistent = alert?.temporal_integrity === "source_clock_inconsistent";
   const publicIp = alert ? safeHostIp(alert.host_ip) : null;
   const iface = alert ? interfaceFromAlertTags(alert) : null;
   const tags = alert ? collectOperationalTags(alert) : [];
@@ -276,6 +277,7 @@ export function AlertDetailDrawer({
                         <DetailField label="Recovery" value={formatDateTime(alert.resolved_at)} />
                       ) : null}
                     </dl>
+                    {temporalInconsistent ? <p className="text-xs text-muted-foreground">Relógio da origem inconsistente.</p> : null}
                   </section>
 
                   {/* Detalhe correlacionado consultado somente pelo BFF no bloco Chamado relacionado. */}
@@ -307,6 +309,7 @@ export function AlertDetailDrawer({
                               <DetailField label="Recovery" value={formatDateTime(alert.resolved_at)} />
                             ) : null}
                           </dl>
+                          {temporalInconsistent ? <p className="text-xs text-muted-foreground">Relógio da origem inconsistente.</p> : null}
                         </section>
                       ) : null}
 

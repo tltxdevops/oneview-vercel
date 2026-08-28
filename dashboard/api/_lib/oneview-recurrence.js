@@ -6,6 +6,8 @@
  * e o novo first_seen_at é posterior a essa resolução.
  */
 
+import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
+
 const MS_24H = 24 * 60 * 60 * 1000;
 const MS_7D = 7 * MS_24H;
 
@@ -38,6 +40,7 @@ export function emptyAlertRecurrenceReadModel() {
     recurrence_count_7d: 0,
     previous_occurrence_at: null,
     previous_recovery_at: null,
+    previous_temporal_integrity: null,
     is_recurrent: false,
   });
 }
@@ -77,14 +80,18 @@ export function parseRecurrenceKey(value) {
  */
 export function selectRecurrenceEpisodes(alerts = []) {
   const sorted = [...alerts]
-    .map((alert) => ({
-      id: textValue(alert?.id),
-      first_seen_at: toDate(alert?.first_seen_at),
-      resolved_at: toDate(alert?.resolved_at),
-      duration_seconds: Number(alert?.duration_seconds) || 0,
-      acknowledged_at: toDate(alert?.acknowledged_source_at ?? alert?.acknowledged_at),
-      acknowledged_by: nullableText(alert?.acknowledged_source_by ?? alert?.acknowledged_by),
-    }))
+    .map((alert) => {
+      const temporal = deriveAlertTemporalIntegrity(alert);
+      return {
+        id: textValue(alert?.id),
+        first_seen_at: toDate(alert?.first_seen_at),
+        resolved_at: toDate(alert?.resolved_at),
+        duration_seconds: temporal.duration_seconds,
+        temporal_integrity: temporal.temporal_integrity,
+        acknowledged_at: toDate(alert?.acknowledged_source_at ?? alert?.acknowledged_at),
+        acknowledged_by: nullableText(alert?.acknowledged_source_by ?? alert?.acknowledged_by),
+      };
+    })
     .filter((alert) => alert.id && alert.first_seen_at)
     .sort((left, right) => {
       const delta = left.first_seen_at.getTime() - right.first_seen_at.getTime();
@@ -163,6 +170,7 @@ export function buildAlertRecurrenceReadModel({ current, siblings = [], now = ne
     previous_recovery_at: previous ? toIso(previous.resolved_at) : null,
     previous_episode_id: previous?.id || null,
     previous_duration_seconds: previous ? previous.duration_seconds : null,
+    previous_temporal_integrity: previous?.temporal_integrity || null,
     previous_acknowledged_at: previous ? toIso(previous.acknowledged_at) : null,
     previous_acknowledged_by: previous?.acknowledged_by || null,
     is_recurrent: recurrence_count_7d >= 2,

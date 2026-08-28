@@ -18,7 +18,7 @@ function formatDateTime(value?: string | null) {
 }
 
 function formatDurationSeconds(seconds: number | null | undefined) {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "Duração indisponível";
   if (seconds < 60) return `${Math.round(seconds)} s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) {
@@ -193,6 +193,7 @@ export function AlertOperationalSummary({ alert, className, children }: AlertOpe
           </div>
         ))}
       </dl>
+      {alert.temporal_integrity === "source_clock_inconsistent" ? <p className="text-xs text-muted-foreground">Relógio da origem inconsistente.</p> : null}
 
       {children}
     </div>

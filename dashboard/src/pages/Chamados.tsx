@@ -205,8 +205,8 @@ export default function ChamadosPage() {
       // SN-P0-25: caller_id opcional — "Todos" omite o param (universo monitoring).
       callerId: applied.callerId !== "all" ? applied.callerId : undefined,
       unassigned: applied.unassigned || undefined,
-      openedFrom: period.openedFrom,
-      openedTo: period.openedTo,
+      updatedFrom: period.openedFrom,
+      updatedTo: period.openedTo,
       signal: controller.signal,
     })
       .then((response) => {
@@ -546,7 +546,7 @@ export default function ChamadosPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-period">Período</label>
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-period">Última atualização</label>
               <Select
                 value={draft.period}
                 onValueChange={(value) => setDraft((prev) => ({ ...prev, period: value }))}
