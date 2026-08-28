@@ -1135,6 +1135,92 @@ export async function fetchIncidents(params?: {
   });
 }
 
+export type OperatorQueueTab = "all" | "unassigned" | "following" | "recent";
+
+export type OperatorQueueItem = {
+  alert_id: string | null;
+  customer_name: string | null;
+  customer_key: string | null;
+  operator_tag: string | null;
+  problem_name: string | null;
+  host_name: string | null;
+  severity: string | null;
+  incident_number: string | null;
+  incident_sys_id: string | null;
+  incident_state: string | null;
+  incident_state_display: string | null;
+  assigned_to: string | null;
+  assigned_to_display: string | null;
+  analyst_label: string;
+  unassigned: boolean;
+  assignment_group: string | null;
+  assignment_group_display: string | null;
+  last_updated_at: string | null;
+  updated_ago_label: string | null;
+  sla_status: null;
+  next_followup_at: null;
+  relation_source: string;
+  oneview_link: string | null;
+  servicenow_url: string | null;
+};
+
+export type OperatorQueueFacet = { value: string; label: string };
+
+export type OperatorQueueResponse = OneViewResponseMeta & {
+  items: OperatorQueueItem[];
+  pagination: AlertPagination;
+  filters: {
+    tab: OperatorQueueTab;
+    operator_tag: string | null;
+    customer: string | null;
+    assigned_to: string | null;
+    state: string | null;
+    severity: string | null;
+    page: number;
+    page_size: number;
+  };
+  counts: {
+    all: number;
+    unassigned: number;
+    following: number;
+    recent: number;
+  };
+  facets: {
+    operator_tags: OperatorQueueFacet[];
+    customers: OperatorQueueFacet[];
+    analysts: OperatorQueueFacet[];
+    states: OperatorQueueFacet[];
+    severities: OperatorQueueFacet[];
+  };
+  sla_rules_implemented: false;
+  sla_awaiting_business_rules: true;
+};
+
+export async function fetchOperatorQueue(params?: {
+  tab?: OperatorQueueTab;
+  operatorTag?: string;
+  customer?: string;
+  assignedTo?: string;
+  state?: string;
+  severity?: string;
+  page?: number;
+  pageSize?: number;
+  signal?: AbortSignal;
+}): Promise<OperatorQueueResponse> {
+  const search = new URLSearchParams();
+  search.set("page", String(Math.max(1, params?.page ?? 1)));
+  search.set("page_size", String(Math.min(Math.max(params?.pageSize ?? 50, 1), 100)));
+  if (params?.tab) search.set("tab", params.tab);
+  if (params?.operatorTag) search.set("operator_tag", params.operatorTag);
+  if (params?.customer) search.set("customer", params.customer);
+  if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
+  if (params?.state) search.set("state", params.state);
+  if (params?.severity) search.set("severity", params.severity);
+  return fetchApi<OperatorQueueResponse>(`/oneview/operator-queue?${search.toString()}`, {
+    signal: params?.signal,
+  });
+}
+
 /** SN-P0-08 — lookup read-only alerta ↔ incidente via zabbix_event_id. */
 export async function fetchIncidentRelatedAlert(
   reference: string | { sysId?: string | null; number?: string | null; sourceEventId?: string | null },

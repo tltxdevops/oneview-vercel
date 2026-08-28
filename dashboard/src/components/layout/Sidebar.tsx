@@ -1,4 +1,4 @@
-import { Home, Bell, History, Monitor, ChevronLeft, ChevronRight, Ticket, Settings, LogOut, Sun, Moon, type LucideIcon } from "lucide-react";
+import { Home, Bell, History, Monitor, ChevronLeft, ChevronRight, Ticket, Radio, Settings, LogOut, Sun, Moon, type LucideIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -38,6 +38,7 @@ const baseNavigation: NavItem[] = [
   { name: "Alertas", href: "/alertas", icon: Bell, secondary: "Fila operacional" },
   { name: "Histórico", href: "/historico", icon: History, secondary: "Eventos e ações" },
   { name: "Chamados", href: "/chamados", icon: Ticket, secondary: "ServiceNow" },
+  { name: "Operadoras", href: "/operadoras", icon: Radio, secondary: "Follow-up" },
 ];
 
 function navToneClasses(isActive: boolean) {

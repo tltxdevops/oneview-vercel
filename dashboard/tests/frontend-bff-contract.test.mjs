@@ -491,7 +491,7 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
   assert.ok(sidebar.includes("baseNavigation"), "Sidebar deve montar navegação operacional estática");
 
   // Hrefs estáticos da navegação operacional.
-  for (const preserved of ["/", "/monitoramento", "/alertas", "/historico", "/chamados"]) {
+  for (const preserved of ["/", "/monitoramento", "/alertas", "/historico", "/chamados", "/operadoras"]) {
     assert.ok(sidebar.includes(`href: "${preserved}"`), `Sidebar deve preservar ${preserved}`);
     assert.ok(appRoutes.has(preserved), `App deve preservar ${preserved}`);
   }

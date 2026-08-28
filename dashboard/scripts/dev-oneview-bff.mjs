@@ -35,9 +35,11 @@ for (const file of [
   "api/oneview/incidents.js",
   "api/oneview/incidents/related-alert.js",
   "api/oneview/alerts/related-incidents.js",
+  "api/oneview/operator-queue.js",
   "api/_lib/oneview-incidents.js",
   "api/_lib/oneview-incident-relation.js",
   "api/_lib/oneview-alert-incidents.js",
+  "api/_lib/oneview-operator-queue.js",
   "api/_lib/servicenow-client.js",
   "api/_lib/servicenow-normalize.js",
 ]) codeHash.update(readFileSync(path.join(rootDir, file)));
@@ -63,6 +65,7 @@ const routes = new Map([
   ["/api/oneview/operations/health", "operations-health"],
   ["/api/oneview/incidents", "incidents"],
   ["/api/oneview/incidents/related-alert", "incident-related-alert"],
+  ["/api/oneview/operator-queue", "operator-queue"],
 ]);
 
 const handlers = new Map();

@@ -11,6 +11,7 @@ import AlertsPage from "@/pages/Alerts";
 import HistoricoPage from "@/pages/Historico";
 import MonitoringPage from "@/pages/Monitoring";
 import ChamadosPage from "@/pages/Chamados";
+import OperadorasPage from "@/pages/Operadoras";
 import SettingsPage from "@/pages/Settings";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import SsoCallback from "@/pages/SsoCallback";
@@ -45,6 +46,7 @@ const App = () => (
             {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={null}><BancoDadosPage /></Suspense>} />}
             {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={null}><CertificadosPage /></Suspense>} />}
             <Route path="/chamados" element={<ChamadosPage />} />
+            <Route path="/operadoras" element={<OperadorasPage />} />
             {WorkspacesPage && <Route path="/workspaces" element={<Suspense fallback={null}><WorkspacesPage /></Suspense>} />}
             <Route path="/config" element={<SettingsPage />} />
           </Route>
