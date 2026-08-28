@@ -9,7 +9,7 @@ function when(value?: string | null) {
 }
 
 function duration(value?: number | null) {
-  if (value == null || !Number.isFinite(value) || value < 0) return "—";
+  if (value == null || !Number.isFinite(value) || value < 0) return "Duração indisponível";
   const minutes = Math.floor(value / 60);
   if (minutes < 60) return `${minutes} min`;
   return `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ""}`;
@@ -32,7 +32,7 @@ export function AlertRecurrenceInvestigation({ alert }: { alert: OneViewAlert })
         {href ? (
           <>
             <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><Count label="Ocorrências 24 h" value={alert.recurrence_count_24h} /><Count label="Ocorrências 7 d" value={alert.recurrence_count_7d} /></dl>
-            {previous ? <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">Última ocorrência anterior</dt><dd className="mt-0.5 font-semibold">{when(previous.occurrence_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Recovery</dt><dd className="mt-0.5 font-semibold">{when(previous.recovery_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Duração</dt><dd className="mt-0.5 font-semibold">{duration(previous.duration_seconds)}</dd></div><div><dt className="text-xs text-muted-foreground">ACK actor</dt><dd className="mt-0.5 font-semibold">{previous.acknowledged_by || "—"}</dd></div></dl> : <p className="mt-3 text-xs text-muted-foreground">Nenhuma ocorrência anterior registrada.</p>}
+            {previous ? <><dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">Última ocorrência anterior</dt><dd className="mt-0.5 font-semibold">{when(previous.occurrence_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Recovery</dt><dd className="mt-0.5 font-semibold">{when(previous.recovery_at)}</dd></div><div><dt className="text-xs text-muted-foreground">Duração</dt><dd className="mt-0.5 font-semibold">{duration(previous.duration_seconds)}</dd></div><div><dt className="text-xs text-muted-foreground">ACK actor</dt><dd className="mt-0.5 font-semibold">{previous.acknowledged_by || "—"}</dd></div></dl>{previous.temporal_integrity === "source_clock_inconsistent" ? <p className="mt-2 text-xs text-muted-foreground">Relógio da origem inconsistente.</p> : null}</> : <p className="mt-3 text-xs text-muted-foreground">Nenhuma ocorrência anterior registrada.</p>}
             {previous?.incident ? <div className="mt-3"><p className="text-xs text-muted-foreground">INC relacionado</p><AlertServiceNowReferenceCell reference={previous.incident} /></div> : null}
             <Link to={href} className="mt-3 inline-block text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">Ver histórico completo</Link>
           </>

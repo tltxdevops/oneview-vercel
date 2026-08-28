@@ -7,6 +7,7 @@ import {
 import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
 import { buildAlertRecurrenceReadModel, buildRecurrenceKey, hasRecurrenceIdentity, parseRecurrenceKey } from "./oneview-recurrence.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 
 const { Pool } = pg;
 
@@ -237,7 +238,13 @@ const ALERT_SORTS = Object.freeze({
   datasource: "d.name",
   host: "a.host_name",
   problem: "a.problem_name",
-  duration: "a.duration_seconds",
+  duration: `case
+    when a.resolved_at is not null and a.first_seen_at is not null and a.resolved_at >= a.first_seen_at
+      then floor(extract(epoch from (a.resolved_at - a.first_seen_at)))
+    when a.resolved_at is null and a.first_seen_at is not null and a.first_seen_at <= now()
+      then floor(extract(epoch from (now() - a.first_seen_at)))
+    else null
+  end`,
   status: `case
     when a.resolved_at is not null or lower(coalesce(a.status_source, '')) = 'resolved'
       or lower(coalesce(a.status_internal, '')) in ('resolved', 'normalized') then 1
@@ -810,6 +817,7 @@ function mapAlertRows(rows) {
   // Aceita base URL mesmo sem credenciais API (link abre no browser do usuário).
   return rows.map((row) => {
     const hosts = operationalHostFields(row);
+    const temporal = deriveAlertTemporalIntegrity(row);
     const enrichmentState = classifyAlertEnrichment(row);
     const customerIdentity = safeCustomerIdentity(row);
     // Escopo derivado no BFF (OV-P0-56) — usa evidência do row original; não reescreve customer_name.
@@ -889,7 +897,8 @@ function mapAlertRows(rows) {
       last_seen_at: isoDate(row.last_seen_at, generatedAt()),
       resolved_at: isoDate(row.resolved_at),
       source_recovery_event_id: nullableText(sanitizeText(row.source_recovery_event_id, "", 120)),
-      duration_seconds: integerValue(row.duration_seconds, 0),
+      duration_seconds: temporal.duration_seconds,
+      temporal_integrity: temporal.temporal_integrity,
       created_at: isoDate(row.created_at ?? row.first_seen_at, generatedAt()),
       updated_at: isoDate(row.updated_at ?? row.last_seen_at, generatedAt()),
     };
@@ -909,13 +918,14 @@ function mapTopHosts(rows) {
 function mapLongestDurationRows(rows) {
   return rows.map((row) => {
     const hosts = operationalHostFields(row);
+    const temporal = deriveAlertTemporalIntegrity(row);
     return {
       id: textValue(row.id),
       client_name: sanitizeText(row.client_name, "Cliente OneView", 160),
       host_name: hosts.host_visible_name || hosts.host_technical_name || hosts.host_name || "Host não informado",
       problem_name: operationalProblemName(row),
       severity: textValue(row.severity, "not_classified"),
-      duration_seconds: integerValue(row.duration_seconds, 0),
+      duration_seconds: temporal.duration_seconds,
       first_seen_at: isoDate(row.first_seen_at, generatedAt()),
     };
   });
@@ -1444,6 +1454,7 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
     occurrence_at: recurrence.previous_occurrence_at,
     recovery_at: recurrence.previous_recovery_at,
     duration_seconds: recurrence.previous_duration_seconds,
+    temporal_integrity: recurrence.previous_temporal_integrity,
     acknowledged_at: recurrence.previous_acknowledged_at,
     acknowledged_by: resolveAckActorName(recurrence.previous_acknowledged_by),
     incident: projectServiceNowReferenceFromAlertTags(previousEpisode, {
@@ -2189,11 +2200,12 @@ async function fetchDashboardSummaryPayload(
     queryRows(
       config,
       `select a.id, ${SAFE_CUSTOMER_NAME_SQL} as client_name, a.host_name, a.problem_name,
-              a.severity, a.duration_seconds::int, a.first_seen_at
+              a.severity, floor(extract(epoch from (now() - a.first_seen_at)))::int as duration_seconds, a.first_seen_at
          from alerts a
          join data_sources d on d.id = a.data_source_id
         where d.name = $1 and a.status_source = 'active' and a.resolved_at is null
-        order by a.duration_seconds desc nulls last
+          and a.first_seen_at is not null and a.first_seen_at <= now()
+        order by floor(extract(epoch from (now() - a.first_seen_at))) desc nulls last
         limit 10`,
       scopeValues,
     ),
@@ -2207,10 +2219,16 @@ async function fetchDashboardSummaryPayload(
       from alerts a
       join data_sources d on d.id = a.data_source_id
       join first_ack on first_ack.alert_id = a.id
-      where d.name = $1`, scopeValues),
-    queryRow(config, `select coalesce(avg(extract(epoch from (coalesce(a.normalized_at, a.resolved_at, a.updated_at) - a.first_seen_at))), 0)::int as avg_normalization_time_seconds
+      where d.name = $1
+        and first_ack.ack_at >= a.first_seen_at
+        and (a.resolved_at is null or a.resolved_at >= a.first_seen_at)`, scopeValues),
+    queryRow(config, `select coalesce(avg(extract(epoch from (a.resolved_at - a.first_seen_at))), 0)::int as avg_normalization_time_seconds
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and (a.status_source = 'resolved' or a.status_internal = 'normalized')`, scopeValues),
+      where d.name = $1
+        and (a.status_source = 'resolved' or a.status_internal = 'normalized')
+        and a.first_seen_at is not null
+        and a.resolved_at is not null
+        and a.resolved_at >= a.first_seen_at`, scopeValues),
   ]);
 
   const alertsTotal = integerValue(totalAlertsRow?.value, 0);

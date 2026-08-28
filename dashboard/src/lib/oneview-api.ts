@@ -357,7 +357,8 @@ export interface OneViewAlert {
   last_seen_at: string;
   resolved_at: string | null;
   source_recovery_event_id: string | null;
-  duration_seconds: number;
+  duration_seconds: number | null;
+  temporal_integrity?: "source_clock_inconsistent" | null;
   created_at: string;
   updated_at: string;
   /** OV-P0-87 — read model de recorrência (detail). */
@@ -371,6 +372,7 @@ export interface OneViewAlert {
     occurrence_at: string | null;
     recovery_at: string | null;
     duration_seconds: number | null;
+    temporal_integrity?: "source_clock_inconsistent" | null;
     acknowledged_at: string | null;
     acknowledged_by: string | null;
     incident: OneViewAlert["servicenow_reference"];
@@ -561,7 +563,7 @@ export interface AlertMetrics extends OneViewResponseMeta {
     host_name: string | null;
     problem_name: string;
     severity: string;
-    duration_seconds: number;
+    duration_seconds: number | null;
     first_seen_at: string;
   }>;
   avg_ack_time_seconds: number;
@@ -1386,8 +1388,9 @@ export function oneViewAlertToLegacyAlert(alert: OneViewAlert): Alert {
   };
 }
 
-export function formatDurationSeconds(value: number): string {
-  const seconds = Math.max(Math.floor(value || 0), 0);
+export function formatDurationSeconds(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return "Duração indisponível";
+  const seconds = Math.floor(value);
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   const hours = Math.floor(seconds / 3600);

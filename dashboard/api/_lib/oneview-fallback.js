@@ -16,6 +16,7 @@ import {
 import { deriveOperationalScope } from "./oneview-operational-scope.js";
 import { emptyAlertRecurrenceReadModel } from "./oneview-recurrence.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
 let snapshotPromise;
@@ -50,6 +51,7 @@ function countBy(items, keyOf, mapper) {
 function snapshotAlert(alert, generatedAt) {
   const hostSeed = String(alert.host_alias || alert.id || "host");
   const hostDigest = createHash("sha256").update(hostSeed).digest("hex").slice(0, 8).toUpperCase();
+  const temporal = deriveAlertTemporalIntegrity(alert, Date.parse(generatedAt));
   const enrichmentState = classifyAlertEnrichment({
     customer_name: alert.customer_name,
     customer_key: alert.customer_key,
@@ -120,7 +122,8 @@ function snapshotAlert(alert, generatedAt) {
     last_seen_at: alert.last_seen_at || generatedAt,
     resolved_at: alert.resolved_at || null,
     source_recovery_event_id: alert.source_recovery_event_id ? String(alert.source_recovery_event_id) : null,
-    duration_seconds: Math.max(0, Number(alert.duration_seconds) || 0),
+    duration_seconds: temporal.duration_seconds,
+    temporal_integrity: temporal.temporal_integrity,
     created_at: alert.created_at || alert.first_seen_at || generatedAt,
     updated_at: alert.updated_at || alert.last_seen_at || generatedAt,
   };
@@ -319,14 +322,14 @@ function filteredAlerts(snapshot, req, primaryDataSourceName) {
     if (filters.sort === "datasource") return item.datasource_name;
     if (filters.sort === "host") return item.host_name;
     if (filters.sort === "problem") return item.problem_name;
-    if (filters.sort === "duration") return item.duration_seconds;
+    if (filters.sort === "duration") return item.duration_seconds ?? -1;
     if (filters.sort === "status") return isResolvedAlert(item) ? 1 : 0;
     if (filters.sort === "acknowledged_source") return item.acknowledged_source ? 1 : 0;
     if (filters.sort === "acknowledged_at") return Date.parse(item.acknowledged_source_at || item.acknowledged_at || "") || 0;
     return Date.parse(item[filters.sort] || item.last_seen_at) || 0;
   };
   const secondaryValueOf = (item) => {
-    if (filters.sortSecondary === "duration") return item.duration_seconds;
+    if (filters.sortSecondary === "duration") return item.duration_seconds ?? -1;
     if (filters.sortSecondary === "resolved_at") return Date.parse(item.resolved_at || "") || 0;
     if (filters.sortSecondary === "acknowledged_at") {
       return Date.parse(item.acknowledged_source_at || item.acknowledged_at || "") || 0;
@@ -495,6 +498,7 @@ function dashboardSummaryPayload(snapshot, timeZone) {
       .slice(0, 10),
     unacknowledged_total: active.filter((alert) => !(alert.acknowledged_internal || alert.acknowledged_source)).length,
     longest_duration: [...active]
+      .filter((alert) => Number.isFinite(alert.duration_seconds) && alert.duration_seconds >= 0)
       .sort((left, right) => right.duration_seconds - left.duration_seconds)
       .slice(0, 10)
       .map((alert) => ({
