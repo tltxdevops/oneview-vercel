@@ -52,6 +52,7 @@ import {
   formatOneViewSeverityLabel,
 } from "@/lib/oneview-api";
 import {
+  DEFAULT_HOME_ALERT_MODE,
   HOME_ALERT_MODE,
   HOME_ALERTS_PAGE_SIZE,
   HOME_EVENTS_LIMIT,
@@ -361,7 +362,7 @@ export default function Index() {
   const homeWindow = parseHomeOperationalWindow(searchParams.get("window"));
   const windowMs = homeOperationalWindowMs(homeWindow);
 
-  const [alertMode, setAlertMode] = useState<HomeAlertMode>(HOME_ALERT_MODE.prioritary);
+  const [alertMode, setAlertMode] = useState<HomeAlertMode>(DEFAULT_HOME_ALERT_MODE);
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>([]);
   const [clientFilterOpen, setClientFilterOpen] = useState(false);
@@ -851,8 +852,8 @@ export default function Index() {
                   value={alertMode}
                   onChange={(mode) => setAlertMode(parseHomeAlertMode(mode))}
                   options={[
-                    { value: HOME_ALERT_MODE.prioritary, label: "Prioritários" },
                     { value: HOME_ALERT_MODE.all, label: "Todos" },
+                    { value: HOME_ALERT_MODE.prioritary, label: "Prioritários" },
                   ]}
                 />
               </OperationalFilterGroup>

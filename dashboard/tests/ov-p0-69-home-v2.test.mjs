@@ -19,7 +19,7 @@ const HOME_PRIORITARY_SEVERITIES = ["average", "high", "disaster"];
 const HOME_ALL_SEVERITIES = ["information", "warning", "average", "high", "disaster"];
 
 function parseHomeAlertMode(value) {
-  return value === HOME_ALERT_MODE.all ? HOME_ALERT_MODE.all : HOME_ALERT_MODE.prioritary;
+  return value === HOME_ALERT_MODE.prioritary ? HOME_ALERT_MODE.prioritary : HOME_ALERT_MODE.all;
 }
 
 function resolveHomeAlertSeverities(mode, severityFilter) {
@@ -45,8 +45,9 @@ test("OV-P0-69 helpers: Prioritários = Avg+High+Disaster; Todos = 5 severidades
     resolveHomeAlertSeverities(HOME_ALERT_MODE.prioritary, "high"),
     ["high"],
   );
-  assert.equal(parseHomeAlertMode(null), "prioritary");
+  assert.equal(parseHomeAlertMode(null), "all");
   assert.equal(parseHomeAlertMode("all"), "all");
+  assert.equal(parseHomeAlertMode("prioritary"), "prioritary");
 });
 
 test("OV-P0-69 oneview-home.ts: constantes e fetchers isolados do Monitoramento", async () => {

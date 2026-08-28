@@ -8,7 +8,6 @@ import {
   OneViewIncident,
   fetchAlerts,
   fetchIncidents,
-  normalizeOneViewSeverity,
 } from "@/lib/oneview-api";
 import { isoAgo } from "@/lib/oneview-recent";
 
@@ -18,6 +17,9 @@ export const HOME_ALERT_MODE = {
 } as const;
 
 export type HomeAlertMode = (typeof HOME_ALERT_MODE)[keyof typeof HOME_ALERT_MODE];
+
+/** OV-P0-246 — Home abre em Todos; Prioritários permanece opt-in. */
+export const DEFAULT_HOME_ALERT_MODE: HomeAlertMode = HOME_ALERT_MODE.all;
 
 /** Prioritários = Average + High + Disaster (ativos na janela). */
 export const HOME_PRIORITARY_SEVERITIES = ["average", "high", "disaster"] as const;
@@ -89,20 +91,16 @@ export const HOME_SEVERITY_FILTER_OPTIONS: Array<{ value: "all" | HomeAlertSever
   { value: "disaster", label: "Disaster" },
 ];
 
-const severityRank: Record<string, number> = {
-  disaster: 0,
-  critical: 1,
-  high: 2,
-  average: 3,
-  warning: 4,
-  information: 5,
-  not_classified: 6,
-};
-
 const CLOSED_SN_STATES = new Set(["6", "7"]);
 
 export function parseHomeAlertMode(value?: string | null): HomeAlertMode {
-  return value === HOME_ALERT_MODE.all ? HOME_ALERT_MODE.all : HOME_ALERT_MODE.prioritary;
+  return value === HOME_ALERT_MODE.prioritary ? HOME_ALERT_MODE.prioritary : DEFAULT_HOME_ALERT_MODE;
+}
+
+/** Chegada/início canônico: first_seen_at (ingest), com started_at só como alias do BFF. */
+export function homeAlertArrivalAt(alert: Pick<OneViewAlert, "first_seen_at" | "started_at">) {
+  const timestamp = Date.parse(String(alert.first_seen_at || alert.started_at || ""));
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 /** Resolve severidades da lista Home (toggle + filtro opcional). */
@@ -129,13 +127,11 @@ export function toggleHomeSeverityFilter(
   return current === next ? "all" : next;
 }
 
-/** Ordenação Home: severidade desc → início mais recente. */
+/** OV-P0-246 — fila operacional: chegada DESC. Sem severity-first e sem duração. */
 export function compareHomeAlerts(left: OneViewAlert, right: OneViewAlert) {
-  const leftRank = severityRank[normalizeOneViewSeverity(left.severity)] ?? 99;
-  const rightRank = severityRank[normalizeOneViewSeverity(right.severity)] ?? 99;
-  if (leftRank !== rightRank) return leftRank - rightRank;
-  return Date.parse(right.first_seen_at || right.started_at || "")
-    - Date.parse(left.first_seen_at || left.started_at || "");
+  const diff = homeAlertArrivalAt(right) - homeAlertArrivalAt(left);
+  if (diff !== 0) return diff;
+  return String(right.id || "").localeCompare(String(left.id || ""));
 }
 
 export type HomeAlertsResult = {
@@ -168,7 +164,7 @@ export async function fetchHomeAlerts(params: {
     severities: [...severities],
     customers: params.customers?.length ? params.customers : undefined,
     firstSeenFrom: isoAgo(params.windowMs, now),
-    sort: "severity",
+    sort: "first_seen_at",
     order: "desc",
     signal: params.signal,
   });
