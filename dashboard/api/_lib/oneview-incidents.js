@@ -71,6 +71,9 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "cliente",
   "opened_from",
   "opened_to",
+  "updated_from",
+  "updated_to",
+  "include_related_alert",
   "unassigned",
   "assignment_group",
   "search",
@@ -183,7 +186,10 @@ export function parseIncidentFilters(req) {
   );
   const openedFrom = assertSafeDate(cleanOptional(oneQuery(req, "opened_from")), "invalid_opened_from");
   const openedTo = assertSafeDate(cleanOptional(oneQuery(req, "opened_to")), "invalid_opened_to");
+  const updatedFrom = assertSafeDate(cleanOptional(oneQuery(req, "updated_from")), "invalid_updated_from");
+  const updatedTo = assertSafeDate(cleanOptional(oneQuery(req, "updated_to")), "invalid_updated_to");
   const unassigned = booleanFlag(oneQuery(req, "unassigned"), false);
+  const includeRelatedAlert = booleanFlag(oneQuery(req, "include_related_alert"), false);
 
   let numberRaw = cleanOptional(oneQuery(req, "number"));
   const sysIdRaw = cleanOptional(oneQuery(req, "sys_id"));
@@ -223,7 +229,10 @@ export function parseIncidentFilters(req) {
     company,
     opened_from: openedFrom,
     opened_to: openedTo,
+    updated_from: updatedFrom,
+    updated_to: updatedTo,
     unassigned,
+    include_related_alert: includeRelatedAlert,
     assignment_group: assignmentGroup,
     search,
   };

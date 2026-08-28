@@ -29,9 +29,49 @@ function display(row, key) {
   return text(values[`${key}_display`]) || text(values[key]) || text(row[`${key}_display`]) || text(row[key]);
 }
 
-function mapIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL } = {}) {
+const READ_MODEL_INCIDENT_SELECT = `
+  sys_id, number, state, priority, assigned_to, assignment_group, caller_id, company,
+  contact_type, short_description, description, opened_at, resolved_at, closed_at,
+  sys_created_on, sys_updated_on, correlation_id, u_hostname_zabbix, u_ip_zabbix,
+  display_values,
+  coalesce(raw_payload->'impact'->>'value', nullif(raw_payload->>'impact', '')) as impact,
+  coalesce(raw_payload->'impact'->>'display_value', nullif(raw_payload->>'impact_display', '')) as impact_display,
+  coalesce(raw_payload->'urgency'->>'value', nullif(raw_payload->>'urgency', '')) as urgency,
+  coalesce(raw_payload->'urgency'->>'display_value', nullif(raw_payload->>'urgency_display', '')) as urgency_display,
+  coalesce(raw_payload->'category'->>'value', nullif(raw_payload->>'category', '')) as category,
+  coalesce(raw_payload->'category'->>'display_value', nullif(raw_payload->>'category_display', '')) as category_display,
+  coalesce(raw_payload->'subcategory'->>'value', nullif(raw_payload->>'subcategory', '')) as subcategory,
+  coalesce(raw_payload->'subcategory'->>'display_value', nullif(raw_payload->>'subcategory_display', '')) as subcategory_display,
+  coalesce(raw_payload->'close_code'->>'value', nullif(raw_payload->>'close_code', '')) as close_code,
+  coalesce(raw_payload->'close_notes'->>'value', nullif(raw_payload->>'close_notes', '')) as close_notes,
+  coalesce(raw_payload->'contract'->>'value', nullif(raw_payload->>'contract', '')) as contract
+`;
+
+function normalizeRelatedAlert(alert) {
+  if (!alert?.id) return null;
+  return {
+    alertId: text(alert.id),
+    severity: text(alert.severity),
+    host: text(alert.host),
+    datasource: text(alert.datasource),
+    link: `/alertas?alert=${encodeURIComponent(String(alert.id))}`,
+    relationSource: text(alert.relation_source),
+    customer: text(alert.customer),
+    problem: text(alert.problem),
+    status: text(alert.status),
+    sourceEventId: text(alert.source_event_id),
+  };
+}
+
+export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, relatedAlert = null } = {}) {
   const sysId = text(row.sys_id);
   const zabbixEventId = parseZabbixFieldsFromDescription(row.description).zabbix_event_id;
+  const assignedTo = text(row.assigned_to);
+  const assignmentGroup = text(row.assignment_group);
+  const customer = text(row.company);
+  const state = text(row.state);
+  const priority = text(row.priority);
+  const contactType = text(row.contact_type);
   let servicenowUrl = null;
   try {
     if (baseUrl && sysId) {
@@ -44,20 +84,26 @@ function mapIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL } = {}) {
   }
   return {
     sys_id: sysId,
+    id: sysId,
+    sysId,
     number: text(row.number),
-    state: text(row.state),
+    state,
     state_display: display(row, "state"),
-    priority: text(row.priority),
+    priority,
     priority_display: display(row, "priority"),
-    assigned_to: text(row.assigned_to),
+    impact: text(row.impact),
+    impact_display: display(row, "impact"),
+    urgency: text(row.urgency),
+    urgency_display: display(row, "urgency"),
+    assigned_to: assignedTo,
     assigned_to_display: display(row, "assigned_to"),
-    assignment_group: text(row.assignment_group),
+    assignment_group: assignmentGroup,
     assignment_group_display: display(row, "assignment_group"),
     caller_id: text(row.caller_id),
     caller_id_display: display(row, "caller_id"),
-    company: text(row.company),
+    company: customer,
     company_display: display(row, "company"),
-    contact_type: text(row.contact_type),
+    contact_type: contactType,
     contact_type_display: display(row, "contact_type"),
     short_description: text(row.short_description),
     description: text(row.description),
@@ -67,6 +113,26 @@ function mapIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL } = {}) {
     correlation_id: text(row.correlation_id),
     u_hostname_zabbix: text(row.u_hostname_zabbix),
     u_ip_zabbix: text(row.u_ip_zabbix),
+    category: text(row.category),
+    category_display: display(row, "category"),
+    subcategory: text(row.subcategory),
+    subcategory_display: display(row, "subcategory"),
+    close_code: text(row.close_code),
+    close_notes: text(row.close_notes),
+    contract: text(row.contract),
+    // OV-P0-245 canonical BFF contract. Existing snake_case keys above stay
+    // for current frontend compatibility; these aliases carry no inferred data.
+    assignmentGroup: display(row, "assignment_group") || assignmentGroup,
+    assignedTo: display(row, "assigned_to") || null,
+    assignedToId: assignedTo,
+    customer: display(row, "company") || customer,
+    shortDescription: text(row.short_description),
+    openedAt: row.opened_at ? new Date(row.opened_at).toISOString() : null,
+    updatedAt: row.sys_updated_on ? new Date(row.sys_updated_on).toISOString() : null,
+    resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : null,
+    closedAt: row.closed_at ? new Date(row.closed_at).toISOString() : null,
+    channel: display(row, "contact_type") || contactType,
+    relatedAlert: normalizeRelatedAlert(relatedAlert),
     servicenow_url: servicenowUrl,
   };
 }
@@ -91,6 +157,8 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
   }
   if (filters.opened_from) clauses.push(`opened_at >= ${addParam(values, `${filters.opened_from}T00:00:00.000Z`)}`);
   if (filters.opened_to) clauses.push(`opened_at < (${addParam(values, `${filters.opened_to}T00:00:00.000Z`)}::timestamptz + interval '1 day')`);
+  if (filters.updated_from) clauses.push(`sys_updated_on >= ${addParam(values, `${filters.updated_from}T00:00:00.000Z`)}`);
+  if (filters.updated_to) clauses.push(`sys_updated_on < (${addParam(values, `${filters.updated_to}T00:00:00.000Z`)}::timestamptz + interval '1 day')`);
   if (includeState && filters.state) clauses.push(`state::text = any(${addParam(values, String(filters.state).split(","))}::text[])`);
   if (includeUnassigned && filters.unassigned) clauses.push("coalesce(btrim(assigned_to::text), '') = ''");
   if (filters.search) {
@@ -154,16 +222,130 @@ async function fetchCounts(pool, filters) {
   return result.rows[0] || { total: 0, open: 0, in_progress: 0, resolved: 0, closed: 0, unassigned: 0 };
 }
 
-export async function fetchReadModelIncidentsPage(filters, { pool = getOneViewDbPool() } = {}) {
+const TAG_ARRAY_MATCH_SQL = (column, tagName, reference) => `
+  exists (
+    select 1
+      from jsonb_array_elements(
+        case when jsonb_typeof(coalesce(a.${column}, '[]'::jsonb)) = 'array'
+          then a.${column} else '[]'::jsonb end
+      ) tag
+     where lower(coalesce(tag->>'tag', tag->>'name', '')) = '${tagName}'
+       and lower(btrim(coalesce(tag->>'value', ''))) = lower(${reference})
+  )
+`;
+
+function explicitTagMatchSql(tagName, reference) {
+  return `(
+    ${TAG_ARRAY_MATCH_SQL("event_tags", tagName, reference)}
+    or ${TAG_ARRAY_MATCH_SQL("trigger_tags", tagName, reference)}
+    or ${TAG_ARRAY_MATCH_SQL("host_tags", tagName, reference)}
+    or exists (
+      select 1
+        from jsonb_array_elements(
+          case when jsonb_typeof(a.payload_normalized->'tags') = 'array'
+            then a.payload_normalized->'tags' else '[]'::jsonb end
+        ) tag
+       where lower(coalesce(tag->>'tag', tag->>'name', '')) = '${tagName}'
+         and lower(btrim(coalesce(tag->>'value', ''))) = lower(${reference})
+    )
+    or lower(btrim(coalesce(a.payload_normalized->'tags'->>'${tagName}', ''))) = lower(${reference})
+  )`;
+}
+
+/**
+ * Resolves one page in one SQL query — not an alert lookup per incident.
+ * Priority remains explicit sys_id, then INC number, then original Zabbix
+ * event parsed from the persisted description. No host/title/customer clause.
+ */
+export async function findReadModelRelatedAlerts(rows, { pool = getOneViewDbPool() } = {}) {
+  const references = (rows || []).map((row) => ({
+    sys_id: text(row.sys_id)?.toLowerCase() || null,
+    number: text(row.number)?.toUpperCase() || null,
+    zabbix_event_id: parseZabbixFieldsFromDescription(row.description).zabbix_event_id,
+  })).filter((row) => row.sys_id);
+  if (!references.length) return new Map();
+
+  const result = await pool.query(`
+    with incident_refs as (
+      select lower(btrim(sys_id)) as sys_id,
+             upper(btrim(number)) as number,
+             nullif(btrim(zabbix_event_id), '') as zabbix_event_id
+        from jsonb_to_recordset($1::jsonb)
+          as ref(sys_id text, number text, zabbix_event_id text)
+    ), candidates as (
+      select r.sys_id as incident_sys_id, 1 as precedence,
+             a.id::text as id, d.name::text as datasource, a.severity,
+             coalesce(a.host_visible_name, a.host_technical_name, a.host_name)::text as host,
+             coalesce(a.customer_name, a.client_name)::text as customer,
+             coalesce(a.problem_name, a.trigger_description)::text as problem,
+             a.source_event_id::text as source_event_id,
+             coalesce(a.status_source, case when a.resolved_at is null then 'active' else 'resolved' end)::text as status,
+             a.last_seen_at, a.updated_at
+        from incident_refs r
+        join alerts a on r.sys_id is not null
+        left join data_sources d on d.id = a.data_source_id
+       where ${explicitTagMatchSql("__zbx_servicenow_sys_id", "r.sys_id")}
+      union all
+      select r.sys_id as incident_sys_id, 2 as precedence,
+             a.id::text as id, d.name::text as datasource, a.severity,
+             coalesce(a.host_visible_name, a.host_technical_name, a.host_name)::text as host,
+             coalesce(a.customer_name, a.client_name)::text as customer,
+             coalesce(a.problem_name, a.trigger_description)::text as problem,
+             a.source_event_id::text as source_event_id,
+             coalesce(a.status_source, case when a.resolved_at is null then 'active' else 'resolved' end)::text as status,
+             a.last_seen_at, a.updated_at
+        from incident_refs r
+        join alerts a on r.number is not null
+        left join data_sources d on d.id = a.data_source_id
+       where ${explicitTagMatchSql("__zbx_servicenow_number", "r.number")}
+      union all
+      select r.sys_id as incident_sys_id, 3 as precedence,
+             a.id::text as id, d.name::text as datasource, a.severity,
+             coalesce(a.host_visible_name, a.host_technical_name, a.host_name)::text as host,
+             coalesce(a.customer_name, a.client_name)::text as customer,
+             coalesce(a.problem_name, a.trigger_description)::text as problem,
+             a.source_event_id::text as source_event_id,
+             coalesce(a.status_source, case when a.resolved_at is null then 'active' else 'resolved' end)::text as status,
+             a.last_seen_at, a.updated_at
+        from incident_refs r
+        join alerts a on r.zabbix_event_id is not null
+                   and (a.source_event_id::text = r.zabbix_event_id or a.source_problem_id::text = r.zabbix_event_id)
+        left join data_sources d on d.id = a.data_source_id
+    ), ranked as (
+      select distinct on (incident_sys_id) *
+        from candidates
+       order by incident_sys_id, precedence, last_seen_at desc nulls last, updated_at desc nulls last, id desc
+    )
+    select * from ranked
+  `, [JSON.stringify(references)]);
+
+  return new Map(result.rows.map((row) => [
+    String(row.incident_sys_id || "").toLowerCase(),
+    {
+      id: text(row.id),
+      datasource: text(row.datasource),
+      severity: text(row.severity),
+      host: text(row.host),
+      customer: text(row.customer),
+      problem: text(row.problem),
+      source_event_id: text(row.source_event_id),
+      status: text(row.status),
+      relation_source: ["sys_id", "number", "source_event"][Number(row.precedence) - 1] || null,
+    },
+  ]));
+}
+
+export async function fetchReadModelIncidentsPage(filters, {
+  pool = getOneViewDbPool(),
+  relatedAlertResolver = findReadModelRelatedAlerts,
+} = {}) {
   const values = [];
   const where = buildWhere(filters, values);
   const exactLookup = Boolean(filters.number || filters.sys_id);
   const offset = exactLookup ? 0 : (filters.page - 1) * filters.page_size;
   const [pageResult, countResult, counts, facets, syncResult] = await Promise.all([
     pool.query(`
-      select sys_id, number, state, priority, assigned_to, assignment_group, caller_id, company,
-             contact_type, short_description, description, opened_at, sys_updated_on,
-             correlation_id, u_hostname_zabbix, u_ip_zabbix, display_values
+      select ${READ_MODEL_INCIDENT_SELECT}
         from servicenow_incidents
        where ${where}
        order by sys_updated_on desc nulls last, sys_id asc
@@ -174,11 +356,21 @@ export async function fetchReadModelIncidentsPage(filters, { pool = getOneViewDb
     fetchFacets(pool, filters),
     pool.query("select last_success_at, watermark_sys_updated_on from servicenow_sync_state where sync_key = 'incident' limit 1"),
   ]);
+  // Tag correlation is intentionally a detail lookup: the current alerts
+  // schema has no index for ServiceNow tag JSON. Running it for every recent
+  // incident would turn the operational queue into a slow scan. Exact GETs
+  // may opt in and still execute one bounded batch, never one query per row.
+  const shouldResolveRelatedAlerts = Boolean(filters.include_related_alert && exactLookup);
+  const relatedAlerts = shouldResolveRelatedAlerts
+    ? await relatedAlertResolver(pageResult.rows, { pool })
+    : new Map();
   const totalItems = Number(countResult.rows?.[0]?.total || 0);
   const totalPages = totalItems ? Math.ceil(totalItems / filters.page_size) : 0;
   const effectivePage = exactLookup ? 1 : filters.page;
   return {
-    items: pageResult.rows.map((row) => mapIncident(row)),
+    items: pageResult.rows.map((row) => mapReadModelIncident(row, {
+      relatedAlert: relatedAlerts.get(String(row.sys_id || "").toLowerCase()) || null,
+    })),
     pagination: {
       page: effectivePage,
       page_size: filters.page_size,
@@ -201,12 +393,10 @@ export async function fetchReadModelIncidentsPage(filters, { pool = getOneViewDb
 
 async function findBy(pool, where, values) {
   const result = await pool.query(`
-    select sys_id, number, state, priority, assigned_to, assignment_group, caller_id, company,
-           contact_type, short_description, description, opened_at, sys_updated_on,
-           correlation_id, u_hostname_zabbix, u_ip_zabbix, display_values
+    select ${READ_MODEL_INCIDENT_SELECT}
       from servicenow_incidents where ${where}
      order by sys_updated_on desc nulls last, sys_id asc limit 50`, values);
-  return result.rows.map((row) => mapIncident(row));
+  return result.rows.map((row) => mapReadModelIncident(row));
 }
 
 export async function findReadModelRelatedIncidents({

@@ -930,11 +930,17 @@ export async function fetchGlobalHistory(params?: {
 
 export type OneViewIncident = {
   sys_id: string | null;
+  id?: string | null;
+  sysId?: string | null;
   number: string | null;
   short_description: string | null;
   description?: string | null;
   state: string | null;
   priority: string | null;
+  impact?: string | null;
+  impact_display?: string | null;
+  urgency?: string | null;
+  urgency_display?: string | null;
   caller_id: string | null;
   contact_type: string | null;
   assignment_group: string | null;
@@ -948,6 +954,13 @@ export type OneViewIncident = {
   correlation_id: string | null;
   u_hostname_zabbix: string | null;
   u_ip_zabbix: string | null;
+  category?: string | null;
+  category_display?: string | null;
+  subcategory?: string | null;
+  subcategory_display?: string | null;
+  close_code?: string | null;
+  close_notes?: string | null;
+  contract?: string | null;
   zabbix_event_id?: string | null;
   zabbix_host?: string | null;
   zabbix_ip?: string | null;
@@ -958,6 +971,29 @@ export type OneViewIncident = {
   company_display?: string | null;
   state_display?: string | null;
   priority_display?: string | null;
+  /** OV-P0-245 canonical aliases; snake_case remains for existing consumers. */
+  assignmentGroup?: string | null;
+  assignedTo?: string | null;
+  assignedToId?: string | null;
+  customer?: string | null;
+  shortDescription?: string | null;
+  openedAt?: string | null;
+  updatedAt?: string | null;
+  resolvedAt?: string | null;
+  closedAt?: string | null;
+  channel?: string | null;
+  relatedAlert?: {
+    alertId: string | null;
+    severity: string | null;
+    host: string | null;
+    datasource: string | null;
+    link: string | null;
+    relationSource?: string | null;
+    customer?: string | null;
+    problem?: string | null;
+    status?: string | null;
+    sourceEventId?: string | null;
+  } | null;
   servicenow_url?: string | null;
 };
 
@@ -1023,6 +1059,9 @@ export type IncidentListResponse = {
     company: string | null;
     opened_from: string | null;
     opened_to: string | null;
+    updated_from?: string | null;
+    updated_to?: string | null;
+    include_related_alert?: boolean;
     unassigned: boolean;
     assignment_group?: string | null;
     search: string | null;
@@ -1063,6 +1102,9 @@ export async function fetchIncidents(params?: {
   company?: string;
   openedFrom?: string;
   openedTo?: string;
+  updatedFrom?: string;
+  updatedTo?: string;
+  includeRelatedAlert?: boolean;
   unassigned?: boolean;
   assignmentGroup?: string;
   search?: string;
@@ -1081,6 +1123,9 @@ export async function fetchIncidents(params?: {
   if (params?.company) search.set("company", params.company);
   if (params?.openedFrom) search.set("opened_from", params.openedFrom);
   if (params?.openedTo) search.set("opened_to", params.openedTo);
+  if (params?.updatedFrom) search.set("updated_from", params.updatedFrom);
+  if (params?.updatedTo) search.set("updated_to", params.updatedTo);
+  if (params?.includeRelatedAlert) search.set("include_related_alert", "true");
   if (params?.unassigned) search.set("unassigned", "true");
   if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.search) search.set("search", params.search);
