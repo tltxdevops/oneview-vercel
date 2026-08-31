@@ -315,7 +315,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /Disaster sem ACK · \$\{windowLabel\}/);
   assert.doesNotMatch(index, /ACK realizados · \$\{windowLabel\}/);
   assert.doesNotMatch(index, /title: "Última sincronização"/);
-  assert.match(index, /title="Alertas"|Prioritários/);
+  assert.match(index, /title="Alertas Recentes"|Prioritários/);
   assert.match(index, /Eventos recentes/);
   assert.doesNotMatch(index, /Atenção necessária/);
   assert.doesNotMatch(index, /Clientes mais impactados/);
@@ -347,8 +347,8 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /OneView:|Nunca tratado|Reconhecimentos OneView hoje|Críticos \/ Altos|Críticos sem ACK|>Esquecidos<|>Fora do radar<|>Desastres recentes</);
   assert.doesNotMatch(index, /disponibilidade\s*100%|disponibilidade 100|uptime\s*100%/i);
   assert.doesNotMatch(index, /PgBouncer|mock-data|demo-oneview-data|RITM\d+|INC\d+/i);
-  assert.ok(index.indexOf('title="Alertas"') < index.indexOf("Eventos recentes"));
-  assert.ok(index.indexOf('title="Chamados sem responsável"') < index.indexOf("Eventos recentes"));
+  assert.ok(index.indexOf('title="Alertas Recentes"') < index.indexOf("Eventos recentes"));
+  assert.ok(index.indexOf('title="Chamados"') < index.indexOf("Eventos recentes"));
   assert.doesNotMatch(index, /A integração com o ServiceNow está em preparação\.|Abrir área de chamados/);
   assert.doesNotMatch(index, /SyncsStatusPanel|PlatformHealthStrip/);
   assert.doesNotMatch(index, /Saúde da plataforma/);
@@ -357,7 +357,8 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /dataSource=\{currentDataSource\}|checkedAt=\{lastCheckedAt\}/);
   assert.match(index, /Abrir resumo de \$\{/);
   assert.match(index, /fetchHomeAlerts|status: "active"/);
-  assert.match(index, /title="Chamados sem responsável"/);
+  assert.match(index, /title="Chamados"/);
+  assert.match(index, /title="Operadoras"/);
   assert.match(app, /path="\/historico"/);
   assert.match(app, /HistoricoPage/);
   assert.match(sidebar, /name: "Histórico"/);

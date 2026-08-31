@@ -857,6 +857,8 @@ export interface FetchAlertsParams {
   order?: "asc" | "desc";
   sortSecondary?: "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "client" | "datasource" | "host" | "problem" | "duration" | "status" | "acknowledged_source" | "acknowledged_at";
   recurrenceKey?: string;
+  /** Home-only queue isolation; `/alertas` never sets it. */
+  excludeOperator?: boolean;
   signal?: AbortSignal;
 }
 
@@ -891,6 +893,7 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   if (params?.order) search.set("order", params.order);
   if (params?.sortSecondary) search.set("sort_secondary", params.sortSecondary);
   if (params?.recurrenceKey) search.set("recurrence_key", params.recurrenceKey);
+  if (params?.excludeOperator) search.set("exclude_operator", "true");
 
   const query = search.toString();
   return fetchApi<AlertListResponse>(`/oneview/alerts${query ? `?${query}` : ""}`, { signal: params?.signal });
@@ -1176,6 +1179,7 @@ export type OperatorQueueResponse = OneViewResponseMeta & {
     assigned_to: string | null;
     state: string | null;
     severity: string | null;
+    alert_status: "all" | "active" | "resolved";
     page: number;
     page_size: number;
   };
@@ -1203,6 +1207,7 @@ export async function fetchOperatorQueue(params?: {
   assignedTo?: string;
   state?: string;
   severity?: string;
+  alertStatus?: "all" | "active" | "resolved";
   page?: number;
   pageSize?: number;
   signal?: AbortSignal;
@@ -1216,6 +1221,7 @@ export async function fetchOperatorQueue(params?: {
   if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params?.state) search.set("state", params.state);
   if (params?.severity) search.set("severity", params.severity);
+  if (params?.alertStatus && params.alertStatus !== "all") search.set("alert_status", params.alertStatus);
   return fetchApi<OperatorQueueResponse>(`/oneview/operator-queue?${search.toString()}`, {
     signal: params?.signal,
   });

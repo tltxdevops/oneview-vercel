@@ -34,6 +34,13 @@ export const HOME_ALL_SEVERITIES = [
 ] as const;
 
 export type HomeAlertSeverity = (typeof HOME_ALL_SEVERITIES)[number];
+export type HomeAlertStatus = "active" | "resolved" | "all";
+
+export const HOME_ALERT_STATUS_OPTIONS: Array<{ value: HomeAlertStatus; label: string }> = [
+  { value: "active", label: "Ativos" },
+  { value: "resolved", label: "Resolvidos" },
+  { value: "all", label: "Todos" },
+];
 
 /**
  * OV-P0-103 — janelas operacionais da Home (não compartilhadas com Monitoramento).
@@ -77,6 +84,7 @@ export function homeWindowToAlertsDatePreset(preset: string): string {
 /** OV-P0-73 — máximo visual Home (~7 linhas por painel). */
 export const HOME_ALERTS_PAGE_SIZE = 7;
 export const HOME_INCIDENTS_PAGE_SIZE = 7;
+export const HOME_INCIDENTS_FETCH_SIZE = 100;
 export const HOME_EVENTS_LIMIT = 7;
 
 /** OV-P0-103 — chamados Home: Novo / Em andamento / Em espera (exclui Resolvido/Encerrado). */
@@ -149,6 +157,8 @@ export async function fetchHomeAlerts(params: {
   mode: HomeAlertMode;
   severity?: string | null;
   customers?: string[];
+  datasources?: string[];
+  status?: HomeAlertStatus;
   limit?: number;
   windowMs: number;
   signal?: AbortSignal;
@@ -160,12 +170,14 @@ export async function fetchHomeAlerts(params: {
   const response = await fetchAlerts({
     page: 1,
     pageSize: limit,
-    status: "active",
     severities: [...severities],
     customers: params.customers?.length ? params.customers : undefined,
+    datasources: params.datasources?.length ? params.datasources : undefined,
+    status: params.status ?? "active",
     firstSeenFrom: isoAgo(params.windowMs, now),
     sort: "first_seen_at",
     order: "desc",
+    excludeOperator: true,
     signal: params.signal,
   });
   const items = [...(response.items ?? [])]
@@ -183,25 +195,87 @@ export async function fetchHomeAlerts(params: {
  * OV-P0-103 — Chamados sem responsável na Home.
  * assigned_to vazio + estados operacionais (1,2,3). Prioriza Novo / Em andamento.
  */
+export type HomeIncidentStreams = {
+  queue: OneViewIncident[];
+  inProgress: OneViewIncident[];
+  recent: OneViewIncident[];
+  total: number;
+};
+
+function hasAssignedAnalyst(item: OneViewIncident) {
+  return Boolean(String(item.assigned_to || "").trim());
+}
+
+function operationalIncident(item: OneViewIncident) {
+  return OPERATIONAL_STATES.has(String(item.state || "").trim());
+}
+
+function incidentUpdatedAt(item: OneViewIncident) {
+  const timestamp = Date.parse(String(item.sys_updated_on || item.opened_at || ""));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareRecentIncidents(left: OneViewIncident, right: OneViewIncident) {
+  const diff = incidentUpdatedAt(right) - incidentUpdatedAt(left);
+  if (diff !== 0) return diff;
+  return String(right.sys_id || right.number || "").localeCompare(String(left.sys_id || left.number || ""));
+}
+
+const OPERATIONAL_STATES = new Set(HOME_UNASSIGNED_OPERATIONAL_STATES.split(","));
+
+/** Home V3: uma leitura do read-model, três visões derivadas sem inferir analista. */
+export async function fetchHomeIncidentStreams(params?: {
+  pageSize?: number;
+  signal?: AbortSignal;
+}): Promise<HomeIncidentStreams> {
+  const pageSize = Math.min(
+    Math.max(params?.pageSize ?? HOME_INCIDENTS_PAGE_SIZE, 1),
+    HOME_INCIDENTS_FETCH_SIZE,
+  );
+  const response = await fetchIncidents({
+    page: 1,
+    pageSize: Math.max(pageSize, HOME_INCIDENTS_FETCH_SIZE),
+    signal: params?.signal,
+  });
+  const items = [...(response.items ?? [])].sort(compareRecentIncidents);
+  return {
+    queue: items.filter((item) => operationalIncident(item) && !hasAssignedAnalyst(item)).slice(0, pageSize),
+    inProgress: items.filter(hasAssignedAnalyst).slice(0, pageSize),
+    recent: items.slice(0, pageSize),
+    total: Number(response.pagination?.total_items) || items.length,
+  };
+}
+
+/** Compatibilidade p/ consumidores legados: fila = chamados operacionais sem responsável. */
 export async function fetchHomeIncidents(params?: {
   pageSize?: number;
   signal?: AbortSignal;
 }): Promise<IncidentListResponse> {
-  const pageSize = Math.min(
-    Math.max(params?.pageSize ?? HOME_INCIDENTS_PAGE_SIZE, 1),
-    25,
-  );
-  const response = await fetchIncidents({
-    page: 1,
-    pageSize: Math.max(pageSize, 25),
-    unassigned: true,
-    state: HOME_UNASSIGNED_OPERATIONAL_STATES,
-    signal: params?.signal,
-  });
-  const items = prioritizeHomeUnassignedIncidents(response.items ?? []).slice(0, pageSize);
+  const streams = await fetchHomeIncidentStreams(params);
+  const pageSize = Math.min(Math.max(params?.pageSize ?? HOME_INCIDENTS_PAGE_SIZE, 1), HOME_INCIDENTS_FETCH_SIZE);
   return {
-    ...response,
-    items,
+    items: streams.queue,
+    pagination: {
+      page: 1,
+      page_size: pageSize,
+      total_items: streams.queue.length,
+      total_pages: streams.queue.length ? 1 : 0,
+      has_next: false,
+      has_previous: false,
+    },
+    filters: {
+      caller_id: null,
+      assigned_to: null,
+      contact_type: "monitoring",
+      number: null,
+      state: HOME_UNASSIGNED_OPERATIONAL_STATES,
+      priority: null,
+      company: null,
+      opened_from: null,
+      opened_to: null,
+      unassigned: true,
+      search: null,
+    },
   };
 }
 
@@ -232,10 +306,12 @@ export function buildHomeAlertsHref(options: {
   mode: HomeAlertMode;
   severity?: string | null;
   customers?: string[];
+  datasources?: string[];
+  status?: HomeAlertStatus;
   windowPreset: string;
 }) {
   const params = new URLSearchParams();
-  params.set("status", "active");
+  params.set("status", options.status ?? "active");
   params.set("date_field", "first_seen");
   params.set("date_preset", homeWindowToAlertsDatePreset(options.windowPreset));
   const severities = resolveHomeAlertSeverities(options.mode, options.severity);
@@ -245,6 +321,9 @@ export function buildHomeAlertsHref(options: {
   }
   for (const customer of options.customers ?? []) {
     if (customer) params.append("customer", customer);
+  }
+  for (const datasource of options.datasources ?? []) {
+    if (datasource) params.append("datasource", datasource);
   }
   if (options.mode === HOME_ALERT_MODE.prioritary && (!options.severity || options.severity === "all")) {
     params.set("view", "priority");

@@ -8,6 +8,7 @@ import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./on
 import { buildAlertRecurrenceReadModel, buildRecurrenceKey, hasRecurrenceIdentity, parseRecurrenceKey } from "./oneview-recurrence.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
+import { OPERATOR_TAG_EXISTS_SQL } from "./oneview-operator-tags.js";
 
 const { Pool } = pg;
 
@@ -612,6 +613,7 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
   const sortSecondary = (oneQueryValue(req, "sort_secondary") || "").toLowerCase();
   const recurrenceKeyRaw = oneQueryValue(req, "recurrence_key");
   const recurrenceKey = recurrenceKeyRaw ? parseRecurrenceKey(recurrenceKeyRaw) : null;
+  const excludeOperator = oneQueryValue(req, "exclude_operator").toLowerCase();
 
   if (severities.some((value) => !ALERT_SEVERITIES.has(value))) throw requestError("invalid_query");
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
@@ -630,6 +632,7 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
   if (resolvedFrom && resolvedTo && Date.parse(resolvedFrom) > Date.parse(resolvedTo)) throw requestError("invalid_query");
   if (acknowledgedFrom && acknowledgedTo && Date.parse(acknowledgedFrom) > Date.parse(acknowledgedTo)) throw requestError("invalid_query");
   if (recurrenceKeyRaw && !recurrenceKey) throw requestError("invalid_query");
+  if (excludeOperator && !["true", "false"].includes(excludeOperator)) throw requestError("invalid_query");
   const offset = (page - 1) * pageSize;
   if (!Number.isSafeInteger(offset)) throw requestError("invalid_query");
 
@@ -658,6 +661,8 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
   if (severities.length) push("a.severity = any(?::text[])", severities);
   if (status === "active") clauses.push(ACTIVE_ALERT_SQL);
   if (status === "resolved") clauses.push(RESOLVED_ALERT_SQL);
+  // OV-P0-248: Home only. /alertas remains unfiltered unless it explicitly opts in.
+  if (excludeOperator === "true") clauses.push(`not (${OPERATOR_TAG_EXISTS_SQL})`);
   if (acknowledged) {
     push(
       `(coalesce(a.acknowledged_source, false) or ${INTERNAL_ACKNOWLEDGED_SQL}) = ?`,
@@ -755,6 +760,7 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
       order,
       sortSecondary,
       recurrenceKey: recurrenceKeyRaw || null,
+      excludeOperator: excludeOperator === "true",
     },
   };
 }

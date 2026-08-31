@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Eye, History, Loader2 } from "lucide-react";
+import { ExternalLink, Eye, Loader2 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import {
   ClientIdentity,
@@ -23,7 +23,6 @@ import { TruncatedText } from "@/components/oneview/TruncatedText";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -47,29 +46,35 @@ import {
   OneViewSeverity,
   fetchAlert,
   fetchAlertHistory,
+  fetchIncidentRelatedAlert,
   fetchOneViewFacets,
+  fetchOperatorQueue,
   formatNullableCount,
   formatOneViewSeverityLabel,
+  type OperatorQueueItem,
+  type OperatorQueueResponse,
 } from "@/lib/oneview-api";
 import {
   DEFAULT_HOME_ALERT_MODE,
   HOME_ALERT_MODE,
   HOME_ALERTS_PAGE_SIZE,
+  HOME_ALERT_STATUS_OPTIONS,
   HOME_EVENTS_LIMIT,
   HOME_INCIDENTS_PAGE_SIZE,
   HOME_OPERATIONAL_WINDOW_OPTIONS,
   HOME_SEVERITY_FILTER_OPTIONS,
   buildHomeAlertsHref,
-  buildHomeUnassignedChamadosHref,
   fetchHomeAlerts,
-  fetchHomeIncidents,
+  fetchHomeIncidentStreams,
   homeOperationalWindowActiveLabel,
   homeOperationalWindowMs,
   parseHomeAlertMode,
   parseHomeOperationalWindow,
   toggleHomeSeverityFilter,
   type HomeAlertMode,
+  type HomeAlertStatus,
   type HomeAlertSeverity,
+  type HomeIncidentStreams,
   type HomeOperationalWindowPreset,
 } from "@/lib/oneview-home";
 import {
@@ -111,7 +116,8 @@ const HOME_EVENT_ALLOWLIST = new Set([
 const HOME_EVENT_BLOCKLIST = /upsert|backfill|reconcil|retry|outbox|cache|payload|worker|sync_log|internal_acknowledged/i;
 
 type ResourceMeta = { source?: OneViewDataSourceKind; checkedAt?: string };
-type SectionKey = "summary" | "alerts" | "incidents" | "events";
+type SectionKey = "summary" | "alerts" | "incidents" | "operators" | "events";
+type HomeIncidentTab = "queue" | "in_progress" | "recent";
 
 function safeActorName(value?: string | null) {
   const actor = String(value || "").trim();
@@ -202,7 +208,11 @@ const HOME_PANEL_HEADER_ASIDE = "inline-flex h-7 items-center gap-2";
 const HOME_PANEL_COUNT = "text-xs font-medium tabular-nums text-muted-foreground";
 const HOME_FILTER_ROW = "flex flex-wrap items-center gap-2 border-b border-border/60 py-1.5";
 const HOME_LIST_DIVIDE = "divide-y divide-border/60";
-const HOME_INCIDENT_COLS = "grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)_auto_auto_minmax(0,1fr)] items-center gap-x-2";
+const HOME_INCIDENT_TABS: Array<{ value: HomeIncidentTab; label: string }> = [
+  { value: "queue", label: "Fila" },
+  { value: "in_progress", label: "Em atendimento" },
+  { value: "recent", label: "Recentes" },
+];
 
 function SectionState({
   loading,
@@ -310,50 +320,69 @@ function HomeAlertRow({
   );
 }
 
-function HomeIncidentRow({ item }: { item: OneViewIncident }) {
+function HomeIncidentCard({
+  item,
+  onOpenRelatedAlert,
+}: {
+  item: OneViewIncident;
+  onOpenRelatedAlert: (item: OneViewIncident) => void;
+}) {
   const href = buildProductionServiceNowIncidentLink(item.sys_id);
-  const label = `Abrir chamado ${displayIncidentField(item.number)}`;
-  const className = cn(
-    HOME_INCIDENT_COLS,
-    "w-full border-b border-border/50 py-1.5 last:border-b-0 transition-colors hover:bg-muted/30",
-  );
-
-  const row = (
-    <>
-      <p className="truncate text-[13px] font-semibold text-foreground" title={displayIncidentField(item.number)}>
-        {displayIncidentField(item.number)}
-      </p>
-      <p className="truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>
-        {displayIncidentField(item.company_display, item.company)}
-      </p>
-      <Badge variant="outline" className="h-5 justify-self-start px-1.5 text-[10px]">
-        {displayIncidentField(item.state_display, item.state)}
-      </Badge>
-      <Badge variant="secondary" className="h-5 justify-self-start px-1.5 text-[10px]">
-        {displayIncidentField(item.priority_display, item.priority)}
-      </Badge>
-      <p className="truncate text-[11px] text-muted-foreground" title={displayIncidentField(item.assigned_to_display, item.assigned_to)}>
-        {displayIncidentField(item.assigned_to_display, item.assigned_to)}
-      </p>
-    </>
-  );
-
-  if (!href) {
-    return <div className={className} aria-label={label} title={label}>{row}</div>;
-  }
-
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={className}
-      aria-label={label}
-      title={label}
-    >
-      {row}
-    </a>
+    <article className="space-y-1.5 border-b border-border/50 py-2 last:border-b-0">
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-[13px] font-semibold text-foreground" title={displayIncidentField(item.number)}>
+            {displayIncidentField(item.number)}
+          </p>
+          <p className="truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>
+            {displayIncidentField(item.company_display, item.company)}
+          </p>
+        </div>
+        <span className="shrink-0 text-[10px] text-muted-foreground" title={formatDateTime(item.sys_updated_on)}>
+          {formatClock(item.sys_updated_on)}
+        </span>
+      </div>
+      <TruncatedText className="text-[11px] leading-tight text-muted-foreground">
+        {displayIncidentField(item.short_description)}
+      </TruncatedText>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{displayIncidentField(item.priority_display, item.priority)}</Badge>
+        <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{displayIncidentField(item.state_display, item.state)}</Badge>
+        <span className="text-[10px] text-muted-foreground">
+          {item.assigned_to ? displayIncidentField(item.assigned_to_display, item.assigned_to) : "Sem responsável"}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-[10px] font-medium">
+        <button type="button" className="text-primary underline-offset-2 hover:underline" onClick={() => onOpenRelatedAlert(item)}>
+          Abrir alerta no OneView
+        </button>
+        {href ? (
+          <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline">
+            Abrir chamado no ServiceNow <ExternalLink className="h-3 w-3" />
+          </a>
+        ) : null}
+      </div>
+    </article>
   );
+}
+
+function HomeOperatorRow({ item }: { item: OperatorQueueItem }) {
+  const content = (
+    <div className="min-w-0 space-y-0.5 py-1.5">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <TruncatedText className="text-[11px] font-semibold text-foreground">{displayIncidentField(item.customer_name)}</TruncatedText>
+        <span className="shrink-0 text-[10px] text-muted-foreground">{item.updated_ago_label || "Atualização indisponível"}</span>
+      </div>
+      <TruncatedText className="text-[10px] text-muted-foreground">{displayIncidentField(item.operator_tag)}</TruncatedText>
+      <p className="truncate text-[10px] text-muted-foreground">
+        {item.incident_number || "Sem INC"} · {item.analyst_label || "Sem responsável"}
+      </p>
+    </div>
+  );
+  return item.oneview_link ? (
+    <Link to={item.oneview_link} className="block rounded-sm px-1 transition-colors hover:bg-muted/40">{content}</Link>
+  ) : <div className="px-1">{content}</div>;
 }
 
 export default function Index() {
@@ -364,17 +393,23 @@ export default function Index() {
 
   const [alertMode, setAlertMode] = useState<HomeAlertMode>(DEFAULT_HOME_ALERT_MODE);
   const [severityFilter, setSeverityFilter] = useState<string>("all");
+  const [alertStatus, setAlertStatus] = useState<HomeAlertStatus>("active");
+  const [selectedDatasources, setSelectedDatasources] = useState<string[]>([]);
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>([]);
   const [clientFilterOpen, setClientFilterOpen] = useState(false);
   const [customerOptions, setCustomerOptions] = useState<ClientFilterOption[]>([
     { key: "all", name: "Todos" },
   ]);
+  const [datasourceOptions, setDatasourceOptions] = useState<Array<{ value: string; label: string }>>([
+    { value: "all", label: "Todos" },
+  ]);
 
   const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(null);
   const [homeAlerts, setHomeAlerts] = useState<OneViewAlert[]>([]);
   const [alertsTotal, setAlertsTotal] = useState(0);
-  const [incidents, setIncidents] = useState<OneViewIncident[]>([]);
-  const [incidentsTotal, setIncidentsTotal] = useState(0);
+  const [incidentStreams, setIncidentStreams] = useState<HomeIncidentStreams | null>(null);
+  const [incidentTab, setIncidentTab] = useState<HomeIncidentTab>("queue");
+  const [operatorQueue, setOperatorQueue] = useState<OperatorQueueResponse | null>(null);
   const [recentEvents, setRecentEvents] = useState<GlobalHistoryItem[]>([]);
   const [eventsTotal, setEventsTotal] = useState(0);
 
@@ -438,8 +473,10 @@ export default function Index() {
     mode: alertMode,
     severity: severityFilter,
     customers: selectedCustomerKeys,
+    datasources: selectedDatasources,
+    status: alertStatus,
     windowPreset: homeWindow,
-  }), [alertMode, homeWindow, selectedCustomerKeys, severityFilter]);
+  }), [alertMode, alertStatus, homeWindow, selectedCustomerKeys, selectedDatasources, severityFilter]);
 
   /** OV-P0-103 — Resumo operacional filtra a lista da Home (toggle local; sem navegar). */
   const toggleSeverityStrip = useCallback((severity: HomeAlertSeverity) => {
@@ -504,6 +541,13 @@ export default function Index() {
             alerts_count: customer.alerts_count,
           })),
         ]);
+        setDatasourceOptions([
+          { value: "all", label: "Todos" },
+          ...(facetsResult.value.datasources ?? []).map((datasource) => ({
+            value: datasource.name,
+            label: datasource.name,
+          })),
+        ]);
         nextMetas.push({
           source: facetsResult.value.data_source as OneViewDataSourceKind | undefined,
           checkedAt: facetsResult.value.checked_at,
@@ -545,6 +589,8 @@ export default function Index() {
           mode: alertMode,
           severity: severityFilter,
           customers: selectedCustomerKeys,
+          datasources: selectedDatasources,
+          status: alertStatus,
           limit: HOME_ALERTS_PAGE_SIZE,
           windowMs,
           signal: controller.signal,
@@ -557,8 +603,14 @@ export default function Index() {
           now,
           windowMs,
         }),
-        fetchHomeIncidents({
+        fetchHomeIncidentStreams({
           pageSize: HOME_INCIDENTS_PAGE_SIZE,
+          signal: controller.signal,
+        }),
+        fetchOperatorQueue({
+          tab: "all",
+          alertStatus: "active",
+          pageSize: 3,
           signal: controller.signal,
         }),
       ];
@@ -566,7 +618,7 @@ export default function Index() {
       const results = await Promise.allSettled(tasks);
       if (controller.signal.aborted || requestId !== listsRequestIdRef.current) return;
 
-      const [alertsResult, historyResult, incidentsResult] = results;
+      const [alertsResult, historyResult, incidentsResult, operatorsResult] = results;
       let anySuccess = false;
 
       if (alertsResult.status === "fulfilled") {
@@ -603,17 +655,27 @@ export default function Index() {
       }
 
       if (incidentsResult?.status === "fulfilled") {
-        const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchHomeIncidents>>;
-        setIncidents(payload.items ?? []);
-        setIncidentsTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
+        const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchHomeIncidentStreams>>;
+        setIncidentStreams(payload);
         setSectionError("incidents", null);
         anySuccess = true;
       } else if (isInitial && !hasListsRef.current) {
-        setIncidents([]);
-        setIncidentsTotal(0);
+        setIncidentStreams(null);
         setSectionError("incidents", incidentLoadErrorMessage(incidentsResult?.reason));
       } else {
         setSectionError("incidents", incidentLoadErrorMessage(incidentsResult?.reason));
+      }
+
+      if (operatorsResult?.status === "fulfilled") {
+        const payload = operatorsResult.value as OperatorQueueResponse;
+        setOperatorQueue(payload);
+        setSectionError("operators", null);
+        anySuccess = true;
+      } else if (isInitial && !hasListsRef.current) {
+        setOperatorQueue(null);
+        setSectionError("operators", "Fila de operadoras indisponível.");
+      } else {
+        setSectionError("operators", "Falha ao atualizar operadoras. Os dados anteriores foram mantidos.");
       }
 
       if (anySuccess) hasListsRef.current = true;
@@ -627,9 +689,11 @@ export default function Index() {
     }
   }, [
     alertMode,
+    alertStatus,
     beginQuietUpdate,
     endQuietUpdate,
     selectedCustomerKeys,
+    selectedDatasources,
     setSectionError,
     severityFilter,
     windowMs,
@@ -679,6 +743,30 @@ export default function Index() {
       customer_key: item.customer_key,
       datasource_name: item.datasource_name,
     });
+  }, [openAlert]);
+
+  const openIncidentRelatedAlert = useCallback(async (incident: OneViewIncident) => {
+    try {
+      const result = await fetchIncidentRelatedAlert({
+        sysId: incident.sys_id,
+        number: incident.number,
+      });
+      if (!result.matched || !result.alert?.id) {
+        toast.message("Nenhum alerta relacionado localizado.");
+        return;
+      }
+      openAlert({
+        id: result.alert.id,
+        severity: result.alert.severity,
+        problem_name: result.alert.problem,
+        host_name: result.alert.host,
+        host_visible_name: result.alert.host,
+        customer_name: result.alert.customer,
+        customer_key: result.alert.customer,
+      });
+    } catch {
+      toast.error("Não foi possível localizar o alerta relacionado.");
+    }
   }, [openAlert]);
 
   const closeAlert = useCallback(() => {
@@ -744,6 +832,9 @@ export default function Index() {
   const selectedAlert = detail?.item ?? selectedPreview;
   const historyItems = (history?.items ?? []).filter((item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal");
   const showInitialLoading = (isSummaryLoading && !hasSummaryRef.current) || (isListsLoading && !hasListsRef.current);
+  const visibleIncidents = incidentStreams?.[incidentTab] ?? [];
+  const operatorItems = (operatorQueue?.items ?? []).slice(0, 3);
+  const operatorCounts = operatorQueue?.counts;
 
   // OV-P0-42A: faixa das cinco severidades (ativos + first_seen na janela). Zero válido ≠ erro ("—").
   const hasValidSummary = Boolean(recentMetrics);
@@ -832,11 +923,11 @@ export default function Index() {
           ) : null}
         </SectionPanel>
 
-        {/* OV-P0-69/73: Alertas ~60% | Chamados ~40% — headers alinhados, listas compactas */}
+        {/* OV-P0-248: alertas dominam; chamados e operadoras são apoio operacional. */}
         <div className="grid items-start gap-3 lg:grid-cols-5">
           <SectionPanel
             className="flex min-h-0 flex-col overflow-hidden lg:col-span-3"
-            title="Alertas"
+            title="Alertas Recentes"
             aside={(
               <div className={HOME_PANEL_HEADER_ASIDE}>
                 <HomePanelCount value={alertsTotal} />
@@ -879,13 +970,40 @@ export default function Index() {
                   </SelectContent>
                 </Select>
               </OperationalFilterGroup>
+              <OperationalFilterGroup label="Status" showDivider>
+                <Select value={alertStatus} onValueChange={(value) => setAlertStatus(value as HomeAlertStatus)}>
+                  <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[8.5rem]")} aria-label="Filtrar por status">
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {HOME_ALERT_STATUS_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </OperationalFilterGroup>
+              <OperationalFilterGroup label="Datasource" showDivider>
+                <Select
+                  value={selectedDatasources[0] || "all"}
+                  onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])}
+                >
+                  <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[10rem]")} aria-label="Filtrar por datasource">
+                    <SelectValue placeholder="Datasource" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {datasourceOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </OperationalFilterGroup>
             </div>
             <div className={cn(HOME_LIST_DIVIDE, "min-h-0")}>
               <SectionState
                 loading={isListsLoading && !homeAlerts.length}
                 error={sectionErrors.alerts ?? null}
                 empty={!homeAlerts.length}
-                emptyMessage="Nenhum alerta ativo na janela com os filtros atuais."
+                emptyMessage="Nenhum alerta recente na fila operacional com os filtros atuais."
                 onRetry={() => void loadLists("manual")}
               >
                 {homeAlerts.map((alert) => (
@@ -900,44 +1018,72 @@ export default function Index() {
             ) : null}
           </SectionPanel>
 
-          <SectionPanel
-            className="flex min-h-0 flex-col overflow-hidden lg:col-span-2"
-            title="Chamados sem responsável"
-            aside={(
-              <div className={HOME_PANEL_HEADER_ASIDE}>
-                <HomePanelCount value={incidentsTotal} />
-                <OperationalCta to={buildHomeUnassignedChamadosHref()}>Ver todos</OperationalCta>
+          <div className="space-y-3 lg:col-span-2">
+            <SectionPanel
+              className="flex min-h-0 flex-col overflow-hidden"
+              title="Chamados"
+              aside={(
+                <div className={HOME_PANEL_HEADER_ASIDE}>
+                  <HomePanelCount value={incidentStreams?.total ?? 0} />
+                  <OperationalCta to="/chamados">Ver todos</OperationalCta>
+                </div>
+              )}
+              bodyClassName="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-0"
+            >
+              <Tabs value={incidentTab} onValueChange={(value) => setIncidentTab(value as HomeIncidentTab)}>
+                <TabsList className="mt-1 h-8 w-full justify-start">
+                  {HOME_INCIDENT_TABS.map((tab) => (
+                    <TabsTrigger key={tab.value} value={tab.value} className="h-7 px-2 text-[11px]">
+                      {tab.label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+                {HOME_INCIDENT_TABS.map((tab) => (
+                  <TabsContent key={tab.value} value={tab.value} className="mt-1">
+                    <SectionState
+                      loading={isListsLoading && !visibleIncidents.length && !sectionErrors.incidents}
+                      error={sectionErrors.incidents ?? null}
+                      empty={!visibleIncidents.length}
+                      emptyMessage={tab.value === "queue" ? "Nenhum chamado operacional sem responsável." : tab.value === "in_progress" ? "Nenhum chamado com analista responsável." : "Nenhum chamado recente disponível."}
+                      emptyClassName="flex min-h-[7rem] items-center justify-center"
+                      onRetry={() => void loadLists("manual")}
+                    >
+                      {visibleIncidents.map((item) => (
+                        <HomeIncidentCard
+                          key={item.sys_id || item.number || String(item.opened_at)}
+                          item={item}
+                          onOpenRelatedAlert={openIncidentRelatedAlert}
+                        />
+                      ))}
+                    </SectionState>
+                  </TabsContent>
+                ))}
+              </Tabs>
+            </SectionPanel>
+
+            <SectionPanel
+              className="overflow-hidden"
+              title="Operadoras"
+              aside={<OperationalCta to="/operadoras">Ver fila de Operadoras</OperationalCta>}
+              bodyClassName="px-3 pb-2 pt-0"
+            >
+              <div className="grid grid-cols-3 gap-2 border-b border-border/60 py-2 text-center">
+                <div><p className="text-base font-semibold tabular-nums">{formatMetricCount(operatorCounts?.all)}</p><p className="text-[10px] text-muted-foreground">Ativos</p></div>
+                <div><p className="text-base font-semibold tabular-nums">{formatMetricCount(operatorCounts?.unassigned)}</p><p className="text-[10px] text-muted-foreground">Sem responsável</p></div>
+                <div><p className="text-base font-semibold tabular-nums">{formatMetricCount(operatorCounts?.following)}</p><p className="text-[10px] text-muted-foreground">Em acompanhamento</p></div>
               </div>
-            )}
-            bodyClassName="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-0"
-          >
-            <div className={cn(HOME_INCIDENT_COLS, "border-b border-border/60 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground")}>
-              <span>Número</span>
-              <span>Cliente</span>
-              <span>Estado</span>
-              <span>Prioridade</span>
-              <span>Responsável</span>
-            </div>
-            <div className="min-h-0 flex-1">
               <SectionState
-                loading={isListsLoading && !incidents.length && !sectionErrors.incidents}
-                error={sectionErrors.incidents ?? null}
-                empty={!incidents.length}
-                emptyMessage="Nenhum chamado monitoring sem responsável."
-                emptyClassName="flex h-full min-h-[7rem] items-center justify-center"
+                loading={isListsLoading && !operatorQueue && !sectionErrors.operators}
+                error={sectionErrors.operators ?? null}
+                empty={!operatorItems.length}
+                emptyMessage="Nenhum alerta ativo de operadora."
+                emptyClassName="py-3"
                 onRetry={() => void loadLists("manual")}
               >
-                {incidents.map((item) => (
-                  <HomeIncidentRow key={item.sys_id || item.number || String(item.opened_at)} item={item} />
-                ))}
+                <div className={HOME_LIST_DIVIDE}>{operatorItems.map((item) => <HomeOperatorRow key={item.alert_id || `${item.incident_number}-${item.operator_tag}`} item={item} />)}</div>
               </SectionState>
-            </div>
-            {queueOverflowLabel(incidentsTotal, incidents.length) ? (
-              <p className="border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">
-                {queueOverflowLabel(incidentsTotal, incidents.length)}
-              </p>
-            ) : null}
-          </SectionPanel>
+            </SectionPanel>
+          </div>
         </div>
 
         <SectionPanel

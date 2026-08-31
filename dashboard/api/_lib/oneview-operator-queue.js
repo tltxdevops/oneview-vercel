@@ -14,6 +14,28 @@ import {
 import { getOneViewDbPool, safeCustomerIdentity } from "./oneview-db.js";
 import { getPrimaryDataSourceName } from "./oneview-scope.js";
 import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
+import {
+  OPERATOR_TAG_EXISTS_SQL,
+  OPERATOR_TAG_KEYS,
+  OPERATOR_TAG_KEY_ALIASES,
+  OPERATOR_TAG_VALUES,
+  OPERATOR_TAG_VALUE_TOKENS,
+  alertHasOperatorTag,
+  extractOperatorTags,
+  isOperatorTagKey,
+  isOperatorTagValue,
+} from "./oneview-operator-tags.js";
+
+export {
+  OPERATOR_TAG_KEYS,
+  OPERATOR_TAG_KEY_ALIASES,
+  OPERATOR_TAG_VALUES,
+  OPERATOR_TAG_VALUE_TOKENS,
+  alertHasOperatorTag,
+  extractOperatorTags,
+  isOperatorTagKey,
+  isOperatorTagValue,
+};
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const DEFAULT_PAGE = 1;
@@ -25,62 +47,12 @@ const SAFE_SEVERITY = /^(information|warning|average|high|disaster|critical|not_
 const SAFE_STATE = /^[1-8]$/;
 const SAFE_SYS_ID = /^[a-f0-9]{32}$/i;
 const SAFE_FILTER = /^[\p{L}\p{N}._:@/| \-]{1,240}$/u;
-
-/** Chave persistida auditada (valores de operadora vivem nela). Não usar sozinha como filtro. */
-export const OPERATOR_TAG_KEYS = Object.freeze(["description"]);
-
-/**
- * Chaves futuras dedicadas (nenhuma persistida na auditoria OV-P0-247).
- * Match exato, case-insensitive.
- */
-export const OPERATOR_TAG_KEY_ALIASES = Object.freeze(["operadora", "operador", "escalonamento"]);
-
-/**
- * Valores realmente persistidos na auditoria (event_tags.description).
- * A seleção operacional usa tokens objetivos na tag, não esta lista fechada.
- */
-export const OPERATOR_TAG_VALUES = Object.freeze([
-  "EMBRATEL-MPLS-10MB-abordagem-operadora | SPO/IP/09330",
-  "EMBRATEL-MPLS-16MB-abordagem-operadora | CTA/IP/01805",
-  "EMBRATEL-MPLS-300MB-abordagem-operadora|SPO/IP/53219",
-  "NET-BLC-120MB | Operadora | SOC/IP/06137",
-  "NET-BLC-120MB | Operadora | STS/IP/17573",
-  "OPERADORA-4G",
-  "OPERADORA-BLC-XXXMB-abordagem-operadora",
-]);
-
-/** Tokens objetivos encontrados na auditoria (e aliases pedidos no card). */
-export const OPERATOR_TAG_VALUE_TOKENS = Object.freeze(["operadora", "operador", "escalonamento"]);
+const SAFE_ALERT_STATUS = /^(all|active|resolved)$/;
 
 export const UNASSIGNED_ANALYST_LABEL = "Sem responsável";
 export const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const SLA_RULES_IMPLEMENTED = false;
 
-const OPERATOR_VALUE_TOKEN_RE = /(operadora|operador|escalonamento)/i;
-const OPERATOR_KEY_ALIAS_RE = /^(operadora|operador|escalonamento)$/i;
-
-const OPERATOR_TAG_EXISTS_SQL = `
-exists (
-  select 1
-  from (
-    select jsonb_array_elements(
-      case when jsonb_typeof(coalesce(a.event_tags, '[]'::jsonb)) = 'array'
-           then a.event_tags else '[]'::jsonb end
-    ) as tag
-    union all
-    select jsonb_array_elements(
-      case when jsonb_typeof(coalesce(a.trigger_tags, '[]'::jsonb)) = 'array'
-           then a.trigger_tags else '[]'::jsonb end
-    )
-    union all
-    select jsonb_array_elements(
-      case when jsonb_typeof(coalesce(a.host_tags, '[]'::jsonb)) = 'array'
-           then a.host_tags else '[]'::jsonb end
-    )
-  ) tags
-  where lower(btrim(coalesce(tags.tag->>'tag', tags.tag->>'name', ''))) ~ '^(operadora|operador|escalonamento)$'
-     or lower(btrim(coalesce(tags.tag->>'value', ''))) ~ '(operadora|operador|escalonamento)'
-)`;
 
 function text(value) {
   const output = String(value ?? "").trim();
@@ -110,43 +82,6 @@ function isoDate(value) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   return date.toISOString();
-}
-
-function asTagList(alertOrTags = {}) {
-  const bags = [
-    alertOrTags.event_tags,
-    alertOrTags.trigger_tags,
-    alertOrTags.host_tags,
-    alertOrTags.template_tags,
-  ];
-  const out = [];
-  for (const group of bags) {
-    if (!Array.isArray(group)) continue;
-    for (const item of group) {
-      if (!item || typeof item !== "object") continue;
-      const tag = String(item.tag ?? item.name ?? "").trim();
-      const value = String(item.value ?? "").trim();
-      if (!tag && !value) continue;
-      out.push({ tag, value });
-    }
-  }
-  return out;
-}
-
-export function isOperatorTagKey(key) {
-  return OPERATOR_KEY_ALIAS_RE.test(String(key || "").trim());
-}
-
-export function isOperatorTagValue(value) {
-  return OPERATOR_VALUE_TOKEN_RE.test(String(value || ""));
-}
-
-export function extractOperatorTags(alertOrTags) {
-  return asTagList(alertOrTags).filter((item) => isOperatorTagKey(item.tag) || isOperatorTagValue(item.value));
-}
-
-export function alertHasOperatorTag(alertOrTags) {
-  return extractOperatorTags(alertOrTags).length > 0;
 }
 
 export function operatorTagLabel(alertOrTags) {
@@ -241,6 +176,9 @@ export function parseOperatorQueueFilters(req) {
   const severity = text(oneQuery(req, "severity"));
   if (severity && !SAFE_SEVERITY.test(severity.toLowerCase())) throw invalidQuery();
 
+  const alertStatus = String(oneQuery(req, "alert_status") || "all").trim().toLowerCase();
+  if (!SAFE_ALERT_STATUS.test(alertStatus)) throw invalidQuery();
+
   return {
     tab,
     operator_tag: operatorTag,
@@ -248,6 +186,7 @@ export function parseOperatorQueueFilters(req) {
     assigned_to: assignedTo ? assignedTo.toLowerCase() : null,
     state,
     severity: severity ? severity.toLowerCase() : null,
+    alert_status: alertStatus,
     page: asPageInt(oneQuery(req, "page"), DEFAULT_PAGE, { min: 1, max: 10_000 }),
     page_size: asPageInt(oneQuery(req, "page_size"), DEFAULT_PAGE_SIZE, { min: 1, max: MAX_PAGE_SIZE }),
   };
@@ -417,6 +356,7 @@ export function buildOperatorQueuePayload(alerts, incidents, filters, now = Date
 export async function fetchOperatorTaggedAlerts({
   pool = getOneViewDbPool(),
   primaryDataSourceName = getPrimaryDataSourceName(),
+  alertStatus = "all",
 } = {}) {
   const result = await pool.query({
     text: `
@@ -445,10 +385,15 @@ export async function fetchOperatorTaggedAlerts({
       join data_sources d on d.id = a.data_source_id
       where d.name = $1
         and ${OPERATOR_TAG_EXISTS_SQL}
+        and (
+          $2 = 'all'
+          or ($2 = 'active' and a.resolved_at is null and coalesce(a.status_source, 'active') = 'active')
+          or ($2 = 'resolved' and (a.resolved_at is not null or coalesce(a.status_source, '') = 'resolved'))
+        )
       order by a.last_seen_at desc nulls last, a.id desc
-      limit $2
+      limit $3
     `,
-    values: [primaryDataSourceName, MAX_ALERT_ROWS],
+    values: [primaryDataSourceName, alertStatus, MAX_ALERT_ROWS],
   });
   return result.rows || [];
 }
@@ -532,7 +477,7 @@ export function createOperatorQueueHandler({
     }
 
     try {
-      const alerts = await listAlerts();
+      const alerts = await listAlerts({ alertStatus: filters.alert_status });
       let incidents = [];
       try {
         incidents = await listIncidents(alerts);

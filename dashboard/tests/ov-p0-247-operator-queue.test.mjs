@@ -87,6 +87,7 @@ const emptyFilters = {
   assigned_to: null,
   state: null,
   severity: null,
+  alert_status: "all",
   page: 1,
   page_size: 50,
 };
@@ -262,14 +263,18 @@ test("OV-P0-247 SLA is a stub: Atualizado há X min, no delay class", () => {
 });
 
 test("OV-P0-247 handler returns INC link and keeps read-only contract", async () => {
+  let receivedAlertStatus = null;
   const handler = createOperatorQueueHandler({
     authorize: async () => ({ roles: ["viewer"] }),
-    listAlerts: async () => [operatorAlert({
+    listAlerts: async ({ alertStatus }) => {
+      receivedAlertStatus = alertStatus;
+      return [operatorAlert({
       event_tags: [
         { tag: "description", value: "OPERADORA-4G" },
         { tag: "__zbx_servicenow_sys_id", value: incidentSysId },
       ],
-    })],
+      })];
+    },
     listIncidents: async () => [incident()],
     now: () => now,
     logger: () => undefined,
@@ -284,13 +289,19 @@ test("OV-P0-247 handler returns INC link and keeps read-only contract", async ()
   );
   assert.equal(res.body.items[0].oneview_link, "/operadoras?alert=alert-operator-1");
   assert.equal(res.body.items[0].analyst_label, "Ana Operadora");
+  assert.equal(receivedAlertStatus, "all");
+
+  const active = response();
+  await handler(request({ alert_status: "active" }), active);
+  assert.equal(active.statusCode, 200);
+  assert.equal(receivedAlertStatus, "active");
 
   const denied = response();
   await handler(request({}, "POST"), denied);
   assert.equal(denied.statusCode, 405);
 });
 
-test("OV-P0-247 page, menu and Home isolation", async () => {
+test("OV-P0-247 page/menu stay isolated; OV-P0-248 consumes only active canonical queue", async () => {
   const [page, app, sidebar, index, api, lib] = await Promise.all([
     read("src/pages/Operadoras.tsx"),
     read("src/App.tsx"),
@@ -317,7 +328,9 @@ test("OV-P0-247 page, menu and Home isolation", async () => {
   assert.match(api, /export async function fetchOperatorQueue/);
   assert.match(api, /\/oneview\/operator-queue/);
   assert.doesNotMatch(page, /Assumir|Transferir|Hold|Comentar no chamado/);
-  assert.doesNotMatch(index, /fetchOperatorQueue|\/operadoras|OperadorasPage/);
+  assert.match(index, /fetchOperatorQueue/);
+  assert.match(index, /alertStatus: "active"/);
+  assert.match(index, /Ver fila de Operadoras/);
   assert.doesNotMatch(lib, /problem_name\s*[=~].*operad|host_name\s*[=~].*operad|customer_name\s*[=~].*operad/i);
   assert.match(lib, /event_tags/);
   assert.match(lib, /extractServiceNowRefsFromAlertTags/);
