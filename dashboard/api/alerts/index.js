@@ -2,15 +2,15 @@ import { query } from "../_lib/db.js";
 import { ALERT_FIELDS } from "../_lib/alerts.js";
 import { requireAuth } from "../_lib/auth.js";
 import { asInt, handleError, methodNotAllowed, sendJson } from "../_lib/http.js";
-import { getPrimaryDataSourceName } from "../_lib/oneview-scope.js";
+import { getOperationalDataSourceNames } from "../_lib/oneview-scope.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
   if (!(await requireAuth(req, res, { role: "viewer" }))) return;
 
   try {
-    const where = ["data_source_id = (select id from data_sources where name = $1 limit 1)"];
-    const values = [getPrimaryDataSourceName()];
+    const where = ["data_source_id in (select id from data_sources where name = any($1::text[]))"];
+    const values = [getOperationalDataSourceNames()];
     const addFilter = (sql, value) => {
       values.push(value);
       where.push(sql.replace("?", `$${values.length}`));

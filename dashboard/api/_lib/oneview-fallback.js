@@ -15,7 +15,7 @@ import {
 } from "./oneview-db.js";
 import { deriveOperationalScope } from "./oneview-operational-scope.js";
 import { emptyAlertRecurrenceReadModel } from "./oneview-recurrence.js";
-import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { getOperationalDataSourceNames } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
@@ -133,30 +133,31 @@ function snapshotAlerts(snapshot) {
   return (snapshot.alerts || []).map((alert) => snapshotAlert(alert, snapshot.generated_at));
 }
 
-function scopedSnapshot(snapshot, primaryDataSourceName) {
+function scopedSnapshot(snapshot, dataSourceNames) {
+  const scopedNames = new Set(dataSourceNames.map((name) => String(name).toLowerCase()));
   const sourceIds = new Set(
     (snapshot.data_sources || [])
-      .filter((source) => String(source.name || "").toLowerCase() === primaryDataSourceName)
+      .filter((source) => scopedNames.has(String(source.name || "").toLowerCase()))
       .map((source) => String(source.id || "")),
   );
   return {
     ...snapshot,
     alerts: (snapshot.alerts || []).filter((alert) => (
-      String(alert.datasource_name || alert.client_name || "").toLowerCase() === primaryDataSourceName
+      scopedNames.has(String(alert.datasource_name || alert.client_name || "").toLowerCase())
       || sourceIds.has(String(alert.data_source_id || ""))
     )),
     data_sources: (snapshot.data_sources || []).filter((source) => (
-      String(source.name || "").toLowerCase() === primaryDataSourceName
+      scopedNames.has(String(source.name || "").toLowerCase())
     )),
     sync_logs: (snapshot.sync_logs || []).filter((log) => (
-      String(log.datasource || "").toLowerCase() === primaryDataSourceName
+      scopedNames.has(String(log.datasource || "").toLowerCase())
       || sourceIds.has(String(log.data_source_id || ""))
     )),
   };
 }
 
-function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresholds(), primaryDataSourceName) {
-  const { limit, firstSeenFrom, firstSeenTo } = buildAttentionRequiredQuery(req, thresholds, primaryDataSourceName);
+function attentionRequiredPayload(snapshot, req, thresholds = getAttentionThresholds(), dataSourceNames) {
+  const { limit, firstSeenFrom, firstSeenTo } = buildAttentionRequiredQuery(req, thresholds, dataSourceNames);
   const matching = snapshotAlerts(snapshot)
     .map((alert) => {
       const state = attentionRequiredState(alert, thresholds, Date.now(), { firstSeenFrom, firstSeenTo });
@@ -239,9 +240,9 @@ function snapshotLog(log, generatedAt) {
   };
 }
 
-function filteredAlerts(snapshot, req, primaryDataSourceName) {
+function filteredAlerts(snapshot, req, dataSourceNames) {
   let items = snapshotAlerts(snapshot);
-  const { page, pageSize, offset, filters } = buildAlertListQuery(req, primaryDataSourceName);
+  const { page, pageSize, offset, filters } = buildAlertListQuery(req, dataSourceNames);
 
   if (filters.clients.length) items = items.filter((item) => filters.clients.includes(item.client_name));
   if (filters.customers.length) items = items.filter((item) => filters.customers.includes(item.customer_key || "unclassified"));
@@ -781,7 +782,7 @@ function alertHistoryPayload(snapshot, req) {
   };
 }
 
-function operationsHealthPayload(snapshot, primaryDataSourceName) {
+function operationsHealthPayload(snapshot, dataSourceNames) {
   const logsBySource = new Map();
   for (const log of snapshot.sync_logs || []) {
     const current = logsBySource.get(log.data_source_id);
@@ -790,11 +791,10 @@ function operationsHealthPayload(snapshot, primaryDataSourceName) {
     }
   }
   const now = Date.now();
-  const primaryName = String(primaryDataSourceName || "").toLowerCase();
+  const scopedNames = new Set(dataSourceNames.map((name) => String(name).toLowerCase()));
   // OV-P0-26: nunca expor castrolanda/fraport/zurich na saúde operacional.
   const sources = (snapshot.data_sources || []).filter((source) => {
-    if (!primaryName) return true;
-    return String(source.name || "").toLowerCase() === primaryName;
+    return scopedNames.has(String(source.name || "").toLowerCase());
   });
   const items = sources.map((source) => {
     const log = logsBySource.get(source.id);
@@ -839,8 +839,12 @@ function operationsHealthPayload(snapshot, primaryDataSourceName) {
 
 export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
   const loadedSnapshot = await loadSnapshot();
-  const primaryDataSourceName = String(config.primaryDataSourceName || getPrimaryDataSourceName()).trim().toLowerCase();
-  const snapshot = scopedSnapshot(loadedSnapshot, primaryDataSourceName);
+  const allowedDataSourceNames = new Set(getOperationalDataSourceNames());
+  const requestedDataSourceNames = Array.isArray(config.operationalDataSourceNames)
+    ? config.operationalDataSourceNames
+    : getOperationalDataSourceNames();
+  const dataSourceNames = requestedDataSourceNames.filter((name) => allowedDataSourceNames.has(String(name).toLowerCase()));
+  const snapshot = scopedSnapshot(loadedSnapshot, dataSourceNames);
   const alerts = snapshot.alerts || [];
 
   switch (routeName) {
@@ -860,9 +864,9 @@ export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
     case "grafana-summary":
       return grafanaSummaryPayload(snapshot);
     case "alerts":
-      return filteredAlerts(snapshot, req, primaryDataSourceName);
+      return filteredAlerts(snapshot, req, dataSourceNames);
     case "attention-required":
-      return attentionRequiredPayload(snapshot, req, config.attentionThresholds, primaryDataSourceName);
+      return attentionRequiredPayload(snapshot, req, config.attentionThresholds, dataSourceNames);
     case "alert-detail":
       return alertDetailPayload(snapshot, req);
     case "alert-history":
@@ -870,7 +874,7 @@ export async function getOneViewSnapshotPayload(routeName, req, config = {}) {
     case "history":
       return globalHistoryPayload(snapshot, req);
     case "operations-health":
-      return operationsHealthPayload(snapshot, primaryDataSourceName);
+      return operationsHealthPayload(snapshot, dataSourceNames);
     case "clients-summary":
       return clientsSummaryPayload(snapshot, req);
     case "data-sources":

@@ -1,7 +1,7 @@
 import { query } from "../_lib/db.js";
 import { requireAuth } from "../_lib/auth.js";
 import { handleError, methodNotAllowed, sendJson } from "../_lib/http.js";
-import { getPrimaryDataSourceName } from "../_lib/oneview-scope.js";
+import { getOperationalDataSourceNames } from "../_lib/oneview-scope.js";
 
 const ACTIVE_WHERE = "status_source = 'active' and resolved_at is null";
 const SCOPE_CTE = `
@@ -9,17 +9,17 @@ const SCOPE_CTE = `
     select a.*, d.environment
     from alerts a
     join data_sources d on d.id = a.data_source_id
-    where d.name = $1
+    where d.name = any($1::text[])
   )
 `;
 
 async function rows(sql) {
-  const result = await query(`${SCOPE_CTE} ${sql}`, [getPrimaryDataSourceName()]);
+  const result = await query(`${SCOPE_CTE} ${sql}`, [getOperationalDataSourceNames()]);
   return result.rows;
 }
 
 async function scalar(sql, fallback = 0) {
-  const result = await query(`${SCOPE_CTE} ${sql}`, [getPrimaryDataSourceName()]);
+  const result = await query(`${SCOPE_CTE} ${sql}`, [getOperationalDataSourceNames()]);
   return result.rows[0]?.value ?? fallback;
 }
 

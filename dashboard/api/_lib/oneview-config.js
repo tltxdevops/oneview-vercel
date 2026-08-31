@@ -1,5 +1,5 @@
 import { getAttentionThresholds, getOneViewDbConfig, operationalTimezone } from "./oneview-db.js";
-import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { getOperationalDataSourceNames } from "./oneview-scope.js";
 
 const ROUTES = Object.freeze({
   health: Object.freeze({ upstreamPath: "/health", role: "viewer", fallbackSafe: true, query: [] }),
@@ -151,7 +151,7 @@ export function getOneViewConfig(env = process.env) {
     attentionThresholds: getAttentionThresholds(env),
     operationalTimezone: operationalTimezone(env.ONEVIEW_OPERATIONAL_TIMEZONE),
     alertStaleMinutes: alertStaleMinutes(env.ONEVIEW_ALERT_STALE_MINUTES),
-    primaryDataSourceName: getPrimaryDataSourceName(env),
+    operationalDataSourceNames: getOperationalDataSourceNames(),
     dbConfig,
     dbConfigErrorCode,
   });

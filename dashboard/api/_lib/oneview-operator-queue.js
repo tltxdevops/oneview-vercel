@@ -12,7 +12,7 @@ import {
   buildServiceNowIncidentDeepLink,
 } from "./oneview-inc-correlation.js";
 import { getOneViewDbPool, safeCustomerIdentity } from "./oneview-db.js";
-import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { getOperationalDataSourceNames } from "./oneview-scope.js";
 import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
 import {
   OPERATOR_TAG_EXISTS_SQL,
@@ -355,9 +355,13 @@ export function buildOperatorQueuePayload(alerts, incidents, filters, now = Date
 
 export async function fetchOperatorTaggedAlerts({
   pool = getOneViewDbPool(),
-  primaryDataSourceName = getPrimaryDataSourceName(),
+  dataSourceNames = getOperationalDataSourceNames(),
   alertStatus = "all",
 } = {}) {
+  const allowedDataSourceNames = new Set(getOperationalDataSourceNames());
+  const scopedDataSourceNames = (Array.isArray(dataSourceNames) ? dataSourceNames : [dataSourceNames])
+    .map((name) => String(name).trim().toLowerCase())
+    .filter((name) => allowedDataSourceNames.has(name));
   const result = await pool.query({
     text: `
       select
@@ -383,7 +387,7 @@ export async function fetchOperatorTaggedAlerts({
         a.resolved_at
       from alerts a
       join data_sources d on d.id = a.data_source_id
-      where d.name = $1
+      where d.name = any($1::text[])
         and ${OPERATOR_TAG_EXISTS_SQL}
         and (
           $2 = 'all'
@@ -393,7 +397,7 @@ export async function fetchOperatorTaggedAlerts({
       order by a.last_seen_at desc nulls last, a.id desc
       limit $3
     `,
-    values: [primaryDataSourceName, alertStatus, MAX_ALERT_ROWS],
+    values: [scopedDataSourceNames, alertStatus, MAX_ALERT_ROWS],
   });
   return result.rows || [];
 }

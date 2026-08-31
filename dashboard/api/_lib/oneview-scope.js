@@ -1,6 +1,16 @@
-export const DEFAULT_ONEVIEW_PRIMARY_DATA_SOURCE_NAME = "teletex-http";
+/**
+ * Production operational scope. Keep this allowlist server-side so a request
+ * can narrow the result, but can never add Maps or an arbitrary datasource.
+ */
+export const ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES = Object.freeze([
+  "teletex-http",
+  "rhp",
+  "castrolanda",
+  "zurich",
+  "fraport-for",
+  "fraport-poa",
+]);
 
-export function getPrimaryDataSourceName(env = process.env) {
-  const configured = String(env.ONEVIEW_PRIMARY_DATA_SOURCE_NAME || "").trim().toLowerCase();
-  return configured || DEFAULT_ONEVIEW_PRIMARY_DATA_SOURCE_NAME;
+export function getOperationalDataSourceNames() {
+  return [...ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES];
 }

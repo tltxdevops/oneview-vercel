@@ -27,7 +27,7 @@ test("OV-P0-139 histórico filtra recurrence key no BFF, sem busca por host", ()
   assert.match(query.whereSql, /a\.data_source_id::text/);
   assert.match(query.whereSql, /a\.source_host_id::text/);
   assert.match(query.whereSql, /a\.source_trigger_id::text/);
-  assert.deepEqual(query.params.slice(0, 4), ["teletex-http", "source-a", "host-42", "trigger-9"]);
+  assert.deepEqual(query.params.slice(0, 4), [["teletex-http"], "source-a", "host-42", "trigger-9"]);
   assert.throws(() => buildAlertListQuery({ query: { recurrence_key: "invalid" } }, "teletex-http"), /invalid_query/);
 });
 

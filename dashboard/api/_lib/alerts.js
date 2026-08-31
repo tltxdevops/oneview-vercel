@@ -1,4 +1,4 @@
-import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { getOperationalDataSourceNames } from "./oneview-scope.js";
 
 export const ALERT_FIELDS = `
   id, data_source_id, client_name, source_type, source_event_id,
@@ -16,9 +16,9 @@ export async function getAlert(client, id) {
        from alerts
       where id = $1
         and data_source_id = (
-          select id from data_sources where name = $2 limit 1
+          select id from data_sources where name = any($2::text[])
         )`,
-    [id, getPrimaryDataSourceName()],
+    [id, getOperationalDataSourceNames()],
   );
   return result.rows[0] || null;
 }

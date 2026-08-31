@@ -1434,7 +1434,7 @@ test("Histórico operacional NOC é rota independente com paginação e filtros 
   assert.match(historico, /PAGE_SIZE = 50/);
   assert.match(api, /search\.set\("page"/);
   assert.match(api, /search\.set\("page_size"/);
-  assert.match(database, /d\.name = \$1/);
+  assert.match(database, /d\.name = any\(\$1::text\[\]\)/);
   assert.match(database, /internal_acknowledged/);
   assert.match(database, /oneview_internal/);
   assert.match(database, /identified: \["problem_created", "created_from_zabbix"\]/);

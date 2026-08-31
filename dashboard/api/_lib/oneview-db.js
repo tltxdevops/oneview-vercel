@@ -6,11 +6,21 @@ import {
 } from "./oneview-inc-correlation.js";
 import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
 import { buildAlertRecurrenceReadModel, buildRecurrenceKey, hasRecurrenceIdentity, parseRecurrenceKey } from "./oneview-recurrence.js";
-import { getPrimaryDataSourceName } from "./oneview-scope.js";
+import { getOperationalDataSourceNames, ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 import { OPERATOR_TAG_EXISTS_SQL } from "./oneview-operator-tags.js";
 
 const { Pool } = pg;
+
+const OPERATIONAL_DATA_SOURCE_NAME_SET = new Set(ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES);
+
+function operationalDataSourceNames(value = getOperationalDataSourceNames()) {
+  const values = Array.isArray(value) ? value : [value];
+  const allowed = values
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter((item) => OPERATIONAL_DATA_SOURCE_NAME_SET.has(item));
+  return [...new Set(allowed)];
+}
 
 const MAX_ALERT_PAGE_SIZE = 100;
 const DEFAULT_ALERT_PAGE_SIZE = 50;
@@ -368,17 +378,17 @@ export function operationalDayBounds(timeZone = DEFAULT_OPERATIONAL_TIMEZONE, no
 export function dailyOperationalMetricQueries(
   timeZone = DEFAULT_OPERATIONAL_TIMEZONE,
   now = new Date(),
-  primaryDataSourceName = getPrimaryDataSourceName(),
+  dataSourceNames = getOperationalDataSourceNames(),
 ) {
   const day = operationalDayBounds(timeZone, now);
-  const values = [primaryDataSourceName, day.from, day.to];
+  const values = [operationalDataSourceNames(dataSourceNames), day.from, day.to];
   return Object.freeze({
     day,
     resolved: Object.freeze({
       text: `select count(*)::int as value
                from alerts a
                join data_sources d on d.id = a.data_source_id
-              where d.name = $1
+              where d.name = any($1::text[])
                 and a.resolved_at >= $2::timestamptz
                 and a.resolved_at < $3::timestamptz`,
       values,
@@ -387,7 +397,7 @@ export function dailyOperationalMetricQueries(
       text: `select count(*)::int as value
                from alerts a
                join data_sources d on d.id = a.data_source_id
-              where d.name = $1
+              where d.name = any($1::text[])
                 and a.acknowledged_source = true
                 and a.acknowledged_at >= $2::timestamptz
                 and a.acknowledged_at < $3::timestamptz`,
@@ -398,7 +408,7 @@ export function dailyOperationalMetricQueries(
                from alert_acknowledgements ack
                join alerts a on a.id = ack.alert_id
                join data_sources d on d.id = a.data_source_id
-              where d.name = $1
+              where d.name = any($1::text[])
                 and ack.acknowledgement_type = any($4::text[])
                 and ack.status = any($5::text[])
                 and ack.requested_at >= $2::timestamptz
@@ -455,7 +465,7 @@ export function getAttentionThresholds(env = process.env) {
 export function buildAttentionRequiredQuery(
   req,
   thresholds = getAttentionThresholds(),
-  primaryDataSourceName = getPrimaryDataSourceName(),
+  dataSourceNames = getOperationalDataSourceNames(),
 ) {
   const limit = positiveInteger(oneQueryValue(req, "limit"), DEFAULT_ATTENTION_LIMIT, { maximum: MAX_ATTENTION_LIMIT });
   const firstSeenFrom = isoFilterDate(oneQueryValue(req, "first_seen_from"));
@@ -468,7 +478,7 @@ export function buildAttentionRequiredQuery(
     thresholds.highMinutes,
     thresholds.averageMinutes,
     thresholds.lowMinutes,
-    primaryDataSourceName,
+    operationalDataSourceNames(dataSourceNames),
   ];
   const clauses = [
     ACTIVE_ALERT_SQL,
@@ -477,7 +487,7 @@ export function buildAttentionRequiredQuery(
       select 1
       from data_sources scope_d
       where scope_d.id = a.data_source_id
-        and scope_d.name = $5
+        and scope_d.name = any($5::text[])
     )`,
     "a.first_seen_at is not null",
     `(
@@ -575,7 +585,7 @@ function isoFilterDate(value) {
   return parsed.toISOString();
 }
 
-export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataSourceName()) {
+export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSourceNames()) {
   const params = [];
   const clauses = [];
   const push = (clause, value) => {
@@ -636,7 +646,7 @@ export function buildAlertListQuery(req, primaryDataSourceName = getPrimaryDataS
   const offset = (page - 1) * pageSize;
   if (!Number.isSafeInteger(offset)) throw requestError("invalid_query");
 
-  push("d.name = ?", primaryDataSourceName);
+  push("d.name = any(?::text[])", operationalDataSourceNames(dataSourceNames));
   if (recurrenceKey) {
     push("a.data_source_id::text = ?", recurrenceKey.data_source_id);
     push("a.source_host_id::text = ?", recurrenceKey.source_host_id);
@@ -1037,10 +1047,10 @@ function alertTemporalCounts(row) {
   };
 }
 
-async function fetchAlertList(req, config, primaryDataSourceName) {
+async function fetchAlertList(req, config, dataSourceNames) {
   const { page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql } = buildAlertListQuery(
     req,
-    primaryDataSourceName,
+    dataSourceNames,
   );
 
   const [summaryRow, temporalRow, itemRows] = await Promise.all([
@@ -1223,9 +1233,9 @@ async function fetchAttentionRequiredPayload(
   req,
   config,
   thresholds = getAttentionThresholds(),
-  primaryDataSourceName = getPrimaryDataSourceName(),
+  dataSourceNames = getOperationalDataSourceNames(),
 ) {
-  const { limit, values, whereSql, orderSql } = buildAttentionRequiredQuery(req, thresholds, primaryDataSourceName);
+  const { limit, values, whereSql, orderSql } = buildAttentionRequiredQuery(req, thresholds, dataSourceNames);
   const [severityRows, customerRows, datasourceRows, itemRows] = await Promise.all([
     queryRows(
       config,
@@ -1322,7 +1332,7 @@ function alertId(req) {
   return value;
 }
 
-async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
+async function fetchAlertDetailPayload(req, config, dataSourceNames) {
   const id = alertId(req);
   const [row, ackHistoryRows] = await Promise.all([
     queryRow(
@@ -1378,10 +1388,10 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
       from alerts a
       join data_sources d on d.id = a.data_source_id
       where a.id = $1
-        and d.name = $2
+        and d.name = any($2::text[])
       limit 1
     `,
-      [id, primaryDataSourceName],
+      [id, operationalDataSourceNames(dataSourceNames)],
     ),
     queryRows(
       config,
@@ -1405,7 +1415,7 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
       join alerts a on a.id = h.alert_id
       join data_sources d on d.id = a.data_source_id
       where h.alert_id = $1
-        and d.name = $2
+        and d.name = any($2::text[])
         and (
           lower(coalesce(h.action_type, '')) in ('acknowledged', 'ack_message')
           or lower(coalesce(h.action_type, '')) like '%ack%'
@@ -1414,7 +1424,7 @@ async function fetchAlertDetailPayload(req, config, primaryDataSourceName) {
       order by h.occurred_at desc nulls last, h.created_at desc, h.id desc
       limit 100
     `,
-      [id, primaryDataSourceName],
+      [id, operationalDataSourceNames(dataSourceNames)],
     ),
   ]);
   if (!row) throw requestError("not_found", 404);
@@ -1767,7 +1777,7 @@ function historyIsLegacy(actionType, actionSource) {
     || ["created_from_zabbix", "resolved_by_reconciliation"].includes(type);
 }
 
-async function fetchAlertHistoryPayload(req, config, primaryDataSourceName) {
+async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
   const id = alertId(req);
   const alert = await queryRow(
     config,
@@ -1775,9 +1785,9 @@ async function fetchAlertHistoryPayload(req, config, primaryDataSourceName) {
             a.acknowledged_at, a.acknowledged_by
        from alerts a
        join data_sources d on d.id = a.data_source_id
-      where a.id = $1 and d.name = $2
+      where a.id = $1 and d.name = any($2::text[])
       limit 1`,
-    [id, primaryDataSourceName],
+    [id, operationalDataSourceNames(dataSourceNames)],
   );
   if (!alert) throw requestError("not_found", 404);
 
@@ -1808,7 +1818,7 @@ async function fetchAlertHistoryPayload(req, config, primaryDataSourceName) {
       join alerts a on a.id = h.alert_id
       join data_sources d on d.id = a.data_source_id
       where h.alert_id = $1
-        and d.name = $2
+        and d.name = any($2::text[])
       union all
       select
         ack.id::text as id,
@@ -1830,12 +1840,12 @@ async function fetchAlertHistoryPayload(req, config, primaryDataSourceName) {
       join alerts a on a.id = ack.alert_id
       join data_sources d on d.id = a.data_source_id
       where ack.alert_id = $1
-        and d.name = $2
+        and d.name = any($2::text[])
         and ack.acknowledgement_type in ('internal','internal_acknowledgement')
         and ack.status in ('recorded','pending','processing','success','completed')
       order by occurred_at desc nulls last, created_at desc, id desc
     `,
-    [id, primaryDataSourceName],
+    [id, operationalDataSourceNames(dataSourceNames)],
   );
   const alias = aliasForHost(alert.host_name);
   const mappedItems = rows.map((row) => {
@@ -1918,7 +1928,7 @@ export function classifyOperationalSource(source, now = Date.now()) {
   return { status: "healthy", reason_code: "healthy", lastActivityAt, intervalSeconds };
 }
 
-async function fetchOperationsHealthPayload(config, primaryDataSourceName) {
+async function fetchOperationsHealthPayload(config, dataSourceNames) {
   const rows = await queryRows(
     config,
     `
@@ -1938,10 +1948,10 @@ async function fetchOperationsHealthPayload(config, primaryDataSourceName) {
         from sync_logs sl
         where sl.data_source_id = d.id
       ) latest on true
-      where d.name = $1
+      where d.name = any($1::text[])
       order by d.display_order asc, d.name asc
     `,
-    [primaryDataSourceName],
+    [operationalDataSourceNames(dataSourceNames)],
   );
   const now = Date.now();
   const items = rows.map((row) => {
@@ -1988,7 +1998,7 @@ async function fetchOperationsHealthPayload(config, primaryDataSourceName) {
   };
 }
 
-async function fetchDataSourceRows(config, primaryDataSourceName) {
+async function fetchDataSourceRows(config, dataSourceNames) {
   return queryRows(
     config,
     `
@@ -2016,7 +2026,7 @@ async function fetchDataSourceRows(config, primaryDataSourceName) {
         count(a.id)::int as alerts_count
       from data_sources d
       left join v_active_alerts a on a.data_source_id = d.id
-      where d.name = $1
+      where d.name = any($1::text[])
       group by
         d.id,
         d.name,
@@ -2040,18 +2050,18 @@ async function fetchDataSourceRows(config, primaryDataSourceName) {
         d.token_encrypted
       order by d.display_order asc, d.name asc
     `,
-    [primaryDataSourceName],
+    [operationalDataSourceNames(dataSourceNames)],
   );
 }
 
-async function fetchDataSourcesPayload(config, primaryDataSourceName) {
+async function fetchDataSourcesPayload(config, dataSourceNames) {
   return {
     generated_at: generatedAt(),
-    items: mapDataSourceRows(await fetchDataSourceRows(config, primaryDataSourceName)),
+    items: mapDataSourceRows(await fetchDataSourceRows(config, dataSourceNames)),
   };
 }
 
-async function fetchSyncLogRows(config, limit = DEFAULT_SYNC_LOG_LIMIT, primaryDataSourceName = getPrimaryDataSourceName()) {
+async function fetchSyncLogRows(config, limit = DEFAULT_SYNC_LOG_LIMIT, dataSourceNames = getOperationalDataSourceNames()) {
   return queryRows(
     config,
     `
@@ -2065,20 +2075,20 @@ async function fetchSyncLogRows(config, limit = DEFAULT_SYNC_LOG_LIMIT, primaryD
         coalesce(sl.finished_at, sl.created_at, sl.started_at) as created_at
       from sync_logs sl
       join data_sources d on d.id = sl.data_source_id
-      where d.name = $1
+      where d.name = any($1::text[])
       order by coalesce(sl.finished_at, sl.created_at, sl.started_at) desc, sl.id desc
       limit $2
     `,
-    [primaryDataSourceName, limit],
+    [operationalDataSourceNames(dataSourceNames), limit],
   );
 }
 
-async function fetchSyncLogsPayload(req, config, primaryDataSourceName) {
+async function fetchSyncLogsPayload(req, config, dataSourceNames) {
   const rawLimit = Array.isArray(req.query?.limit) ? req.query.limit[0] : req.query?.limit;
   const limit = integerValue(rawLimit, DEFAULT_SYNC_LOG_LIMIT, { min: 1, max: MAX_SYNC_LOG_LIMIT });
   return {
     generated_at: generatedAt(),
-    items: mapSyncLogRows(await fetchSyncLogRows(config, limit, primaryDataSourceName)),
+    items: mapSyncLogRows(await fetchSyncLogRows(config, limit, dataSourceNames)),
   };
 }
 
@@ -2086,7 +2096,7 @@ async function fetchHealthPayload(
   config,
   acknowledgementEnabled = false,
   alertStaleMinutes = 15,
-  primaryDataSourceName = getPrimaryDataSourceName(),
+  dataSourceNames = getOperationalDataSourceNames(),
 ) {
   const [reachableRow, countsRow] = await Promise.all([
     queryRow(config, "select 1 as reachable"),
@@ -2097,13 +2107,13 @@ async function fetchHealthPayload(
           (select count(*)::int
              from alerts a
              join data_sources d on d.id = a.data_source_id
-            where d.name = $1) as total_alerts,
+            where d.name = any($1::text[])) as total_alerts,
           (select count(*)::int
              from alerts a
              join data_sources d on d.id = a.data_source_id
-            where d.name = $1 and ${ACTIVE_ALERT_SQL}) as active_alerts
+            where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}) as active_alerts
       `,
-      [primaryDataSourceName],
+      [operationalDataSourceNames(dataSourceNames)],
     ),
   ]);
 
@@ -2126,11 +2136,12 @@ async function fetchHealthPayload(
 async function fetchDashboardSummaryPayload(
   config,
   timeZone = DEFAULT_OPERATIONAL_TIMEZONE,
-  primaryDataSourceName = getPrimaryDataSourceName(),
+  dataSourceNames = getOperationalDataSourceNames(),
 ) {
-  const dailyMetrics = dailyOperationalMetricQueries(timeZone, new Date(), primaryDataSourceName);
-  const scopeValues = [primaryDataSourceName];
-  const dayValues = [primaryDataSourceName, dailyMetrics.day.from, dailyMetrics.day.to];
+  const scopedDataSourceNames = operationalDataSourceNames(dataSourceNames);
+  const dailyMetrics = dailyOperationalMetricQueries(timeZone, new Date(), scopedDataSourceNames);
+  const scopeValues = [scopedDataSourceNames];
+  const dayValues = [scopedDataSourceNames, dailyMetrics.day.from, dailyMetrics.day.to];
   const [
     totalAlertsRow,
     activeAlertsRow,
@@ -2147,38 +2158,38 @@ async function fetchDashboardSummaryPayload(
     ackMetricsRow,
     normalizationMetricsRow,
   ] = await Promise.all([
-    queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = $1`, scopeValues),
-    queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = $1 and ${ACTIVE_ALERT_SQL}`, scopeValues),
+    queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = any($1::text[])`, scopeValues),
+    queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}`, scopeValues),
     queryRow(config, `select count(*)::int as value
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and a.resolved_at >= $2::timestamptz and a.resolved_at < $3::timestamptz`, dayValues),
+      where d.name = any($1::text[]) and a.resolved_at >= $2::timestamptz and a.resolved_at < $3::timestamptz`, dayValues),
     queryRow(config, `select count(*)::int as value
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and a.acknowledged_source = true
+      where d.name = any($1::text[]) and a.acknowledged_source = true
         and a.acknowledged_at >= $2::timestamptz and a.acknowledged_at < $3::timestamptz`, dayValues),
     queryRow(config, `select count(*)::int as value
       from alert_acknowledgements ack
       join alerts a on a.id = ack.alert_id
       join data_sources d on d.id = a.data_source_id
-      where d.name = $1
+      where d.name = any($1::text[])
         and ack.acknowledgement_type = any($4::text[])
         and ack.status = any($5::text[])
         and ack.requested_at >= $2::timestamptz and ack.requested_at < $3::timestamptz`,
     [...dayValues, INTERNAL_ACKNOWLEDGEMENT_TYPES, INTERNAL_ACKNOWLEDGEMENT_STATUSES]),
     queryRows(config, `select a.severity, count(*)::int as count
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
       group by a.severity order by count desc, a.severity asc`, scopeValues),
     queryRows(config, `select a.status_internal, count(*)::int as count
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
       group by a.status_internal order by count desc, a.status_internal asc`, scopeValues),
     queryRows(
       config,
       `select ${SAFE_CUSTOMER_NAME_SQL} as client_name, count(*)::int as count
          from alerts a
          join data_sources d on d.id = a.data_source_id
-        where d.name = $1 and a.status_source = 'active' and a.resolved_at is null
+        where d.name = any($1::text[]) and a.status_source = 'active' and a.resolved_at is null
         group by ${SAFE_CUSTOMER_NAME_SQL}
         order by count desc, client_name asc`,
       scopeValues,
@@ -2188,7 +2199,7 @@ async function fetchDashboardSummaryPayload(
       `
         select coalesce(a.service_name, '-') as service_name, coalesce(d.environment, 'internal') as environment, count(*)::int as count
         from alerts a join data_sources d on d.id = a.data_source_id
-        where d.name = $1 and ${ACTIVE_ALERT_SQL}
+        where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
         group by coalesce(a.service_name, '-'), coalesce(d.environment, 'internal')
         order by count desc, service_name asc
         limit 20
@@ -2197,11 +2208,11 @@ async function fetchDashboardSummaryPayload(
     ),
     queryRows(config, `select a.host_name, count(*)::int as count
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
       group by a.host_name order by count desc, a.host_name asc limit 10`, scopeValues),
     queryRow(config, `select count(*)::int as value
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
         and coalesce(a.acknowledged_source, false) = false`, scopeValues),
     queryRows(
       config,
@@ -2209,7 +2220,7 @@ async function fetchDashboardSummaryPayload(
               a.severity, floor(extract(epoch from (now() - a.first_seen_at)))::int as duration_seconds, a.first_seen_at
          from alerts a
          join data_sources d on d.id = a.data_source_id
-        where d.name = $1 and a.status_source = 'active' and a.resolved_at is null
+        where d.name = any($1::text[]) and a.status_source = 'active' and a.resolved_at is null
           and a.first_seen_at is not null and a.first_seen_at <= now()
         order by floor(extract(epoch from (now() - a.first_seen_at))) desc nulls last
         limit 10`,
@@ -2225,12 +2236,12 @@ async function fetchDashboardSummaryPayload(
       from alerts a
       join data_sources d on d.id = a.data_source_id
       join first_ack on first_ack.alert_id = a.id
-      where d.name = $1
+      where d.name = any($1::text[])
         and first_ack.ack_at >= a.first_seen_at
         and (a.resolved_at is null or a.resolved_at >= a.first_seen_at)`, scopeValues),
     queryRow(config, `select coalesce(avg(extract(epoch from (a.resolved_at - a.first_seen_at))), 0)::int as avg_normalization_time_seconds
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1
+      where d.name = any($1::text[])
         and (a.status_source = 'resolved' or a.status_internal = 'normalized')
         and a.first_seen_at is not null
         and a.resolved_at is not null
@@ -2279,8 +2290,9 @@ async function fetchDashboardSummaryPayload(
   };
 }
 
-async function fetchGrafanaSummaryPayload(config, primaryDataSourceName) {
-  const scopeValues = [primaryDataSourceName];
+async function fetchGrafanaSummaryPayload(config, dataSourceNames = getOperationalDataSourceNames()) {
+  const scopedDataSourceNames = operationalDataSourceNames(dataSourceNames);
+  const scopeValues = [scopedDataSourceNames];
   const [
     activeAlertsRow,
     acknowledgedRow,
@@ -2292,14 +2304,14 @@ async function fetchGrafanaSummaryPayload(config, primaryDataSourceName) {
   ] = await Promise.all([
     queryRow(config, `select count(*)::int as value
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and ${ACTIVE_ALERT_SQL}`, scopeValues),
+      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}`, scopeValues),
     queryRow(
       config,
       `
         select count(*)::int as value
         from alerts a
         join data_sources d on d.id = a.data_source_id
-        where d.name = $1 and ${ACTIVE_ALERT_SQL}
+        where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
           and (coalesce(a.acknowledged_source, false) = true
             or ${INTERNAL_ACKNOWLEDGED_SQL})
       `,
@@ -2307,23 +2319,23 @@ async function fetchGrafanaSummaryPayload(config, primaryDataSourceName) {
     ),
     queryRows(config, `select a.severity, count(*)::int as count
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and ${ACTIVE_ALERT_SQL}
+      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
       group by a.severity order by count desc, a.severity asc`, scopeValues),
     queryRows(
       config,
       `select ${SAFE_CUSTOMER_NAME_SQL} as client, count(*)::int as count
          from alerts a
          join data_sources d on d.id = a.data_source_id
-        where d.name = $1 and a.status_source = 'active' and a.resolved_at is null
+        where d.name = any($1::text[]) and a.status_source = 'active' and a.resolved_at is null
         group by ${SAFE_CUSTOMER_NAME_SQL}
         order by count desc, client asc`,
       scopeValues,
     ),
     queryRow(config, `select max(a.last_seen_at) as last_updated_at
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = $1 and ${ACTIVE_ALERT_SQL}`, scopeValues),
-    fetchDataSourceRows(config, primaryDataSourceName),
-    fetchSyncLogRows(config, 8, primaryDataSourceName),
+      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}`, scopeValues),
+    fetchDataSourceRows(config, scopedDataSourceNames),
+    fetchSyncLogRows(config, 8, scopedDataSourceNames),
   ]);
 
   const severityMap = Object.fromEntries(severityRows.map((row) => [textValue(row.severity), integerValue(row.count, 0)]));
@@ -2355,7 +2367,8 @@ async function fetchGrafanaSummaryPayload(config, primaryDataSourceName) {
   };
 }
 
-async function fetchClientsSummaryPayload(req, config, primaryDataSourceName) {
+async function fetchClientsSummaryPayload(req, config, dataSourceNames = getOperationalDataSourceNames()) {
+  const scopedDataSourceNames = operationalDataSourceNames(dataSourceNames);
   const status = (oneQueryValue(req, "status") || "active").toLowerCase();
   if (!["active", "all"].includes(status)) throw requestError("invalid_query");
 
@@ -2371,7 +2384,7 @@ async function fetchClientsSummaryPayload(req, config, primaryDataSourceName) {
   if (firstSeenFrom) {
     if (status !== "active") throw requestError("invalid_query");
     const limit = positiveInteger(oneQueryValue(req, "limit") || "5", 5, { maximum: 50 });
-    const values = [primaryDataSourceName, firstSeenFrom];
+    const values = [scopedDataSourceNames, firstSeenFrom];
     let toSql = "";
     if (firstSeenTo) {
       values.push(firstSeenTo);
@@ -2386,7 +2399,7 @@ async function fetchClientsSummaryPayload(req, config, primaryDataSourceName) {
           count(*)::int as count
         from alerts a
         join data_sources d on d.id = a.data_source_id
-        where d.name = $1
+        where d.name = any($1::text[])
           and ${ACTIVE_ALERT_SQL}
           and a.first_seen_at >= $2::timestamptz
           ${toSql}
@@ -2435,7 +2448,7 @@ async function fetchClientsSummaryPayload(req, config, primaryDataSourceName) {
     when 'disaster' then 7 when 'critical' then 6 when 'high' then 5 when 'average' then 4
     when 'warning' then 2 when 'information' then 1 else 0 end`;
   const [items, customerRows, datasourceRows] = await Promise.all([
-    mapDataSourceRows(await fetchDataSourceRows(config, primaryDataSourceName)),
+    mapDataSourceRows(await fetchDataSourceRows(config, scopedDataSourceNames)),
     queryRows(
       config,
       `
@@ -2452,11 +2465,11 @@ async function fetchClientsSummaryPayload(req, config, primaryDataSourceName) {
           max(${severityRankSql})::int as max_severity_rank
         from alerts a
         join data_sources d on d.id = a.data_source_id
-        where d.name = $1 and ${ACTIVE_ALERT_SQL}
+        where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
         group by ${SAFE_CUSTOMER_NAME_SQL}, ${SAFE_CUSTOMER_KEY_SQL}
         order by alerts_count desc, name asc
       `,
-      [primaryDataSourceName],
+      [scopedDataSourceNames],
     ),
     queryRows(
       config,
@@ -2466,11 +2479,11 @@ async function fetchClientsSummaryPayload(req, config, primaryDataSourceName) {
         left join alerts a
           on a.data_source_id = d.id
          and ${ACTIVE_ALERT_SQL}
-        where d.name = $1
+        where d.name = any($1::text[])
         group by d.id, d.name
         order by alerts_count desc, d.name asc
       `,
-      [primaryDataSourceName],
+      [scopedDataSourceNames],
     ),
   ]);
   const severityFromRank = (rank) => {
@@ -2542,7 +2555,7 @@ export const GLOBAL_HISTORY_EVENT_TYPES = Object.freeze({
   update: ["problem_seen", "status_changed", "reopened", "problem_created", "created_from_zabbix"],
 });
 
-async function fetchGlobalHistoryPayload(req, config, primaryDataSourceName) {
+async function fetchGlobalHistoryPayload(req, config, dataSourceNames = getOperationalDataSourceNames()) {
   const page = positiveInteger(oneQueryValue(req, "page"), 1);
   const pageSize = positiveInteger(oneQueryValue(req, "page_size"), DEFAULT_ALERT_PAGE_SIZE, { maximum: MAX_ALERT_PAGE_SIZE });
   const customers = queryValues(req, "customer").map((value) => value.slice(0, 160));
@@ -2558,9 +2571,9 @@ async function fetchGlobalHistoryPayload(req, config, primaryDataSourceName) {
     throw requestError("invalid_query");
   }
 
-  const params = [primaryDataSourceName];
+  const params = [operationalDataSourceNames(dataSourceNames)];
   const clauses = [
-    `d.name = $1`,
+    `d.name = any($1::text[])`,
     `lower(coalesce(h.action_type, '')) <> 'internal_acknowledged'`,
     `lower(coalesce(h.action_source, '')) <> 'oneview_internal'`,
   ];
@@ -2791,35 +2804,37 @@ export function getOneViewDbPoolStats() {
 
 export async function fetchOneViewDatabase(routeName, req, config) {
   const dbConfig = config?.dbConfig || getOneViewDbConfig();
-  const primaryDataSourceName = config?.primaryDataSourceName || getPrimaryDataSourceName();
+  const dataSourceNames = operationalDataSourceNames(
+    config?.operationalDataSourceNames || getOperationalDataSourceNames(),
+  );
   try {
     switch (routeName) {
       case "health":
-        return fetchHealthPayload(dbConfig, config?.ackEnabled, config?.alertStaleMinutes, primaryDataSourceName);
+        return fetchHealthPayload(dbConfig, config?.ackEnabled, config?.alertStaleMinutes, dataSourceNames);
       case "dashboard-summary":
-        return fetchDashboardSummaryPayload(dbConfig, config?.operationalTimezone, primaryDataSourceName);
+        return fetchDashboardSummaryPayload(dbConfig, config?.operationalTimezone, dataSourceNames);
       case "grafana-summary":
-        return fetchGrafanaSummaryPayload(dbConfig, primaryDataSourceName);
+        return fetchGrafanaSummaryPayload(dbConfig, dataSourceNames);
       case "alerts":
-        return fetchAlertList(req, dbConfig, primaryDataSourceName);
+        return fetchAlertList(req, dbConfig, dataSourceNames);
       case "attention-required":
-        return fetchAttentionRequiredPayload(req, dbConfig, config?.attentionThresholds, primaryDataSourceName);
+        return fetchAttentionRequiredPayload(req, dbConfig, config?.attentionThresholds, dataSourceNames);
       case "alert-detail":
-        return fetchAlertDetailPayload(req, dbConfig, primaryDataSourceName);
+        return fetchAlertDetailPayload(req, dbConfig, dataSourceNames);
       case "alert-history":
-        return fetchAlertHistoryPayload(req, dbConfig, primaryDataSourceName);
+        return fetchAlertHistoryPayload(req, dbConfig, dataSourceNames);
       case "history":
-        return fetchGlobalHistoryPayload(req, dbConfig, primaryDataSourceName);
+        return fetchGlobalHistoryPayload(req, dbConfig, dataSourceNames);
       case "operations-health":
-        return fetchOperationsHealthPayload(dbConfig, primaryDataSourceName);
+        return fetchOperationsHealthPayload(dbConfig, dataSourceNames);
       case "runtime-health":
         return fetchRuntimeHealthPayload(dbConfig);
       case "clients-summary":
-        return fetchClientsSummaryPayload(req, dbConfig, primaryDataSourceName);
+        return fetchClientsSummaryPayload(req, dbConfig, dataSourceNames);
       case "data-sources":
-        return fetchDataSourcesPayload(dbConfig, primaryDataSourceName);
+        return fetchDataSourcesPayload(dbConfig, dataSourceNames);
       case "sync-logs":
-        return fetchSyncLogsPayload(req, dbConfig, primaryDataSourceName);
+        return fetchSyncLogsPayload(req, dbConfig, dataSourceNames);
       default:
         throw new Error("oneview_route_not_supported");
     }
