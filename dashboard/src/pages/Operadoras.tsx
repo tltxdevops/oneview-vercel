@@ -45,6 +45,8 @@ import {
 
 const PAGE_SIZE = 50;
 const ALL_VALUE = "all";
+/** OV-P0-255 — polling operacional 10s (AppLayout auto-refresh fica desligado). */
+const OPERATORS_REFRESH_MS = 10_000;
 
 const TAB_OPTIONS: Array<{ value: OperatorQueueTab; label: string }> = [
   { value: "all", label: "Todos" },
@@ -112,12 +114,15 @@ export default function OperadorasPage() {
   const listRequest = useRef<AbortController | null>(null);
   const detailRequest = useRef<AbortController | null>(null);
 
-  const loadQueue = useCallback(async () => {
+  const loadQueue = useCallback(async (mode: "initial" | "quiet" | "manual" = "initial") => {
+    if (mode === "quiet" && listRequest.current && !listRequest.current.signal.aborted) return;
     listRequest.current?.abort();
     const controller = new AbortController();
     listRequest.current = controller;
-    setLoading(true);
-    setError(null);
+    if (mode !== "quiet") {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const response = await fetchOperatorQueue({
         tab,
@@ -132,12 +137,13 @@ export default function OperadorasPage() {
       });
       if (controller.signal.aborted) return;
       setPayload(response);
+      setError(null);
     } catch (loadError) {
       if (controller.signal.aborted) return;
-      setPayload(null);
+      if (mode !== "quiet") setPayload(null);
       setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar a fila de operadoras.");
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!controller.signal.aborted && mode !== "quiet") setLoading(false);
     }
   }, [assignedTo, customer, operatorTag, page, severity, state, tab]);
 
@@ -187,8 +193,24 @@ export default function OperadorasPage() {
   }, [searchParams, setSearchParams]);
 
   useEffect(() => {
-    void loadQueue();
+    void loadQueue("initial");
     return () => listRequest.current?.abort();
+  }, [loadQueue]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void loadQueue("quiet");
+    }, OPERATORS_REFRESH_MS);
+    const onVisibility = () => {
+      if (document.hidden) return;
+      void loadQueue("quiet");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [loadQueue]);
 
   useEffect(() => {
@@ -235,7 +257,9 @@ export default function OperadorasPage() {
     <AppLayout
       title="Operadoras"
       description="Fila de follow-up de alertas identificados por tag de operadora."
-      onRefresh={loadQueue}
+      onRefresh={() => loadQueue("manual")}
+      enableAutoRefresh={false}
+      showRefreshMeta={false}
       dataSource={payload?.data_source === "snapshot" ? "snapshot" : payload ? "database" : null}
       checkedAt={payload?.checked_at}
     >

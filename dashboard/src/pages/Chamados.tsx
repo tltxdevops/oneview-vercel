@@ -37,6 +37,7 @@ import {
   type IncidentRelatedAlert,
   type OneViewIncident,
 } from "@/lib/oneview-api";
+import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
 
 /** SN-P0-28 — busca ^INC\d+$ → number exato no BFF. */
 const INCIDENT_EXACT_NUMBER_SEARCH_RE = /^INC\d+$/i;
@@ -167,11 +168,16 @@ function alertStatusLabel(value: string | null | undefined) {
 
 export default function ChamadosPage() {
   const [searchParams] = useSearchParams();
-  const initialFilters = useMemo<DraftFilters>(() => (
-    searchParams.get("unassigned") === "true"
-      ? { ...EMPTY_DRAFT, unassigned: true }
-      : EMPTY_DRAFT
-  ), [searchParams]);
+  const initialFilters = useMemo<DraftFilters>(() => {
+    if (searchParams.get("unassigned") === "true") {
+      return { ...EMPTY_DRAFT, unassigned: true };
+    }
+    const assignedIds = parseAssignedToSysIds(searchParams.get("assigned_to"));
+    if (assignedIds.length) {
+      return { ...EMPTY_DRAFT, assignedTo: assignedIds.join(",") };
+    }
+    return EMPTY_DRAFT;
+  }, [searchParams]);
   const [draft, setDraft] = useState<DraftFilters>(initialFilters);
   const [applied, setApplied] = useState<DraftFilters>(initialFilters);
   const [page, setPage] = useState(1);
@@ -310,7 +316,11 @@ export default function ChamadosPage() {
       });
     }
     if (applied.assignedTo !== "all" && !map.has(applied.assignedTo)) {
-      map.set(applied.assignedTo, { value: applied.assignedTo, label: applied.assignedTo });
+      const ids = parseAssignedToSysIds(applied.assignedTo);
+      map.set(applied.assignedTo, {
+        value: applied.assignedTo,
+        label: ids.length > 1 ? `${ids.length} analistas` : applied.assignedTo,
+      });
     }
     return [...map.values()];
   }, [payload?.facets?.assignees, applied.assignedTo]);

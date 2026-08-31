@@ -162,8 +162,9 @@ const VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_cl
   "disaster",
 ];
 
-const SUMMARY_REFRESH_MS = 30_000;
-const ALERTS_REFRESH_MS = 30_000;
+/** OV-P0-255 — polling operacional 10s. */
+const SUMMARY_REFRESH_MS = 10_000;
+const ALERTS_REFRESH_MS = 10_000;
 
 const emptyPagination: AlertPagination = {
   page: 1,
@@ -906,13 +907,16 @@ export default function AlertsPage() {
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
   }, [alertsView, dateField, datePreset, dateRange, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
-  const loadAlerts = useCallback(async () => {
+  const loadAlerts = useCallback(async (options?: { quiet?: boolean }) => {
+    if (options?.quiet && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
     alertsRequestRef.current?.abort();
     const controller = new AbortController();
     alertsRequestRef.current = controller;
     const requestId = ++alertsRequestIdRef.current;
-    setIsAlertsLoading(true);
-    setAlertsError(null);
+    if (!options?.quiet) {
+      setIsAlertsLoading(true);
+      setAlertsError(null);
+    }
     try {
       const requestTime = Date.now();
       const configuredStale = Number(health?.thresholds?.alert_stale_minutes);
@@ -1078,10 +1082,21 @@ export default function AlertsPage() {
       }
       if (now >= alertsDeadlineRef.current) {
         alertsDeadlineRef.current = now + ALERTS_REFRESH_MS;
-        void loadAlerts();
+        void loadAlerts({ quiet: true });
       }
     }, 1000);
-    return () => window.clearInterval(timer);
+    const onVisibility = () => {
+      if (document.hidden) return;
+      summaryDeadlineRef.current = Date.now() + SUMMARY_REFRESH_MS;
+      alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
+      void loadSummaryResources();
+      void loadAlerts({ quiet: true });
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [loadAlerts, loadSummaryResources]);
 
   useEffect(() => () => {

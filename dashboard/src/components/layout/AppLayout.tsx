@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
 import { BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { OneViewDataSourceKind } from "@/lib/oneview-api";
 
 interface AppLayoutProps {
   title?: string;
@@ -21,7 +22,7 @@ interface AppLayoutProps {
   refreshInterval?: number;
   enableAutoRefresh?: boolean;
   showRefreshMeta?: boolean;
-  dataSource?: "database" | "snapshot" | null;
+  dataSource?: OneViewDataSourceKind | null;
   checkedAt?: string | null;
   showHealthStrip?: boolean;
 }

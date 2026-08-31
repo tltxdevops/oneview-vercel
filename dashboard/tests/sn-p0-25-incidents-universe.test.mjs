@@ -276,5 +276,6 @@ test("SN-P0-25 Chamados FE: caller default Todos + busca INC; Home usa helper se
       : home.indexOf("export function buildHomeAlertsHref"),
   );
   assert.doesNotMatch(incidentsFn, /callerId|caller_id/);
-  assert.match(incidentsFn, /unassigned:\s*true/);
+  const helper = await read("src/lib/oneview-operational-incidents.ts");
+  assert.match(helper, /unassigned: mode === INCIDENTS_QUEUE_MODE\.unassigned \? true : undefined/);
 });

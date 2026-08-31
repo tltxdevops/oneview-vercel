@@ -272,7 +272,7 @@ function dayGroupKey(value?: string | null): string {
 }
 
 function alertStatusLabel(alert: OneViewAlert): string {
-  const status = String(alert.status_source || alert.status || "").toLowerCase();
+  const status = String(alert.status_source || "").toLowerCase();
   if (status === "resolved" || status === "ok" || Boolean(alert.resolved_at)) return "Resolvido";
   return "Ativo";
 }

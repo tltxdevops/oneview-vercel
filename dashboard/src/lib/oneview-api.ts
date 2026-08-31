@@ -325,10 +325,18 @@ export interface OneViewAlert {
   /** OV-P0-109 — referência SN das tags Zabbix (sem lookup ServiceNow na listagem). */
   servicenow_reference?: {
     number: string | null;
-    sys_id?: string | null;
     sys_id: string | null;
-    url?: string | null;
-    extra_count?: number;
+    url: string | null;
+    extra_count: number;
+  } | null;
+  /** Reconhecimento da origem (detail; listagem pode omitir). */
+  source_ack?: {
+    acknowledged: boolean;
+    actor_name: string | null;
+    acknowledged_at: string | null;
+    comment: string | null;
+    acknowledge_id: string | null;
+    history_available: boolean;
   } | null;
   service_name: string | null;
   item_name: string | null;
@@ -487,14 +495,6 @@ export interface AlertDetailResponse extends OneViewResponseMeta {
   item: OneViewAlert & {
     history_count: number;
     acknowledgement_count: number;
-    source_ack?: {
-      acknowledged: boolean;
-      actor_name: string | null;
-      acknowledged_at: string | null;
-      comment: string | null;
-      acknowledge_id: string | null;
-      history_available: boolean;
-    };
   };
 }
 
@@ -1111,6 +1111,8 @@ export async function fetchIncidents(params?: {
   unassigned?: boolean;
   assignmentGroup?: string;
   search?: string;
+  hasAssignee?: boolean;
+  includeUnassigned?: boolean;
   signal?: AbortSignal;
 }): Promise<IncidentListResponse> {
   // SN-P0-15: filtros allowlisted apenas. Encoded query só no BFF; canal monitoring é fixo no backend.
@@ -1130,6 +1132,8 @@ export async function fetchIncidents(params?: {
   if (params?.updatedTo) search.set("updated_to", params.updatedTo);
   if (params?.includeRelatedAlert) search.set("include_related_alert", "true");
   if (params?.unassigned) search.set("unassigned", "true");
+  if (params?.hasAssignee) search.set("has_assignee", "true");
+  if (params?.includeUnassigned) search.set("include_unassigned", "true");
   if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.search) search.set("search", params.search);
   const query = search.toString();

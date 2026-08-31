@@ -142,10 +142,31 @@ function addParam(values, value) {
   return `$${values.length}`;
 }
 
+function assignedToIds(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function buildWhere(filters, values, { includeState = true, includeUnassigned = true } = {}) {
   const clauses = ["coalesce(contact_type::text, '') = 'monitoring'"];
   if (filters.caller_id) clauses.push(`caller_id::text = ${addParam(values, filters.caller_id)}`);
-  if (filters.assigned_to) clauses.push(`assigned_to::text = ${addParam(values, filters.assigned_to)}`);
+  const assigneeIds = assignedToIds(filters.assigned_to);
+  const emptyAssignee = "coalesce(btrim(assigned_to::text), '') = ''";
+  if (assigneeIds.length) {
+    if (filters.include_unassigned) {
+      const idList = addParam(values, assigneeIds.map((id) => id.toLowerCase()));
+      clauses.push(`(lower(assigned_to::text) = any(${idList}::text[]) or ${emptyAssignee})`);
+    } else if (assigneeIds.length === 1) {
+      clauses.push(`assigned_to::text = ${addParam(values, assigneeIds[0])}`);
+    } else {
+      const idList = addParam(values, assigneeIds.map((id) => id.toLowerCase()));
+      clauses.push(`lower(assigned_to::text) = any(${idList}::text[])`);
+    }
+  } else if (filters.has_assignee) {
+    clauses.push("coalesce(btrim(assigned_to::text), '') <> ''");
+  }
   if (filters.assignment_group) clauses.push(`assignment_group::text = ${addParam(values, filters.assignment_group)}`);
   if (filters.number) clauses.push(`upper(number::text) = ${addParam(values, filters.number.toUpperCase())}`);
   if (filters.sys_id) clauses.push(`lower(sys_id::text) = ${addParam(values, filters.sys_id.toLowerCase())}`);
@@ -179,7 +200,13 @@ function mapFacet(rows) {
 
 async function fetchFacets(pool, filters) {
   const values = [];
-  const where = buildWhere({ ...filters, caller_id: null, assigned_to: null }, values, {
+  const where = buildWhere({
+    ...filters,
+    caller_id: null,
+    assigned_to: null,
+    has_assignee: false,
+    include_unassigned: false,
+  }, values, {
     includeState: false,
     includeUnassigned: false,
   });

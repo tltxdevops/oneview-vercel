@@ -5,10 +5,16 @@
 import {
   OneViewAlert,
   fetchAlerts,
-  fetchIncidents,
   normalizeOneViewSeverity,
   type IncidentListResponse,
 } from "@/lib/oneview-api";
+import {
+  OPERATIONAL_INCIDENT_STATES,
+  OPERATIONAL_INCIDENTS_PAGE_SIZE,
+  buildOperationalChamadosHref,
+  fetchOperationalIncidents,
+  type IncidentsQueueMode,
+} from "@/lib/oneview-operational-incidents";
 import { isoAgo } from "@/lib/oneview-recent";
 
 export const MONITOR_ALERT_MODE = {
@@ -34,10 +40,10 @@ export type MonitorAlertSeverity = (typeof MONITOR_ALL_SEVERITIES)[number];
 
 export const MONITOR_QUEUE_LIMIT = 14;
 export const MONITOR_HOSTS_LIMIT = 6;
-/** OV-P0-75 — painel: chamados sem responsável. */
-export const MONITOR_UNASSIGNED_LIMIT = 6;
+/** Painel de chamados: teto do BFF, lista rolável. */
+export const MONITOR_UNASSIGNED_LIMIT = OPERATIONAL_INCIDENTS_PAGE_SIZE;
 /** Estados operacionais SN (exclui Resolvido=6 e Encerrado=7). */
-export const MONITOR_UNASSIGNED_OPERATIONAL_STATES = "1,2,3";
+export const MONITOR_UNASSIGNED_OPERATIONAL_STATES = OPERATIONAL_INCIDENT_STATES;
 
 /**
  * OV-P0-104 — janelas do Monitoramento (isoladas da Home / oneview-recent).
@@ -132,8 +138,6 @@ const severityRank: Record<string, number> = {
   information: 5,
   not_classified: 6,
 };
-
-const CLOSED_SN_STATES = new Set(["6", "7"]);
 
 export function parseMonitorAlertMode(value?: string | null): MonitorAlertMode {
   return value === MONITOR_ALERT_MODE.all ? MONITOR_ALERT_MODE.all : MONITOR_ALERT_MODE.prioritary;
@@ -242,36 +246,30 @@ export async function fetchMonitoringAlerts(params: {
 }
 
 /**
- * OV-P0-75 — chamados monitoring sem responsável (estados operacionais).
- * Usa GET /api/oneview/incidents (unassigned + state 1,2,3). Sem caller obrigatório.
+ * OV-P0-75 — chamados monitoring (estados operacionais).
+ * Padrão: unassigned + state 1,2,3. Janela opened_from da página em todos os modos.
  */
 export async function fetchMonitoringUnassignedIncidents(params?: {
+  mode?: IncidentsQueueMode | string | null;
+  assignedTo?: string | string[] | null;
+  windowMs?: number;
+  now?: number;
   limit?: number;
   signal?: AbortSignal;
 }): Promise<IncidentListResponse> {
-  const pageSize = Math.min(
-    Math.max(params?.limit ?? MONITOR_UNASSIGNED_LIMIT, 1),
-    25,
-  );
-  const response = await fetchIncidents({
-    page: 1,
-    pageSize,
-    unassigned: true,
-    state: MONITOR_UNASSIGNED_OPERATIONAL_STATES,
-    signal: params?.signal,
-  });
-  const items = (response.items ?? [])
-    .filter((item) => !CLOSED_SN_STATES.has(String(item.state || "").trim()))
-    .slice(0, pageSize);
-  return {
-    ...response,
-    items,
-  };
+  return fetchOperationalIncidents(params);
 }
 
-/** Deep-link /chamados com filtro equivalente ao painel unassigned. */
+/** Deep-link /chamados com filtro equivalente ao painel. */
 export function buildMonitoringUnassignedChamadosHref() {
-  return "/chamados?unassigned=true";
+  return buildOperationalChamadosHref({ mode: "unassigned" });
+}
+
+export function buildMonitoringChamadosHref(params?: {
+  mode?: IncidentsQueueMode | string | null;
+  assignedTo?: string | string[] | null;
+}) {
+  return buildOperationalChamadosHref(params);
 }
 
 /** Deep-link /alertas a partir do modo atual do Monitoramento. */

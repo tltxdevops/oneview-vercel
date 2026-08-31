@@ -209,10 +209,7 @@ export function AlertRelatedIncidentsSection({
   );
 
   const historyNumbers = useMemo(() => {
-    const ackComment = alert?.source_ack && typeof alert.source_ack === "object"
-      ? (alert.source_ack as { comment?: string | null }).comment
-      : null;
-    return extractServiceNowIncidentNumbersFromHistory(historyItems, [ackComment])
+    return extractServiceNowIncidentNumbersFromHistory(historyItems, [alert?.source_ack?.comment])
       .filter((number) => !tagRefs.numbers.includes(number));
   }, [alert, historyItems, tagRefs.numbers]);
 

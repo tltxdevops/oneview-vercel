@@ -33,6 +33,7 @@ const SAFE_FILTER = /^[a-zA-Z0-9._:@/\- ]{1,120}$/;
 const SAFE_STATE = /^[0-9,]{1,40}$/;
 const SAFE_PRIORITY = /^[1-5]$/;
 const SAFE_SYS_ID = /^[a-f0-9]{32}$/i;
+const MAX_ASSIGNED_TO_IDS = 20;
 
 /**
  * SN-P0-12 — definições explícitas de KPI por state ServiceNow.
@@ -75,6 +76,8 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "updated_to",
   "include_related_alert",
   "unassigned",
+  "has_assignee",
+  "include_unassigned",
   "assignment_group",
   "search",
 ]);
@@ -85,6 +88,36 @@ function oneQuery(req, key) {
   const value = req?.query?.[key];
   if (Array.isArray(value)) return value[0];
   return value;
+}
+
+function oneQueryJoined(req, key) {
+  const value = req?.query?.[key];
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean).join(",");
+  }
+  return value;
+}
+
+export function parseAssignedToFilter(value) {
+  if (value === undefined || value === null) return null;
+  const tokens = String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!tokens.length) return null;
+  if (tokens.length > MAX_ASSIGNED_TO_IDS) throw invalidQuery("invalid_assigned_to");
+  if (tokens.length === 1) {
+    const single = tokens[0];
+    if (SAFE_SYS_ID.test(single)) return single.toLowerCase();
+    if (!SAFE_FILTER.test(single)) throw invalidQuery("invalid_assigned_to");
+    return single;
+  }
+  const ids = [];
+  for (const token of tokens) {
+    if (!SAFE_SYS_ID.test(token)) throw invalidQuery("invalid_assigned_to");
+    ids.push(token.toLowerCase());
+  }
+  return [...new Set(ids)].join(",");
 }
 
 function asPageInt(value, fallback, { min = 1, max = 10_000 } = {}) {
@@ -169,7 +202,7 @@ export function parseIncidentFilters(req) {
   const contactType = DEFAULT_CONTACT_TYPE;
 
   const callerId = assertSafeFilter(cleanOptional(oneQuery(req, "caller_id")), "invalid_caller_id");
-  const assignedTo = assertSafeFilter(cleanOptional(oneQuery(req, "assigned_to")), "invalid_assigned_to");
+  const assignedTo = parseAssignedToFilter(oneQueryJoined(req, "assigned_to"));
   const stateRaw = cleanOptional(oneQuery(req, "state"));
   const state = stateRaw
     ? (SAFE_STATE.test(stateRaw) ? stateRaw : (() => { throw invalidQuery("invalid_state"); })())
@@ -189,6 +222,8 @@ export function parseIncidentFilters(req) {
   const updatedFrom = assertSafeDate(cleanOptional(oneQuery(req, "updated_from")), "invalid_updated_from");
   const updatedTo = assertSafeDate(cleanOptional(oneQuery(req, "updated_to")), "invalid_updated_to");
   const unassigned = booleanFlag(oneQuery(req, "unassigned"), false);
+  const hasAssignee = booleanFlag(oneQuery(req, "has_assignee"), false);
+  const includeUnassigned = booleanFlag(oneQuery(req, "include_unassigned"), false);
   const includeRelatedAlert = booleanFlag(oneQuery(req, "include_related_alert"), false);
 
   let numberRaw = cleanOptional(oneQuery(req, "number"));
@@ -232,6 +267,8 @@ export function parseIncidentFilters(req) {
     updated_from: updatedFrom,
     updated_to: updatedTo,
     unassigned,
+    has_assignee: unassigned ? false : hasAssignee,
+    include_unassigned: unassigned ? false : includeUnassigned,
     include_related_alert: includeRelatedAlert,
     assignment_group: assignmentGroup,
     search,
@@ -245,7 +282,18 @@ function buildAndParts(filters, { stateOverride = undefined, unassignedOverride 
   andParts.push(`contact_type=${DEFAULT_CONTACT_TYPE}`);
   // caller_id, assigned_to e number são filtros opcionais — só entram se enviados pelo frontend.
   if (filters.caller_id) andParts.push(`caller_id=${filters.caller_id}`);
-  if (filters.assigned_to) andParts.push(`assigned_to=${filters.assigned_to}`);
+  if (filters.assigned_to) {
+    const ids = String(filters.assigned_to).split(",").map((item) => item.trim()).filter(Boolean);
+    const assigneePart = ids.length > 1 ? `assigned_toIN${ids.join(",")}` : `assigned_to=${ids[0]}`;
+    if (filters.include_unassigned) {
+      andParts.push(assigneePart);
+      andParts.push("ORassigned_toISEMPTY");
+    } else {
+      andParts.push(assigneePart);
+    }
+  } else if (filters.has_assignee) {
+    andParts.push("assigned_toISNOTEMPTY");
+  }
   if (filters.number) andParts.push(`number=${filters.number}`);
   if (filters.priority) andParts.push(`priority=${filters.priority}`);
   if (filters.company) andParts.push(`company.nameLIKE${escapeLike(filters.company)}`);

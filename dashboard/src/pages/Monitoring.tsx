@@ -16,6 +16,7 @@ import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { OperationalFilterGroup } from "@/components/oneview/OperationalFilterGroup";
+import { OperationalIncidentsToolbar } from "@/components/oneview/OperationalIncidentsToolbar";
 import { OperationalSegmentedControl } from "@/components/oneview/OperationalSegmentedControl";
 import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
@@ -40,6 +41,7 @@ import {
   AlertDetailResponse,
   AlertHistoryItem,
   AlertHistoryResponse,
+  IncidentAssigneeFacet,
   IncidentRelatedAlert,
   OneViewAlert,
   OneViewFacetsResponse,
@@ -69,7 +71,7 @@ import {
   MONITOR_UNASSIGNED_LIMIT,
   MONITOR_UNASSIGNED_OPERATIONAL_STATES,
   MONITOR_WINDOW_OPTIONS,
-  buildMonitoringUnassignedChamadosHref,
+  buildMonitoringChamadosHref,
   effectiveMonitorSeverities,
   fetchMonitoringAlerts,
   fetchMonitoringUnassignedIncidents,
@@ -86,12 +88,21 @@ import {
   type MonitorWindowPreset,
 } from "@/lib/oneview-monitoring";
 import {
+  INCIDENTS_QUEUE_MODE,
+  analystFacetOptions,
+  applyIncidentsQueueToSearchParams,
+  parseAssignedToSysIds,
+  parseIncidentsQueueMode,
+  type IncidentsQueueMode,
+} from "@/lib/oneview-operational-incidents";
+import {
   RecentOperationalMetrics,
   fetchRecentOperationalMetrics,
   queueOverflowLabel,
 } from "@/lib/oneview-recent";
 
-const REFRESH_MS = 30_000;
+/** OV-P0-255 — polling operacional 10s. */
+const REFRESH_MS = 10_000;
 
 /** OV-P0-43: faixa visual das cinco severidades (Not classified no chip discreto). */
 const MONITOR_VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
@@ -111,9 +122,9 @@ type SectionErrors = Partial<Record<"summary" | "queue" | "incidents", string | 
 const QUEUE_GRID =
   "grid grid-cols-[minmax(9.5rem,13rem)_minmax(8rem,12rem)_minmax(0,1fr)_6.25rem_4.75rem_5.75rem_5.5rem_4.5rem] items-center gap-x-3";
 
-/** OV-P0-75 — coluna direita ~28% a partir de 1440px; abaixo empilha (1366). */
+/** OV-P0-75 — coluna direita ~40% a partir de 1440px; abaixo empilha (1366). */
 const COMMAND_CENTER_GRID =
-  "grid min-h-0 flex-1 gap-2 min-[1440px]:grid-cols-[minmax(0,72fr)_minmax(0,28fr)]";
+  "grid min-h-0 flex-1 gap-2 min-[1440px]:grid-cols-[minmax(0,60fr)_minmax(0,40fr)]";
 
 function formatDurationSeconds(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
@@ -287,12 +298,15 @@ function MonitorUnassignedRow({
   item,
   onOpen,
   selected = false,
+  showAnalyst = false,
 }: {
   item: OneViewIncident;
   onOpen: (item: OneViewIncident) => void;
   selected?: boolean;
+  showAnalyst?: boolean;
 }) {
   const number = displayIncidentField(item.number);
+  const analyst = displayIncidentField(item.assigned_to_display, item.assigned_to);
   return (
     <button
       type="button"
@@ -312,6 +326,11 @@ function MonitorUnassignedRow({
         {displayIncidentField(item.company_display, item.company)}
       </p>
       <div className="flex flex-wrap items-center justify-end gap-1">
+        {showAnalyst ? (
+          <span className="max-w-[8rem] truncate text-[10px] text-muted-foreground" title={analyst}>
+            {analyst}
+          </span>
+        ) : null}
         <Badge variant="secondary" className="h-5 max-w-[7rem] truncate px-1.5 text-[10px]">
           {displayIncidentField(item.priority_display, item.priority)}
         </Badge>
@@ -444,6 +463,11 @@ export default function MonitoringPage() {
   const windowMs = monitorWindowMs(homeWindow);
   const windowLabel = monitorWindowShortLabel(homeWindow);
   const alertMode = parseMonitorAlertMode(searchParams.get("mode"));
+  const incidentsMode = parseIncidentsQueueMode(searchParams.get("incidents"));
+  const incidentsAssignedTo = incidentsMode === INCIDENTS_QUEUE_MODE.unassigned
+    ? []
+    : parseAssignedToSysIds(searchParams.get("assigned_to"));
+  const showIncidentAnalysts = incidentsMode !== INCIDENTS_QUEUE_MODE.unassigned;
   const queueSort = useMemo(
     () => parseMonitorQueueSort(searchParams.get("sort")),
     [searchParams],
@@ -463,6 +487,7 @@ export default function MonitoringPage() {
   const [queueTotal, setQueueTotal] = useState(0);
   const [unassignedIncidents, setUnassignedIncidents] = useState<OneViewIncident[]>([]);
   const [unassignedTotal, setUnassignedTotal] = useState(0);
+  const [incidentAssignees, setIncidentAssignees] = useState<IncidentAssigneeFacet[]>([]);
   const [sectionErrors, setSectionErrors] = useState<SectionErrors>({});
   const [isUpdating, setIsUpdating] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -544,6 +569,28 @@ export default function MonitoringPage() {
       }
     });
   }, [patchSearchParams]);
+
+  const setIncidentsMode = useCallback((mode: IncidentsQueueMode) => {
+    patchSearchParams((next) => {
+      applyIncidentsQueueToSearchParams(
+        next,
+        mode,
+        mode === INCIDENTS_QUEUE_MODE.unassigned ? [] : incidentsAssignedTo,
+      );
+    });
+  }, [incidentsAssignedTo, patchSearchParams]);
+
+  const setIncidentsAssignedTo = useCallback((assignedTo: string[]) => {
+    patchSearchParams((next) => {
+      applyIncidentsQueueToSearchParams(
+        next,
+        incidentsMode === INCIDENTS_QUEUE_MODE.unassigned
+          ? INCIDENTS_QUEUE_MODE.assigned
+          : incidentsMode,
+        assignedTo,
+      );
+    });
+  }, [incidentsMode, patchSearchParams]);
 
   const setSeveritySelection = useCallback((values: MonitorAlertSeverity[]) => {
     patchSearchParams((next) => {
@@ -655,7 +702,11 @@ export default function MonitoringPage() {
   const unassignedEmpty = hasLoaded && !unassignedIncidents.length && !sectionErrors.incidents;
   const modeLabel = alertMode === MONITOR_ALERT_MODE.prioritary ? "Prioritários" : "Todos";
   const unassignedTitleCount = Math.max(0, Math.trunc(Number(unassignedTotal) || unassignedIncidents.length || 0));
-  const unassignedPanelTitle = `${unassignedTitleCount.toLocaleString("pt-BR")} sem responsável`;
+  const unassignedPanelTitle = incidentsMode === INCIDENTS_QUEUE_MODE.assigned
+    ? `${unassignedTitleCount.toLocaleString("pt-BR")} em acompanhamento`
+    : incidentsMode === INCIDENTS_QUEUE_MODE.all
+      ? `${unassignedTitleCount.toLocaleString("pt-BR")} chamados`
+      : `${unassignedTitleCount.toLocaleString("pt-BR")} sem responsável`;
   const selectedIncidentKey = selectedIncident ? incidentKey(selectedIncident) : null;
 
   const toggleCustomer = (key: string) => {
@@ -694,6 +745,10 @@ export default function MonitoringPage() {
           now,
         }),
         fetchMonitoringUnassignedIncidents({
+          mode: incidentsMode,
+          assignedTo: incidentsAssignedTo,
+          windowMs,
+          now,
           limit: MONITOR_UNASSIGNED_LIMIT,
           signal: controller.signal,
         }),
@@ -739,6 +794,18 @@ export default function MonitoringPage() {
         const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchMonitoringUnassignedIncidents>>;
         setUnassignedIncidents(payload.items ?? []);
         setUnassignedTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
+        setIncidentAssignees((current) => {
+          const next = analystFacetOptions(payload.facets?.assignees);
+          if (!incidentsAssignedTo.length) return next.length ? next : current;
+          const map = new Map(current.map((item) => [item.value, item]));
+          for (const item of next) map.set(item.value, item);
+          for (const id of incidentsAssignedTo) {
+            if (!map.has(id)) {
+              map.set(id, { value: id, label: id, count: 0 });
+            }
+          }
+          return [...map.values()];
+        });
         setSectionError("incidents", null);
         anySuccess = true;
       } else if (isInitial && !hasDataRef.current) {
@@ -758,7 +825,7 @@ export default function MonitoringPage() {
 
     inFlight.current = request;
     return request;
-  }, [alertMode, queueSort, selectedCustomerKeys, setSectionError, severitySelection, windowMs]);
+  }, [alertMode, incidentsAssignedTo, incidentsMode, queueSort, selectedCustomerKeys, setSectionError, severitySelection, windowMs]);
 
   useEffect(() => {
     void refreshAll();
@@ -766,9 +833,18 @@ export default function MonitoringPage() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
+      if (document.hidden) return;
       void refreshAll();
     }, REFRESH_MS);
-    return () => window.clearInterval(timer);
+    const onVisibility = () => {
+      if (document.hidden) return;
+      void refreshAll();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refreshAll]);
 
   useEffect(() => {
@@ -1036,7 +1112,7 @@ export default function MonitoringPage() {
   const hasZabbixHost = Boolean(String(selectedIncident?.u_hostname_zabbix || "").trim());
   const hasZabbixIp = Boolean(String(selectedIncident?.u_ip_zabbix || "").trim());
   const alertsHref = alertMode === MONITOR_ALERT_MODE.prioritary ? "/alertas?view=priority" : "/alertas?view=open";
-  const chamadosHref = buildMonitoringUnassignedChamadosHref();
+  const chamadosHref = buildMonitoringChamadosHref({ mode: incidentsMode, assignedTo: incidentsAssignedTo });
 
   return (
     <div
@@ -1083,7 +1159,7 @@ export default function MonitoringPage() {
       </header>
 
       <div className="mx-auto flex h-0 w-full max-w-[1920px] min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2 sm:p-3">
-        {/* OV-P0-75: >=1440 fila ~72% | chamados ~28%; em 1366 empilha abaixo */}
+        {/* OV-P0-75: >=1440 fila ~60% | chamados ~40%; em 1366 empilha abaixo */}
         <div className={COMMAND_CENTER_GRID}>
           <Panel
             title={`Fila · ${modeLabel} · ${windowLabel}`}
@@ -1258,16 +1334,29 @@ export default function MonitoringPage() {
             onRetry={() => void refreshAll()}
             overflow={queueOverflowLabel(unassignedTotal, unassignedIncidents.length)}
             empty={unassignedEmpty}
-            className="min-h-0 min-[1440px]:flex-1"
+            className="min-h-[16rem] min-[1440px]:min-h-0 min-[1440px]:flex-1"
             aside={(
               <OperationalCta to={chamadosHref}>Ver todos em Chamados</OperationalCta>
+            )}
+            toolbar={(
+              <OperationalIncidentsToolbar
+                mode={incidentsMode}
+                onModeChange={setIncidentsMode}
+                assignedTo={incidentsAssignedTo}
+                onAssignedToChange={setIncidentsAssignedTo}
+                analysts={incidentAssignees}
+              />
             )}
           >
             {!hasLoaded && !unassignedIncidents.length ? (
               <p className="py-2 text-center text-sm text-muted-foreground">Carregando…</p>
             ) : !unassignedIncidents.length ? (
               <p className="py-3 text-center text-xs text-muted-foreground">
-                Nenhum chamado monitoring sem responsável.
+                {incidentsMode === INCIDENTS_QUEUE_MODE.assigned
+                  ? "Nenhum chamado com analista na janela."
+                  : incidentsMode === INCIDENTS_QUEUE_MODE.all
+                    ? "Nenhum chamado na janela."
+                    : "Nenhum chamado monitoring sem responsável."}
               </p>
             ) : (
               <div className="flex h-full min-h-0 flex-col">
@@ -1276,7 +1365,9 @@ export default function MonitoringPage() {
                   aria-hidden="true"
                 >
                   <span>Número · Cliente</span>
-                  <span className="text-right">Atualização · Prioridade · Estado</span>
+                  <span className="text-right">
+                    {showIncidentAnalysts ? "Atualização · Analista · Prioridade · Estado" : "Atualização · Prioridade · Estado"}
+                  </span>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   {unassignedIncidents.map((item) => (
@@ -1285,6 +1376,7 @@ export default function MonitoringPage() {
                       item={item}
                       onOpen={openIncident}
                       selected={selectedIncidentKey === incidentKey(item)}
+                      showAnalyst={showIncidentAnalysts}
                     />
                   ))}
                 </div>

@@ -85,8 +85,8 @@ import {
 } from "@/lib/oneview-recent";
 import { toast } from "sonner";
 
-const SUMMARY_REFRESH_MS = 30_000;
-const LIST_REFRESH_MS = 30_000;
+const SUMMARY_REFRESH_MS = 10_000;
+const LIST_REFRESH_MS = 10_000;
 
 /** Ordem visual Home OV-P0-42A (sem Not classified — chip no mesmo bloco). */
 const HOME_VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
@@ -573,6 +573,7 @@ export default function Index() {
   }, [beginQuietUpdate, endQuietUpdate, setSectionError, windowMs]);
 
   const loadLists = useCallback(async (mode: "initial" | "quiet" | "manual" = "quiet") => {
+    if (mode === "quiet" && listsRequest.current && !listsRequest.current.signal.aborted) return;
     listsRequest.current?.abort();
     const controller = new AbortController();
     const requestId = ++listsRequestIdRef.current;

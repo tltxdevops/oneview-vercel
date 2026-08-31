@@ -63,7 +63,7 @@ test("OV-P0-69 oneview-home.ts: constantes e fetchers isolados do Monitoramento"
   assert.match(home, /export async function fetchHomeIncidents/);
   assert.match(home, /status: "active"/);
   assert.match(home, /firstSeenFrom: isoAgo/);
-  assert.match(home, /fetchIncidents\(\{/);
+  assert.match(home, /fetchOperationalIncidents|fetchIncidents\(\{/);
   assert.match(home, /HOME_INCIDENTS_PAGE_SIZE/);
   assert.match(home, /HOME_ALERTS_PAGE_SIZE/);
 
@@ -90,18 +90,18 @@ test("OV-P0-69 Home layout: Alertas|Chamados|Eventos; drawer/?alert=; sem Client
   assert.match(index, /Prioritários/);
   assert.match(index, /Todos/);
   assert.match(index, /title="Alertas"/);
-  assert.match(index, /title="Chamados sem responsável"/);
+  assert.match(index, /Chamados sem responsável/);
   assert.match(index, /title="Eventos recentes"/);
   assert.match(index, /lg:grid-cols-5/);
   assert.match(index, /lg:col-span-3/);
   assert.match(index, /lg:col-span-2/);
   assert.match(index, /Ver todos/);
-  assert.match(index, /buildHomeUnassignedChamadosHref|unassigned=true/);
+  assert.match(index, /buildHomeChamadosHref|buildHomeUnassignedChamadosHref|unassigned=true/);
   assert.match(index, /ClientFilterCombobox/);
   assert.match(index, /HOME_SEVERITY_FILTER_OPTIONS|Filtrar por severidade/);
   assert.doesNotMatch(index, /isServiceNowIncidentsUiEnabled|VITE_SERVICENOW_INCIDENTS_ENABLED/);
   assert.doesNotMatch(index, /não estão habilitados|ServiceNow desabilitado/);
-  assert.match(index, /ServiceNow indisponível/);
+  assert.match(index, /Chamados indisponíveis|ServiceNow indisponível/);
   assert.match(index, /HOME_OPERATIONAL_WINDOW_OPTIONS/);
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);
   assert.match(index, /fetchRecentOperationalMetrics/);
@@ -122,5 +122,5 @@ test("OV-P0-69 Home layout: Alertas|Chamados|Eventos; drawer/?alert=; sem Client
 
   // Ordem: Alertas/Chamados antes de Eventos
   assert.ok(index.indexOf('title="Alertas"') < index.indexOf('title="Eventos recentes"'));
-  assert.ok(index.indexOf('title="Chamados sem responsável"') < index.indexOf('title="Eventos recentes"'));
+  assert.ok(index.indexOf("Chamados sem responsável") < index.indexOf('title="Eventos recentes"'));
 });

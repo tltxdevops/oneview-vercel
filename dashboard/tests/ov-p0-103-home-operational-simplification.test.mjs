@@ -63,27 +63,29 @@ test("OV-P0-103 Resumo operacional: filtro local toggle (sem /alertas)", async (
   assert.equal(toggleHomeSeverityFilter("high", "disaster"), "disaster");
 });
 
-test("OV-P0-103 Chamados sem responsável: unassigned + estados operacionais + máx 7", async () => {
-  const [home, index] = await Promise.all([
+test("OV-P0-103 Chamados sem responsável: unassigned + estados operacionais + teto 100", async () => {
+  const [home, index, helper] = await Promise.all([
     read("src/lib/oneview-home.ts"),
     read("src/pages/Index.tsx"),
+    read("src/lib/oneview-operational-incidents.ts"),
   ]);
 
-  assert.match(home, /HOME_UNASSIGNED_OPERATIONAL_STATES = "1,2,3"/);
-  assert.match(home, /unassigned:\s*true/);
-  assert.match(home, /state:\s*HOME_UNASSIGNED_OPERATIONAL_STATES/);
+  assert.match(home, /HOME_UNASSIGNED_OPERATIONAL_STATES = OPERATIONAL_INCIDENT_STATES/);
+  assert.match(helper, /unassigned: mode === INCIDENTS_QUEUE_MODE\.unassigned \? true : undefined/);
+  assert.match(helper, /OPERATIONAL_INCIDENT_STATES = "1,2,3"/);
   assert.match(home, /prioritizeHomeUnassignedIncidents/);
   assert.match(home, /buildHomeUnassignedChamadosHref/);
-  assert.match(home, /return "\/chamados\?unassigned=true"/);
-  assert.match(home, /HOME_INCIDENTS_PAGE_SIZE = 7/);
+  assert.match(helper, /return "\/chamados\?unassigned=true"/);
+  assert.match(home, /HOME_INCIDENTS_PAGE_SIZE = OPERATIONAL_INCIDENTS_PAGE_SIZE/);
+  assert.match(helper, /OPERATIONAL_INCIDENTS_PAGE_SIZE = 100/);
 
-  assert.match(index, /title="Chamados sem responsável"/);
-  assert.match(index, /buildHomeUnassignedChamadosHref\(\)/);
+  assert.match(index, /Chamados sem responsável/);
+  assert.match(index, /buildHomeChamadosHref|buildHomeUnassignedChamadosHref/);
   assert.match(index, /Nenhum chamado monitoring sem responsável/);
   assert.match(index, /AlertDetailDrawer/);
   assert.doesNotMatch(index, /to="\/chamados"/);
 
-  // Não altera página /chamados.
+  // Não altera fetch de /chamados com helpers da Home.
   const chamados = await read("src/pages/Chamados.tsx");
   assert.doesNotMatch(chamados, /HOME_UNASSIGNED_OPERATIONAL_STATES|fetchHomeIncidents/);
 });

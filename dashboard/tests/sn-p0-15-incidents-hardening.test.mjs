@@ -99,6 +99,8 @@ test("SN-P0-15 rejeita query params fora do allowlist", () => {
   }
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("caller_id"));
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("assigned_to"));
+  assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("has_assignee"));
+  assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("include_unassigned"));
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("opened_from"));
   assert.ok(!INCIDENT_ALLOWED_QUERY_KEYS.includes("sysparm_query"));
 });
@@ -255,4 +257,44 @@ test("SN-P0-15 priority inválida e response sem vazar senha", async () => {
   assert.equal(serialized.includes("secret-password"), false);
   assert.equal(serialized.includes("Authorization"), false);
   assert.equal(serialized.includes("Basic "), false);
+});
+
+test("SN-P0-15 assigned_to CSV, has_assignee e include_unassigned", () => {
+  const a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+  const csv = parseIncidentFilters(requestMock({ assigned_to: `${a},${b}` }));
+  assert.equal(csv.assigned_to, `${a},${b}`);
+  assert.equal(csv.has_assignee, false);
+  assert.equal(csv.include_unassigned, false);
+
+  const assignedOnly = parseIncidentFilters(requestMock({ has_assignee: "true" }));
+  assert.equal(assignedOnly.has_assignee, true);
+  assert.equal(assignedOnly.unassigned, false);
+  assert.match(buildIncidentSysparmQuery(assignedOnly), /assigned_toISNOTEMPTY/);
+
+  const mix = parseIncidentFilters(requestMock({
+    assigned_to: `${a},${b}`,
+    include_unassigned: "true",
+  }));
+  assert.equal(mix.include_unassigned, true);
+  const mixQuery = buildIncidentSysparmQuery(mix);
+  assert.match(mixQuery, /assigned_toIN/);
+  assert.match(mixQuery, /ORassigned_toISEMPTY/);
+
+  const unassignedWins = parseIncidentFilters(requestMock({
+    unassigned: "true",
+    assigned_to: a,
+    has_assignee: "true",
+    include_unassigned: "true",
+  }));
+  assert.equal(unassignedWins.unassigned, true);
+  assert.equal(unassignedWins.assigned_to, null);
+  assert.equal(unassignedWins.has_assignee, false);
+  assert.equal(unassignedWins.include_unassigned, false);
+
+  assert.throws(
+    () => parseIncidentFilters(requestMock({ assigned_to: `${a},not-a-sys-id` })),
+    (error) => error.code === "invalid_query",
+  );
 });

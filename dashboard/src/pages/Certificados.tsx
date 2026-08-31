@@ -194,7 +194,9 @@ export default function CertificadosPage() {
         <ClientSelect
           clients={mockClients}
           selectedClient={selectedClient}
-          onClientChange={setSelectedClient}
+          onClientChange={(clientId) => {
+            setSelectedClient(Array.isArray(clientId) ? (clientId[0] ?? "all") : clientId);
+          }}
         />
       }
       onRefresh={handleRefresh}

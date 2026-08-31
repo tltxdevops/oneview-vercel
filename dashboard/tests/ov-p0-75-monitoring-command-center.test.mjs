@@ -13,15 +13,19 @@ async function read(relativePath) {
   return fs.readFile(path.join(root, relativePath), "utf8");
 }
 
-test("OV-P0-75 oneview-monitoring: unassigned via incidents API, estados operacionais, max 6", async () => {
-  const lib = await read("src/lib/oneview-monitoring.ts");
+test("OV-P0-75 oneview-monitoring: unassigned via incidents API, estados operacionais, teto 100", async () => {
+  const [lib, helper] = await Promise.all([
+    read("src/lib/oneview-monitoring.ts"),
+    read("src/lib/oneview-operational-incidents.ts"),
+  ]);
 
-  assert.match(lib, /MONITOR_UNASSIGNED_LIMIT = 6/);
-  assert.match(lib, /MONITOR_UNASSIGNED_OPERATIONAL_STATES = "1,2,3"/);
+  assert.match(lib, /MONITOR_UNASSIGNED_LIMIT = OPERATIONAL_INCIDENTS_PAGE_SIZE/);
+  assert.match(lib, /MONITOR_UNASSIGNED_OPERATIONAL_STATES = OPERATIONAL_INCIDENT_STATES/);
+  assert.match(helper, /OPERATIONAL_INCIDENTS_PAGE_SIZE = 100/);
+  assert.match(helper, /OPERATIONAL_INCIDENT_STATES = "1,2,3"/);
   assert.match(lib, /export async function fetchMonitoringUnassignedIncidents/);
-  assert.match(lib, /fetchIncidents\(\{/);
-  assert.match(lib, /unassigned: true/);
-  assert.match(lib, /state: MONITOR_UNASSIGNED_OPERATIONAL_STATES/);
+  assert.match(helper, /fetchIncidents\(\{/);
+  assert.match(helper, /unassigned: mode === INCIDENTS_QUEUE_MODE\.unassigned \? true : undefined/);
   assert.doesNotMatch(
     lib.slice(
       lib.indexOf("export async function fetchMonitoringUnassignedIncidents"),
@@ -30,7 +34,7 @@ test("OV-P0-75 oneview-monitoring: unassigned via incidents API, estados operaci
     /callerId|caller_id/,
   );
   assert.match(lib, /buildMonitoringUnassignedChamadosHref/);
-  assert.match(lib, /\/chamados\?unassigned=true/);
+  assert.match(helper, /\/chamados\?unassigned=true/);
 
   // Prioritários / Todos preservados
   assert.match(lib, /MONITOR_PRIORITARY_SEVERITIES = \["average", "high", "disaster"\]/);
@@ -45,11 +49,11 @@ test("OV-P0-75 Monitoring layout: 72/28 a partir de 1440; empilha em 1366; sem c
     read("src/pages/Historico.tsx"),
   ]);
 
-  assert.match(monitoring, /COMMAND_CENTER_GRID|min-\[1440px\]:grid-cols-\[minmax\(0,72fr\)_minmax\(0,28fr\)\]/);
+  assert.match(monitoring, /COMMAND_CENTER_GRID|min-\[1440px\]:grid-cols-\[minmax\(0,60fr\)_minmax\(0,40fr\)\]/);
   assert.match(monitoring, /sem responsável/);
   assert.match(monitoring, /fetchMonitoringUnassignedIncidents/);
-  assert.match(monitoring, /MONITOR_UNASSIGNED_LIMIT/);
-  assert.match(monitoring, /buildMonitoringUnassignedChamadosHref|chamadosHref/);
+  assert.match(monitoring, /fetchMonitoringUnassignedIncidents|OPERATIONAL_INCIDENTS/);
+  assert.match(monitoring, /buildMonitoringChamadosHref|buildMonitoringUnassignedChamadosHref|chamadosHref/);
   assert.match(monitoring, /Ver todos em Alertas|Ver todos/);
   assert.match(monitoring, /Ver todos em Chamados|Ver todos/);
   assert.match(monitoring, /MonitorUnassignedRow/);

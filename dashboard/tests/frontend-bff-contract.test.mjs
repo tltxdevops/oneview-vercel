@@ -68,8 +68,8 @@ test("um único controle coordena refresh e timers sem Pausar", async () => {
     read("src/components/oneview/AlertOperationalSummary.tsx"),
     read("src/components/layout/AppLayout.tsx"),
   ]);
-  assert.match(alerts, /SUMMARY_REFRESH_MS = 30_000/);
-  assert.match(alerts, /ALERTS_REFRESH_MS = 30_000/);
+  assert.match(alerts, /SUMMARY_REFRESH_MS = 10_000/);
+  assert.match(alerts, /ALERTS_REFRESH_MS = 10_000/);
   assert.match(alerts, /if \(document\.hidden\) return/);
   assert.doesNotMatch(alerts, /topbarRightSection=\{<PlatformHealthStrip/);
   assert.doesNotMatch(alerts, /showHealthStrip=\{false\}/);
@@ -188,8 +188,9 @@ test("filtros temporais usam um campo, persistem na URL e atualizam os cards", a
   assert.match(query, /search_field/);
   assert.match(db, /search_field/);
   assert.match(db, /acknowledged_at: "a\.acknowledged_at"/);
-  assert.match(index, /params\.set\("status", options\.status\)/);
-  assert.match(index, /params\.set\("source_ack", options\.sourceAck\)/);
+  assert.match(index, /buildHomeAlertsHref/);
+  assert.match(await read("src/lib/oneview-home.ts"), /params\.set\("status", options\.status \?\? "active"\)/);
+  assert.match(await read("src/lib/oneview-home.ts"), /params\.set\("date_field", "first_seen"\)/);
   assert.match(index, /AlertDetailDrawer/);
   assert.match(index, /onOpen=\{openAlert\}/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /defaultTab = "summary"|defaultValue=\{initialTab\}/);
@@ -423,7 +424,7 @@ test("página de chamados lista incidents do BFF read-only", async () => {
   assert.match(chamados, /Estado/);
   assert.match(chamados, /Prioridade/);
   assert.match(chamados, /Caller/);
-  assert.match(chamados, /Período/);
+  assert.match(chamados, /Todo o período|Última atualização/);
   assert.match(chamados, /Número/);
   assert.match(chamados, /Descrição/);
   assert.match(chamados, /Grupo/);
@@ -434,7 +435,7 @@ test("página de chamados lista incidents do BFF read-only", async () => {
   assert.match(chamados, /Em andamento/);
   assert.match(chamados, /Resolvidos/);
   assert.match(chamados, /Encerrados/);
-  assert.match(chamados, /Não atribuídos/);
+  assert.match(chamados, /Sem responsável|Não atribuídos/);
   assert.match(chamados, /ServiceNow/);
   assert.doesNotMatch(chamados, /ServiceNow DEV/);
   assert.match(chamados, /Nenhum chamado encontrado/);
@@ -588,7 +589,7 @@ test("OV-P0-19/38 Monitoramento NOC com Sidebar real, sem scroll e com janela re
 
   assert.match(monitoring, /searchParams\.get\("tv"\) === "1"/);
   assert.match(monitoring, /data-tv=\{tvMode \? "1" : "0"\}/);
-  assert.match(monitoring, /REFRESH_MS = 30_000/);
+  assert.match(monitoring, /REFRESH_MS = 10_000/);
   assert.match(monitoring, /hasDataRef/);
   assert.match(monitoring, /Valores anteriores mantidos/);
   assert.match(monitoring, /PlatformHealthStrip/);
@@ -759,7 +760,9 @@ test("alertas preserva a normalização canônica de severidade Zabbix", async (
   assert.match(api, /export function formatOneViewSeverityLabel/);
   assert.match(api, /export function canonicalizeSeveritiesForApi/);
   assert.match(api, /export function disasterFamilySeverities/);
-  assert.match(api, /if \(Number\(counts\?\.critical \?\? 0\) > 0\) severities\.push\("critical"\)/);
+  assert.match(api, /export function highFamilySeverities/);
+  assert.match(api, /if \(seen\.has\("high"\)\) seen\.add\("critical"\)/);
+  assert.match(api, /return \["disaster"\]/);
   assert.doesNotMatch(api, /high: \{ label: "Crítico"/);
   assert.doesNotMatch(api, /label: "Desastre"|label: "Crítico"|label: "Alto"|label: "Médio"|label: "Aviso"|label: "Informação"|label: "Não classificado"/);
   assert.match(alerts, /formatOneViewSeverityLabel/);
@@ -1918,7 +1921,7 @@ test("OV-P0-42A Home: faixa de 5 severidades via filtered_summary (1 consulta)",
 
   assert.match(home, /if \(severity === "high"\) params\.append\("severity", "critical"\)/);
   assert.match(home, /date_field.*first_seen|params\.set\("date_field", "first_seen"\)/);
-  assert.match(home, /status: "active"/);
+  assert.match(home, /status: params\.status \?\? "active"/);
   assert.doesNotMatch(index, /navigate\(|useNavigate\(/);
 
   assert.match(index, /title="Alertas"|Prioritários/);

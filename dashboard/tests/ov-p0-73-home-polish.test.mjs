@@ -16,7 +16,7 @@ async function read(relativePath) {
 test("OV-P0-73 oneview-home: máximos visuais 7", async () => {
   const home = await read("src/lib/oneview-home.ts");
   assert.match(home, /HOME_ALERTS_PAGE_SIZE = 7/);
-  assert.match(home, /HOME_INCIDENTS_PAGE_SIZE = 7/);
+  assert.match(home, /HOME_INCIDENTS_PAGE_SIZE = OPERATIONAL_INCIDENTS_PAGE_SIZE/);
   assert.match(home, /HOME_EVENTS_LIMIT = 7/);
 });
 
@@ -43,9 +43,9 @@ test("OV-P0-73 Home: Alertas header título+count+Ver todos; filtros na 2ª linh
 test("OV-P0-73 Home: Chamados 7 colunas, row clicável, empty discreto, Ver todos alinhado", async () => {
   const index = await read("src/pages/Index.tsx");
 
-  assert.match(index, /title="Chamados sem responsável"/);
+  assert.match(index, /Chamados sem responsável/);
   assert.match(index, /HomePanelCount value=\{incidentsTotal\}/);
-  assert.match(index, /buildHomeUnassignedChamadosHref|unassigned=true/);
+  assert.match(index, /buildHomeChamadosHref|buildHomeUnassignedChamadosHref|unassigned=true/);
   assert.match(index, /HOME_PANEL_HEADER_ASIDE/);
   assert.match(index, /HOME_INCIDENT_COLS/);
   assert.match(index, />Número</);
@@ -53,7 +53,7 @@ test("OV-P0-73 Home: Chamados 7 colunas, row clicável, empty discreto, Ver todo
   assert.match(index, />Estado</);
   assert.match(index, />Prioridade</);
   assert.match(index, />Responsável</);
-  assert.match(index, /servicenow_url \|\| "\/chamados"/);
+  assert.match(index, /buildProductionServiceNowIncidentLink|servicenow_url/);
   assert.match(index, /emptyClassName=.*items-center justify-center/);
   assert.match(index, /items-start/);
 });
