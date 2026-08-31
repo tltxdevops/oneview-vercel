@@ -6,7 +6,7 @@
   "crons": [
     {
       "path": "/api/internal/theo-cron",
-      "schedule": "*/5 * * * *"
+      "schedule": "* * * * *"
     }
   ],
   "rewrites": [

@@ -616,9 +616,9 @@ test("OV-P0-224 Cron preserves non-enumerable Vercel request headers for CRON_SE
   assert.deepEqual(delegated.query, {});
 });
 
-test("OV-P0-217 production config schedules only the dedicated Theo Cron route", async () => {
+test("OV-P0-258 production config schedules only the dedicated Theo Cron route every minute", async () => {
   const config = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../vercel.json", import.meta.url), "utf8"));
-  assert.deepEqual(config.crons, [{ path: "/api/internal/theo-cron", schedule: "*/5 * * * *" }]);
+  assert.deepEqual(config.crons, [{ path: "/api/internal/theo-cron", schedule: "* * * * *" }]);
 });
 
 test("OV-P0-192 success is never sent again", async () => {
