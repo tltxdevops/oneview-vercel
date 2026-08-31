@@ -13,6 +13,13 @@ import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
 // dispatch may claim only rows created by the persisted Worker producer.
 export const THEO_ACTION_TYPE = "theo_webex_notification";
 export const THEO_AUTO_ACTION_TYPE = "theo_alert_notification_v1";
+export const THEO_UNSEEN_ALERT_ACTION_TYPE = "theo_unseen_alert_notification_v1";
+// Automatic dispatch accepts only persisted Worker producer notifications.
+// Explicit smoke/canary rows remain restricted to THEO_ACTION_TYPE.
+export const THEO_AUTO_ACTION_TYPES = Object.freeze([
+  THEO_AUTO_ACTION_TYPE,
+  THEO_UNSEEN_ALERT_ACTION_TYPE,
+]);
 export const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
 export const THEO_CANARY_DEDUPE_PREFIX = "theo:canary:alert:";
 export const THEO_DISPATCHER_WORKER_NAME = "theo_dispatcher";
@@ -32,6 +39,15 @@ function bool(value, fallback = false) {
 
 function text(value) {
   return String(value || "").trim();
+}
+
+function actionTypeList(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.map(text).filter(Boolean))];
+}
+
+export function isTheoAutomaticActionType(value) {
+  return THEO_AUTO_ACTION_TYPES.includes(text(value));
 }
 
 function queryValue(req, name) {
@@ -240,12 +256,14 @@ export async function claimEligibleTheoOutbox(client, {
   lockedBy,
   lockTtlSeconds = LOCK_TTL_SECONDS,
 } = {}) {
+  const actionTypes = actionTypeList(actionType);
+  if (!actionTypes.length) return null;
   const result = await client.query(
     `
       with candidate as (
         select o.id
           from integration_outbox o
-         where o.action_type = $1
+         where o.action_type = any($1::text[])
            and ($2::text is null or o.id = $2)
            and o.status in ('pending', 'failed')
            and o.attempts < o.max_attempts
@@ -266,7 +284,7 @@ export async function claimEligibleTheoOutbox(client, {
        where o.id = candidate.id
       returning o.id, o.action_type, o.payload, o.attempts, o.max_attempts, o.idempotency_key
     `,
-    [actionType, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, allowedDedupeKey, lockedBy, lockTtlSeconds],
+    [actionTypes, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, allowedDedupeKey, lockedBy, lockTtlSeconds],
   );
   return result.rows[0] || null;
 }
@@ -399,11 +417,13 @@ export function createTheoDispatchHandler({
     if (canary.present && config.automationEnabled) return sendJson(res, 403, { error: "canary_requires_automation_disabled" });
     let targetId = requestedOutboxId(req);
     let allowedDedupeKey = null;
-    let actionType = THEO_AUTO_ACTION_TYPE;
+    let actionType = THEO_AUTO_ACTION_TYPES;
+    let automaticDispatch = true;
     if (smoke) {
       const smokeOutbox = await transaction((client) => createSmoke(client, { idFactory, now: now() }));
       targetId = smokeOutbox?.id || null;
       actionType = THEO_ACTION_TYPE;
+      automaticDispatch = false;
     } else if (canary.present) {
       let alert;
       try {
@@ -428,11 +448,12 @@ export function createTheoDispatchHandler({
       targetId = canaryOutbox?.id || null;
       allowedDedupeKey = theoCanaryDedupeKey(canary.value);
       actionType = THEO_ACTION_TYPE;
+      automaticDispatch = false;
     } else if (!config.automationEnabled) {
       return sendJson(res, 403, { error: "theo_automation_disabled" });
     }
 
-    const automaticBatch = actionType === THEO_AUTO_ACTION_TYPE && !targetId;
+    const automaticBatch = automaticDispatch && !targetId;
     const maxItems = automaticBatch ? config.batchSize : 1;
     const results = [];
 
@@ -443,7 +464,7 @@ export function createTheoDispatchHandler({
         claimed = await transaction((client) => claim(client, {
           actionType,
           outboxId: targetId,
-          allowAutomation: actionType === THEO_AUTO_ACTION_TYPE && config.automationEnabled,
+          allowAutomation: automaticDispatch && config.automationEnabled,
           allowedDedupeKey,
           lockedBy: lockId,
         }));
@@ -455,7 +476,7 @@ export function createTheoDispatchHandler({
       if (!claimed) break;
       const claimedActionType = text(claimed.action_type) || actionType;
       let payload;
-      if (claimedActionType === THEO_AUTO_ACTION_TYPE) {
+      if (isTheoAutomaticActionType(claimedActionType)) {
         const producerPayload = payloadObject(claimed.payload);
         let alert;
         let enrichmentFailure = null;

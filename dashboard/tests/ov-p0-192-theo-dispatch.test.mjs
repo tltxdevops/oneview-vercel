@@ -13,6 +13,8 @@ import {
   recordTheoDispatcherHeartbeat,
   THEO_ACTION_TYPE,
   THEO_AUTO_ACTION_TYPE,
+  THEO_AUTO_ACTION_TYPES,
+  THEO_UNSEEN_ALERT_ACTION_TYPE,
   THEO_DISPATCHER_WORKER_NAME,
   theoCanaryDedupeKey,
   THEO_SMOKE_DEDUPE_KEY,
@@ -85,10 +87,10 @@ function canaryAlert(severity = "disaster") {
   };
 }
 
-function producedClaim() {
+function producedClaim(actionType = THEO_AUTO_ACTION_TYPE) {
   return {
     id: OUTBOX_ID,
-    action_type: THEO_AUTO_ACTION_TYPE,
+    action_type: actionType,
     attempts: 1,
     max_attempts: 3,
     idempotency_key: "theo:alert:source-a:338976923",
@@ -162,7 +164,7 @@ test("OV-P0-192 completes a claimed smoke outbox after Theo 2xx", async () => {
   });
 });
 
-test("OV-P0-214 automatic claim is limited to pending or failed producer rows", async () => {
+test("OV-P0-251 automatic claim is limited to pending or failed allowed producer rows", async () => {
   const calls = [];
   await claimEligibleTheoOutbox({
     query: async (sql, values) => {
@@ -170,14 +172,14 @@ test("OV-P0-214 automatic claim is limited to pending or failed producer rows", 
       return { rows: [] };
     },
   }, {
-    actionType: THEO_AUTO_ACTION_TYPE,
+    actionType: THEO_AUTO_ACTION_TYPES,
     allowAutomation: true,
     lockedBy: "vercel-theo:test",
   });
 
-  assert.equal(calls[0].values[0], THEO_AUTO_ACTION_TYPE);
+  assert.deepEqual(calls[0].values[0], [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]);
   assert.match(calls[0].sql, /o\.status in \('pending', 'failed'\)/i);
-  assert.match(calls[0].sql, /o\.action_type = \$1/i);
+  assert.match(calls[0].sql, /o\.action_type = any\(\$1::text\[\]\)/i);
   assert.doesNotMatch(calls[0].sql, /theo_webex_notification/);
   assert.match(calls[0].sql, /order by o\.created_at asc, o\.id asc/i);
 });
@@ -208,7 +210,7 @@ test("OV-P0-225 automatic dispatch drains a bounded FIFO batch sequentially", as
   assert.deepEqual(finished.map((result) => result.outboxId), ["outbox-1", "outbox-2", "outbox-3"]);
 });
 
-test("OV-P0-214 automatic dispatcher cannot claim legacy smoke, canary, or Theo rows", async () => {
+test("OV-P0-251 automatic dispatcher cannot claim legacy smoke, canary, or Theo rows", async () => {
   let claimOptions;
   const handler = dispatcher({
     configProvider: () => config({ automationEnabled: true }),
@@ -219,12 +221,12 @@ test("OV-P0-214 automatic dispatcher cannot claim legacy smoke, canary, or Theo 
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body, { claimed: false, status: "not_eligible" });
-  assert.equal(claimOptions.actionType, THEO_AUTO_ACTION_TYPE);
+  assert.deepEqual(claimOptions.actionType, THEO_AUTO_ACTION_TYPES);
   assert.equal(claimOptions.allowAutomation, true);
   assert.equal(claimOptions.allowedDedupeKey, null);
 });
 
-test("OV-P0-214 enriches a producer row into Theo payload with OneView and ServiceNow links", async () => {
+test("OV-P0-251 unseen producer row uses the existing Theo payload with OneView and ServiceNow links", async () => {
   let sent;
   let finished;
   const alert = {
@@ -236,7 +238,7 @@ test("OV-P0-214 enriches a producer row into Theo payload with OneView and Servi
   };
   const handler = dispatcher({
     configProvider: () => config({ automationEnabled: true }),
-    claim: async () => producedClaim(),
+    claim: async () => producedClaim(THEO_UNSEEN_ALERT_ACTION_TYPE),
     findProducedAlert: async (reference) => {
       assert.deepEqual(reference, { alertId: CANARY_ALERT_ID, dataSourceId: "source-a", sourceEventId: "338976923" });
       return alert;
@@ -248,18 +250,18 @@ test("OV-P0-214 enriches a producer row into Theo payload with OneView and Servi
   await handler(req(), response);
 
   assert.equal(response.statusCode, 200);
-  assert.equal(finished.actionType, THEO_AUTO_ACTION_TYPE);
+  assert.equal(finished.actionType, THEO_UNSEEN_ALERT_ACTION_TYPE);
   assert.equal(sent.link, `https://oneview.teletexdev.com.br/alertas?alert=${CANARY_ALERT_ID}`);
   assert.equal(sent.oneview_link, sent.link);
   assert.equal(sent.servicenow_link, "https://teletexprod.service-now.com/incident.do?sys_id=fdb2c6e797fe0710e580f137f053afe3");
   assert.equal(sent.chamado, "INC0074751");
 });
 
-test("OV-P0-214 producer payload without an explicit Incident has only the OneView link", async () => {
+test("OV-P0-251 unseen payload without an explicit Incident has only the OneView link", async () => {
   let sent;
   const handler = dispatcher({
     configProvider: () => config({ automationEnabled: true }),
-    claim: async () => producedClaim(),
+    claim: async () => producedClaim(THEO_UNSEEN_ALERT_ACTION_TYPE),
     findProducedAlert: async () => ({ ...canaryAlert(), event_tags: [], trigger_tags: [], host_tags: [] }),
     fetchFn: async (_url, options) => { sent = JSON.parse(options.body); return { status: 200, headers: { get: () => null } }; },
   });
@@ -273,7 +275,7 @@ test("OV-P0-214 producer payload without an explicit Incident has only the OneVi
   assert.doesNotMatch(JSON.stringify(sent), /"chamado"\s*:\s*"(TESTE|N\/A|UNKNOWN)"/i);
 });
 
-test("OV-P0-214 concurrent automatic dispatches claim and send a producer row once", async () => {
+test("OV-P0-251 concurrent unseen dispatches claim and send a producer row once", async () => {
   let claimedOnce = false;
   let sends = 0;
   const handler = dispatcher({
@@ -281,7 +283,7 @@ test("OV-P0-214 concurrent automatic dispatches claim and send a producer row on
     claim: async () => {
       if (claimedOnce) return null;
       claimedOnce = true;
-      return producedClaim();
+      return producedClaim(THEO_UNSEEN_ALERT_ACTION_TYPE);
     },
     findProducedAlert: async () => canaryAlert(),
     fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
