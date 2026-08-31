@@ -792,7 +792,6 @@ function operationsHealthPayload(snapshot, dataSourceNames) {
   }
   const now = Date.now();
   const scopedNames = new Set(dataSourceNames.map((name) => String(name).toLowerCase()));
-  // OV-P0-26: nunca expor castrolanda/fraport/zurich na saúde operacional.
   const sources = (snapshot.data_sources || []).filter((source) => {
     return scopedNames.has(String(source.name || "").toLowerCase());
   });
