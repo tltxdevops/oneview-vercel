@@ -31,8 +31,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  fetchIncidentDuplicates,
   fetchIncidentRelatedAlert,
   fetchIncidents,
+  type DuplicateIncidentGroup,
+  type IncidentDuplicatesResponse,
   type IncidentListResponse,
   type IncidentRelatedAlert,
   type OneViewIncident,
@@ -188,8 +191,14 @@ export default function ChamadosPage() {
   const [relatedAlert, setRelatedAlert] = useState<IncidentRelatedAlert | null>(null);
   const [relatedAlertLoading, setRelatedAlertLoading] = useState(false);
   const [relatedAlertChecked, setRelatedAlertChecked] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "duplicates">("list");
+  const [duplicatesLoading, setDuplicatesLoading] = useState(false);
+  const [duplicatesError, setDuplicatesError] = useState<string | null>(null);
+  const [duplicatesPayload, setDuplicatesPayload] = useState<IncidentDuplicatesResponse | null>(null);
+  const [selectedDuplicateGroup, setSelectedDuplicateGroup] = useState<DuplicateIncidentGroup | null>(null);
 
   useEffect(() => {
+    if (viewMode !== "list") return;
     const controller = new AbortController();
     setLoading(true);
     setError(null);
@@ -230,7 +239,37 @@ export default function ChamadosPage() {
       });
 
     return () => controller.abort();
-  }, [applied, page]);
+  }, [applied, page, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "duplicates") return;
+    const controller = new AbortController();
+    setDuplicatesLoading(true);
+    setDuplicatesError(null);
+    fetchIncidentDuplicates({
+      customer: applied.company.trim() || undefined,
+      assignedTo: applied.unassigned
+        ? undefined
+        : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
+      priority: applied.priority !== "all" ? applied.priority : undefined,
+      state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        setDuplicatesPayload(response);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setDuplicatesPayload(null);
+        setDuplicatesError("Duplicados indisponíveis");
+        void err;
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDuplicatesLoading(false);
+      });
+    return () => controller.abort();
+  }, [applied, viewMode]);
 
   useEffect(() => {
     if (!selected) {
@@ -340,7 +379,15 @@ export default function ChamadosPage() {
     setPage(1);
   }
 
-  function selectMetric(kind: "total" | "open" | "in_progress" | "resolved" | "closed" | "unassigned") {
+  function selectMetric(kind: "total" | "open" | "in_progress" | "resolved" | "closed" | "unassigned" | "duplicates") {
+    if (kind === "duplicates") {
+      setViewMode("duplicates");
+      setSelected(null);
+      setSelectedDuplicateGroup(null);
+      return;
+    }
+    setViewMode("list");
+    setSelectedDuplicateGroup(null);
     const next: DraftFilters = {
       ...draft,
       unassigned: kind === "unassigned",
@@ -388,48 +435,58 @@ export default function ChamadosPage() {
               label: "Total",
               value: error ? "—" : safeCount(counts?.total ?? pagination?.total_items),
               loading,
-              selected: applied.state === "all" && !applied.unassigned,
+              selected: viewMode === "list" && applied.state === "all" && !applied.unassigned,
               onClick: () => selectMetric("total"),
             },
             {
               key: "open",
               label: "Abertos",
               value: error ? "—" : safeCount(counts?.open),
-              loading,
-              selected: applied.state === "1" && !applied.unassigned,
+              loading: viewMode === "list" && loading,
+              selected: viewMode === "list" && applied.state === "1" && !applied.unassigned,
               onClick: () => selectMetric("open"),
             },
             {
               key: "in_progress",
               label: "Em andamento",
               value: error ? "—" : safeCount(counts?.in_progress),
-              loading,
-              selected: applied.state === "2" && !applied.unassigned,
+              loading: viewMode === "list" && loading,
+              selected: viewMode === "list" && applied.state === "2" && !applied.unassigned,
               onClick: () => selectMetric("in_progress"),
             },
             {
               key: "resolved",
               label: "Resolvidos",
               value: error ? "—" : safeCount(counts?.resolved),
-              loading,
-              selected: applied.state === "6" && !applied.unassigned,
+              loading: viewMode === "list" && loading,
+              selected: viewMode === "list" && applied.state === "6" && !applied.unassigned,
               onClick: () => selectMetric("resolved"),
             },
             {
               key: "closed",
               label: "Encerrados",
               value: error ? "—" : safeCount(counts?.closed),
-              loading,
-              selected: applied.state === "7" && !applied.unassigned,
+              loading: viewMode === "list" && loading,
+              selected: viewMode === "list" && applied.state === "7" && !applied.unassigned,
               onClick: () => selectMetric("closed"),
             },
             {
               key: "unassigned",
               label: "Sem responsável",
               value: error ? "—" : safeCount(counts?.unassigned),
-              loading,
-              selected: applied.unassigned,
+              loading: viewMode === "list" && loading,
+              selected: viewMode === "list" && applied.unassigned,
               onClick: () => selectMetric("unassigned"),
+            },
+            {
+              key: "duplicates",
+              label: "Duplicados",
+              value: duplicatesError
+                ? "—"
+                : safeCount(duplicatesPayload?.stats?.duplicate_groups),
+              loading: viewMode === "duplicates" && duplicatesLoading,
+              selected: viewMode === "duplicates",
+              onClick: () => selectMetric("duplicates"),
             },
           ]}
         />
@@ -574,6 +631,170 @@ export default function ChamadosPage() {
           </div>
         </FilterBar>
 
+        {viewMode === "duplicates" ? (
+          <>
+            {duplicatesError ? (
+              <OperationalErrorBanner
+                message={duplicatesError}
+                onRetry={() => setViewMode("duplicates")}
+              />
+            ) : null}
+            <SectionPanel
+              className="overflow-hidden"
+              bodyClassName="space-y-3 p-3"
+              title="Duplicados"
+              aside={(
+                <p className="text-xs text-muted-foreground">
+                  {duplicatesLoading
+                    ? "Carregando…"
+                    : `${safeCount(duplicatesPayload?.stats?.duplicate_groups)} grupo(s) · ${safeCount(duplicatesPayload?.stats?.incidents_in_duplicate_groups)} INC`}
+                </p>
+              )}
+            >
+              {duplicatesLoading ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 3 }).map((_, index) => (
+                    <Skeleton key={`dup-skel-${index}`} className="h-28 w-full" />
+                  ))}
+                </div>
+              ) : duplicatesError ? (
+                <p className="text-sm text-muted-foreground">Não foi possível carregar duplicados.</p>
+              ) : !(duplicatesPayload?.groups?.length) ? (
+                <OperationalEmptyState compact title="Nenhum grupo de duplicidade sugerida" />
+              ) : (
+                <div className="space-y-3">
+                  {duplicatesPayload.groups.map((group) => {
+                    const primary = group.primaryIncident;
+                    const related = group.relatedIncidents || [];
+                    return (
+                      <div
+                        key={group.duplicateKey}
+                        className="rounded-lg border border-border/70 bg-card/40 p-3"
+                      >
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary" className="font-mono text-[10px]">
+                            {group.duplicateCount}x DUP
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px]">
+                            Duplicidade sugerida
+                          </Badge>
+                          <span className="text-[11px] text-muted-foreground">
+                            Atualização: {formatDateTime(primary?.updatedAt)}
+                          </span>
+                        </div>
+                        <p className="mb-2 text-sm font-medium text-foreground">
+                          {displayValue(group.shortDescription || primary?.shortDescription)}
+                        </p>
+                        <p className="mb-2 font-mono text-[11px] text-muted-foreground" title="Chave de agrupamento">
+                          chave: {group.duplicateKey}
+                        </p>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <div className="rounded-md border border-border/60 p-2">
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Principal
+                            </p>
+                            <p className="font-mono text-sm">{displayValue(primary?.number)}</p>
+                            <p className="text-xs text-muted-foreground">
+                              Cliente: {displayValue(primary?.customer)}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Analista: {displayValue(primary?.assignedTo)}
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <ServiceNowDevLink
+                                href={primary?.servicenowUrl}
+                                sysId={primary?.sysId}
+                                size="sm"
+                              />
+                              {primary?.relatedAlert?.link ? (
+                                <Button asChild size="sm" variant="outline">
+                                  <Link to={primary.relatedAlert.link}>Abrir alerta</Link>
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="rounded-md border border-border/60 p-2">
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Relacionados
+                            </p>
+                            <div className="space-y-2">
+                              {related.map((item) => (
+                                <div key={item.sysId || item.number || item.shortDescription} className="space-y-1">
+                                  <p className="font-mono text-sm">{displayValue(item.number)}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Cliente: {displayValue(item.customer)} · Analista: {displayValue(item.assignedTo)}
+                                  </p>
+                                  <ServiceNowDevLink
+                                    href={item.servicenowUrl}
+                                    sysId={item.sysId}
+                                    size="sm"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setSelectedDuplicateGroup(group)}
+                          >
+                            Ver evidência
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </SectionPanel>
+
+            <Sheet
+              open={Boolean(selectedDuplicateGroup)}
+              onOpenChange={(open) => { if (!open) setSelectedDuplicateGroup(null); }}
+            >
+              <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
+                <SheetHeader>
+                  <SheetTitle>Evidência de duplicidade</SheetTitle>
+                  <SheetDescription>
+                    Agrupamento POSSIBLE_DUPLICATE pela mesma descrição normalizada da extensão Snow Notifier.
+                  </SheetDescription>
+                </SheetHeader>
+                {selectedDuplicateGroup ? (
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div>
+                      <p className="text-xs font-medium uppercase text-muted-foreground">duplicateKey</p>
+                      <p className="break-all font-mono text-xs">{selectedDuplicateGroup.duplicateKey}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase text-muted-foreground">Descrição normalizada</p>
+                      <p className="break-all font-mono text-xs">{selectedDuplicateGroup.duplicateKey}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase text-muted-foreground">Classificação</p>
+                      <p>{selectedDuplicateGroup.classification}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase text-muted-foreground">Principal</p>
+                      <p className="font-mono">{displayValue(selectedDuplicateGroup.primaryIncident?.number)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase text-muted-foreground">Relacionados</p>
+                      <ul className="list-disc pl-4 font-mono text-xs">
+                        {selectedDuplicateGroup.relatedIncidents.map((item) => (
+                          <li key={item.sysId || item.number}>{displayValue(item.number)} · {displayValue(item.customer)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                ) : null}
+              </SheetContent>
+            </Sheet>
+          </>
+        ) : (
+        <>
         {error ? <OperationalErrorBanner message={error} onRetry={() => applyFilters()} /> : null}
 
         <SectionPanel
@@ -682,6 +903,8 @@ export default function ChamadosPage() {
             </div>
           ) : null}
         </SectionPanel>
+        </>
+        )}
       </div>
 
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>

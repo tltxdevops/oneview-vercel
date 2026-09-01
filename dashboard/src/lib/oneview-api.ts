@@ -1142,6 +1142,85 @@ export async function fetchIncidents(params?: {
   });
 }
 
+/** OV-P0-262A — possible duplicate groups (Snow Notifier-compatible, read-only). */
+export type DuplicateIncidentCard = {
+  sysId: string | null;
+  number: string | null;
+  shortDescription: string | null;
+  customer: string | null;
+  state: string | null;
+  stateCode: string | null;
+  priority: string | null;
+  priorityCode: string | null;
+  assignedTo: string | null;
+  assignedToId: string | null;
+  assignmentGroup: string | null; // BFF card field (assignment_group display)
+  createdAt: string | null;
+  updatedAt: string | null;
+  relatedAlert: {
+    alertId: string | null;
+    severity: string | null;
+    host: string | null;
+    link: string | null;
+    problem: string | null;
+    status: string | null;
+  } | null;
+  servicenowUrl: string | null;
+};
+
+export type DuplicateIncidentGroup = {
+  duplicateKey: string;
+  duplicateCount: number;
+  classification: "POSSIBLE_DUPLICATE";
+  shortDescription: string | null;
+  primaryIncident: DuplicateIncidentCard;
+  relatedIncidents: DuplicateIncidentCard[];
+};
+
+export type IncidentDuplicatesResponse = {
+  classification: "POSSIBLE_DUPLICATE";
+  open_universe: {
+    contact_type: string;
+    state_not_in: string[];
+  };
+  groups: DuplicateIncidentGroup[];
+  stats: {
+    evaluated_incidents: number;
+    duplicate_groups: number;
+    incidents_in_duplicate_groups: number;
+    largest_group: number;
+    bff_ms: number;
+  };
+  data_source: string;
+  checked_at: string;
+  write_actions: {
+    auto_close: false;
+    parent_incident_mutation: false;
+    servicenow_write: false;
+  };
+};
+
+export async function fetchIncidentDuplicates(params?: {
+  customer?: string;
+  assignedTo?: string;
+  assignmentGroup?: string;
+  priority?: string;
+  state?: string;
+  signal?: AbortSignal;
+}): Promise<IncidentDuplicatesResponse> {
+  const search = new URLSearchParams();
+  if (params?.customer) search.set("customer", params.customer);
+  if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
+  if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
+  if (params?.priority) search.set("priority", params.priority);
+  if (params?.state) search.set("state", params.state);
+  const query = search.toString();
+  return fetchApi<IncidentDuplicatesResponse>(
+    `/oneview/incidents/duplicates${query ? `?${query}` : ""}`,
+    { signal: params?.signal },
+  );
+}
+
 export type OperatorQueueTab = "all" | "unassigned" | "following" | "recent";
 
 export type OperatorQueueItem = {
