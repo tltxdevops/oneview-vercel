@@ -28,7 +28,7 @@ const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const DEFAULT_PAGE = 1;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
-const DEFAULT_CONTACT_TYPE = "monitoring";
+const MONITORING_CONTACT_TYPE = "monitoring";
 const SAFE_FILTER = /^[a-zA-Z0-9._:@/\- ]{1,120}$/;
 const SAFE_STATE = /^[0-9,]{1,40}$/;
 const SAFE_PRIORITY = /^[1-5]$/;
@@ -183,7 +183,7 @@ export function assertAllowlistedIncidentQuery(req) {
 }
 
 /**
- * Parseia filtros allowlisted. contact_type é sempre monitoring (base obrigatória).
+ * Parseia filtros allowlisted. contact_type é opcional e sempre explícito.
  */
 export function parseIncidentFilters(req) {
   assertAllowlistedIncidentQuery(req);
@@ -194,12 +194,9 @@ export function parseIncidentFilters(req) {
     max: MAX_PAGE_SIZE,
   });
 
-  // SN-P0-15: base obrigatória. Aceita omitido ou "monitoring"; qualquer outro valor = 400.
-  const contactTypeRaw = cleanOptional(oneQuery(req, "contact_type"));
-  if (contactTypeRaw != null && contactTypeRaw !== DEFAULT_CONTACT_TYPE) {
-    throw invalidQuery("invalid_contact_type");
-  }
-  const contactType = DEFAULT_CONTACT_TYPE;
+  // OV-P0-265: omitir o filtro mantém o universo integral do read-model.
+  // "__blank" é a opção explícita para registros sem canal informado.
+  const contactType = assertSafeFilter(cleanOptional(oneQuery(req, "contact_type")), "invalid_contact_type");
 
   const callerId = assertSafeFilter(cleanOptional(oneQuery(req, "caller_id")), "invalid_caller_id");
   const assignedTo = parseAssignedToFilter(oneQueryJoined(req, "assigned_to"));
@@ -278,8 +275,9 @@ export function parseIncidentFilters(req) {
 function buildAndParts(filters, { stateOverride = undefined, unassignedOverride = undefined } = {}) {
   const andParts = [];
 
-  // SN-P0-25: universo /chamados = contact_type=monitoring (sem caller_id default).
-  andParts.push(`contact_type=${DEFAULT_CONTACT_TYPE}`);
+  // OV-P0-265: canal só restringe a consulta quando informado pelo usuário.
+  if (filters.contact_type === "__blank") andParts.push("contact_typeISEMPTY");
+  else if (filters.contact_type) andParts.push(`contact_type=${filters.contact_type}`);
   // caller_id, assigned_to e number são filtros opcionais — só entram se enviados pelo frontend.
   if (filters.caller_id) andParts.push(`caller_id=${filters.caller_id}`);
   if (filters.assigned_to) {
@@ -314,8 +312,7 @@ function buildAndParts(filters, { stateOverride = undefined, unassignedOverride 
 
 /**
  * Monta encoded query ServiceNow a partir dos filtros allowlisted (SN-P0-15/25).
- * Universo base: contact_type=monitoring (+ ORDERBYDESCsys_updated_on).
- * Sem caller_id default. Search usa ^NQ para numberLIKE OR short_descriptionLIKE.
+ * Sem canal ou caller_id implícito. Search usa ^NQ para numberLIKE OR short_descriptionLIKE.
  */
 export function buildIncidentSysparmQuery(filters, options = {}) {
   const andParts = buildAndParts(filters, options);
@@ -397,7 +394,7 @@ export function buildRelatedIncidentsSysparmQuery(sourceEventId, { callerId } = 
   }
   const eventId = escapeLike(String(sourceEventId || "").trim());
   return (
-    `contact_type=${DEFAULT_CONTACT_TYPE}`
+    `contact_type=${MONITORING_CONTACT_TYPE}`
     + `^caller_id=${resolvedCaller}`
     + `^descriptionLIKEeventid=${eventId}`
     + "^ORDERBYDESCsys_updated_on^ORDERBYsys_id"

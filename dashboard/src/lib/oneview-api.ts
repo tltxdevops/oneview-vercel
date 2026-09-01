@@ -1077,11 +1077,12 @@ export type IncidentListResponse = {
     closed: number;
     unassigned: number;
   } | null;
-  /** SN-P0-25 / SN-P0-28 / SN-P0-30 — facets Aggregate no universo monitoring. */
+  /** Facets do universo acessível do read-model; filtros só restringem quando explícitos. */
   facets?: {
     callers?: IncidentCallerFacet[];
     assignees?: IncidentAssigneeFacet[];
     companies?: IncidentAssigneeFacet[];
+    contact_types?: IncidentAssigneeFacet[];
     states?: IncidentAssigneeFacet[];
     priorities?: IncidentAssigneeFacet[];
   } | null;
@@ -1097,6 +1098,7 @@ export async function fetchIncidents(params?: {
   page?: number;
   pageSize?: number;
   callerId?: string;
+  contactType?: string;
   assignedTo?: string;
   number?: string;
   sysId?: string;
@@ -1115,11 +1117,12 @@ export async function fetchIncidents(params?: {
   includeUnassigned?: boolean;
   signal?: AbortSignal;
 }): Promise<IncidentListResponse> {
-  // SN-P0-15: filtros allowlisted apenas. Encoded query só no BFF; canal monitoring é fixo no backend.
+  // OV-P0-265: filtros allowlisted apenas; canal é enviado somente quando explícito na UI.
   const search = new URLSearchParams();
   search.set("page", String(Math.max(1, params?.page ?? 1)));
   search.set("page_size", String(Math.min(Math.max(params?.pageSize ?? 25, 1), 100)));
   if (params?.callerId) search.set("caller_id", params.callerId);
+  if (params?.contactType) search.set("contact_type", params.contactType);
   if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params?.number) search.set("number", params.number);
   if (params?.sysId) search.set("sys_id", params.sysId);

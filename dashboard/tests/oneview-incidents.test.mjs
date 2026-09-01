@@ -164,9 +164,9 @@ function mockGetStats() {
   };
 }
 
-test("incidents filters: contact_type default monitoring", () => {
+test("incidents filters: contact_type is optional by default", () => {
   const filters = parseIncidentFilters(requestMock({}));
-  assert.equal(filters.contact_type, "monitoring");
+  assert.equal(filters.contact_type, null);
   assert.equal(filters.page, 1);
   assert.equal(filters.page_size, 25);
   assert.equal(filters.unassigned, false);
@@ -210,15 +210,15 @@ test("incidents query: company e periodo", () => {
   assert.match(query, /opened_at<=2026-07-31 23:59:59/);
 });
 
-test("incidents query: combina caller_id e search com NQ", () => {
+test("incidents query: combina caller_id e search com NQ sem canal implícito", () => {
   const query = buildIncidentSysparmQuery(parseIncidentFilters(requestMock({
     caller_id: "caller-zabbix",
     search: "ICMP",
   })));
   assert.equal(
     query,
-    "contact_type=monitoring^caller_id=caller-zabbix^numberLIKEICMP"
-      + "^NQcontact_type=monitoring^caller_id=caller-zabbix^short_descriptionLIKEICMP"
+    "caller_id=caller-zabbix^numberLIKEICMP"
+      + "^NQcaller_id=caller-zabbix^short_descriptionLIKEICMP"
       + "^ORDERBYDESCsys_updated_on^ORDERBYsys_id",
   );
 });

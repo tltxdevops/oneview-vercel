@@ -150,7 +150,13 @@ function assignedToIds(value) {
 }
 
 function buildWhere(filters, values, { includeState = true, includeUnassigned = true } = {}) {
-  const clauses = ["coalesce(contact_type::text, '') = 'monitoring'"];
+  // Mantém WHERE sintaticamente válido quando nenhum filtro é explícito.
+  const clauses = ["true"];
+  if (filters.contact_type === "__blank") {
+    clauses.push("coalesce(btrim(contact_type::text), '') = ''");
+  } else if (filters.contact_type) {
+    clauses.push(`lower(coalesce(contact_type::text, '')) = lower(${addParam(values, filters.contact_type)})`);
+  }
   if (filters.caller_id) clauses.push(`caller_id::text = ${addParam(values, filters.caller_id)}`);
   const assigneeIds = assignedToIds(filters.assigned_to);
   const emptyAssignee = "coalesce(btrim(assigned_to::text), '') = ''";
@@ -214,6 +220,7 @@ async function fetchFacets(pool, filters) {
     ["callers", "caller_id", "caller_id"],
     ["assignees", "assigned_to", "assigned_to"],
     ["companies", "company", "company"],
+    ["contact_types", "coalesce(nullif(btrim(contact_type::text), ''), '__blank')", "contact_type"],
     ["states", "state", "state"],
     ["priorities", "priority", "priority"],
   ];

@@ -100,6 +100,7 @@ type DraftFilters = {
   priority: string;
   assignedTo: string;
   callerId: string;
+  contactType: string;
   period: string;
   unassigned: boolean;
 };
@@ -111,6 +112,7 @@ const EMPTY_DRAFT: DraftFilters = {
   priority: "all",
   assignedTo: "all",
   callerId: "all",
+  contactType: "all",
   period: "all",
   unassigned: false,
 };
@@ -217,8 +219,9 @@ export default function ChamadosPage() {
       assignedTo: applied.unassigned
         ? undefined
         : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
-      // SN-P0-25: caller_id opcional — "Todos" omite o param (universo monitoring).
+      // OV-P0-265: caller e canal opcionais; "Todos" preserva o universo do read-model.
       callerId: applied.callerId !== "all" ? applied.callerId : undefined,
+      contactType: applied.contactType !== "all" ? applied.contactType : undefined,
       unassigned: applied.unassigned || undefined,
       updatedFrom: period.openedFrom,
       updatedTo: period.openedTo,
@@ -342,6 +345,29 @@ export default function ChamadosPage() {
     }
     return [...map.values()];
   }, [payload?.facets?.callers, applied.callerId]);
+
+  const contactTypeOptions = useMemo(() => {
+    const map = new Map<string, { value: string; label: string }>();
+    map.set("all", { value: "all", label: "Todos os canais" });
+    for (const facet of payload?.facets?.contact_types ?? []) {
+      const value = String(facet?.value || "").trim();
+      if (!value) continue;
+      const rawLabel = String(facet?.label || value).trim();
+      const label = value === "__blank"
+        ? "Sem canal informado"
+        : rawLabel === "monitoring"
+          ? "Monitoramento"
+          : rawLabel;
+      map.set(value, { value, label });
+    }
+    if (applied.contactType !== "all" && !map.has(applied.contactType)) {
+      map.set(applied.contactType, {
+        value: applied.contactType,
+        label: applied.contactType === "__blank" ? "Sem canal informado" : applied.contactType,
+      });
+    }
+    return [...map.values()];
+  }, [payload?.facets?.contact_types, applied.contactType]);
 
   const assigneeOptions = useMemo(() => {
     const map = new Map<string, { value: string; label: string }>();
@@ -571,6 +597,22 @@ export default function ChamadosPage() {
                 </SelectTrigger>
                 <SelectContent>
                   {STATE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chamados-contact-type">Canal</label>
+              <Select
+                value={draft.contactType}
+                onValueChange={(value) => setDraft((prev) => ({ ...prev, contactType: value }))}
+              >
+                <SelectTrigger id="chamados-contact-type" className="h-9">
+                  <SelectValue placeholder="Todos os canais" />
+                </SelectTrigger>
+                <SelectContent>
+                  {contactTypeOptions.map((option) => (
                     <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                   ))}
                 </SelectContent>
