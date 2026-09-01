@@ -6,7 +6,7 @@ import {
 } from "./oneview-inc-correlation.js";
 import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
 import { buildAlertRecurrenceReadModel, buildRecurrenceKey, hasRecurrenceIdentity, parseRecurrenceKey } from "./oneview-recurrence.js";
-import { getOperationalDataSourceNames, ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES } from "./oneview-scope.js";
+import { getOperationalDataSourceNames, ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES, splitAlertCustomerFilter } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 import { OPERATOR_TAG_EXISTS_SQL } from "./oneview-operator-tags.js";
 
@@ -596,8 +596,11 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const page = positiveInteger(oneQueryValue(req, "page"), 1);
   const pageSize = positiveInteger(oneQueryValue(req, "page_size"), DEFAULT_ALERT_PAGE_SIZE, { maximum: MAX_ALERT_PAGE_SIZE });
   const clients = queryValues(req, "client").map((value) => value.slice(0, 160));
-  const customers = queryValues(req, "customer").map((value) => value.slice(0, 160));
-  const datasources = queryValues(req, "datasource").map((value) => value.slice(0, 160));
+  const rawCustomers = queryValues(req, "customer").map((value) => value.slice(0, 160));
+  const rawDatasources = queryValues(req, "datasource").map((value) => value.slice(0, 160));
+  const splitCustomers = splitAlertCustomerFilter(rawCustomers, getOperationalDataSourceNames());
+  const customers = splitCustomers.customers;
+  const datasources = [...new Set([...rawDatasources, ...splitCustomers.datasources])];
   const customerConfidences = queryValues(req, "customer_confidence").map((value) => value.toLowerCase());
   const severities = queryValues(req, "severity").map((value) => value.toLowerCase());
   const status = (oneQueryValue(req, "status") || "active").toLowerCase();

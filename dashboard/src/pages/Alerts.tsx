@@ -1189,6 +1189,23 @@ export default function AlertsPage() {
 
   const customerCards = useMemo(() => {
     const allCount = metrics?.active_total ?? health?.counts.active_alerts ?? null;
+    const datasourceNames = new Set(
+      (facets?.datasources ?? [])
+        .map((row) => String(row.name || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const datasourceCards = (facets?.datasources ?? []).map((row) => ({
+      key: String(row.name || "").trim(),
+      name: String(row.name || "").trim(),
+      alerts_count: row.alerts_count,
+      enrichment_status: "enriched" as const,
+    }));
+    const customers = (facets?.customers ?? [])
+      .filter((customer) => !datasourceNames.has(String(customer.key || "").trim().toLowerCase()))
+      .map((customer) => ({
+        ...customer,
+        name: facetCustomerDisplayName(customer),
+      }));
     return [
       {
         key: "all",
@@ -1196,12 +1213,10 @@ export default function AlertsPage() {
         alerts_count: allCount,
         enrichment_status: "enriched" as const,
       },
-      ...(facets?.customers ?? []).map((customer) => ({
-        ...customer,
-        name: facetCustomerDisplayName(customer),
-      })),
+      ...datasourceCards,
+      ...customers,
     ];
-  }, [facets?.customers, health?.counts.active_alerts, metrics?.active_total]);
+  }, [facets?.customers, facets?.datasources, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
     if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
