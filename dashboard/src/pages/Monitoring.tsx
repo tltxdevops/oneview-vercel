@@ -63,6 +63,19 @@ import {
   type FreshAttentionTone,
 } from "@/lib/oneview-fresh-attention";
 import {
+  LIVE_TRANSITION_DURATION_MS,
+  detectLiveTransitions,
+  isLiveTransitionActive,
+  mergeLiveTransitionQueue,
+  prunePinnedByTransitions,
+  reconcileLiveTransitions,
+  sameLiveTransitionMap,
+  snapshotFromAlert,
+  snapshotFromIncident,
+  toLiveSnapshotMap,
+  type LiveTransition,
+} from "@/lib/oneview-live-transition";
+import {
   MONITOR_ALERT_MODE,
   MONITOR_QUEUE_LIMIT,
   MONITOR_QUEUE_SORT,
@@ -299,11 +312,13 @@ function MonitorUnassignedRow({
   onOpen,
   selected = false,
   showAnalyst = false,
+  liveTransition = null,
 }: {
   item: OneViewIncident;
   onOpen: (item: OneViewIncident) => void;
   selected?: boolean;
   showAnalyst?: boolean;
+  liveTransition?: LiveTransition | null;
 }) {
   const number = displayIncidentField(item.number);
   const analyst = displayIncidentField(item.assigned_to_display, item.assigned_to);
@@ -315,8 +330,9 @@ function MonitorUnassignedRow({
       className={cn(
         "grid w-full grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] gap-x-2 gap-y-0.5 border-b border-border/50 py-1.5 text-left last:border-b-0 transition-colors hover:bg-muted/40",
         selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
+        liveTransition && "ov-live-transition",
       )}
-      aria-label={`Abrir chamado ${number}`}
+      aria-label={`Abrir chamado ${number}${liveTransition ? ` · ${liveTransition.label}` : ""}`}
     >
       <p className="truncate text-[13px] font-semibold text-foreground" title={number}>{number}</p>
       <p className="truncate text-right text-[11px] text-muted-foreground" title={formatUpdatedAgo(item.sys_updated_on)}>
@@ -326,6 +342,9 @@ function MonitorUnassignedRow({
         {displayIncidentField(item.company_display, item.company)}
       </p>
       <div className="flex flex-wrap items-center justify-end gap-1">
+        {liveTransition ? (
+          <span className="ov-live-transition-badge" aria-live="polite">{liveTransition.label}</span>
+        ) : null}
         {showAnalyst ? (
           <span className="max-w-[8rem] truncate text-[10px] text-muted-foreground" title={analyst}>
             {analyst}
@@ -352,11 +371,13 @@ function MonitorAlertRow({
   onOpen,
   selected = false,
   freshTone = null,
+  liveTransition = null,
 }: {
   alert: OneViewAlert;
   onOpen: (alert: OneViewAlert) => void;
   selected?: boolean;
   freshTone?: FreshAttentionTone | null;
+  liveTransition?: LiveTransition | null;
 }) {
   const acked = Boolean(alert.acknowledged_source);
   const fresh = Boolean(freshTone);
@@ -372,8 +393,9 @@ function MonitorAlertRow({
         selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
         freshTone === "disaster" && "ov-fresh-attention-disaster",
         freshTone === "high" && "ov-fresh-attention-high",
+        liveTransition && "ov-live-transition",
       )}
-      aria-label={`Abrir alerta ${alert.problem_name || alert.id}${fresh ? " · Novo" : ""}`}
+      aria-label={`Abrir alerta ${alert.problem_name || alert.id}${fresh ? " · Novo" : ""}${liveTransition ? ` · ${liveTransition.label}` : ""}`}
     >
       <span className="flex min-w-0 items-center gap-2">
         <ClientIdentity
@@ -409,6 +431,9 @@ function MonitorAlertRow({
 
       <span className="flex min-w-0 flex-wrap items-center gap-1 justify-self-start">
         <SeverityBadge severity={alert.severity} className="h-fit w-fit px-1.5 py-0.5 text-[11px] leading-none" />
+        {liveTransition ? (
+          <span className="ov-live-transition-badge" aria-live="polite">{liveTransition.label}</span>
+        ) : null}
         {fresh ? (
           <span
             className={cn(
@@ -532,6 +557,19 @@ export default function MonitoringPage() {
   const freshStartedAtRef = useRef<Map<string, number>>(new Map());
   const freshSeededRef = useRef(false);
   const [freshAttentionIds, setFreshAttentionIds] = useState<Set<string>>(new Set());
+  const pollGenerationRef = useRef(0);
+  const alertSnapshotReadyRef = useRef(false);
+  const previousAlertsRef = useRef<Map<string, OneViewAlert>>(new Map());
+  const alertConsumedKeysRef = useRef<Set<string>>(new Set());
+  const alertTransitionsRef = useRef<Map<string, LiveTransition>>(new Map());
+  const alertPinnedRef = useRef<Map<string, OneViewAlert>>(new Map());
+  const [alertTransitions, setAlertTransitions] = useState<Map<string, LiveTransition>>(new Map());
+  const incidentSnapshotReadyRef = useRef(false);
+  const previousIncidentsRef = useRef<Map<string, OneViewIncident>>(new Map());
+  const incidentConsumedKeysRef = useRef<Set<string>>(new Set());
+  const incidentTransitionsRef = useRef<Map<string, LiveTransition>>(new Map());
+  const incidentPinnedRef = useRef<Map<string, OneViewIncident>>(new Map());
+  const [incidentTransitions, setIncidentTransitions] = useState<Map<string, LiveTransition>>(new Map());
 
   const setSectionError = useCallback((key: keyof SectionErrors, value: string | null) => {
     setSectionErrors((current) => (current[key] === value ? current : { ...current, [key]: value }));
@@ -721,6 +759,8 @@ export default function MonitoringPage() {
 
   const refreshAll = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
+    pollGenerationRef.current += 1;
+    const pollGeneration = pollGenerationRef.current;
 
     const request = (async () => {
       setIsUpdating(true);
@@ -779,7 +819,60 @@ export default function MonitoringPage() {
 
       if (queueResult.status === "fulfilled") {
         const payload = queueResult.value as Awaited<ReturnType<typeof fetchMonitoringAlerts>>;
-        setQueueAlerts(payload.items);
+        /* OV-P0-268 alert transitions */
+        const serverAlerts = payload.items ?? [];
+        const previousAlerts = previousAlertsRef.current;
+        const nextAlertMap = new Map(serverAlerts.map((item) => [item.id, item]));
+        const provenAlertSnapshots = toLiveSnapshotMap(serverAlerts.map((item) => snapshotFromAlert(item)));
+        const missingAlertIds = [...previousAlerts.keys()].filter((id) => !nextAlertMap.has(id));
+        if (alertSnapshotReadyRef.current && missingAlertIds.length) {
+          const proofs = await Promise.allSettled(
+            missingAlertIds.slice(0, 5).map(async (id) => {
+              const detail = await fetchAlert(id, controller.signal);
+              return snapshotFromAlert((detail as { item?: OneViewAlert })?.item ?? (detail as OneViewAlert));
+            }),
+          );
+          if (controller.signal.aborted || pollGeneration !== pollGenerationRef.current) return;
+          for (const proof of proofs) {
+            if (proof.status !== "fulfilled" || !proof.value?.id) continue;
+            provenAlertSnapshots.set(proof.value.id, proof.value);
+          }
+        }
+        if (controller.signal.aborted || pollGeneration !== pollGenerationRef.current) return;
+        const detectedAlerts = detectLiveTransitions({
+          previousById: toLiveSnapshotMap([...previousAlerts.values()].map((item) => snapshotFromAlert(item))),
+          nextById: provenAlertSnapshots,
+          previousSnapshotReady: alertSnapshotReadyRef.current,
+          consumedVersionKeys: alertConsumedKeysRef.current,
+          now: Date.now(),
+        });
+        const reconciledAlerts = reconcileLiveTransitions({
+          current: alertTransitionsRef.current,
+          detected: detectedAlerts,
+          consumedVersionKeys: alertConsumedKeysRef.current,
+          now: Date.now(),
+        });
+        const nextPinnedAlerts = new Map(alertPinnedRef.current);
+        for (const transition of reconciledAlerts.active.values()) {
+          if (nextAlertMap.has(transition.id)) continue;
+          const previous = previousAlerts.get(transition.id);
+          const proven = provenAlertSnapshots.get(transition.id);
+          if (!previous) continue;
+          nextPinnedAlerts.set(transition.id, {
+            ...previous,
+            acknowledged_source: proven?.acknowledged_source ?? previous.acknowledged_source,
+            acknowledged_internal: proven?.acknowledged_internal ?? previous.acknowledged_internal,
+            status_source: proven?.status_source ?? previous.status_source,
+            status_internal: proven?.status_internal ?? previous.status_internal,
+          });
+        }
+        alertTransitionsRef.current = reconciledAlerts.active;
+        alertConsumedKeysRef.current = reconciledAlerts.consumedVersionKeys;
+        alertPinnedRef.current = prunePinnedByTransitions(nextPinnedAlerts, reconciledAlerts.active, Date.now());
+        setAlertTransitions(new Map(reconciledAlerts.active));
+        previousAlertsRef.current = nextAlertMap;
+        alertSnapshotReadyRef.current = true;
+        setQueueAlerts(serverAlerts);
         setQueueTotal(payload.total);
         setSectionError("queue", null);
         anySuccess = true;
@@ -792,8 +885,64 @@ export default function MonitoringPage() {
 
       if (incidentsResult?.status === "fulfilled") {
         const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchMonitoringUnassignedIncidents>>;
-        setUnassignedIncidents(payload.items ?? []);
-        setUnassignedTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
+        /* OV-P0-268 incident transitions */
+        const serverIncidents = payload.items ?? [];
+        const previousIncidents = previousIncidentsRef.current;
+        const nextIncidentMap = new Map(
+          serverIncidents
+            .map((item) => [String(item.sys_id || item.id || ""), item] as const)
+            .filter(([id]) => Boolean(id)),
+        );
+        const provenIncidentSnapshots = toLiveSnapshotMap(serverIncidents.map((item) => snapshotFromIncident(item)));
+        const missingIncidentIds = [...previousIncidents.keys()].filter((id) => !nextIncidentMap.has(id));
+        if (incidentSnapshotReadyRef.current && missingIncidentIds.length) {
+          const proofs = await Promise.allSettled(
+            missingIncidentIds.slice(0, 5).map(async (id) => {
+              const detail = await fetchIncidents({ sysId: id, pageSize: 1, signal: controller.signal });
+              const item = detail.items?.[0];
+              return item ? snapshotFromIncident(item) : null;
+            }),
+          );
+          if (controller.signal.aborted || pollGeneration !== pollGenerationRef.current) return;
+          for (const proof of proofs) {
+            if (proof.status !== "fulfilled" || !proof.value?.id) continue;
+            provenIncidentSnapshots.set(proof.value.id, proof.value);
+          }
+        }
+        if (controller.signal.aborted || pollGeneration !== pollGenerationRef.current) return;
+        const detectedIncidents = detectLiveTransitions({
+          previousById: toLiveSnapshotMap([...previousIncidents.values()].map((item) => snapshotFromIncident(item))),
+          nextById: provenIncidentSnapshots,
+          previousSnapshotReady: incidentSnapshotReadyRef.current,
+          consumedVersionKeys: incidentConsumedKeysRef.current,
+          now: Date.now(),
+        });
+        const reconciledIncidents = reconcileLiveTransitions({
+          current: incidentTransitionsRef.current,
+          detected: detectedIncidents,
+          consumedVersionKeys: incidentConsumedKeysRef.current,
+          now: Date.now(),
+        });
+        const nextPinnedIncidents = new Map(incidentPinnedRef.current);
+        for (const transition of reconciledIncidents.active.values()) {
+          if (nextIncidentMap.has(transition.id)) continue;
+          const previous = previousIncidents.get(transition.id);
+          const proven = provenIncidentSnapshots.get(transition.id);
+          if (!previous) continue;
+          nextPinnedIncidents.set(transition.id, {
+            ...previous,
+            assigned_to: proven?.assigned_to ?? previous.assigned_to,
+            assigned_to_display: proven?.assigned_to_display ?? previous.assigned_to_display,
+          });
+        }
+        incidentTransitionsRef.current = reconciledIncidents.active;
+        incidentConsumedKeysRef.current = reconciledIncidents.consumedVersionKeys;
+        incidentPinnedRef.current = prunePinnedByTransitions(nextPinnedIncidents, reconciledIncidents.active, Date.now());
+        setIncidentTransitions(new Map(reconciledIncidents.active));
+        previousIncidentsRef.current = nextIncidentMap;
+        incidentSnapshotReadyRef.current = true;
+        setUnassignedIncidents(serverIncidents);
+        setUnassignedTotal(Number(payload.pagination?.total_items) || serverIncidents.length);
         setIncidentAssignees((current) => {
           const next = analystFacetOptions(payload.facets?.assignees);
           if (!incidentsAssignedTo.length) return next.length ? next : current;
@@ -847,6 +996,30 @@ export default function MonitoringPage() {
     };
   }, [refreshAll]);
 
+  const displayQueueAlerts = mergeLiveTransitionQueue({
+    serverItems: queueAlerts,
+    pinnedById: alertPinnedRef.current,
+    transitions: alertTransitions,
+    passesFilter: () => true,
+    filter: {
+      hideAcknowledged: alertMode === MONITOR_ALERT_MODE.prioritary,
+      hideResolved: true,
+      hideAssigned: false,
+    },
+  });
+  const displayUnassignedIncidents = mergeLiveTransitionQueue({
+    serverItems: unassignedIncidents,
+    pinnedById: incidentPinnedRef.current,
+    transitions: incidentTransitions,
+    passesFilter: () => true,
+    filter: {
+      hideAcknowledged: false,
+      hideResolved: false,
+      hideAssigned: incidentsMode === INCIDENTS_QUEUE_MODE.unassigned,
+    },
+    idOf: (item) => String(item.sys_id || item.id || ""),
+  });
+
   useEffect(() => {
     const next = reconcileFreshAttention({
       alerts: queueAlerts,
@@ -869,6 +1042,27 @@ export default function MonitoringPage() {
     }, 1_000);
     return () => window.clearInterval(timer);
   }, [freshAttentionIds.size]);
+
+  useEffect(() => {
+    /* OV-P0-268 transition tick */
+    if (!alertTransitions.size && !incidentTransitions.size) return undefined;
+    const timer = window.setInterval(() => {
+      const tick = Date.now();
+      const nextAlerts = new Map(
+        [...alertTransitionsRef.current].filter(([, transition]) => isLiveTransitionActive(transition, tick)),
+      );
+      const nextIncidents = new Map(
+        [...incidentTransitionsRef.current].filter(([, transition]) => isLiveTransitionActive(transition, tick)),
+      );
+      alertTransitionsRef.current = nextAlerts;
+      incidentTransitionsRef.current = nextIncidents;
+      alertPinnedRef.current = prunePinnedByTransitions(alertPinnedRef.current, nextAlerts, tick);
+      incidentPinnedRef.current = prunePinnedByTransitions(incidentPinnedRef.current, nextIncidents, tick);
+      if (!sameLiveTransitionMap(alertTransitions, nextAlerts)) setAlertTransitions(nextAlerts);
+      if (!sameLiveTransitionMap(incidentTransitions, nextIncidents)) setIncidentTransitions(nextIncidents);
+    }, Math.min(250, LIVE_TRANSITION_DURATION_MS));
+    return () => window.clearInterval(timer);
+  }, [alertTransitions, incidentTransitions]);
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -1312,13 +1506,14 @@ export default function MonitoringPage() {
                     <span className="text-center">Ação</span>
                   </div>
                   <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
-                    {queueAlerts.map((alert) => (
+                    {displayQueueAlerts.map((alert) => (
                       <li key={alert.id}>
                         <MonitorAlertRow
                           alert={alert}
                           onOpen={openAlert}
                           selected={selectedAlertId === alert.id}
                           freshTone={freshAttentionIds.has(alert.id) ? freshAttentionTone(alert.severity) : null}
+                          liveTransition={alertTransitions.get(alert.id) ?? null}
                         />
                       </li>
                     ))}
@@ -1370,13 +1565,14 @@ export default function MonitoringPage() {
                   </span>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto">
-                  {unassignedIncidents.map((item) => (
+                  {displayUnassignedIncidents.map((item) => (
                     <MonitorUnassignedRow
                       key={item.sys_id || item.number || String(item.sys_updated_on)}
                       item={item}
                       onOpen={openIncident}
                       selected={selectedIncidentKey === incidentKey(item)}
                       showAnalyst={showIncidentAnalysts}
+                      liveTransition={incidentTransitions.get(String(item.sys_id || item.id || "")) ?? null}
                     />
                   ))}
                 </div>
