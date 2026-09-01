@@ -97,6 +97,41 @@ test("OV-P0-267: Cliente=fonte for all six operational sources remaps to d.name"
   }
 });
 
+test("OV-P0-267B: Home, Monitoramento and Alertas share the six-source BFF truth contract", async () => {
+  const home = await readFile(path.join(dashboardRoot, "src/lib/oneview-home.ts"), "utf8");
+  const monitoring = await readFile(path.join(dashboardRoot, "src/lib/oneview-monitoring.ts"), "utf8");
+  const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
+
+  // Home carries source explicitly; Monitoramento and Alertas retain the Cliente
+  // UI contract and rely on the same BFF remap. All three use first_seen windows.
+  assert.match(home, /datasources: params\.datasources/);
+  assert.match(home, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
+  assert.match(home, /excludeOperator: true/);
+  assert.match(monitoring, /customers: params\.customers/);
+  assert.match(monitoring, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
+  assert.match(alerts, /facets\?\.datasources/);
+
+  for (const datasource of OPERATIONAL) {
+    for (const firstSeenFrom of [
+      "2026-09-01T14:30:00.000Z",
+      "2026-09-01T13:00:00.000Z",
+      "2026-09-01T07:00:00.000Z",
+      "2026-08-31T15:00:00.000Z",
+    ]) {
+      const query = buildAlertListQuery(request({
+        customer: datasource,
+        status: "active",
+        severity: "average",
+        first_seen_from: firstSeenFrom,
+      }));
+      assert.deepEqual(query.filters.customers, [], `${datasource}/${firstSeenFrom}`);
+      assert.ok(query.filters.datasources.includes(datasource), `${datasource}/${firstSeenFrom}`);
+      assert.equal(query.filters.status, "active");
+      assert.deepEqual(query.filters.severities, ["average"]);
+    }
+  }
+});
+
 test("OV-P0-267: status contract uses resolved_at + status_source + status_internal", () => {
   const active = buildAlertListQuery(request({ status: "active" }));
   const resolved = buildAlertListQuery(request({ status: "resolved" }));
