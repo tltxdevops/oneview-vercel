@@ -4,6 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createServiceNowIncidentActionsHandler, getServiceNowActionsConfig } from "../api/_lib/oneview-servicenow-actions.js";
+import routeHandler from "../api/oneview/incidents/[sysId]/actions.js";
 
 const SYS_ID = "a".repeat(32);
 const NUMBER = "INC0012345";
@@ -159,4 +160,8 @@ test("OV-P0-280A: drawer uses only the authenticated OneView BFF and presents al
   assert.match(page, /Solicitação enviada — aguardando Worker/);
   assert.match(api, /\/oneview\/incidents\/\$\{encodeURIComponent\(sysId\)\}\/actions/);
   assert.doesNotMatch(api, /service-now\.com|SERVICENOW_(?:USERNAME|PASSWORD)|Basic\s+/i);
+});
+
+test("OV-P0-280A: Vercel dynamic route resolves the action handler", () => {
+  assert.equal(typeof routeHandler, "function");
 });
