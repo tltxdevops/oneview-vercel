@@ -233,8 +233,7 @@ export default function ChamadosPage() {
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        setPayload(null);
-        setError("Chamados indisponíveis");
+        setError(payload ? "Atualização falhou — exibindo último dado disponível" : "Chamados indisponíveis");
         void err;
       })
       .finally(() => {

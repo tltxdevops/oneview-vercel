@@ -1,0 +1,3 @@
+import test from "node:test"; import assert from "node:assert/strict"; import { readFile } from "node:fs/promises";
+const read=(p)=>readFile(new URL(`../${p}`,import.meta.url),"utf8");
+test("OV-P0-279B valid payload survives refresh errors on all operational surfaces",async()=>{const files=["src/pages/Index.tsx","src/pages/Monitoring.tsx","src/pages/Alerts.tsx","src/pages/Historico.tsx","src/pages/Chamados.tsx","src/pages/Operadoras.tsx"];const pages=await Promise.all(files.map(read));for(const page of pages) assert.doesNotMatch(page,/setPayload\(null\)/);assert.match(pages[4],/Atualização falhou — exibindo último dado disponível/);});
