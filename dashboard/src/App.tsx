@@ -2,22 +2,18 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Index from "./pages/Index";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
-import AlertsPage from "@/pages/Alerts";
-import HistoricoPage from "@/pages/Historico";
-import MonitoringPage from "@/pages/Monitoring";
-import ChamadosPage from "@/pages/Chamados";
-import OperadorasPage from "@/pages/Operadoras";
 import SettingsPage from "@/pages/Settings";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import SsoCallback from "@/pages/SsoCallback";
 import { getBrowserRouterBase } from "@/lib/basePath";
 
 const queryClient = new QueryClient();
+const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const HistoricoPage = lazy(() => import("@/pages/Historico")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras"));
+const route = (node: ReactNode) => <Suspense fallback={null}>{node}</Suspense>;
 
 /**
  * OV-P0-141B — páginas sem fonte real permanecem apenas no servidor local.
@@ -39,14 +35,14 @@ const App = () => (
           <Route path="/sso/callback" element={<SsoCallback />} />
           <Route path="/auth/microsoft/callback" element={<SsoCallback />} />
           <Route element={<ProtectedRoute />}>
-            <Route path="/" element={<Index />} />
-            <Route path="/monitoramento" element={<MonitoringPage />} />
-            <Route path="/alertas" element={<AlertsPage />} />
-            <Route path="/historico" element={<HistoricoPage />} />
+            <Route path="/" element={route(<Index />)} />
+            <Route path="/monitoramento" element={route(<MonitoringPage />)} />
+            <Route path="/alertas" element={route(<AlertsPage />)} />
+            <Route path="/historico" element={route(<HistoricoPage />)} />
             {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={null}><BancoDadosPage /></Suspense>} />}
             {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={null}><CertificadosPage /></Suspense>} />}
-            <Route path="/chamados" element={<ChamadosPage />} />
-            <Route path="/operadoras" element={<OperadorasPage />} />
+            <Route path="/chamados" element={route(<ChamadosPage />)} />
+            <Route path="/operadoras" element={route(<OperadorasPage />)} />
             {WorkspacesPage && <Route path="/workspaces" element={<Suspense fallback={null}><WorkspacesPage /></Suspense>} />}
             <Route path="/config" element={<SettingsPage />} />
           </Route>
