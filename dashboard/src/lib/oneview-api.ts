@@ -5,6 +5,14 @@ import { getServerAuthToken, serverAuthEnabled } from "@/lib/server-auth";
 import { canonicalClientName, canonicalHostName } from "@/components/oneview/ClientIdentity";
 
 const API_BASE_URL = "/api";
+/** OV-P0-279: same BFF read shares an in-flight promise and a brief route cache. */
+const READ_CACHE_TTL_MS = 8_000;
+const readCache = new Map<string, { value: unknown; expiresAt: number }>();
+const inFlightReads = new Map<string, Promise<unknown>>();
+export function oneViewReadCacheKey(path: string, init?: RequestInit) {
+  return `${path}|${String(init?.method || "GET").toUpperCase()}`;
+}
+export function clearOneViewReadCache() { readCache.clear(); inFlightReads.clear(); }
 
 async function authHeaders(): Promise<Record<string, string>> {
   if (serverAuthEnabled()) {
@@ -31,6 +39,13 @@ async function authHeaders(): Promise<Record<string, string>> {
 }
 
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const isRead = !init?.method || init.method.toUpperCase() === "GET";
+  const key = oneViewReadCacheKey(path, init);
+  const cached = isRead ? readCache.get(key) : undefined;
+  if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+  const shared = isRead ? inFlightReads.get(key) : undefined;
+  if (shared) return shared as Promise<T>;
+  const request = (async () => {
   const authorization = await authHeaders();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -98,6 +113,13 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
     ...(dataSource ? { data_source: dataSource } : {}),
     checked_at: typeof record.checked_at === "string" ? record.checked_at : new Date().toISOString(),
   } as T;
+  })();
+  if (isRead) inFlightReads.set(key, request);
+  try {
+    const value = await request;
+    if (isRead) readCache.set(key, { value, expiresAt: Date.now() + READ_CACHE_TTL_MS });
+    return value;
+  } finally { if (isRead) inFlightReads.delete(key); }
 }
 
 export type OneViewDataSourceKind = "database" | "snapshot" | "servicenow";

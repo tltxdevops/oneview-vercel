@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { getStoredTheme, setStoredTheme, type Theme } from "@/lib/settings";
+import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
 
 const MONITOR_SIDEBAR_STORAGE_KEY = "oneview-monitor-sidebar-open";
 
@@ -100,6 +101,8 @@ function SidebarNavItem({
       <TooltipTrigger asChild>
         <NavLink
           to={to}
+          onMouseEnter={() => prefetchOneViewRoute(to)}
+          onFocus={() => prefetchOneViewRoute(to)}
           end={end}
           aria-label={secondary ? `${name}. ${secondary}` : name}
           className={({ isActive }) => {
