@@ -23,7 +23,7 @@ test("OV-P0-255 intervalos: 10s nas quatro telas; Histórico/Settings mais lento
   assert.match(monitoring, /REFRESH_MS = 10_000/);
   assert.match(alerts, /SUMMARY_REFRESH_MS = 10_000/);
   assert.match(alerts, /ALERTS_REFRESH_MS = 10_000/);
-  assert.match(operators, /OPERATORS_REFRESH_MS = 10_000/);
+  assert.match(operators, /REFRESH_MS = 10_000/);
 
   assert.match(history, /HISTORY_REFRESH_MS = 60_000/);
   assert.match(settings, /SETTINGS_REFRESH_SECONDS = 60/);
@@ -60,20 +60,17 @@ test("OV-P0-255 dedup: request equivalente não empilha; quiet não reseta UI", 
   assert.match(monitoring, /if \(inFlight\.current\) return inFlight\.current/);
   assert.match(alerts, /if \(summaryRequestRef\.current\) return summaryRequestRef\.current/);
   assert.match(alerts, /options\?\.quiet && alertsRequestRef\.current && !alertsRequestRef\.current\.signal\.aborted/);
-  assert.match(operators, /mode === "quiet" && listRequest\.current && !listRequest\.current\.signal\.aborted/);
+  assert.match(operators, /mode === "quiet" && request\.current && !request\.current\.signal\.aborted/);
 
   assert.match(home, /loadSummary\("quiet"\)/);
   assert.match(home, /loadLists\("quiet"\)/);
   assert.match(alerts, /loadAlerts\(\{ quiet: true \}\)/);
-  assert.match(operators, /loadQueue\("quiet"\)/);
+  assert.match(operators, /load\("quiet"\)/);
   assert.match(operators, /enableAutoRefresh=\{false\}/);
 
-  const quietQueue = operators.slice(
-    operators.indexOf("const loadQueue"),
-    operators.indexOf("const loadSelectedAlert"),
-  );
-  assert.doesNotMatch(quietQueue, /loadSelectedAlert|setSelectedAlertId|searchParams\.delete\("alert"\)/);
-  assert.match(quietQueue, /if \(mode !== "quiet"\) setPayload\(null\)/);
+  const quietQueue = operators.slice(operators.indexOf("const load"), operators.indexOf("useEffect"));
+  assert.doesNotMatch(quietQueue, /setSelected\(/);
+  assert.doesNotMatch(quietQueue, /setPayload\(null\)/);
 
   assert.match(alerts, /não limpa detail\/history/);
 });

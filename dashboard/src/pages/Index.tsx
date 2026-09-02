@@ -1023,8 +1023,8 @@ export default function Index() {
 
         <SectionPanel
           className="overflow-hidden"
-          title="Operadoras"
-          aside={<OperationalCta to="/operadoras">Ver fila de Operadoras</OperationalCta>}
+          title="Links"
+          aside={<OperationalCta to="/operadoras">Ver conectividade</OperationalCta>}
           bodyClassName="px-3 pb-2 pt-0"
         >
           <div className="grid grid-cols-3 gap-2 border-b border-border/60 py-2 text-center">

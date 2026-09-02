@@ -301,7 +301,7 @@ test("OV-P0-247 handler returns INC link and keeps read-only contract", async ()
   assert.equal(denied.statusCode, 405);
 });
 
-test("OV-P0-247 page/menu stay isolated; OV-P0-248 consumes only active canonical queue", async () => {
+test("OV-P0-247 legacy route remains; OV-P0-278C presents canonical links", async () => {
   const [page, app, sidebar, index, api, lib] = await Promise.all([
     read("src/pages/Operadoras.tsx"),
     read("src/App.tsx"),
@@ -313,24 +313,20 @@ test("OV-P0-247 page/menu stay isolated; OV-P0-248 consumes only active canonica
 
   assert.match(app, /path="\/operadoras"/);
   assert.match(app, /OperadorasPage/);
-  assert.match(sidebar, /name: "Operadoras"/);
+  assert.match(sidebar, /name: "Links"/);
   assert.match(sidebar, /href: "\/operadoras"/);
-  assert.match(page, /searchParams.get\("alert"\)/);
-  assert.match(page, /AlertDetailDrawer/);
-  assert.match(page, /Abrir alerta no OneView/);
-  assert.match(page, /Abrir chamado no ServiceNow/);
+  assert.match(page, /title="Links"/);
+  assert.match(page, /zabbix_link_inventory/);
+  assert.match(page, /fetchCanonicalLinks/);
   assert.match(page, /Todos/);
-  assert.match(page, /Sem responsável/);
-  assert.match(page, /Em acompanhamento/);
-  assert.match(page, /Recentes/);
-  assert.match(page, /Operadora\/tag/);
-  assert.match(page, /Analista/);
+  assert.match(page, /Não informada na origem/);
+  assert.match(page, /Link \/ Serviço/);
   assert.match(api, /export async function fetchOperatorQueue/);
   assert.match(api, /\/oneview\/operator-queue/);
   assert.doesNotMatch(page, /Assumir|Transferir|Hold|Comentar no chamado/);
   assert.match(index, /fetchOperatorQueue/);
   assert.match(index, /alertStatus: "active"/);
-  assert.match(index, /Ver fila de Operadoras/);
+  assert.match(index, /Ver conectividade/);
   assert.doesNotMatch(lib, /problem_name\s*[=~].*operad|host_name\s*[=~].*operad|customer_name\s*[=~].*operad/i);
   assert.match(lib, /event_tags/);
   assert.match(lib, /extractServiceNowRefsFromAlertTags/);

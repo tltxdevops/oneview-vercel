@@ -38,7 +38,7 @@ const baseNavigation: NavItem[] = [
   { name: "Alertas", href: "/alertas", icon: Bell, secondary: "Fila operacional" },
   { name: "Histórico", href: "/historico", icon: History, secondary: "Eventos e ações" },
   { name: "Chamados", href: "/chamados", icon: Ticket, secondary: "ServiceNow" },
-  { name: "Operadoras", href: "/operadoras", icon: Radio, secondary: "Follow-up" },
+  { name: "Links", href: "/operadoras", icon: Radio, secondary: "Conectividade" },
 ];
 
 function navToneClasses(isActive: boolean) {
