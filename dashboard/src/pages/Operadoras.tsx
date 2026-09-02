@@ -4,6 +4,7 @@ import { ExternalLink, Radio } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { FilterBar } from "@/components/oneview/FilterBar";
+import { facetCustomerDisplayName, operationalClientLabel } from "@/components/oneview/ClientIdentity";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { OperationalSegmentedControl } from "@/components/oneview/OperationalSegmentedControl";
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
+import { isDatasourceOnlyFilterValue, zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
 import {
   AlertDetailResponse,
@@ -99,6 +101,7 @@ export default function OperadorasPage() {
   const [tab, setTab] = useState<OperatorQueueTab>(() => parseTab(searchParams.get("tab")));
   const [operatorTag, setOperatorTag] = useState(searchParams.get("operator_tag") || ALL_VALUE);
   const [customer, setCustomer] = useState(searchParams.get("customer") || ALL_VALUE);
+  const [datasource, setDatasource] = useState(searchParams.get("datasource") || ALL_VALUE);
   const [assignedTo, setAssignedTo] = useState(searchParams.get("assigned_to") || ALL_VALUE);
   const [state, setState] = useState(searchParams.get("state") || ALL_VALUE);
   const [severity, setSeverity] = useState(searchParams.get("severity") || ALL_VALUE);
@@ -128,6 +131,7 @@ export default function OperadorasPage() {
         tab,
         operatorTag: operatorTag === ALL_VALUE ? undefined : operatorTag,
         customer: customer === ALL_VALUE ? undefined : customer,
+        datasource: datasource === ALL_VALUE ? undefined : datasource,
         assignedTo: assignedTo === ALL_VALUE ? undefined : assignedTo,
         state: state === ALL_VALUE ? undefined : state,
         severity: severity === ALL_VALUE ? undefined : severity,
@@ -145,7 +149,7 @@ export default function OperadorasPage() {
     } finally {
       if (!controller.signal.aborted && mode !== "quiet") setLoading(false);
     }
-  }, [assignedTo, customer, operatorTag, page, severity, state, tab]);
+  }, [assignedTo, customer, datasource, operatorTag, page, severity, state, tab]);
 
   const loadSelectedAlert = useCallback(async (alertId: string) => {
     detailRequest.current?.abort();
@@ -272,7 +276,7 @@ export default function OperadorasPage() {
         />
 
         <FilterBar aria-label="Filtros da fila de operadoras">
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
             <FilterSelect
               id="operadoras-tag"
               label="Operadora/tag"
@@ -284,8 +288,23 @@ export default function OperadorasPage() {
               id="operadoras-cliente"
               label="Cliente"
               value={customer}
-              options={facetOptions(payload?.facets.customers)}
+              options={facetOptions((payload?.facets.customers || [])
+                .filter((item) => !isDatasourceOnlyFilterValue(item.value) && !isDatasourceOnlyFilterValue(item.label))
+                .map((item) => ({
+                  value: item.value,
+                  label: facetCustomerDisplayName({ key: item.value, name: item.label }),
+                })))}
               onChange={(value) => { setCustomer(value); setPage(1); }}
+            />
+            <FilterSelect
+              id="operadoras-fonte"
+              label="Fonte Zabbix"
+              value={datasource}
+              options={facetOptions((payload?.facets.datasources || []).map((item) => ({
+                value: item.value,
+                label: zabbixSourceDisplayName(item.value || item.label),
+              })))}
+              onChange={(value) => { setDatasource(value); setPage(1); }}
             />
             <FilterSelect
               id="operadoras-analista"
@@ -421,7 +440,14 @@ function OperatorQueueRow({
       className={cn("align-top", selected && "bg-muted/60")}
       data-selected={selected || undefined}
     >
-      <TableCell className="max-w-[9rem] text-[12px]"><TruncatedText>{displayValue(item.customer_name)}</TruncatedText></TableCell>
+      <TableCell className="max-w-[9rem] text-[12px]">
+        <TruncatedText>
+          {operationalClientLabel({
+            key: item.customer_key,
+            name: item.customer_name,
+          })}
+        </TruncatedText>
+      </TableCell>
       <TableCell className="max-w-[12rem] text-[12px]"><TruncatedText>{displayValue(item.operator_tag)}</TruncatedText></TableCell>
       <TableCell className="max-w-[14rem] text-[12px]"><TruncatedText>{displayValue(item.problem_name)}</TruncatedText></TableCell>
       <TableCell className="max-w-[10rem] text-[12px]"><TruncatedText>{displayValue(item.host_name)}</TruncatedText></TableCell>

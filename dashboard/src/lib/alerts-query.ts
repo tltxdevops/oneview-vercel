@@ -168,6 +168,7 @@ export function parseSortOptionKey(value: string | null): { sort: AlertsSortKey;
 export type AlertsUrlState = {
   view?: string;
   customers: string[];
+  datasources?: string[];
   severities: OneViewSeverity[];
   status: AlertsStatusFilter;
   acknowledgedSource: AlertsAckFilter;
@@ -187,6 +188,7 @@ export function writeAlertsUrlParams(state: AlertsUrlState) {
   const next = new URLSearchParams();
   if (state.view) next.set("view", state.view);
   for (const customer of state.customers) next.append("customer", customer);
+  for (const datasource of state.datasources ?? []) next.append("datasource", datasource);
   for (const severity of state.severities) next.append("severity", severity);
   if (state.status) next.set("status", state.status);
   if (state.acknowledgedSource === "acknowledged") next.set("acknowledged_source", "true");

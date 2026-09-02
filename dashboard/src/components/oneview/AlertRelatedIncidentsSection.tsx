@@ -46,13 +46,13 @@ function displayValue(...values: Array<string | null | undefined>) {
       return text;
     }
   }
-  return "—";
+  return "Indisponível na origem";
 }
 
 function formatDateTime(value?: string | null) {
-  if (!value) return "—";
+  if (!value) return "Indisponível na origem";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("pt-BR");
+  return Number.isNaN(date.getTime()) ? "Indisponível na origem" : date.toLocaleString("pt-BR");
 }
 
 function relationSourceLabel(source?: AlertRelatedIncidentsRelationSource | null) {
@@ -75,7 +75,7 @@ function IncidentCard({
   return (
     <article className="space-y-3 rounded-md border border-border/70 p-3" aria-label="Chamado relacionado">
       <div className="flex flex-wrap items-center gap-2">
-        {url && number !== "—" ? (
+        {url && number !== "Indisponível na origem" ? (
           <a
             href={url}
             target="_blank"
@@ -106,7 +106,7 @@ function IncidentCard({
           <dd className="font-medium">{displayValue(item.priority_display, item.priority)}</dd>
         </div>
         <div>
-          <dt className="text-xs text-muted-foreground">Responsável</dt>
+          <dt className="text-xs text-muted-foreground">Analista</dt>
           <dd className="font-medium">{displayValue(item.assigned_to_display, item.assigned_to)}</dd>
         </div>
         <div>
@@ -146,28 +146,7 @@ function ProjectedIncidentCard({
           <Skeleton className="h-10 w-full" />
         </div>
       ) : (
-        <dl className="grid gap-2 text-sm sm:grid-cols-2">
-          <div>
-            <dt className="text-xs text-muted-foreground">Estado</dt>
-            <dd className="font-medium">—</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Prioridade</dt>
-            <dd className="font-medium">—</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Responsável</dt>
-            <dd className="font-medium">—</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Grupo</dt>
-            <dd className="font-medium">—</dd>
-          </div>
-          <div className="sm:col-span-2">
-            <dt className="text-xs text-muted-foreground">Última atualização</dt>
-            <dd>—</dd>
-          </div>
-        </dl>
+        <p className="text-sm text-muted-foreground">Detalhe do chamado indisponível na origem</p>
       )}
     </article>
   );
@@ -315,7 +294,7 @@ export function AlertRelatedIncidentsSection({
           <Skeleton className="h-16 w-full" />
         </div>
       ) : showEmptyEligible ? (
-        <p className="text-sm text-muted-foreground">Nenhum incidente relacionado localizado</p>
+        <p className="text-sm text-muted-foreground">Sem chamado correlacionado</p>
       ) : null}
     </section>
   );

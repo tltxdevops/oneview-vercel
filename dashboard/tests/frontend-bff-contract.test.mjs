@@ -349,7 +349,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /disponibilidade\s*100%|disponibilidade 100|uptime\s*100%/i);
   assert.doesNotMatch(index, /PgBouncer|mock-data|demo-oneview-data|RITM\d+|INC\d+/i);
   assert.ok(index.indexOf('title="Alertas Recentes"') < index.indexOf("Eventos recentes"));
-  assert.ok(index.indexOf('title="Chamados"') < index.indexOf("Eventos recentes"));
+  assert.ok(index.indexOf("incidentsPanelTitle") < index.indexOf("Eventos recentes"));
   assert.doesNotMatch(index, /A integração com o ServiceNow está em preparação\.|Abrir área de chamados/);
   assert.doesNotMatch(index, /SyncsStatusPanel|PlatformHealthStrip/);
   assert.doesNotMatch(index, /Saúde da plataforma/);
@@ -358,7 +358,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /dataSource=\{currentDataSource\}|checkedAt=\{lastCheckedAt\}/);
   assert.match(index, /Abrir resumo de \$\{/);
   assert.match(index, /fetchHomeAlerts|status: "active"/);
-  assert.match(index, /title="Chamados"/);
+  assert.match(index, /title=\{incidentsPanelTitle\}/);
   assert.match(index, /title="Operadoras"/);
   assert.match(app, /path="\/historico"/);
   assert.match(app, /HistoricoPage/);
@@ -472,9 +472,11 @@ test("página de chamados lista incidents do BFF read-only", async () => {
 
   assert.match(app, /path="\/chamados"/);
   assert.match(app, /ChamadosPage/);
-  // OV-P0-69: Home tem "Ver todos" → /chamados (não o CTA estático antigo).
+  // OV-P0-69: Home tem "Ver todos em Chamados" via href operacional (não o CTA estático antigo).
   assert.doesNotMatch(index, /Abrir área de chamados|A integração com o ServiceNow está em preparação/);
-  assert.match(index, /to="\/chamados"/);
+  assert.match(index, /buildOperationalChamadosHref/);
+  assert.match(index, /Ver todos em Chamados/);
+  assert.match(index, /to=\{chamadosHref\}/);
 });
 
 test("navegação lateral aponta somente para rotas registradas no App", async () => {
@@ -1459,7 +1461,10 @@ test("Histórico operacional NOC é rota independente com paginação e filtros 
   assert.match(historico, /value: "custom"/);
   assert.match(historico, /canonicalClientName|facetCustomerDisplayName|historyEventClientLabel/);
   assert.doesNotMatch(historico, /value: "update"/);
-  assert.doesNotMatch(historico, /Filtrar por fonte|alert_history|dataSource|datasources:/);
+  assert.match(historico, /datasources:/);
+  assert.match(historico, /Fonte Zabbix|ZabbixSourceFilter/);
+  assert.doesNotMatch(historico, /Filtrar por fonte|alert_history|dataSource=/);
+  assert.doesNotMatch(historico, /Fonte: \$\{dataSource\}|via alert_history/);
   assert.doesNotMatch(historico, /Fonte: \$\{dataSource\}|via alert_history/);
   assert.doesNotMatch(historico, /Reconhecer no OneView|INC\d+|RITM\d+/);
   assert.doesNotMatch(historico, /Sem comentário registrado|Sem responsável/);
@@ -1839,7 +1844,7 @@ test("OV-P0-49 drawer operacional compartilha hierarquia ClientIdentity + host",
   assert.match(summary, /canonicalClientName|ClientIdentity/);
   assert.match(summary, /canonicalHostName/);
   assert.match(summary, /CLASSIFICATION_PENDING_LABEL/);
-  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /Origem da classificação/);
+  assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /Fonte da identidade do cliente|Origem da classificação/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /label="Confiança"/);
   assert.match(summary, /ACK pendente|ACK/);
   assert.match(summary, /interfaceFromAlertTags|safeHostIp/);
@@ -2114,7 +2119,7 @@ test("OV-P0-43 Monitoramento alinha faixa de severidades, janela e fila única",
   assert.match(monitoring, /parseMonitorWindow\(searchParams\.get\("window"\)\)/);
   assert.match(monitoring, /label="Janela temporal"|Janela temporal/);
   assert.match(monitoring, /MONITOR_WINDOW_OPTIONS\.map/);
-  assert.match(monitoring, /fetchRecentOperationalMetrics\(\{ customers, signal: controller\.signal, now, windowMs \}\)/);
+  assert.match(monitoring, /fetchRecentOperationalMetrics\(\{ customers, datasources, signal: controller\.signal, now, windowMs \}\)/);
   assert.match(monitoring, /fetchMonitoringAlerts/);
   assert.match(monitoring, /windowMs,/);
   assert.doesNotMatch(monitoring, /title=\{`Recentes · \$\{windowLabel\}`\}/);

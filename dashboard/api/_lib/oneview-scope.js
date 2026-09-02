@@ -16,24 +16,31 @@ export function getOperationalDataSourceNames() {
 }
 
 /**
- * OV-P0-267 — o combobox Cliente da UI envia `customer=`.
- * Quando o valor é o nome de uma fonte operacional, isso é filtro de
- * datasource (`d.name`), não identidade de customer_name.
- * Fontes fora do allowlist nunca entram por esse caminho.
+ * OV-P0-274 — `customer=` é identidade canônica (customer_key/name).
+ * Apenas tokens que nunca são cliente (teletex-http / *-http) ainda
+ * remapeiam para `d.name`, para deep links antigos da OV-P0-267.
+ * Zurich / Castrolanda / RHP / Fraport permanecem filtro de cliente.
  */
-export function splitAlertCustomerFilter(values, dataSourceNames = getOperationalDataSourceNames()) {
+export function isDatasourceOnlyCustomerToken(value, dataSourceNames = getOperationalDataSourceNames()) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.includes("datasource") || normalized.endsWith("-http")) return true;
   const allowed = new Set(
     (Array.isArray(dataSourceNames) ? dataSourceNames : [dataSourceNames])
       .map((name) => String(name || "").trim().toLowerCase())
-      .filter(Boolean),
+      .filter((name) => name.endsWith("-http") || name.includes("datasource")),
   );
+  return allowed.has(normalized);
+}
+
+export function splitAlertCustomerFilter(values, dataSourceNames = getOperationalDataSourceNames()) {
   const datasources = [];
   const customers = [];
   for (const raw of Array.isArray(values) ? values : [values]) {
     const value = String(raw || "").trim();
     if (!value) continue;
     const normalized = value.toLowerCase();
-    if (allowed.has(normalized)) datasources.push(normalized);
+    if (isDatasourceOnlyCustomerToken(normalized, dataSourceNames)) datasources.push(normalized);
     else customers.push(normalized);
   }
   return {

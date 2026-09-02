@@ -13,6 +13,7 @@ import {
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
+import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
@@ -51,6 +52,7 @@ import {
   isRiskSummaryPreset,
   type HistoryRiskPreset,
 } from "@/lib/historico-query";
+import { isDatasourceOnlyFilterValue, zabbixSourceKey } from "@/lib/oneview-zabbix-source";
 import {
   AlertHistoryItem,
   fetchAlert,
@@ -383,7 +385,11 @@ export default function HistoricoPage() {
     HISTORY_RISK_PRESETS.map((item) => item.value),
     "all",
   ) as HistoryRiskPreset;
-  const cliente = searchParams.get("customer") || "all";
+  const clienteRaw = searchParams.get("customer") || "all";
+  const cliente = isDatasourceOnlyFilterValue(clienteRaw) ? "all" : clienteRaw;
+  const fonte = searchParams.get("datasource")
+    || (isDatasourceOnlyFilterValue(clienteRaw) ? zabbixSourceKey(clienteRaw) : "all")
+    || "all";
   const severities = parseSeverities(searchParams);
   const alertStatus = queryEnum(
     searchParams.get("status"),
@@ -500,6 +506,7 @@ export default function HistoricoPage() {
         page,
         pageSize: PAGE_SIZE,
         customers: cliente === "all" ? [] : [cliente],
+        datasources: fonte === "all" ? [] : [fonte],
         eventType,
         search: searchParts.length ? searchParts.join(" ") : undefined,
         occurredFrom: bounds.from,
@@ -521,7 +528,7 @@ export default function HistoricoPage() {
     } finally {
       if (!controller.signal.aborted) setEventsLoading(false);
     }
-  }, [actor, cliente, customRange, eventType, page, period, search]);
+  }, [actor, cliente, fonte, customRange, eventType, page, period, search]);
 
   const loadAlerts = useCallback(async () => {
     alertsRequestRef.current?.abort();
@@ -546,6 +553,7 @@ export default function HistoricoPage() {
         page,
         pageSize: PAGE_SIZE,
         customers: cliente === "all" ? [] : [cliente],
+        datasources: fonte === "all" ? [] : [fonte],
         severities: risk === "all" || risk === "no_ack" ? severities : undefined,
         status: risk === "all" || risk === "no_ack" ? alertStatus : undefined,
         acknowledgedSource: risk === "all"
@@ -591,7 +599,7 @@ export default function HistoricoPage() {
     } finally {
       if (!controller.signal.aborted) setAlertsLoading(false);
     }
-  }, [ackFilter, alertStatus, cliente, customRange, page, period, recurrenceKey, risk, search, severities]);
+  }, [ackFilter, alertStatus, cliente, fonte, customRange, page, period, recurrenceKey, risk, search, severities]);
 
   useEffect(() => {
     if (tab !== "eventos") return;
@@ -678,7 +686,9 @@ export default function HistoricoPage() {
 
   const customerOptions = useMemo(() => (
     // OV-P0-102: só facets reais — sem opção artificial de unclassified.
-    (facets?.customers ?? []).map((customer) => ({
+    (facets?.customers ?? [])
+      .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
+      .map((customer) => ({
       ...customer,
       name: facetCustomerDisplayName(customer),
     }))
@@ -705,6 +715,10 @@ export default function HistoricoPage() {
   const changeFilter = (key: string, value: string) => {
     if (key === "customer") {
       patchParams({ customer: value === "all" ? null : value }, { resetPage: true });
+      return;
+    }
+    if (key === "datasource") {
+      patchParams({ datasource: value === "all" ? null : value }, { resetPage: true });
       return;
     }
     if (key === "period") {
@@ -875,6 +889,16 @@ export default function HistoricoPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="historico-alertas-fonte">Fonte Zabbix</Label>
+                  <ZabbixSourceFilter
+                    id="historico-alertas-fonte"
+                    value={fonte}
+                    options={facets?.datasources ?? []}
+                    onValueChange={(value) => changeFilter("datasource", value)}
+                    triggerClassName="w-full"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-alertas-severidade">Severidade</Label>
@@ -1179,6 +1203,16 @@ export default function HistoricoPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="historico-eventos-fonte">Fonte Zabbix</Label>
+                  <ZabbixSourceFilter
+                    id="historico-eventos-fonte"
+                    value={fonte}
+                    options={facets?.datasources ?? []}
+                    onValueChange={(value) => changeFilter("datasource", value)}
+                    triggerClassName="w-full"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="historico-tipo">Tipo</Label>

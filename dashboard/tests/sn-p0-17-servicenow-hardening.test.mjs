@@ -262,11 +262,13 @@ test("SN-P0-17 UI/Home/Alertas: seção isolada; Alertas sem fetchIncidents", as
   assert.match(api, /servicenow_authentication_failed:\s*"ServiceNow indisponível"/);
   assert.match(api, /servicenow_access_forbidden:\s*"ServiceNow indisponível"/);
 
-  // OV-P0-69: Home consome fetchHomeIncidents (wrapper); /alertas não lista incidents.
-  assert.match(index, /fetchHomeIncidents/);
+  // OV-P0-69: Home consome fetchOperationalIncidents; /alertas não lista incidents.
+  assert.match(index, /fetchOperationalIncidents/);
   assert.doesNotMatch(alerts, /fetchIncidents\b/);
-  assert.match(index, /AlertRelatedIncidentsSection/);
-  assert.match(alerts, /AlertRelatedIncidentsSection/);
+  assert.match(index, /AlertDetailDrawer/);
+  assert.match(alerts, /AlertDetailDrawer/);
+  const drawer = await read("src/components/oneview/AlertDetailDrawer.tsx");
+  assert.match(drawer, /AlertRelatedIncidentsSection/);
 
   const client = await read("api/_lib/servicenow-client.js");
   assert.match(client, /timeoutMs/);

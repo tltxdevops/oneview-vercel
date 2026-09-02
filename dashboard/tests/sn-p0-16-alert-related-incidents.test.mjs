@@ -210,7 +210,7 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
   assert.match(section, /ServiceNowDevLink|Abrir no ServiceNow/);
   assert.doesNotMatch(section, /Abrir no ServiceNow DEV/);
   assert.match(section, /Grupo/);
-  assert.match(section, /Responsável/);
+  assert.match(section, /Analista/);
   assert.match(section, /Última atualização|Atualização/);
   assert.match(section, /fetchAlertRelatedIncidents/);
   assert.doesNotMatch(section, /host_name|method:\s*["']POST["']/i);
@@ -220,7 +220,7 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
   assert.match(drawer, /sourceEventId=\{alert\.source_event_id\}/);
   assert.match(drawer, /severity=\{alert\.severity\}/);
   assert.match(drawer, /historyItems=\{historyItems\}/);
-  assert.match(section, /Nenhum incidente relacionado localizado/);
+  assert.match(section, /Sem chamado correlacionado/);
   assert.match(section, /isIncidentEligibleSeverity/);
 
   assert.match(bff, /alerts\/related-incidents/);

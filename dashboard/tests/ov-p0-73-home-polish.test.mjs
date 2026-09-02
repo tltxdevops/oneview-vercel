@@ -16,14 +16,13 @@ async function read(relativePath) {
 test("OV-P0-73 oneview-home: máximos visuais 7", async () => {
   const home = await read("src/lib/oneview-home.ts");
   assert.match(home, /HOME_ALERTS_PAGE_SIZE = 7/);
-  assert.match(home, /HOME_INCIDENTS_PAGE_SIZE = OPERATIONAL_INCIDENTS_PAGE_SIZE/);
   assert.match(home, /HOME_EVENTS_LIMIT = 7/);
 });
 
 test("OV-P0-73 Home: Alertas header título+count+Ver todos; filtros na 2ª linha", async () => {
   const index = await read("src/pages/Index.tsx");
 
-  assert.match(index, /title="Alertas"/);
+  assert.match(index, /title="Alertas Recentes"/);
   assert.match(index, /HomePanelCount value=\{alertsTotal\}/);
   assert.match(index, /Ver todos/);
   assert.match(index, /HOME_FILTER_ROW|Prioritários/);
@@ -40,22 +39,24 @@ test("OV-P0-73 Home: Alertas header título+count+Ver todos; filtros na 2ª linh
   assert.match(index, /title="Eventos recentes"/);
 });
 
-test("OV-P0-73 Home: Chamados 7 colunas, row clicável, empty discreto, Ver todos alinhado", async () => {
-  const index = await read("src/pages/Index.tsx");
+test("OV-P0-73 Home: Chamados iguais ao Monitoramento, coluna própria, lista rolável", async () => {
+  const [index, list] = await Promise.all([
+    read("src/pages/Index.tsx"),
+    read("src/components/oneview/OperationalIncidentsQueueList.tsx"),
+  ]);
 
-  assert.match(index, /Chamados sem responsável/);
-  assert.match(index, /HomePanelCount value=\{incidentsTotal\}/);
-  assert.match(index, /buildHomeChamadosHref|buildHomeUnassignedChamadosHref|unassigned=true/);
+  assert.match(index, /title=\{incidentsPanelTitle\}/);
+  assert.match(index, /OperationalIncidentsToolbar/);
+  assert.match(index, /OperationalIncidentsQueueList/);
+  assert.match(index, /buildOperationalChamadosHref/);
+  assert.match(index, /Ver todos em Chamados/);
   assert.match(index, /HOME_PANEL_HEADER_ASIDE/);
-  assert.match(index, /HOME_INCIDENT_COLS/);
-  assert.match(index, />Número</);
-  assert.match(index, />Cliente</);
-  assert.match(index, />Estado</);
-  assert.match(index, />Prioridade</);
-  assert.match(index, />Responsável</);
-  assert.match(index, /buildProductionServiceNowIncidentLink|servicenow_url/);
-  assert.match(index, /emptyClassName=.*items-center justify-center/);
-  assert.match(index, /items-start/);
+  assert.match(index, /items-stretch/);
+  assert.match(index, /lg:col-span-2/);
+  assert.match(list, /Número · Cliente/);
+  assert.match(list, /Atualização · Prioridade · Estado/);
+  assert.match(list, /overflow-y-auto/);
+  assert.match(index, /IncidentQuickSheet/);
 });
 
 test("OV-P0-73 Home: Eventos Cliente|Host|Problema|Severidade|Horário + Abrir histórico", async () => {
@@ -68,7 +69,7 @@ test("OV-P0-73 Home: Eventos Cliente|Host|Problema|Severidade|Horário + Abrir h
 
   const eventsBlock = index.slice(
     index.indexOf('title="Eventos recentes"'),
-    index.indexOf("<Sheet open="),
+    index.indexOf("<IncidentQuickSheet"),
   );
   assert.match(eventsBlock, />Cliente</);
   assert.match(eventsBlock, />Host</);

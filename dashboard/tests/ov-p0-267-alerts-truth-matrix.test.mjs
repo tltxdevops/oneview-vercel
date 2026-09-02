@@ -19,15 +19,13 @@ function request(query = {}) {
 
 const OPERATIONAL = [...ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES];
 
-test("OV-P0-267: operational customer values remap to datasource names", () => {
-  for (const name of OPERATIONAL) {
-    const split = splitAlertCustomerFilter([name.toUpperCase(), name]);
-    assert.deepEqual(split.datasources, [name]);
-    assert.deepEqual(split.customers, []);
-  }
-  const mixed = splitAlertCustomerFilter(["Zurich", "berneck", "unclassified", "maps"]);
-  assert.deepEqual(mixed.datasources, ["zurich"]);
-  assert.deepEqual(mixed.customers, ["berneck", "unclassified", "maps"]);
+test("OV-P0-267: operational teletex-http customer values remap to datasource names", () => {
+  const split = splitAlertCustomerFilter(["TELETEX-HTTP", "teletex-http"]);
+  assert.deepEqual(split.datasources, ["teletex-http"]);
+  assert.deepEqual(split.customers, []);
+  const mixed = splitAlertCustomerFilter(["Zurich", "berneck", "unclassified", "maps", "teletex-http"]);
+  assert.deepEqual(mixed.datasources, ["teletex-http"]);
+  assert.deepEqual(mixed.customers, ["zurich", "berneck", "unclassified", "maps"]);
 });
 
 test("OV-P0-267: Maps cannot enter the operational customer remap", () => {
@@ -36,17 +34,17 @@ test("OV-P0-267: Maps cannot enter the operational customer remap", () => {
   assert.deepEqual(split.customers, ["maps"]);
 });
 
-test("OV-P0-267: /alerts customer=zurich scopes d.name, not customer_name identity", () => {
+test("OV-P0-267: /alerts customer=teletex-http scopes d.name, not customer_name identity", () => {
   const query = buildAlertListQuery(request({
     status: "active",
-    customer: "Zurich",
+    customer: "teletex-http",
     first_seen_from: "2026-08-31T15:00:00.000Z",
     first_seen_to: "2026-09-01T15:00:00.000Z",
   }));
   assert.deepEqual(query.filters.customers, []);
-  assert.ok(query.filters.datasources.includes("zurich"));
+  assert.ok(query.filters.datasources.includes("teletex-http"));
   assert.doesNotMatch(query.whereSql, /lower\(btrim\(a\.customer_name\)\)/);
-  assert.ok(query.params.some((value) => Array.isArray(value) && value.includes("zurich")));
+  assert.ok(query.params.some((value) => Array.isArray(value) && value.includes("teletex-http")));
   assert.match(query.whereSql, /d\.name = any\(\$\d+::text\[\]\)/);
 });
 
@@ -72,10 +70,11 @@ test("OV-P0-267: six operational sources stay in the allowlist; Maps stays out",
   assert.equal(OPERATIONAL.includes("maps"), false);
 });
 
-test("OV-P0-267: Alerts Cliente combobox includes datasource facets and does not hardcode names", async () => {
+test("OV-P0-267: Alerts keeps datasource facets on Fonte Zabbix, not Cliente", async () => {
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
   assert.match(alerts, /facets\?\.datasources/);
-  assert.match(alerts, /datasourceCards/);
+  assert.match(alerts, /ZabbixSourceFilter/);
+  assert.doesNotMatch(alerts, /datasourceCards/);
   assert.doesNotMatch(alerts, /FRAPORT|Zurich|Castrolanda/);
   const scope = await readFile(path.join(dashboardRoot, "api/_lib/oneview-scope.js"), "utf8");
   assert.match(scope, /splitAlertCustomerFilter/);
@@ -83,33 +82,33 @@ test("OV-P0-267: Alerts Cliente combobox includes datasource facets and does not
   assert.match(db, /splitAlertCustomerFilter\(rawCustomers/);
 });
 
-test("OV-P0-267: Cliente=fonte for all six operational sources remaps to d.name", () => {
-  for (const name of OPERATIONAL) {
+test("OV-P0-267: dedicated company customer filter stays on identity key", () => {
+  for (const name of ["zurich", "castrolanda", "rhp", "fraport-for", "fraport-poa"]) {
     const query = buildAlertListQuery(request({
       status: "active",
       customer: name,
       first_seen_from: "2026-08-31T15:00:00.000Z",
       first_seen_to: "2026-09-01T15:00:00.000Z",
     }));
-    assert.equal(query.filters.customers.length, 0, name);
-    assert.ok(query.filters.datasources.includes(name), name);
-    assert.doesNotMatch(query.whereSql, /lower\(btrim\(a\.customer_name\)\)/);
+    assert.equal(query.filters.datasources.length, 0, name);
+    assert.ok(query.filters.customers.includes(name), name);
+    assert.match(query.whereSql, /lower\(btrim\(a\.customer_name\)\)/);
   }
 });
 
-test("OV-P0-267B: Home, Monitoramento and Alertas share the six-source BFF truth contract", async () => {
+test("OV-P0-267B: Home, Monitoramento and Alertas share explicit datasource query", async () => {
   const home = await readFile(path.join(dashboardRoot, "src/lib/oneview-home.ts"), "utf8");
   const monitoring = await readFile(path.join(dashboardRoot, "src/lib/oneview-monitoring.ts"), "utf8");
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
 
-  // Home carries source explicitly; Monitoramento and Alertas retain the Cliente
-  // UI contract and rely on the same BFF remap. All three use first_seen windows.
   assert.match(home, /datasources: params\.datasources/);
   assert.match(home, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
   assert.match(home, /excludeOperator: true/);
   assert.match(monitoring, /customers: params\.customers/);
+  assert.match(monitoring, /datasources: params\.datasources/);
   assert.match(monitoring, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
-  assert.match(alerts, /facets\?\.datasources/);
+  assert.match(alerts, /ZabbixSourceFilter/);
+  assert.match(alerts, /datasources: selectedDatasources/);
 
   for (const datasource of OPERATIONAL) {
     for (const firstSeenFrom of [
@@ -119,7 +118,7 @@ test("OV-P0-267B: Home, Monitoramento and Alertas share the six-source BFF truth
       "2026-08-31T15:00:00.000Z",
     ]) {
       const query = buildAlertListQuery(request({
-        customer: datasource,
+        datasource,
         status: "active",
         severity: "average",
         first_seen_from: firstSeenFrom,
@@ -194,21 +193,21 @@ test("OV-P0-267: window filters first_seen_at with inclusive ISO bounds", () => 
   assert.equal(before.filters.firstSeenFrom, "2026-08-31T14:59:59.000Z");
 });
 
-test("OV-P0-267: UI combinations send customer+status+window+severity+ack as BFF params", () => {
+test("OV-P0-267: UI combinations send datasource+status+window+severity+ack as BFF params", () => {
   const combos = [
-    { customer: "zurich", status: "active", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
-    { customer: "rhp", status: "all", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
-    { customer: "teletex-http", status: "resolved", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
-    { customer: "castrolanda", status: "active", severity: ["high", "critical"], first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
-    { customer: "fraport-for", status: "active", severity: "average", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
-    { customer: "fraport-poa", status: "active", acknowledged_source: "true", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
+    { datasource: "zurich", status: "active", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
+    { datasource: "rhp", status: "all", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
+    { datasource: "teletex-http", status: "resolved", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
+    { datasource: "castrolanda", status: "active", severity: ["high", "critical"], first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
+    { datasource: "fraport-for", status: "active", severity: "average", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
+    { datasource: "fraport-poa", status: "active", acknowledged_source: "true", first_seen_from: "2026-08-31T15:00:00.000Z", first_seen_to: "2026-09-01T15:00:00.000Z" },
     { status: "active" },
   ];
   for (const combo of combos) {
     const query = buildAlertListQuery(request(combo));
-    if (combo.customer) {
+    if (combo.datasource) {
       assert.equal(query.filters.customers.length, 0, JSON.stringify(combo));
-      assert.ok(query.filters.datasources.includes(combo.customer), JSON.stringify(combo));
+      assert.ok(query.filters.datasources.includes(combo.datasource), JSON.stringify(combo));
     } else {
       assert.deepEqual(query.filters.datasources, []);
     }
@@ -263,5 +262,5 @@ test("OV-P0-267: fetchAlerts keeps customer= for UI contract and expands high→
   assert.match(api, /canonicalizeSeveritiesForApi\(params\?\.severities/);
   const query = await readFile(path.join(dashboardRoot, "src/lib/alerts-query.ts"), "utf8");
   assert.match(query, /for \(const customer of state\.customers\) next\.append\("customer", customer\)/);
-  assert.doesNotMatch(query, /next\.append\("datasource"/);
+  assert.match(query, /next\.append\("datasource"/);
 });

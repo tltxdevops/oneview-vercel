@@ -169,6 +169,7 @@ function severityCountsFromSummary(summary: unknown): {
 /** Contagens verificáveis via /oneview/alerts (server-side). Falha → null (nunca inventa zero). */
 export async function fetchRecentOperationalMetrics(params?: {
   customers?: string[];
+  datasources?: string[];
   signal?: AbortSignal;
   now?: number;
   /** Quando informado (Home OV-P0-42A), uma única consulta alimenta by_severity. */
@@ -176,6 +177,7 @@ export async function fetchRecentOperationalMetrics(params?: {
 }): Promise<RecentOperationalMetrics> {
   const now = params?.now ?? Date.now();
   const customers = params?.customers;
+  const datasources = params?.datasources;
   const signal = params?.signal;
 
   // Home: 1× alerts (summary) + sync. Monitoramento (sem windowMs) mantém as 4 consultas legadas.
@@ -186,6 +188,7 @@ export async function fetchRecentOperationalMetrics(params?: {
         pageSize: 1,
         status: "active",
         customers,
+        datasources,
         firstSeenFrom: isoAgo(params.windowMs, now),
         signal,
       }),
@@ -228,16 +231,18 @@ export async function fetchRecentOperationalMetrics(params?: {
       page: 1,
       pageSize: 1,
       status: "active",
-      customers,
-      firstSeenFrom: isoAgo(createdWindow, now),
+        customers,
+        datasources,
+        firstSeenFrom: isoAgo(createdWindow, now),
       signal,
     }),
     fetchAlerts({
       page: 1,
       pageSize: 1,
       status: "active",
-      customers,
-      severities: ["disaster"],
+        customers,
+        datasources,
+        severities: ["disaster"],
       acknowledgedSource: false,
       firstSeenFrom: isoAgo(priorityWindow, now),
       signal,
@@ -246,8 +251,9 @@ export async function fetchRecentOperationalMetrics(params?: {
       page: 1,
       pageSize: 1,
       status: "active",
-      customers,
-      severities: ["high"],
+        customers,
+        datasources,
+        severities: ["high"],
       acknowledgedSource: false,
       firstSeenFrom: isoAgo(priorityWindow, now),
       signal,
@@ -256,8 +262,9 @@ export async function fetchRecentOperationalMetrics(params?: {
       page: 1,
       pageSize: 1,
       status: "all",
-      customers,
-      acknowledgedSource: true,
+        customers,
+        datasources,
+        acknowledgedSource: true,
       acknowledgedFrom: isoAgo(ackWindow, now),
       signal,
     }),
@@ -291,6 +298,7 @@ export async function fetchRecentOperationalMetrics(params?: {
 export async function fetchRecentOperationalEvents(params: {
   limit: number;
   customers?: string[];
+  datasources?: string[];
   signal?: AbortSignal;
   now?: number;
   windowMs?: number;
@@ -301,6 +309,7 @@ export async function fetchRecentOperationalEvents(params: {
     page: 1,
     pageSize: params.limit,
     customers: params.customers,
+    datasources: params.datasources,
     eventType: "operational",
     occurredFrom: isoAgo(windowMs, now),
     signal: params.signal,

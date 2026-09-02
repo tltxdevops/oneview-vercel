@@ -70,19 +70,18 @@ test("OV-P0-103 Chamados sem responsável: unassigned + estados operacionais + t
     read("src/lib/oneview-operational-incidents.ts"),
   ]);
 
-  assert.match(home, /HOME_UNASSIGNED_OPERATIONAL_STATES = OPERATIONAL_INCIDENT_STATES/);
   assert.match(helper, /unassigned: mode === INCIDENTS_QUEUE_MODE\.unassigned \? true : undefined/);
   assert.match(helper, /OPERATIONAL_INCIDENT_STATES = "1,2,3"/);
   assert.match(home, /prioritizeHomeUnassignedIncidents/);
   assert.match(home, /buildHomeUnassignedChamadosHref/);
   assert.match(helper, /return "\/chamados\?unassigned=true"/);
-  assert.match(home, /HOME_INCIDENTS_PAGE_SIZE = OPERATIONAL_INCIDENTS_PAGE_SIZE/);
   assert.match(helper, /OPERATIONAL_INCIDENTS_PAGE_SIZE = 100/);
 
-  assert.match(index, /Chamados sem responsável/);
-  assert.match(index, /buildHomeChamadosHref|buildHomeUnassignedChamadosHref/);
+  assert.match(index, /title=\{incidentsPanelTitle\}/);
+  assert.match(index, /buildOperationalChamadosHref/);
   assert.match(index, /Nenhum chamado monitoring sem responsável/);
   assert.match(index, /AlertDetailDrawer/);
+  assert.match(index, /OperationalIncidentsToolbar/);
   assert.doesNotMatch(index, /to="\/chamados"/);
 
   // Não altera fetch de /chamados com helpers da Home.

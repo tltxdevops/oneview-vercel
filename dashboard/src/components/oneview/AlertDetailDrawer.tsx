@@ -20,6 +20,7 @@ import { AlertRelatedIncidentsSection } from "@/components/oneview/AlertRelatedI
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -33,13 +34,20 @@ import {
 } from "@/lib/oneview-api";
 import { filterOperationalAlertTags } from "@/lib/oneview-inc-correlation";
 import { buildAlertOperationalTimeline } from "@/lib/oneview-alert-timeline";
+import { primaryPersistedOperatorTag } from "@/lib/oneview-operator-display";
+import {
+  formatZabbixSourceAudit,
+  zabbixSourceDisplayName,
+} from "@/lib/oneview-zabbix-source";
 
 export type AlertDetailDrawerTab = "summary" | "history" | "technical";
 
+const ORIGIN_UNAVAILABLE = "Indisponível na origem";
+
 function formatDateTime(value?: string | null) {
-  if (!value) return "—";
+  if (!value) return ORIGIN_UNAVAILABLE;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("pt-BR");
+  return Number.isNaN(date.getTime()) ? ORIGIN_UNAVAILABLE : date.toLocaleString("pt-BR");
 }
 
 function formatDurationSeconds(seconds: number | null | undefined) {
@@ -60,6 +68,7 @@ function customerSourceLabel(value?: string | null) {
     tag: "Tag",
     host_group: "Grupo do host",
     datasource_fallback: "Fallback da fonte",
+    unclassified: "unclassified",
   };
   const key = String(value || "").trim();
   if (!key) return "Enriquecimento pendente";
@@ -176,6 +185,10 @@ export function AlertDetailDrawer({
   const ackBy = alert
     ? safeActorName(alert.acknowledged_source_by || alert.acknowledged_by)
     : null;
+  const operatorTag = alert ? primaryPersistedOperatorTag(alert) : null;
+  const fonteZabbix = alert ? zabbixSourceDisplayName(alert.datasource_name) : "Fonte não identificada";
+  const hostVisible = alert ? displayHostField(alert.host_visible_name, canonicalHostName(alert)) : ORIGIN_UNAVAILABLE;
+  const hostTechnical = alert ? displayHostField(alert.host_technical_name, ORIGIN_UNAVAILABLE) : ORIGIN_UNAVAILABLE;
   const queueHref = String(alertsQueueHref || "").trim() || null;
   const historyLoading = isLoading && !timeline.length;
 
@@ -229,7 +242,7 @@ export function AlertDetailDrawer({
                     />
                     <div className="min-w-0 space-y-1.5">
                       <p className="truncate text-base font-semibold leading-tight text-foreground">{clientName}</p>
-                      <p className="truncate text-sm text-foreground/80">{hostName}</p>
+                      <p className="truncate text-sm text-foreground/80">{hostVisible}</p>
                       {showPending ? (
                         <p className="text-xs text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</p>
                       ) : null}
@@ -261,32 +274,76 @@ export function AlertDetailDrawer({
                     </div>
                   </div>
 
-                  <section aria-label="Resumo" className="space-y-3">
-                    <div>
-                      <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Problema</p>
-                      <p className="mt-1.5 text-base font-semibold leading-6 text-foreground">
-                        {String(alert.problem_name || "").trim() || "Alerta sem descrição"}
-                      </p>
-                    </div>
+                  <section aria-label="Identidade" className="space-y-2">
+                    <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Identidade</h3>
+                    <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                      <DetailField label="Cliente" value={clientName} />
+                      <DetailField label="Fonte Zabbix" value={fonteZabbix} />
+                      <DetailField label="Host" value={hostVisible} />
+                      <DetailField label="Host técnico" value={hostTechnical} />
+                      <DetailField
+                        label="Trigger/Problema"
+                        value={String(alert.problem_name || alert.trigger_description || "").trim() || "Alerta sem descrição"}
+                      />
+                      <DetailField label="Severidade" value={formatOneViewSeverityLabel(alert.severity)} />
+                    </dl>
+                  </section>
+
+                  <section aria-label="Estado" className="space-y-2">
+                    <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Estado</h3>
                     <AlertRecurrenceSignal alert={alert} />
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                      <DetailField label="Início" value={formatDateTime(alert.first_seen_at)} />
-                      <DetailField label="Duração" value={formatDurationSeconds(alert.duration_seconds)} />
-                      <DetailField label="Última atualização" value={formatDateTime(alert.last_seen_at)} />
-                      {alert.resolved_at ? (
-                        <DetailField label="Recovery" value={formatDateTime(alert.resolved_at)} />
-                      ) : null}
+                      <DetailField label="Estado da origem" value={String(alert.status_source || "").trim() || ORIGIN_UNAVAILABLE} />
+                      <DetailField label="ACK origem" value={alert.acknowledged_source ? "Reconhecido" : "Não reconhecido"} />
+                      <DetailField label="ACK OneView" value={alert.acknowledged_internal ? "Reconhecido" : "Não reconhecido"} />
+                      <DetailField label="Responsável" value={ackBy || "Sem responsável"} />
+                      <DetailField label="Primeira ocorrência" value={formatDateTime(alert.first_seen_at)} />
+                      <DetailField label="Última ocorrência" value={formatDateTime(alert.last_seen_at)} />
+                      <DetailField label="Recuperação" value={formatDateTime(alert.resolved_at)} />
                     </dl>
                     {temporalInconsistent ? <p className="text-xs text-muted-foreground">Relógio da origem inconsistente.</p> : null}
                   </section>
 
-                  {/* Detalhe correlacionado consultado somente pelo BFF no bloco Chamado relacionado. */}
                   <AlertRelatedIncidentsSection
                     sourceEventId={alert.source_event_id}
                     severity={alert.severity}
                     historyItems={historyItems}
                     alert={alert}
                   />
+
+                  {operatorTag ? (
+                    <section aria-label="Operadora" className="space-y-2">
+                      <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Operadora</h3>
+                      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                        <DetailField label="Operadora/tag" value={operatorTag.tag || operatorTag.value || ORIGIN_UNAVAILABLE} />
+                        <DetailField label="descrição" value={operatorTag.tag || ORIGIN_UNAVAILABLE} />
+                        <DetailField label="valor persistido" value={operatorTag.value || ORIGIN_UNAVAILABLE} />
+                      </dl>
+                    </section>
+                  ) : null}
+
+                  <Accordion type="single" collapsible className="rounded-md border border-border/60 px-3">
+                    <AccordionItem value="audit" className="border-0">
+                      <AccordionTrigger className="py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:no-underline">
+                        Auditoria da identidade
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                          <DetailField label="Fonte da identidade do cliente" value={customerSourceLabel(alert.customer_source)} />
+                          <DetailField label="Confiança" value={confidenceLabel(alert.customer_confidence)} />
+                          <DetailField
+                            label="Datasource"
+                            value={formatZabbixSourceAudit({
+                              data_source_id: alert.data_source_id,
+                              datasource_name: alert.datasource_name,
+                            })}
+                            mono
+                          />
+                          <DetailField label="source_event_id" value={String(alert.source_event_id || "").trim() || ORIGIN_UNAVAILABLE} mono />
+                        </dl>
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
                 </TabsContent>
 
                 <TabsContent value="history" className="mt-4 space-y-4">
@@ -304,7 +361,7 @@ export function AlertDetailDrawer({
                             <DetailField label="Início" value={formatDateTime(alert.first_seen_at)} />
                             <DetailField label="Duração total" value={formatDurationSeconds(alert.duration_seconds)} />
                             <DetailField label="Reconhecido em" value={formatDateTime(ackAt)} />
-                            <DetailField label="Reconhecido por" value={ackBy || "—"} />
+                            <DetailField label="Reconhecido por" value={ackBy || ORIGIN_UNAVAILABLE} />
                             {alert.resolved_at ? (
                               <DetailField label="Recovery" value={formatDateTime(alert.resolved_at)} />
                             ) : null}
@@ -359,7 +416,7 @@ export function AlertDetailDrawer({
                   <section aria-label="Fonte" className="space-y-2">
                     <h3 className="text-sm font-semibold">Fonte</h3>
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                      <DetailField label="Fonte Zabbix" value={String(alert.datasource_name || "").trim() || "Fonte não identificada"} />
+                      <DetailField label="Fonte Zabbix" value={fonteZabbix} />
                       <DetailField label="Tipo de fonte" value={String(alert.source_type || "").trim() || "Não informado"} />
                       <DetailField label="Event ID" value={String(alert.source_event_id || "").trim() || "Não informado"} mono />
                     </dl>
@@ -369,7 +426,7 @@ export function AlertDetailDrawer({
                     <h3 className="text-sm font-semibold">Host</h3>
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                       <DetailField label="Nome visível" value={displayHostField(alert.host_visible_name) || hostName} />
-                      <DetailField label="Nome técnico" value={displayHostField(alert.host_technical_name) || "—"} />
+                      <DetailField label="Nome técnico" value={displayHostField(alert.host_technical_name, ORIGIN_UNAVAILABLE)} />
                       {publicIp ? <DetailField label="IP" value={publicIp} mono /> : null}
                       {iface ? <DetailField label="Interface" value={iface} /> : null}
                     </dl>

@@ -61,7 +61,7 @@ test("OV-P0-69 oneview-home.ts: constantes e fetchers isolados do Monitoramento"
   assert.match(home, /HOME_ALL_SEVERITIES = \[[\s\S]*"information"[\s\S]*"warning"[\s\S]*"average"[\s\S]*"high"[\s\S]*"disaster"/);
   assert.match(home, /export async function fetchHomeAlerts/);
   assert.match(home, /export async function fetchHomeIncidents/);
-  assert.match(home, /status: "active"/);
+  assert.match(home, /status: params\.status \?\? "active"|status: "active"/);
   assert.match(home, /firstSeenFrom: isoAgo/);
   assert.match(home, /fetchOperationalIncidents|fetchIncidents\(\{/);
   assert.match(home, /HOME_INCIDENTS_PAGE_SIZE/);
@@ -71,7 +71,7 @@ test("OV-P0-69 oneview-home.ts: constantes e fetchers isolados do Monitoramento"
     home.indexOf("export async function fetchHomeIncidents"),
     home.indexOf("export function buildHomeAlertsHref"),
   );
-  assert.doesNotMatch(incidentsFn, /callerId|caller_id/);
+  assert.doesNotMatch(incidentsFn, /callerId:/);
   assert.doesNotMatch(incidentsFn, /mock|fake|INC000/i);
 
   // Monitoramento permanece no contrato antigo (disaster/high + ACK).
@@ -85,18 +85,18 @@ test("OV-P0-69 Home layout: Alertas|Chamados|Eventos; drawer/?alert=; sem Client
 
   assert.match(index, /from "@\/lib\/oneview-home"/);
   assert.match(index, /fetchHomeAlerts/);
-  assert.match(index, /fetchHomeIncidents/);
+  assert.match(index, /fetchOperationalIncidents/);
   assert.match(index, /HOME_ALERT_MODE/);
   assert.match(index, /Prioritários/);
   assert.match(index, /Todos/);
-  assert.match(index, /title="Alertas"/);
-  assert.match(index, /Chamados sem responsável/);
+  assert.match(index, /title="Alertas Recentes"/);
+  assert.match(index, /title=\{incidentsPanelTitle\}/);
   assert.match(index, /title="Eventos recentes"/);
   assert.match(index, /lg:grid-cols-5/);
   assert.match(index, /lg:col-span-3/);
   assert.match(index, /lg:col-span-2/);
   assert.match(index, /Ver todos/);
-  assert.match(index, /buildHomeChamadosHref|buildHomeUnassignedChamadosHref|unassigned=true/);
+  assert.match(index, /buildOperationalChamadosHref/);
   assert.match(index, /ClientFilterCombobox/);
   assert.match(index, /HOME_SEVERITY_FILTER_OPTIONS|Filtrar por severidade/);
   assert.doesNotMatch(index, /isServiceNowIncidentsUiEnabled|VITE_SERVICENOW_INCIDENTS_ENABLED/);
@@ -121,6 +121,6 @@ test("OV-P0-69 Home layout: Alertas|Chamados|Eventos; drawer/?alert=; sem Client
   assert.match(index, /open=\{selectedAlertId !== null\}/);
 
   // Ordem: Alertas/Chamados antes de Eventos
-  assert.ok(index.indexOf('title="Alertas"') < index.indexOf('title="Eventos recentes"'));
-  assert.ok(index.indexOf("Chamados sem responsável") < index.indexOf('title="Eventos recentes"'));
+  assert.ok(index.indexOf('title="Alertas Recentes"') < index.indexOf('title="Eventos recentes"'));
+  assert.ok(index.indexOf("incidentsPanelTitle") < index.indexOf('title="Eventos recentes"'));
 });

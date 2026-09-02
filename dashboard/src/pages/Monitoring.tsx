@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { Expand, Eye, Loader2, Minimize2, RefreshCcw, ChevronsUpDown, Check } from "lucide-react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
+import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import {
   ClientIdentity,
   CLASSIFICATION_PENDING_LABEL,
@@ -113,6 +114,12 @@ import {
   fetchRecentOperationalMetrics,
   queueOverflowLabel,
 } from "@/lib/oneview-recent";
+import {
+  customerFilterCountNoun,
+  isDatasourceOnlyFilterValue,
+  splitLegacyCustomerQuery,
+  zabbixSourceKey,
+} from "@/lib/oneview-zabbix-source";
 
 /** OV-P0-255 — polling operacional 10s. */
 const REFRESH_MS = 10_000;
@@ -545,8 +552,13 @@ export default function MonitoringPage() {
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
   const [severityFilterOpen, setSeverityFilterOpen] = useState(false);
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(() =>
-    searchParams.getAll("customer").filter(Boolean),
+    splitLegacyCustomerQuery(searchParams.getAll("customer")).customers,
   );
+  const [selectedDatasources, setSelectedDatasources] = useState<string[]>(() => {
+    const migrated = splitLegacyCustomerQuery(searchParams.getAll("customer")).datasources;
+    const fromQuery = searchParams.getAll("datasource").map((value) => zabbixSourceKey(value)).filter(Boolean);
+    return [...new Set([...fromQuery, ...migrated])];
+  });
 
   const inFlight = useRef<Promise<void> | null>(null);
   const openBeforeFullscreen = useRef(true);
@@ -677,9 +689,11 @@ export default function MonitoringPage() {
   useEffect(() => {
     patchSearchParams((next) => {
       next.delete("customer");
+      next.delete("datasource");
       selectedCustomerKeys.forEach((value) => next.append("customer", value));
+      selectedDatasources.forEach((value) => next.append("datasource", value));
     });
-  }, [patchSearchParams, selectedCustomerKeys]);
+  }, [patchSearchParams, selectedCustomerKeys, selectedDatasources]);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -695,21 +709,17 @@ export default function MonitoringPage() {
   }, []);
 
   const customerCards = useMemo(() => {
-    const by = recentMetrics?.by_severity;
-    const known = by
-      ? [by.information, by.warning, by.average, by.high, by.disaster, recentMetrics?.not_classified]
-      : [];
-    const total = known.length && known.every((value) => value != null)
-      ? known.reduce<number>((sum, value) => sum + Number(value), 0)
-      : 0;
     return [
-      { key: "all", name: "Todos", alerts_count: total },
-      ...(facets?.customers ?? []).map((customer) => ({
-        ...customer,
-        name: facetCustomerDisplayName(customer),
-      })),
+      { key: "all", name: "Todos" },
+      ...(facets?.customers ?? [])
+        .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
+        .map((customer) => ({
+          ...customer,
+          name: facetCustomerDisplayName(customer),
+          alerts_count: null,
+        })),
     ];
-  }, [facets?.customers, recentMetrics]);
+  }, [facets?.customers]);
 
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
@@ -769,15 +779,17 @@ export default function MonitoringPage() {
       const controller = new AbortController();
       listsAbort.current = controller;
       const customers = selectedCustomerKeys.length ? selectedCustomerKeys : undefined;
+      const datasources = selectedDatasources.length ? selectedDatasources : undefined;
       const now = Date.now();
 
       const tasks: Array<Promise<unknown>> = [
-        fetchRecentOperationalMetrics({ customers, signal: controller.signal, now, windowMs }),
+        fetchRecentOperationalMetrics({ customers, datasources, signal: controller.signal, now, windowMs }),
         fetchOneViewFacets(controller.signal),
         fetchMonitoringAlerts({
           mode: alertMode,
           severity: severitySelection,
           customers,
+          datasources,
           limit: MONITOR_QUEUE_LIMIT,
           windowMs,
           sort: queueSort,
@@ -974,7 +986,7 @@ export default function MonitoringPage() {
 
     inFlight.current = request;
     return request;
-  }, [alertMode, incidentsAssignedTo, incidentsMode, queueSort, selectedCustomerKeys, setSectionError, severitySelection, windowMs]);
+  }, [alertMode, incidentsAssignedTo, incidentsMode, queueSort, selectedCustomerKeys, selectedDatasources, setSectionError, severitySelection, windowMs]);
 
   useEffect(() => {
     void refreshAll();
@@ -1374,6 +1386,12 @@ export default function MonitoringPage() {
                   selectedKeys={selectedCustomerKeys}
                   selectedLabel={selectedCustomerLabel}
                   onToggle={toggleCustomer}
+                  countNoun={customerFilterCountNoun(alertMode === MONITOR_ALERT_MODE.prioritary ? "prioritary" : "filter")}
+                />
+                <ZabbixSourceFilter
+                  value={selectedDatasources[0] || "all"}
+                  options={facets?.datasources ?? []}
+                  onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])}
                 />
                 <OperationalSegmentedControl
                   aria-label="Modo da fila"

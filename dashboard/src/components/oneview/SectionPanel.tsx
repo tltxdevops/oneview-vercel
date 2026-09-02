@@ -5,6 +5,7 @@ type SectionPanelProps = {
   title?: ReactNode;
   description?: ReactNode;
   aside?: ReactNode;
+  toolbar?: ReactNode;
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
@@ -15,6 +16,7 @@ export function SectionPanel({
   title,
   description,
   aside,
+  toolbar,
   children,
   className,
   bodyClassName,
@@ -34,6 +36,11 @@ export function SectionPanel({
             {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
           </div>
           {aside ? <div className="shrink-0">{aside}</div> : null}
+        </div>
+      ) : null}
+      {toolbar ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-3 py-1.5">
+          {toolbar}
         </div>
       ) : null}
       <div className={bodyClassName}>{children}</div>

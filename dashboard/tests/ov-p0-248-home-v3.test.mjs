@@ -47,7 +47,7 @@ test("OV-P0-248: canonical operator tag is excluded only by explicit Home filter
   assert.equal(alerts.filters.excludeOperator, false);
 });
 
-test("OV-P0-248: Home V3 keeps alert deep link, active operator mini-panel, and three incident streams", async () => {
+test("OV-P0-248: Home V3 keeps alert deep link, operator panel, and monitoring incident queue", async () => {
   const [home, page, api, operator] = await Promise.all([
     read("src/lib/oneview-home.ts"),
     read("src/pages/Index.tsx"),
@@ -58,16 +58,15 @@ test("OV-P0-248: Home V3 keeps alert deep link, active operator mini-panel, and 
   assert.match(home, /sort: "first_seen_at"/);
   assert.match(home, /order: "desc"/);
   assert.match(home, /excludeOperator: true/);
-  assert.match(home, /fetchHomeIncidentStreams/);
   assert.match(home, /assigned_to/);
   assert.match(page, /title="Alertas Recentes"/);
   assert.match(page, /title="Operadoras"/);
   assert.match(page, /Ver fila de Operadoras/);
-  assert.match(page, /label: "Fila"/);
-  assert.match(page, /label: "Em atendimento"/);
-  assert.match(page, /label: "Recentes"/);
-  assert.match(page, /Abrir alerta no OneView/);
-  assert.match(page, /Abrir chamado no ServiceNow/);
+  assert.match(page, /OperationalIncidentsToolbar/);
+  assert.match(page, /OperationalIncidentsQueueList/);
+  assert.match(page, /IncidentQuickSheet/);
+  assert.match(page, /fetchOperationalIncidents/);
+  assert.match(page, /Ver todos em Chamados/);
   assert.match(page, /searchParams\.get\("alert"\)/);
   assert.match(page, /next\.set\("alert", alert\.id\)/);
   assert.match(api, /excludeOperator\?: boolean/);

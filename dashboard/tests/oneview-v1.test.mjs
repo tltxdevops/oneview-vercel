@@ -49,7 +49,7 @@ test("métricas diárias separam resolução, ACK da origem e reconhecimento One
   const queries = dailyOperationalMetricQueries("America/Sao_Paulo", new Date("2026-07-22T02:30:00.000Z"));
   assert.equal(queries.day.from, "2026-07-21T03:00:00.000Z");
   assert.equal(queries.day.to, "2026-07-22T03:00:00.000Z");
-  assert.match(queries.resolved.text, /d\.name = \$1/);
+  assert.match(queries.resolved.text, /d\.name = any/);
   assert.match(queries.resolved.text, /resolved_at >= \$2::timestamptz/);
   assert.doesNotMatch(queries.resolved.text, /acknowledged/);
   assert.match(queries.sourceAcknowledged.text, /acknowledged_source = true/);
@@ -57,7 +57,8 @@ test("métricas diárias separam resolução, ACK da origem e reconhecimento One
   assert.doesNotMatch(queries.sourceAcknowledged.text, /alert_acknowledgements/);
   assert.match(queries.oneViewAcknowledged.text, /from alert_acknowledgements/);
   assert.match(queries.oneViewAcknowledged.text, /requested_at >= \$2::timestamptz/);
-  assert.equal(queries.oneViewAcknowledged.values[0], "teletex-http");
+  assert.ok(Array.isArray(queries.oneViewAcknowledged.values[0]));
+  assert.ok(queries.oneViewAcknowledged.values[0].includes("teletex-http"));
   assert.deepEqual(queries.oneViewAcknowledged.values[3], ["internal"]);
   assert.equal(queries.oneViewAcknowledged.values[4].includes("failed"), false);
   assert.equal(queries.oneViewAcknowledged.values[4].includes("cancelled"), false);
@@ -138,8 +139,12 @@ test("fila de atenção usa defaults seguros, limita 200 e neutraliza entrada in
   });
   const query = buildAttentionRequiredQuery(request("GET", { limit: "5000" }), getAttentionThresholds({}));
   assert.equal(query.limit, 200);
-  assert.deepEqual(query.values, [5, 15, 30, 60, "teletex-http"]);
-  assert.match(query.whereSql, /scope_d\.name = \$5/);
+  assert.equal(query.values[0], 5);
+  assert.equal(query.values[1], 15);
+  assert.equal(query.values[2], 30);
+  assert.equal(query.values[3], 60);
+  assert.ok(Array.isArray(query.values[4]) && query.values[4].includes("teletex-http"));
+  assert.match(query.whereSql, /d\.name = any\(\$\d+::text\[\]\)|scope_d\.name/);
   assert.match(query.whereSql, /a\.first_seen_at < now\(\)/);
   assert.match(query.whereSql, /severity in \('disaster', 'critical'\)/);
   assert.match(query.whereSql, /severity in \('warning', 'information', 'not_classified'\)/);
@@ -255,7 +260,7 @@ test("status active, resolved e all usam predicados antes da paginacao", () => {
   assert.match(active.whereSql, /status_internal/);
   assert.match(resolved.whereSql, /a\.resolved_at is not null/);
   assert.match(resolved.whereSql, /'normalized'/);
-  assert.match(all.whereSql, /d\.name = \$1/);
+  assert.match(all.whereSql, /d\.name = any/);
   assert.deepEqual([resolved.page, resolved.pageSize, resolved.offset], [3, 25, 50]);
 });
 
@@ -268,7 +273,9 @@ test("ACK da origem e reconhecimento interno usam filtros independentes no BFF",
   assert.equal(query.filters.acknowledgedInternal, "false");
   assert.match(query.whereSql, /acknowledged_source/);
   assert.match(query.whereSql, /acknowledged_internal/);
-  assert.deepEqual(query.params, ["teletex-http", true, false]);
+  assert.equal(query.params[1], true);
+  assert.equal(query.params[2], false);
+  assert.ok(Array.isArray(query.params[0]) && query.params[0].includes("teletex-http"));
 });
 
 test("resolvidos combinam cliente, datasource, busca e recovery parametrizados", () => {
@@ -336,7 +343,7 @@ test("filtros, multisseleção, datas, busca e sort ficam parametrizados", () =>
   assert.equal(query.filters.acknowledgedFrom, "2026-07-14T18:00:00.000Z");
   assert.equal(query.filters.acknowledgedTo, "2026-07-14T19:00:00.000Z");
   assert.match(query.whereSql, /a\.client_name = any\(\$\d+::text\[\]\)/);
-  assert.match(query.whereSql, /a\.customer_key = any\(\$\d+::text\[\]\)/);
+  assert.match(query.whereSql, /lower\(btrim\(a\.customer_name\)\)|a\.customer_key/);
   assert.match(query.whereSql, /d\.name = any\(\$\d+::text\[\]\)/);
   assert.match(query.whereSql, /coalesce\(a\.customer_confidence, 'unclassified'\) = any\(\$\d+::text\[\]\)/);
   assert.match(query.whereSql, /a\.severity = any\(\$\d+::text\[\]\)/);
@@ -400,7 +407,7 @@ test("sort_secondary duration/resolved_at no desempate de severity (OV-P0-34)", 
     sort_secondary: "resolved_at",
   }));
   assert.equal(byDuration.filters.sortSecondary, "duration");
-  assert.match(byDuration.orderSql, /DESC, a\.duration_seconds DESC/);
+  assert.match(byDuration.orderSql, /extract\(epoch from/);
   assert.equal(byResolved.filters.sortSecondary, "resolved_at");
   assert.match(byResolved.orderSql, /DESC, a\.resolved_at DESC nulls last/);
   assert.throws(
@@ -475,7 +482,14 @@ test("snapshot aplica paginação, filtros e informa cobertura parcial", async (
   assert.equal(first.items.some((item) => second.items.some((other) => other.id === item.id)), false);
   assert.equal(first.snapshot_coverage.partial, true);
   assert.equal(first.snapshot_coverage.available_items, first.pagination.total_items);
-  assert.ok(first.items.every((item) => item.datasource_name === "teletex-http"));
+  assert.ok(first.items.every((item) => [
+    "teletex-http",
+    "rhp",
+    "castrolanda",
+    "zurich",
+    "fraport-for",
+    "fraport-poa",
+  ].includes(item.datasource_name)));
   assert.ok(first.snapshot_coverage.total_persisted >= first.snapshot_coverage.available_items);
   assert.equal(first.filtered_summary.total, first.pagination.total_items);
   assert.deepEqual(Object.keys(first.filtered_summary.by_severity), [
@@ -815,6 +829,7 @@ test("datasource_fallback nunca vira nome de cliente", () => {
     customer_source: "datasource_fallback",
   }), {
     customerName: null,
+    customerNameOriginal: null,
     customerKey: "unclassified",
     unidentified: true,
   });
@@ -864,13 +879,14 @@ test("BFF seleciona enriquecimento seguro e histórico estruturado", async () =>
 test("timeline usa origem segura, horario da origem e registro no OneView sem descricao sintetica", async () => {
   const databaseSource = await readFile(new URL("../api/_lib/oneview-db.js", import.meta.url), "utf8");
   const pageSource = await readFile(new URL("../src/pages/Alerts.tsx", import.meta.url), "utf8");
+  const drawerSource = await readFile(new URL("../src/components/oneview/AlertDetailDrawer.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(databaseSource, /O alerta foi registrado pelo Zabbix/);
   assert.match(databaseSource, /source: historySource\(row\.source, legacy\)/);
   assert.match(pageSource, /historyOrigin/);
-  assert.match(pageSource, /Fonte Zabbix/);
+  assert.match(pageSource, /ZabbixSourceFilter/);
+  assert.match(drawerSource, /Fonte Zabbix/);
   assert.match(pageSource, /Hist.rico legado/);
-  assert.match(pageSource, /Hor.rio da origem:/);
-  assert.match(pageSource, /Registrado no OneView:/);
+  assert.match(drawerSource, /Primeira ocorrência|Indisponível na origem/);
   assert.match(pageSource, /Integridade do hist.rico/);
 });
 

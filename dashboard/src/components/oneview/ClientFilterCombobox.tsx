@@ -22,6 +22,8 @@ type ClientFilterComboboxProps = {
   className?: string;
   triggerClassName?: string;
   emptyLabel?: string;
+  /** OV-P0-274 — "neste filtro" | "prioritário"; nunca "alertas" genérico. */
+  countNoun?: string;
 };
 
 /**
@@ -38,6 +40,7 @@ export function ClientFilterCombobox({
   className,
   triggerClassName,
   emptyLabel = "Nenhum cliente encontrado.",
+  countNoun = "neste filtro",
 }: ClientFilterComboboxProps) {
   const selectedCustomer = selectedKeys.length === 1
     ? options.find((customer) => customer.key === selectedKeys[0])
@@ -93,7 +96,7 @@ export function ClientFilterCombobox({
                       <span className="block truncate text-sm font-medium">{customer.name}</span>
                       {customer.alerts_count != null ? (
                         <span className="text-[10px] text-muted-foreground">
-                          {Number(customer.alerts_count).toLocaleString("pt-BR")} alertas
+                          {Number(customer.alerts_count).toLocaleString("pt-BR")} {countNoun}
                         </span>
                       ) : null}
                     </span>

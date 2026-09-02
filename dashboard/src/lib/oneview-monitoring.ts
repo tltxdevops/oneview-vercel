@@ -213,6 +213,7 @@ export async function fetchMonitoringAlerts(params: {
   /** Single, CSV ou array — chips multi-select. */
   severity?: string | string[] | null;
   customers?: string[];
+  datasources?: string[];
   limit?: number;
   windowMs: number;
   /** OV-P0-83 — recent | oldest | severity. Default recent. */
@@ -230,6 +231,7 @@ export async function fetchMonitoringAlerts(params: {
     status: "active",
     severities: [...severities],
     customers: params.customers?.length ? params.customers : undefined,
+    datasources: params.datasources?.length ? params.datasources : undefined,
     acknowledgedSource: params.mode === MONITOR_ALERT_MODE.prioritary ? false : undefined,
     firstSeenFrom: isoAgo(params.windowMs, now),
     sort: sortParams.sort,

@@ -27,6 +27,10 @@ export const UNKNOWN_SCOPE_LABEL = "Cliente não identificado";
 const CANONICAL_CLIENT_DISPLAY_NAMES: Record<string, string> = {
   ailos: "Ailos",
   jfsc: "JFSC",
+  "j.macedo": "J.Macedo",
+  "saque e pague": "Saque e Pague",
+  "fraport-for": "Fraport FOR",
+  "fraport-poa": "Fraport POA",
 };
 
 /** Chave segura de cliente: somente trim + case-insensitive; sem fuzzy matching. */

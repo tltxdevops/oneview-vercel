@@ -63,7 +63,7 @@ test("OV-P0-112 Drawer: chamado com INC clicável, skeleton só no detalhe, tags
   assert.match(section, /target="_blank"/);
   assert.match(section, /Estado/);
   assert.match(section, /Prioridade/);
-  assert.match(section, /Responsável/);
+  assert.match(section, /Analista/);
   assert.match(section, /Grupo/);
   assert.match(section, /Última atualização/);
   assert.match(section, /servicenow_reference/);

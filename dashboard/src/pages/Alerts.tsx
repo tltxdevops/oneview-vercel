@@ -20,6 +20,7 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
+import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
@@ -83,6 +84,12 @@ import {
   type AlertsSearchField,
   type AlertsSortKey,
 } from "@/lib/alerts-query";
+import {
+  customerFilterCountNoun,
+  isDatasourceOnlyFilterValue,
+  splitLegacyCustomerQuery,
+  zabbixSourceKey,
+} from "@/lib/oneview-zabbix-source";
 import {
   Activity,
   ArrowUpDown,
@@ -762,8 +769,12 @@ export default function AlertsPage() {
 
   const [page, setPage] = useState(() => positiveQueryInteger(initialQuery.get("page"), 1, Number.MAX_SAFE_INTEGER));
   const [pageSize, setPageSize] = useState(() => Number(queryEnum(initialQuery.get("page_size"), ["25", "50", "100"] as const, "50")));
-  const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(() => initialQuery.getAll("customer").filter(Boolean));
-  const [selectedDatasources, setSelectedDatasources] = useState<string[]>(() => initialQuery.getAll("datasource").filter(Boolean));
+  const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(() => splitLegacyCustomerQuery(initialQuery.getAll("customer")).customers);
+  const [selectedDatasources, setSelectedDatasources] = useState<string[]>(() => {
+    const migrated = splitLegacyCustomerQuery(initialQuery.getAll("customer")).datasources;
+    const fromQuery = initialQuery.getAll("datasource").map((value) => zabbixSourceKey(value)).filter(Boolean);
+    return [...new Set([...fromQuery, ...migrated])];
+  });
   const initialView = inferAlertsView(initialQuery);
   const [sourceAckFilter, setSourceAckFilter] = useState<RecognitionFilter>(() => {
     const ackSource = initialQuery.get("acknowledged_source");
@@ -888,6 +899,7 @@ export default function AlertsPage() {
     const next = writeAlertsUrlParams({
       view: alertsView,
       customers: selectedCustomerKeys,
+      datasources: selectedDatasources,
       severities: selectedSeverities,
       status: statusFilter,
       acknowledgedSource: sourceAckFilter,
@@ -905,7 +917,7 @@ export default function AlertsPage() {
       alert: requestedAlertId,
     });
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [alertsView, dateField, datePreset, dateRange, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [alertsView, dateField, datePreset, dateRange, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedDatasources, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadAlerts = useCallback(async (options?: { quiet?: boolean }) => {
     if (options?.quiet && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
@@ -1114,6 +1126,7 @@ export default function AlertsPage() {
   const hasTemporalFilter = alertsView !== "forgotten" && alertsDateActive(datePreset, dateRange);
   const hasActiveListFilters = Boolean(
     selectedCustomerKeys.length
+    || selectedDatasources.length
     || selectedSeverities.length
     || sourceAckFilter !== "all"
     || statusFilter !== "active"
@@ -1188,23 +1201,13 @@ export default function AlertsPage() {
   };
 
   const customerCards = useMemo(() => {
-    const allCount = metrics?.active_total ?? health?.counts.active_alerts ?? null;
-    const datasourceNames = new Set(
-      (facets?.datasources ?? [])
-        .map((row) => String(row.name || "").trim().toLowerCase())
-        .filter(Boolean),
-    );
-    const datasourceCards = (facets?.datasources ?? []).map((row) => ({
-      key: String(row.name || "").trim(),
-      name: String(row.name || "").trim(),
-      alerts_count: row.alerts_count,
-      enrichment_status: "enriched" as const,
-    }));
+    const allCount = hasTemporalFilter ? null : (metrics?.active_total ?? health?.counts.active_alerts ?? null);
     const customers = (facets?.customers ?? [])
-      .filter((customer) => !datasourceNames.has(String(customer.key || "").trim().toLowerCase()))
+      .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
       .map((customer) => ({
         ...customer,
         name: facetCustomerDisplayName(customer),
+        alerts_count: hasTemporalFilter ? null : customer.alerts_count,
       }));
     return [
       {
@@ -1213,10 +1216,9 @@ export default function AlertsPage() {
         alerts_count: allCount,
         enrichment_status: "enriched" as const,
       },
-      ...datasourceCards,
       ...customers,
     ];
-  }, [facets?.customers, facets?.datasources, health?.counts.active_alerts, metrics?.active_total]);
+  }, [facets?.customers, hasTemporalFilter, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
     if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
@@ -1564,6 +1566,18 @@ export default function AlertsPage() {
       selectedKeys={selectedCustomerKeys}
       selectedLabel={selectedCustomerLabel}
       onToggle={toggleCustomer}
+      countNoun={customerFilterCountNoun(alertsView === "priority" ? "prioritary" : "filter")}
+    />
+  );
+  const sourceSelector = (
+    <ZabbixSourceFilter
+      id="alerts-fonte-zabbix"
+      value={selectedDatasources[0] || "all"}
+      options={facets?.datasources ?? []}
+      onValueChange={(value) => {
+        setSelectedDatasources(value === "all" ? [] : [value]);
+        setPage(1);
+      }}
     />
   );
 
@@ -1575,6 +1589,7 @@ export default function AlertsPage() {
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Alertas</h1>
           {clientSelector}
+          {sourceSelector}
         </div>
       )}
       contentClassName="gap-3 p-3 lg:px-4"

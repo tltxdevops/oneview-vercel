@@ -1230,6 +1230,7 @@ export type OperatorQueueItem = {
   alert_id: string | null;
   customer_name: string | null;
   customer_key: string | null;
+  datasource_name: string | null;
   operator_tag: string | null;
   problem_name: string | null;
   host_name: string | null;
@@ -1278,6 +1279,7 @@ export type OperatorQueueResponse = OneViewResponseMeta & {
   facets: {
     operator_tags: OperatorQueueFacet[];
     customers: OperatorQueueFacet[];
+    datasources: OperatorQueueFacet[];
     analysts: OperatorQueueFacet[];
     states: OperatorQueueFacet[];
     severities: OperatorQueueFacet[];
@@ -1290,6 +1292,7 @@ export async function fetchOperatorQueue(params?: {
   tab?: OperatorQueueTab;
   operatorTag?: string;
   customer?: string;
+  datasource?: string;
   assignedTo?: string;
   state?: string;
   severity?: string;
@@ -1304,6 +1307,7 @@ export async function fetchOperatorQueue(params?: {
   if (params?.tab) search.set("tab", params.tab);
   if (params?.operatorTag) search.set("operator_tag", params.operatorTag);
   if (params?.customer) search.set("customer", params.customer);
+  if (params?.datasource) search.set("datasource", params.datasource);
   if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params?.state) search.set("state", params.state);
   if (params?.severity) search.set("severity", params.severity);

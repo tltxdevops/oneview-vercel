@@ -179,10 +179,14 @@ export function parseOperatorQueueFilters(req) {
   const alertStatus = String(oneQuery(req, "alert_status") || "all").trim().toLowerCase();
   if (!SAFE_ALERT_STATUS.test(alertStatus)) throw invalidQuery();
 
+  const datasource = text(oneQuery(req, "datasource"));
+  if (datasource && !SAFE_FILTER.test(datasource)) throw invalidQuery();
+
   return {
     tab,
     operator_tag: operatorTag,
     customer,
+    datasource: datasource ? datasource.toLowerCase() : null,
     assigned_to: assignedTo ? assignedTo.toLowerCase() : null,
     state,
     severity: severity ? severity.toLowerCase() : null,
@@ -210,6 +214,7 @@ function matchesFilters(row, filters) {
       .map((value) => String(value || "").toLowerCase());
     if (!haystack.includes(needle)) return false;
   }
+  if (filters.datasource && String(row.datasource_name || "").toLowerCase() !== filters.datasource) return false;
   if (filters.assigned_to && row.assigned_to !== filters.assigned_to) return false;
   if (filters.state && row.incident_state !== filters.state) return false;
   if (filters.severity && row.severity !== filters.severity) return false;
@@ -238,6 +243,7 @@ export function mapOperatorQueueRow(alert, incident, relationSource, now = Date.
     alert_id: text(alert.id),
     customer_name: customer.customer_name,
     customer_key: customer.customer_key,
+    datasource_name: text(alert.datasource_name),
     operator_tag: operatorTagLabel(alert),
     problem_name: text(alert.problem_name),
     host_name: hostLabel(alert),
@@ -337,7 +343,13 @@ export function buildOperatorQueuePayload(alerts, incidents, filters, now = Date
     counts,
     facets: {
       operator_tags: uniqueFacet(rows.map((row) => ({ value: row.operator_tag, label: row.operator_tag }))),
-      customers: uniqueFacet(rows.map((row) => ({ value: row.customer_name, label: row.customer_name }))),
+      customers: uniqueFacet(rows.map((row) => ({
+        value: row.customer_key || row.customer_name,
+        label: String(row.customer_key || "").toLowerCase() === "unclassified"
+          ? "Cliente não identificado"
+          : (row.customer_name || row.customer_key),
+      }))),
+      datasources: uniqueFacet(rows.map((row) => ({ value: row.datasource_name, label: row.datasource_name }))),
       analysts: uniqueFacet(rows
         .filter((row) => row.assigned_to)
         .map((row) => ({ value: row.assigned_to, label: row.assigned_to_display || row.assigned_to }))),
@@ -372,6 +384,7 @@ export async function fetchOperatorTaggedAlerts({
         a.customer_name,
         a.customer_key,
         a.customer_source,
+        d.name as datasource_name,
         a.host_name,
         a.host_visible_name,
         a.host_technical_name,
