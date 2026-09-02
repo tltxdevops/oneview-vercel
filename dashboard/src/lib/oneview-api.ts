@@ -90,6 +90,14 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       alert_already_recognized: "Este alerta já foi reconhecido no OneView.",
       invalid_comment: "O comentário deve possuir no máximo 500 caracteres.",
       actions_database_not_configured: "O canal seguro de solicitações ainda não está configurado.",
+      authenticated_actions_disabled: "Seu usuário não possui permissão para solicitar esta ação.",
+      servicenow_actions_disabled: "As solicitações ServiceNow ainda não estão habilitadas.",
+      incident_not_found: "Chamado não localizado no read-model ServiceNow.",
+      incident_number_mismatch: "O número do chamado não corresponde ao incidente selecionado.",
+      invalid_target_group: "Selecione um grupo permitido.",
+      invalid_work_note: "A nota deve ser texto simples, não vazio, com no máximo 2000 caracteres.",
+      invalid_hold_reason: "Selecione um motivo de espera homologado.",
+      action_not_found: "Solicitação operacional não encontrada.",
     };
     throw new Error(messages[errorCode] || `Não foi possível consultar o OneView (${response.status}).`);
   }
@@ -1337,6 +1345,45 @@ export async function fetchOperatorQueue(params?: {
   return fetchApi<OperatorQueueResponse>(`/oneview/operator-queue?${search.toString()}`, {
     signal: params?.signal,
   });
+}
+
+export type ServiceNowIncidentAction =
+  | "servicenow.assume_self"
+  | "servicenow.assign_group"
+  | "servicenow.work_note"
+  | "servicenow.hold";
+
+export type ServiceNowIncidentActionOptions = {
+  enabled: boolean;
+  actions: ServiceNowIncidentAction[];
+  assignable_groups: string[];
+  hold_reasons: string[];
+};
+
+export type ServiceNowIncidentActionStatus = {
+  action_id: string;
+  action: ServiceNowIncidentAction;
+  status: "pending" | "processing" | "succeeded" | "failed";
+  requested_at: string | null;
+  processed_at: string | null;
+  error_code: string | null;
+  idempotent: boolean;
+};
+
+export async function fetchServiceNowIncidentActionOptions(sysId: string, signal?: AbortSignal): Promise<ServiceNowIncidentActionOptions> {
+  return fetchApi<ServiceNowIncidentActionOptions>(`/oneview/incidents/${encodeURIComponent(sysId)}/actions`, { signal });
+}
+
+export async function requestServiceNowIncidentAction({ sysId, incidentNumber, action, payload, idempotencyKey }: {
+  sysId: string; incidentNumber: string; action: ServiceNowIncidentAction; payload: Record<string, string>; idempotencyKey: string;
+}): Promise<ServiceNowIncidentActionStatus> {
+  return fetchApi<ServiceNowIncidentActionStatus>(`/oneview/incidents/${encodeURIComponent(sysId)}/actions`, {
+    method: "POST", body: JSON.stringify({ action, incident_number: incidentNumber, payload, idempotencyKey }),
+  });
+}
+
+export async function fetchServiceNowIncidentActionStatus(sysId: string, actionId: string, signal?: AbortSignal): Promise<ServiceNowIncidentActionStatus> {
+  return fetchApi<ServiceNowIncidentActionStatus>(`/oneview/incidents/${encodeURIComponent(sysId)}/actions?outbox_id=${encodeURIComponent(actionId)}`, { signal });
 }
 
 export type CanonicalLinkIncident = { sys_id: string | null; number: string | null; state: string | null; state_display?: string | null; priority: string | null; priority_display?: string | null; assigned_to: string | null; assigned_to_display?: string | null; assignment_group: string | null; assignment_group_display?: string | null; };

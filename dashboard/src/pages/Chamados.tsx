@@ -12,6 +12,7 @@ import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -34,11 +35,17 @@ import {
   fetchIncidentDuplicates,
   fetchIncidentRelatedAlert,
   fetchIncidents,
+  fetchServiceNowIncidentActionOptions,
+  fetchServiceNowIncidentActionStatus,
+  requestServiceNowIncidentAction,
   type DuplicateIncidentGroup,
   type IncidentDuplicatesResponse,
   type IncidentListResponse,
   type IncidentRelatedAlert,
   type OneViewIncident,
+  type ServiceNowIncidentAction,
+  type ServiceNowIncidentActionOptions,
+  type ServiceNowIncidentActionStatus,
 } from "@/lib/oneview-api";
 import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
 
@@ -1011,6 +1018,8 @@ export default function ChamadosPage() {
                     <p className="text-sm text-muted-foreground">Nenhum alerta relacionado localizado</p>
                   ) : null}
                 </section>
+
+                <IncidentOperationalActions incident={selected} />
               </div>
 
               <div className="border-t border-border/70 px-6 py-4">
@@ -1027,5 +1036,80 @@ export default function ChamadosPage() {
         </SheetContent>
       </Sheet>
     </AppLayout>
+  );
+}
+
+function actionIdempotencyKey(action: ServiceNowIncidentAction) {
+  const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `sn-action:${action}:${nonce}`;
+}
+
+function IncidentOperationalActions({ incident }: { incident: OneViewIncident }) {
+  const [options, setOptions] = useState<ServiceNowIncidentActionOptions | null>(null);
+  const [optionsError, setOptionsError] = useState<string | null>(null);
+  const [targetGroup, setTargetGroup] = useState("");
+  const [workNote, setWorkNote] = useState("");
+  const [holdReason, setHoldReason] = useState("");
+  const [submitting, setSubmitting] = useState<ServiceNowIncidentAction | null>(null);
+  const [result, setResult] = useState<ServiceNowIncidentActionStatus | null>(null);
+  const [resultError, setResultError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setOptions(null); setOptionsError(null); setResult(null); setResultError(null);
+    setTargetGroup(""); setWorkNote(""); setHoldReason("");
+    fetchServiceNowIncidentActionOptions(incident.sys_id, controller.signal)
+      .then(setOptions)
+      .catch((error: unknown) => { if (!controller.signal.aborted) setOptionsError(error instanceof Error ? error.message : "Ações indisponíveis."); });
+    return () => controller.abort();
+  }, [incident.sys_id]);
+
+  useEffect(() => {
+    if (!result?.action_id || !["pending", "processing"].includes(result.status)) return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetchServiceNowIncidentActionStatus(incident.sys_id, result.action_id, controller.signal).then(setResult).catch(() => undefined);
+    }, 5_000);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [incident.sys_id, result?.action_id, result?.status]);
+
+  async function submit(action: ServiceNowIncidentAction, payload: Record<string, string>, confirmation?: string) {
+    if (!incident.sys_id || !incident.number || submitting) return;
+    if (confirmation && !window.confirm(confirmation)) return;
+    setSubmitting(action); setResultError(null);
+    try {
+      const response = await requestServiceNowIncidentAction({ sysId: incident.sys_id, incidentNumber: incident.number, action, payload, idempotencyKey: actionIdempotencyKey(action) });
+      setResult(response);
+      if (action === "servicenow.work_note") setWorkNote("");
+    } catch (error) {
+      setResultError(error instanceof Error ? error.message : "Não foi possível enviar a solicitação.");
+    } finally { setSubmitting(null); }
+  }
+
+  const enabled = Boolean(options?.enabled && incident.sys_id && incident.number);
+  const busy = submitting !== null;
+  const resultLabel = result?.status === "succeeded" ? "Aplicada" : result?.status === "failed" ? "Falhou" : result ? "Solicitação enviada — aguardando Worker" : null;
+
+  return (
+    <section aria-label="Ações operacionais ServiceNow" className="space-y-3 rounded-md border border-border/70 p-3">
+      <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Ações operacionais</p><p className="text-xs text-muted-foreground">A solicitação é registrada no OneView; o incidente só muda após confirmação do Worker.</p></div>
+      {optionsError ? <p className="text-xs text-muted-foreground">{optionsError}</p> : null}
+      {!optionsError && !options ? <Skeleton className="h-20 w-full" /> : null}
+      {options && !options.enabled ? <p className="text-xs text-muted-foreground">Solicitações ServiceNow indisponíveis neste ambiente.</p> : null}
+      {options?.enabled ? <div className="space-y-3">
+        <Button type="button" size="sm" variant="secondary" disabled={!enabled || busy} onClick={() => void submit("servicenow.assume_self", {}, "Enviar solicitação para assumir este chamado?")}>Assumir</Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Select value={targetGroup} onValueChange={setTargetGroup} disabled={!enabled || busy || !options.assignable_groups.length}><SelectTrigger aria-label="Grupo de destino" className="flex-1"><SelectValue placeholder={options.assignable_groups.length ? "Selecionar grupo" : "Nenhum grupo homologado"} /></SelectTrigger><SelectContent>{options.assignable_groups.map((group) => <SelectItem key={group} value={group}>{group}</SelectItem>)}</SelectContent></Select>
+          <Button type="button" size="sm" variant="outline" disabled={!enabled || busy || !targetGroup} onClick={() => void submit("servicenow.assign_group", { target_group: targetGroup }, "Enviar solicitação para atribuir este grupo?")}>Atribuir grupo</Button>
+        </div>
+        <div className="space-y-2"><Textarea aria-label="Nota de trabalho" value={workNote} maxLength={2000} onChange={(event) => setWorkNote(event.target.value)} disabled={!enabled || busy} placeholder="Adicionar nota de trabalho" /><Button type="button" size="sm" variant="outline" disabled={!enabled || busy || !workNote.trim()} onClick={() => void submit("servicenow.work_note", { work_note: workNote })}>Adicionar nota</Button></div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Select value={holdReason} onValueChange={setHoldReason} disabled={!enabled || busy || !options.hold_reasons.length}><SelectTrigger aria-label="Motivo de espera" className="flex-1"><SelectValue placeholder={options.hold_reasons.length ? "Motivo homologado" : "Nenhum motivo homologado"} /></SelectTrigger><SelectContent>{options.hold_reasons.map((reason) => <SelectItem key={reason} value={reason}>{reason}</SelectItem>)}</SelectContent></Select>
+          <Button type="button" size="sm" variant="outline" disabled={!enabled || busy || !holdReason} onClick={() => void submit("servicenow.hold", { hold_reason: holdReason }, "Enviar solicitação para colocar este chamado em espera?")}>Colocar em espera</Button>
+        </div>
+      </div> : null}
+      {resultLabel ? <p className={result?.status === "failed" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>{resultLabel}{result?.error_code ? ` (${result.error_code})` : ""}</p> : null}
+      {resultError ? <p className="text-xs text-destructive">{resultError}</p> : null}
+    </section>
   );
 }
