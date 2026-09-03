@@ -67,11 +67,11 @@ export default async function handler(req, res) {
     const offset = asInt(req.query.offset, 0, { min: 0, max: 100000 });
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";
 
-    const totalResult = await query(`select count(*)::int as total from alerts ${whereSql}`, values);
+    const totalResult = await query(`select count(*)::int as total from alerts a ${whereSql}`, values);
     const listResult = await query(
       `
         select ${ALERT_FIELDS}
-        from alerts
+        from alerts a
         ${whereSql}
         order by first_seen_at desc
         limit $${values.length + 1}

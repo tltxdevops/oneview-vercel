@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { buildLegacyAlertsScope } from "../api/alerts/index.js";
@@ -20,6 +21,12 @@ test("OV-P0-285A: legacy /api/alerts applies customer identity and datasource as
   assert.equal(scope.values.length, 3);
   assert.deepEqual(scope.values[1], ["castrolanda"]);
   assert.deepEqual(scope.values[2], ["teletex-http"]);
+});
+
+test("OV-P0-285A: legacy SQL declares the canonical customer alias in count and page queries", async () => {
+  const source = await readFile(new URL("../api/alerts/index.js", import.meta.url), "utf8");
+  assert.match(source, /count\(\*\)::int as total from alerts a \$\{whereSql\}/);
+  assert.match(source, /select \$\{ALERT_FIELDS\}[\s\S]*from alerts a[\s\S]*\$\{whereSql\}/);
 });
 
 test("OV-P0-285A: customer=castrolanda remains customer identity, never datasource", () => {
