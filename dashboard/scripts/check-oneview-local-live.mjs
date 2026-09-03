@@ -112,6 +112,8 @@ try {
     ["data-sources", "/api/oneview/data-sources"],
     ["sync-logs", "/api/oneview/sync-logs"],
     ["operations-health", "/api/oneview/operations/health"],
+    ["runtime-health", "/api/oneview/runtime-health"],
+    ["links", "/api/oneview/links?page=1&page_size=50"],
     ["attention-required", "/api/oneview/attention-required?limit=10"],
   ]) checks.push(await checkRoute(name, path));
 

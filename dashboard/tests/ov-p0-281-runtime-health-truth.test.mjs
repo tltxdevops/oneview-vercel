@@ -18,7 +18,7 @@ const now = Date.parse("2026-09-02T20:00:00.000Z");
 const root = path.resolve(import.meta.dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-test("OV-P0-281 false-green: sync success + TLS failure is never HEALTHY", () => {
+test("OV-P0-281 current successful FOR sync is healthy without replaying a historical TLS probe", () => {
   const truth = classifyZabbixSourceTruth({
     sourceName: "fraport-for",
     enabled: true,
@@ -31,20 +31,19 @@ test("OV-P0-281 false-green: sync success + TLS failure is never HEALTHY", () =>
     probe: fraportProbeForSource("fraport-for"),
     now,
   });
-  assert.equal(truth.status, "DEGRADED");
-  assert.equal(truth.cause, "TLS_HOSTNAME_MISMATCH+PRIVATE_CA_NOT_IN_SYSTEM_TRUST");
+  assert.equal(truth.status, "HEALTHY");
+  assert.equal(truth.cause, null);
   assert.equal(truth.dimensions.SYNC_PROCESS.status, "HEALTHY");
   assert.equal(truth.dimensions.SOURCE_CONNECTIVITY.status, "HEALTHY");
   assert.equal(truth.dimensions.TCP.status, "HEALTHY");
   assert.equal(truth.dimensions.API.status, "HEALTHY");
   assert.equal(truth.dimensions.AUTH.status, "HEALTHY");
-  assert.equal(truth.dimensions.TLS_STRICT.status, "DEGRADED");
-  assert.equal(truth.dimensions.TLS_INSECURE.status, "HEALTHY");
-  assert.match(truth.recommended_action, /fraport-brasil\.local|CA privada/);
-  assert.match(truth.recommended_action, /Não usar verify_tls=false/);
+  assert.equal(truth.dimensions.TLS_STRICT.status, "UNKNOWN");
+  assert.equal(truth.dimensions.TLS_INSECURE.status, "UNKNOWN");
+  assert.equal(truth.recommended_action, null);
 });
 
-test("OV-P0-281 fraport-poa follows same TLS degraded contract as FOR", () => {
+test("OV-P0-281 current successful POA sync follows the same live-evidence contract", () => {
   const truth = classifyZabbixSourceTruth({
     sourceName: "fraport-poa",
     enabled: true,
@@ -56,9 +55,32 @@ test("OV-P0-281 fraport-poa follows same TLS degraded contract as FOR", () => {
     probe: fraportProbeForSource("fraport-poa"),
     now,
   });
+  assert.equal(truth.status, "HEALTHY");
+  assert.equal(truth.cause, null);
+});
+
+test("OV-P0-281 a current explicit Fraport TLS failure still degrades health", () => {
+  const truth = classifyZabbixSourceTruth({
+    sourceName: "fraport-for",
+    enabled: true,
+    configured: true,
+    lastSuccessAt: "2026-09-02T19:59:00.000Z",
+    lastDbEventAt: "2026-09-02T19:50:00.000Z",
+    intervalSeconds: 60,
+    failureCount: 0,
+    probe: fraportProbeForSource("fraport-for", {
+      tcp: "HEALTHY",
+      api: "HEALTHY",
+      auth: "HEALTHY",
+      tls_strict: "FAILED",
+      cause: "TLS_HOSTNAME_MISMATCH+PRIVATE_CA_NOT_IN_SYSTEM_TRUST",
+      checked_at: "2026-09-02T19:59:30.000Z",
+    }),
+    now,
+  });
   assert.equal(truth.status, "DEGRADED");
+  assert.equal(truth.dimensions.TLS_STRICT.status, "DEGRADED");
   assert.equal(truth.cause, "TLS_HOSTNAME_MISMATCH+PRIVATE_CA_NOT_IN_SYSTEM_TRUST");
-  assert.notEqual(truth.status, "DOWN");
 });
 
 test("OV-P0-281 false-green: sync success + silent source keeps STALE badge", () => {
@@ -126,7 +148,7 @@ test("OV-P0-281 active truth explains live extras from 286A without DEGRADED", (
   assert.equal(unexplained.dimension.status, "DEGRADED");
 });
 
-test("OV-P0-281 latest FOR evidence supersedes temporary outage (286A)", () => {
+test("OV-P0-281 recovered FOR sync supersedes a historical persisted error", () => {
   const truth = classifyZabbixSourceTruth({
     sourceName: "fraport-for",
     enabled: true,
@@ -142,7 +164,7 @@ test("OV-P0-281 latest FOR evidence supersedes temporary outage (286A)", () => {
   assert.equal(truth.dimensions.TCP.status, "HEALTHY");
   assert.equal(truth.dimensions.API.status, "HEALTHY");
   assert.equal(truth.dimensions.AUTH.status, "HEALTHY");
-  assert.equal(truth.status, "DEGRADED");
+  assert.equal(truth.status, "HEALTHY");
   assert.notEqual(truth.status, "DOWN");
   assert.notEqual(truth.status, "UNKNOWN");
 });

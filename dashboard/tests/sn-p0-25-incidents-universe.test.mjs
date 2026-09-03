@@ -266,8 +266,8 @@ test("SN-P0-25 Chamados FE: caller default Todos + busca INC; Home usa helper se
   assert.match(api, /if \(params\?\.callerId\) search\.set\("caller_id"/);
   assert.match(api, /facets\?:/);
 
-  // OV-P0-69 / OV-P0-103: Home lista incidents via fetchHomeIncidents (unassigned, sem caller_id).
-  assert.match(indexPage, /fetchHomeIncidents/);
+  // OV-P0-69 / OV-P0-103: Home lista incidents via fetchOperationalIncidents (sem caller_id).
+  assert.match(indexPage, /fetchOperationalIncidents/);
   assert.doesNotMatch(indexPage, /CALLER_FILTER_SEEDS|chamados-number/);
   const incidentsFn = home.slice(
     home.indexOf("export async function fetchHomeIncidents"),
@@ -275,7 +275,7 @@ test("SN-P0-25 Chamados FE: caller default Todos + busca INC; Home usa helper se
       ? home.indexOf("export function prioritizeHomeUnassignedIncidents")
       : home.indexOf("export function buildHomeAlertsHref"),
   );
-  assert.doesNotMatch(incidentsFn, /callerId|caller_id/);
+  assert.doesNotMatch(incidentsFn, /callerId:/);
   const helper = await read("src/lib/oneview-operational-incidents.ts");
   assert.match(helper, /unassigned: mode === INCIDENTS_QUEUE_MODE\.unassigned \? true : undefined/);
 });

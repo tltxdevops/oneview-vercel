@@ -140,11 +140,11 @@ type SectionErrors = Partial<Record<"summary" | "queue" | "incidents", string | 
  * Validado mentalmente em 1366×768 e 1920×1080 (problema absorve o restante).
  */
 const QUEUE_GRID =
-  "grid grid-cols-[minmax(9.5rem,13rem)_minmax(8rem,12rem)_minmax(0,1fr)_6.25rem_4.75rem_5.75rem_5.5rem_4.5rem] items-center gap-x-3";
+  "grid grid-cols-[minmax(7.5rem,10rem)_minmax(0,1fr)_6rem_3.75rem] items-center gap-x-2 md:grid-cols-[minmax(8rem,11rem)_minmax(7rem,10rem)_minmax(0,1fr)_6rem_3.75rem] xl:grid-cols-[minmax(9rem,12rem)_minmax(7rem,10rem)_minmax(0,1fr)_6rem_4.5rem_5.25rem_5rem_4rem] xl:gap-x-3 min-[1440px]:grid-cols-[minmax(8rem,11rem)_minmax(7rem,9rem)_minmax(0,1fr)_6rem_3.75rem] min-[1800px]:grid-cols-[minmax(9rem,12rem)_minmax(7rem,10rem)_minmax(0,1fr)_6rem_4.5rem_5.25rem_5rem_4rem]";
 
 /** OV-P0-75 — coluna direita ~40% a partir de 1440px; abaixo empilha (1366). */
 const COMMAND_CENTER_GRID =
-  "grid min-h-0 flex-1 gap-2 min-[1440px]:grid-cols-[minmax(0,60fr)_minmax(0,40fr)]";
+  "grid min-h-0 flex-none gap-2 min-[1440px]:flex-1 min-[1440px]:grid-cols-[minmax(0,60fr)_minmax(0,40fr)]";
 
 function formatDurationSeconds(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
@@ -282,12 +282,12 @@ function Panel({
         className,
       )}
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+      <div className="flex shrink-0 flex-col items-stretch gap-2 border-b border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:py-1.5">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold tracking-wide text-foreground sm:text-base">{title}</h2>
+          <h2 className="break-words text-sm font-semibold tracking-wide text-foreground sm:text-base">{title}</h2>
           {overflow ? <p className="text-[11px] font-medium text-muted-foreground">{overflow}</p> : null}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5 sm:shrink-0 sm:justify-end">
           {aside}
           {error ? (
             <Button
@@ -432,7 +432,7 @@ function MonitorAlertRow({
         </span>
       </span>
 
-      <TruncatedText className="min-w-0 text-left text-xs text-foreground/85">{canonicalHostName(alert)}</TruncatedText>
+      <TruncatedText className="hidden min-w-0 text-left text-xs text-foreground/85 md:block">{canonicalHostName(alert)}</TruncatedText>
 
       <TruncatedText className="min-w-0 text-left text-xs text-muted-foreground">{alert.problem_name}</TruncatedText>
 
@@ -456,7 +456,7 @@ function MonitorAlertRow({
         ) : null}
       </span>
 
-      <span className="justify-self-start">
+      <span className="hidden justify-self-start xl:block min-[1440px]:hidden min-[1800px]:block">
         <Badge
           variant="outline"
           className={cn(
@@ -470,11 +470,11 @@ function MonitorAlertRow({
         </Badge>
       </span>
 
-      <span className="justify-self-end text-right text-xs tabular-nums text-muted-foreground">
+      <span className="hidden justify-self-end text-right text-xs tabular-nums text-muted-foreground xl:block min-[1440px]:hidden min-[1800px]:block">
         {formatCompactFirstSeen(alert.first_seen_at || alert.started_at)}
       </span>
 
-      <span className="justify-self-end text-right text-xs tabular-nums text-muted-foreground">
+      <span className="hidden justify-self-end text-right text-xs tabular-nums text-muted-foreground xl:block min-[1440px]:hidden min-[1800px]:block">
         {formatDurationSeconds(alert.duration_seconds)}
       </span>
 
@@ -1364,7 +1364,7 @@ export default function MonitoringPage() {
         </div>
       </header>
 
-      <div className="mx-auto flex h-0 w-full max-w-[1920px] min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2 sm:p-3">
+      <div className="mx-auto flex h-0 w-full max-w-[1920px] min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2 sm:p-3 min-[1440px]:overflow-hidden">
         {/* OV-P0-75: >=1440 fila ~60% | chamados ~40%; em 1366 empilha abaixo */}
         <div className={COMMAND_CENTER_GRID}>
           <Panel
@@ -1373,7 +1373,7 @@ export default function MonitoringPage() {
             onRetry={() => void refreshAll()}
             overflow={queueOverflowLabel(queueTotal, queueAlerts.length)}
             empty={queueEmpty}
-            className="min-h-0 min-[1440px]:flex-1"
+            className="min-h-[24rem] min-[1440px]:min-h-0 min-[1440px]:flex-1"
             aside={(
               <OperationalCta to={alertsHref}>Ver todos em Alertas</OperationalCta>
             )}
@@ -1515,12 +1515,12 @@ export default function MonitoringPage() {
                     aria-hidden="true"
                   >
                     <span className="text-left">Cliente</span>
-                    <span className="text-left">Host</span>
+                    <span className="hidden text-left md:block">Host</span>
                     <span className="text-left">Problema</span>
                     <span className="text-left">Severidade</span>
-                    <span className="text-left">ACK</span>
-                    <span className="text-right">Início</span>
-                    <span className="text-right">Duração</span>
+                    <span className="hidden text-left xl:block min-[1440px]:hidden min-[1800px]:block">ACK</span>
+                    <span className="hidden text-right xl:block min-[1440px]:hidden min-[1800px]:block">Início</span>
+                    <span className="hidden text-right xl:block min-[1440px]:hidden min-[1800px]:block">Duração</span>
                     <span className="text-center">Ação</span>
                   </div>
                   <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">

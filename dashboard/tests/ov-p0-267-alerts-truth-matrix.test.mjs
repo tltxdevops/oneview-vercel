@@ -70,10 +70,10 @@ test("OV-P0-267: six operational sources stay in the allowlist; Maps stays out",
   assert.equal(OPERATIONAL.includes("maps"), false);
 });
 
-test("OV-P0-267: Alerts keeps datasource facets on Fonte Zabbix, not Cliente", async () => {
+test("OV-P0-267: Alerts keeps datasource scope in the BFF contract without the header selector", async () => {
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
-  assert.match(alerts, /facets\?\.datasources/);
-  assert.match(alerts, /ZabbixSourceFilter/);
+  assert.doesNotMatch(alerts, /ZabbixSourceFilter/);
+  assert.match(alerts, /datasources: selectedDatasources/);
   assert.doesNotMatch(alerts, /datasourceCards/);
   assert.doesNotMatch(alerts, /FRAPORT|Zurich|Castrolanda/);
   const scope = await readFile(path.join(dashboardRoot, "api/_lib/oneview-scope.js"), "utf8");
@@ -107,7 +107,7 @@ test("OV-P0-267B: Home, Monitoramento and Alertas share explicit datasource quer
   assert.match(monitoring, /customers: params\.customers/);
   assert.match(monitoring, /datasources: params\.datasources/);
   assert.match(monitoring, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
-  assert.match(alerts, /ZabbixSourceFilter/);
+  assert.doesNotMatch(alerts, /ZabbixSourceFilter/);
   assert.match(alerts, /datasources: selectedDatasources/);
 
   for (const datasource of OPERATIONAL) {

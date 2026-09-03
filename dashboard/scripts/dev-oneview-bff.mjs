@@ -29,6 +29,8 @@ for (const file of [
   "api/oneview/alerts/[id].js",
   "api/oneview/alerts/[id]/history.js",
   "api/oneview/operations/health.js",
+  "api/oneview/runtime-health.js",
+  "api/oneview/links.js",
   "api/oneview/attention-required.js",
   "api/oneview/history.js",
   "api/oneview/clients-summary.js",
@@ -40,6 +42,8 @@ for (const file of [
   "api/_lib/oneview-incident-relation.js",
   "api/_lib/oneview-alert-incidents.js",
   "api/_lib/oneview-operator-queue.js",
+  "api/_lib/oneview-runtime-health-truth.js",
+  "api/_lib/oneview-links.js",
   "api/_lib/servicenow-client.js",
   "api/_lib/servicenow-normalize.js",
 ]) codeHash.update(readFileSync(path.join(rootDir, file)));
@@ -63,6 +67,8 @@ const routes = new Map([
   ["/api/oneview/data-sources", "data-sources"],
   ["/api/oneview/sync-logs", "sync-logs"],
   ["/api/oneview/operations/health", "operations-health"],
+  ["/api/oneview/runtime-health", "runtime-health"],
+  ["/api/oneview/links", "links"],
   ["/api/oneview/incidents", "incidents"],
   ["/api/oneview/incidents/related-alert", "incident-related-alert"],
   ["/api/oneview/operator-queue", "operator-queue"],
@@ -80,6 +86,8 @@ async function getHandler(routeName) {
           ? path.join("alerts", "[id]", "ack-request.js")
         : routeName === "operations-health"
           ? path.join("operations", "health.js")
+        : routeName === "runtime-health"
+          ? "runtime-health.js"
           : routeName === "incident-related-alert"
             ? path.join("incidents", "related-alert.js")
           : routeName === "alert-related-incidents"
@@ -111,6 +119,7 @@ function routeTemplate(routeName) {
   if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
   if (routeName === "alert-ack-request") return "/api/oneview/alerts/:id/ack-request";
   if (routeName === "operations-health") return "/api/oneview/operations/health";
+  if (routeName === "runtime-health") return "/api/oneview/runtime-health";
   if (routeName === "incidents") return "/api/oneview/incidents";
   if (routeName === "incident-related-alert") return "/api/oneview/incidents/related-alert";
   if (routeName === "alert-related-incidents") return "/api/oneview/alerts/related-incidents";

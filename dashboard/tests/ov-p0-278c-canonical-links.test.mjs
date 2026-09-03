@@ -9,6 +9,7 @@ test("OV-P0-278C payload keeps only canonical links and carrier null semantics",
   const rows=[...Array.from({length:113},()=>row("Castrolanda")),...Array.from({length:40},()=>row("Tuper")),...Array.from({length:31},()=>row("Teletex",1)),...Array.from({length:2},()=>row("Fraport FOR",0,1))];
   const payload=buildLinksPayload(rows,filters,0);
   assert.equal(payload.totals.links,186); assert.equal(payload.totals.active_alert_links,31); assert.equal(payload.totals.incident_links,2); assert.equal(payload.totals.known_carriers,0);
+  assert.equal(payload.data_source,"database"); assert.equal(payload.fallback_code,null);
   assert.deepEqual([...new Set(payload.items.map(x=>x.customer_name))].sort(),["Castrolanda","Fraport FOR","Teletex","Tuper"]);
 });
 test("OV-P0-278C filters preserve canonical customer, datasource-host join contract", () => {

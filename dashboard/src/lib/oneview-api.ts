@@ -13,6 +13,9 @@ export function oneViewReadCacheKey(path: string, init?: RequestInit) {
   return `${path}|${String(init?.method || "GET").toUpperCase()}`;
 }
 export function clearOneViewReadCache() { readCache.clear(); inFlightReads.clear(); }
+export function canShareOneViewRead(init?: RequestInit) {
+  return (!init?.method || init.method.toUpperCase() === "GET") && !init?.signal;
+}
 
 async function authHeaders(): Promise<Record<string, string>> {
   if (serverAuthEnabled()) {
@@ -40,10 +43,13 @@ async function authHeaders(): Promise<Record<string, string>> {
 
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   const isRead = !init?.method || init.method.toUpperCase() === "GET";
+  // A Promise bound to one component's AbortSignal cannot be shared safely:
+  // unmounting that component would reject the next screen's identical GET.
+  const canShare = canShareOneViewRead(init);
   const key = oneViewReadCacheKey(path, init);
   const cached = isRead ? readCache.get(key) : undefined;
   if (cached && cached.expiresAt > Date.now()) return cached.value as T;
-  const shared = isRead ? inFlightReads.get(key) : undefined;
+  const shared = canShare ? inFlightReads.get(key) : undefined;
   if (shared) return shared as Promise<T>;
   const request = (async () => {
   const authorization = await authHeaders();
@@ -122,12 +128,12 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
     checked_at: typeof record.checked_at === "string" ? record.checked_at : new Date().toISOString(),
   } as T;
   })();
-  if (isRead) inFlightReads.set(key, request);
+  if (canShare) inFlightReads.set(key, request);
   try {
     const value = await request;
     if (isRead) readCache.set(key, { value, expiresAt: Date.now() + READ_CACHE_TTL_MS });
     return value;
-  } finally { if (isRead) inFlightReads.delete(key); }
+  } finally { if (canShare) inFlightReads.delete(key); }
 }
 
 export type OneViewDataSourceKind = "database" | "snapshot" | "servicenow";

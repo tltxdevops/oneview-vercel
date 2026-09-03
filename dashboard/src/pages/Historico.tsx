@@ -834,22 +834,23 @@ export default function HistoricoPage() {
         </div>
       )}
     >
-      <div className="space-y-3">
+      <div className="min-w-0 space-y-3">
         <Tabs value={tab} onValueChange={switchTab}>
-          <TabsList aria-label="Abas do histórico">
+          <TabsList aria-label="Abas do histórico" className="w-full sm:w-auto">
             <TabsTrigger value="alertas">Alertas</TabsTrigger>
             <TabsTrigger value="eventos">Eventos</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="alertas" className="mt-4 space-y-4">
+          <TabsContent value="alertas" className="mt-4 min-w-0 space-y-4">
             {recurrenceKey ? <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">Histórico completo da reincidência deste ativo (mesma fonte, host e trigger).</div> : null}
-            <div className="flex flex-wrap gap-2" role="group" aria-label="Presets de risco">
+            <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1 sm:flex-wrap" role="group" aria-label="Presets de risco">
               {HISTORY_RISK_PRESETS.map((preset) => (
                 <Button
                   key={preset.value}
                   type="button"
                   size="sm"
                   variant={risk === preset.value ? "default" : "outline"}
+                  className="shrink-0"
                   onClick={() => applyRiskPreset(preset.value)}
                 >
                   {preset.label}
@@ -1141,7 +1142,7 @@ export default function HistoricoPage() {
                 />
               )}
               {alertsLoaded && !alertsError && alertPages > 1 ? (
-                <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-3">
+                <div className="flex flex-col gap-3 border-t border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-xs text-muted-foreground">
                     Página {page} de {alertPages} · {countLabel}
                   </p>
@@ -1170,7 +1171,7 @@ export default function HistoricoPage() {
             </SectionPanel>
           </TabsContent>
 
-          <TabsContent value="eventos" className="mt-4 space-y-4">
+          <TabsContent value="eventos" className="mt-4 min-w-0 space-y-4">
             <FilterBar
               aria-label="Filtros de eventos do histórico"
               footer={(
@@ -1445,7 +1446,7 @@ export default function HistoricoPage() {
                 />
               )}
               {eventsLoaded && !eventsError && eventPages > 1 ? (
-                <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-3">
+                <div className="flex flex-col gap-3 border-t border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-xs text-muted-foreground">
                     Página {page} de {eventPages} · {countLabel}
                   </p>

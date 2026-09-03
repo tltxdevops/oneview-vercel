@@ -174,7 +174,10 @@ test("OV-P0-274: cross-surface Fonte Zabbix + canonical Cliente", async () => {
     "src/pages/Operadoras.tsx",
     "src/components/oneview/AlertDetailDrawer.tsx",
   ];
-  const zabbixSourceFilterFiles = files.filter((file) => file !== "src/pages/Index.tsx");
+  const zabbixSourceFilterFiles = files.filter((file) => ![
+    "src/pages/Index.tsx",
+    "src/pages/Alerts.tsx",
+  ].includes(file));
   for (const file of files) {
     const source = await read(file);
     assert.match(source, /operationalClientLabel|facetCustomerDisplayName|customer_key|Cliente/, file);
@@ -193,6 +196,7 @@ test("OV-P0-274: cross-surface Fonte Zabbix + canonical Cliente", async () => {
   assert.doesNotMatch(home, /label="Fonte Zabbix"/);
   const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /datasources: selectedDatasources/);
+  assert.doesNotMatch(alerts, /ZabbixSourceFilter/);
   const monitoring = await read("src/pages/Monitoring.tsx");
   assert.match(monitoring, /REFRESH_MS = 10_000/);
   assert.match(monitoring, /oneview-live-transition/);

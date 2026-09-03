@@ -286,9 +286,7 @@ export function classifyZabbixSourceTruth({
         : RUNTIME_TRUTH_STATUS.UNKNOWN)
     : tlsCause
       ? RUNTIME_TRUTH_STATUS.DEGRADED
-      : lastSuccessAt
-        ? RUNTIME_TRUTH_STATUS.HEALTHY
-        : RUNTIME_TRUTH_STATUS.UNKNOWN;
+      : RUNTIME_TRUTH_STATUS.UNKNOWN;
 
   const tlsInsecureStatus = hasProbe
     ? (tlsInsecureFlag === "HEALTHY"
@@ -611,21 +609,11 @@ export function classifyServiceNowWriteReadiness({
   };
 }
 
-/** Frozen latest probe evidence from OV-P0-286A (supersedes temporary FOR outage). */
-export const FRAPORT_TLS_PROBE_286A = Object.freeze({
-  tcp: "HEALTHY",
-  api: "HEALTHY",
-  auth: "HEALTHY",
-  tls_strict: "FAILED",
-  tls_insecure: "WORKING",
-  cause: "TLS_HOSTNAME_MISMATCH+PRIVATE_CA_NOT_IN_SYSTEM_TRUST",
-  checked_at: "2026-09-02T00:00:00.000Z",
-});
-
+/** Fraport probe evidence must be supplied by a current live probe, never replayed from a prior audit. */
 export function fraportProbeForSource(sourceName, override = null) {
   const name = lower(sourceName);
   if (name === "fraport-for" || name === "fraport-poa") {
-    return { ...FRAPORT_TLS_PROBE_286A, ...(override || {}) };
+    return override && typeof override === "object" ? { ...override } : null;
   }
   return override;
 }

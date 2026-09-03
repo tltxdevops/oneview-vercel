@@ -20,7 +20,6 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
-import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
@@ -1569,18 +1568,6 @@ export default function AlertsPage() {
       countNoun={customerFilterCountNoun(alertsView === "priority" ? "prioritary" : "filter")}
     />
   );
-  const sourceSelector = (
-    <ZabbixSourceFilter
-      id="alerts-fonte-zabbix"
-      value={selectedDatasources[0] || "all"}
-      options={facets?.datasources ?? []}
-      onValueChange={(value) => {
-        setSelectedDatasources(value === "all" ? [] : [value]);
-        setPage(1);
-      }}
-    />
-  );
-
   return (
     <AppLayout
       enableAutoRefresh={false}
@@ -1589,7 +1576,6 @@ export default function AlertsPage() {
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Alertas</h1>
           {clientSelector}
-          {sourceSelector}
         </div>
       )}
       contentClassName="gap-3 p-3 lg:px-4"

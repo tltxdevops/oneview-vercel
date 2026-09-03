@@ -41,7 +41,7 @@ export function PlatformHealthStrip({ className }: { className?: string }) {
                   aria-describedby={describedBy}
                 >
                   <span aria-hidden="true" className={cn("h-2 w-2 shrink-0 rounded-full", operationalToneDotClass(item.tone))} />
-                  <span className="whitespace-nowrap text-xs font-medium text-foreground">{item.name}</span>
+                  <span className="hidden whitespace-nowrap text-xs font-medium text-foreground sm:inline">{item.name}</span>
                 </button>
               </TooltipTrigger>
               <TooltipContent

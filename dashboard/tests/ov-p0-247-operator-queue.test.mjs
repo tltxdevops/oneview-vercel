@@ -318,6 +318,9 @@ test("OV-P0-247 legacy route remains; OV-P0-278C presents canonical links", asyn
   assert.match(page, /title="Links"/);
   assert.match(page, /zabbix_link_inventory/);
   assert.match(page, /fetchCanonicalLinks/);
+  assert.match(page, /isAbortError/);
+  assert.match(page, /request\.current === controller/);
+  assert.match(page, /request\.current = null/);
   assert.match(page, /Todos/);
   assert.match(page, /Não informada na origem/);
   assert.match(page, /Link \/ Serviço/);
