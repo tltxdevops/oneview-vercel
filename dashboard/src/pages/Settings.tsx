@@ -24,8 +24,8 @@ import {
   RUNTIME_CATEGORY_LABELS,
   operationalToneDotClass,
   operationalToneFromStatus,
-  operationalToneLabel,
   operationalToneTextClass,
+  runtimeStatusLabel,
 } from "@/lib/runtime-health";
 import {
   DEFAULT_SYNC_INTERVAL_SECONDS,
@@ -179,23 +179,70 @@ export default function SettingsPage() {
                 <div className="grid gap-2 md:grid-cols-2">
                   {items.map((item) => {
                     const tone = operationalToneFromStatus(item.status, item.last_success_at);
+                    const hasDimensions = Boolean(item.dimensions && Object.keys(item.dimensions).length);
                     return (
                       <div key={item.id} className="rounded-md border border-border/70 px-3 py-2 text-sm">
                         <div className="flex items-center justify-between gap-2">
                           <span className="inline-flex min-w-0 items-center gap-2">
                             <span aria-hidden="true" className={cn("h-2 w-2 shrink-0 rounded-full", operationalToneDotClass(tone))} />
                             <span className="truncate font-medium">{item.name}</span>
+                            {item.badge ? (
+                              <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                                {item.badge_label || "Origem silenciosa"}
+                              </span>
+                            ) : null}
                           </span>
                           <span className={cn("shrink-0 text-xs font-medium", operationalToneTextClass(tone))}>
-                            {operationalToneLabel(tone)}
+                            {runtimeStatusLabel(item.status)}
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-muted-foreground">
                           Último sucesso: {formatPtBrDateTime(item.last_success_at) ?? "—"} · Última observação: {formatPtBrDateTime(item.last_observed_at) ?? "—"}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
+                          Último dado origem: {formatPtBrDateTime(item.last_source_event_at) ?? "—"}
+                          {" · "}
+                          Último dado DB: {formatPtBrDateTime(item.last_db_event_at) ?? "—"}
+                          {item.source_db_lag_seconds != null ? ` · Lag: ${item.source_db_lag_seconds}s` : ""}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
                           Intervalo: {item.interval_seconds ? `${item.interval_seconds}s` : "—"}{item.detail ? ` · ${item.detail}` : ""}
                         </p>
+                        {hasDimensions ? (
+                          <div className="mt-2 grid grid-cols-2 gap-1 text-[11px] text-muted-foreground">
+                            {(
+                              [
+                                ["SOURCE_CONNECTIVITY", "Rede"],
+                                ["SOURCE_API", "API"],
+                                ["SOURCE_AUTH", "Autenticação"],
+                                ["TLS_STRICT", "TLS estrito"],
+                                ["SYNC_PROCESS", "Sync Worker"],
+                                ["SOURCE_FRESHNESS", "Dados da origem"],
+                                ["ACTIVE_TRUTH", "Active truth"],
+                              ] as const
+                            )
+                              .map(([key, label]) => {
+                                const dim = item.dimensions?.[key];
+                                if (!dim) return null;
+                                return (
+                                  <div key={key} className="flex items-center justify-between gap-2 rounded bg-muted/30 px-1.5 py-0.5">
+                                    <span className="truncate">{label}</span>
+                                    <span className="font-medium text-foreground">{dim.status}</span>
+                                  </div>
+                                );
+                              })
+                              .filter(Boolean)}
+                          </div>
+                        ) : null}
+                        {item.cause ? (
+                          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">Causa: {item.cause}</p>
+                        ) : null}
+                        {item.recommended_action ? (
+                          <p className="mt-1 text-xs text-muted-foreground">Ação: {item.recommended_action}</p>
+                        ) : null}
+                        {item.warning ? (
+                          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">Warning: {item.warning}</p>
+                        ) : null}
                         {item.current_error ? (
                           <p className="mt-1 text-xs text-error">
                             Erro atual: {item.current_error}{item.last_error_at ? ` · ${formatPtBrDateTime(item.last_error_at)}` : ""}

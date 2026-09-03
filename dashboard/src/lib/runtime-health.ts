@@ -182,7 +182,10 @@ export function runtimeSummary(health: RuntimeHealthResponse | null, now = Date.
         ...lastSyncLines(zabbixLastSuccess, now),
         ...zabbix.flatMap((item) => {
           const relative = formatRelativePtBr(item.last_success_at, now);
-          return [`${item.name} — ${runtimeStatusLabel(item.status)}${relative ? ` · ${relative}` : ""}`];
+          const badge = item.badge_label || (item.badge === "HEALTHY_SILENT" ? "Origem silenciosa" : null);
+          const cause = item.cause ? ` · ${item.cause}` : "";
+          const badgePart = badge ? ` · ${badge}` : "";
+          return [`${item.name} — ${runtimeStatusLabel(item.status)}${badgePart}${cause}${relative ? ` · ${relative}` : ""}`];
         }),
       ],
     },

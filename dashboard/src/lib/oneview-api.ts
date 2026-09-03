@@ -732,7 +732,22 @@ export interface AttentionRequiredResponse extends OneViewResponseMeta {
 }
 
 export type OperationalStatus = "healthy" | "warning" | "error" | "stale" | "disabled";
-export type RuntimeHealthStatus = "HEALTHY" | "DEGRADED" | "DOWN" | "STALE" | "READY_DISABLED" | "CONFIG_MISSING" | "UNKNOWN";
+export type RuntimeHealthStatus =
+  | "HEALTHY"
+  | "DEGRADED"
+  | "DOWN"
+  | "STALE"
+  | "READY_DISABLED"
+  | "CONFIG_MISSING"
+  | "UNKNOWN";
+
+export interface RuntimeHealthDimension {
+  status: RuntimeHealthStatus;
+  checked_at?: string | null;
+  evidence_at?: string | null;
+  detail?: string | null;
+  cause?: string | null;
+}
 
 export interface RuntimeHealthComponent {
   id: string;
@@ -754,6 +769,19 @@ export interface RuntimeHealthComponent {
   current_error: string | null;
   last_historical_error: string | null;
   detail: string | null;
+  badge?: string | null;
+  badge_label?: string | null;
+  cause?: string | null;
+  recommended_action?: string | null;
+  dimensions?: Record<string, RuntimeHealthDimension> | null;
+  last_source_event_at?: string | null;
+  last_db_event_at?: string | null;
+  last_successful_sync_at?: string | null;
+  source_db_lag_seconds?: number | null;
+  active_truth?: Record<string, number | null> | null;
+  metrics?: Record<string, unknown> | null;
+  warning?: string | null;
+  checked_at?: string | null;
 }
 
 export interface RuntimeHealthResponse extends OneViewResponseMeta {

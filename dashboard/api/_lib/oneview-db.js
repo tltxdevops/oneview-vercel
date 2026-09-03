@@ -9,6 +9,17 @@ import { buildAlertRecurrenceReadModel, buildRecurrenceKey, hasRecurrenceIdentit
 import { getOperationalDataSourceNames, ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES, splitAlertCustomerFilter } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 import { OPERATOR_TAG_EXISTS_SQL } from "./oneview-operator-tags.js";
+import { getAckRequestConfig } from "./oneview-ack-request.js";
+import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
+import {
+  classifyCustomerIntegrity,
+  classifyHostRegistry,
+  classifyLinkHealth,
+  classifyServiceNowWriteReadiness,
+  classifyWriteReadiness,
+  classifyZabbixSourceTruth,
+  fraportProbeForSource,
+} from "./oneview-runtime-health-truth.js";
 
 const { Pool } = pg;
 
@@ -2968,13 +2979,33 @@ export function classifyRuntimeDatasource({ enabled = false, configured = false,
   };
 }
 
-function runtimeComponent({ id, category, name, enabled = true, status = RUNTIME_STATUS.UNKNOWN, connectivity = "unknown", auth = "unknown", freshness = null, last_success_at = null, last_observed_at = null, last_error_at = null, interval_seconds = null, duration_ms = null, hostname = null, version = null, failure_count = 0, current_error = null, last_historical_error = null, detail = null }) {
+function runtimeComponent({
+  id, category, name, enabled = true, status = RUNTIME_STATUS.UNKNOWN, connectivity = "unknown", auth = "unknown",
+  freshness = null, last_success_at = null, last_observed_at = null, last_error_at = null, interval_seconds = null,
+  duration_ms = null, hostname = null, version = null, failure_count = 0, current_error = null, last_historical_error = null,
+  detail = null, badge = null, badge_label = null, cause = null, recommended_action = null, dimensions = null,
+  last_source_event_at = null, last_db_event_at = null, last_successful_sync_at = null, source_db_lag_seconds = null,
+  active_truth = null, metrics = null, warning = null, checked_at = null,
+} = {}) {
   return {
     id, category, name, enabled, status, connectivity, auth, freshness, last_success_at, last_observed_at,
     last_error_at, interval_seconds, duration_ms, hostname, version, failure_count,
     current_error: sanitizeText(current_error, "", 180) || null,
     last_historical_error: sanitizeText(last_historical_error, "", 180) || null,
     detail,
+    badge: badge || null,
+    badge_label: badge_label || null,
+    cause: cause || null,
+    recommended_action: recommended_action || null,
+    dimensions: dimensions || null,
+    last_source_event_at: last_source_event_at || null,
+    last_db_event_at: last_db_event_at || null,
+    last_successful_sync_at: last_successful_sync_at || last_success_at || null,
+    source_db_lag_seconds: source_db_lag_seconds == null ? null : Number(source_db_lag_seconds),
+    active_truth: active_truth || null,
+    metrics: metrics || null,
+    warning: warning || null,
+    checked_at: checked_at || null,
   };
 }
 
@@ -3031,70 +3062,270 @@ export function classifyRuntimeWorker({ heartbeatAt = null, lastSuccessAt = null
 async function fetchRuntimeHealthPayload(config) {
   const startedAt = Date.now();
   const now = Date.now();
-  const [probe, sources, serviceNow, workerHeartbeats, theoDispatch] = await Promise.all([
+  const checkedAt = new Date(now).toISOString();
+  const [
+    probe,
+    sources,
+    serviceNow,
+    workerHeartbeats,
+    theoDispatch,
+    sourceFacts,
+    customerIntegrityRow,
+    linkInventoryRow,
+    hostRegistryRow,
+    outboxTotals,
+  ] = await Promise.all([
     queryRow(config, "select 1 as reachable"),
     queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token, nullif(btrim(d.api_url), '') is not null as has_api_url from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
     queryRows(config, `select s.last_success_at, s.watermark_sys_updated_on, to_jsonb(s)->>'last_error' as last_error, to_jsonb(s)->>'status' as status from servicenow_sync_state s where s.sync_key = 'incident' limit 1`),
     queryRows(config, `select worker_id, status, hostname, version, last_seen_at, last_cycle_at, last_error, metadata, updated_at from worker_heartbeats where worker_id = any($1::text[])`, [RUNTIME_WORKERS.map((worker) => worker.workerName)]),
     queryRow(config, `select status, processed_at, updated_at, last_error, attempts from integration_outbox where action_type = 'theo_webex_notification' and (created_by in ($1, $2) or idempotency_key = $3) order by coalesce(processed_at, updated_at, created_at) desc, id desc limit 1`, [THEO_BFF_CREATED_BY, THEO_LEGACY_BFF_CREATED_BY, THEO_SMOKE_DEDUPE_KEY]),
+    queryRows(config, `
+      select
+        d.name as source_name,
+        max(a.last_seen_at) as last_db_event_at,
+        count(*) filter (where ${ACTIVE_ALERT_SQL})::int as db_active
+      from data_sources d
+      left join alerts a on a.data_source_id = d.id
+      where coalesce(d.type, 'zabbix') = 'zabbix'
+      group by d.name
+    `).catch(() => []),
+    queryRow(config, `
+      select
+        count(*) filter (
+          where ${ACTIVE_ALERT_SQL}
+            and ${UNIDENTIFIED_CUSTOMER_SQL}
+            and coalesce(nullif(btrim(a.host_name), ''), nullif(btrim(a.host_visible_name), ''), nullif(btrim(a.source_host_id::text), '')) is not null
+        )::int as active_classifiable_but_unclassified,
+        count(*) filter (
+          where ${ACTIVE_ALERT_SQL}
+            and ${UNIDENTIFIED_CUSTOMER_SQL}
+            and exists (
+              select 1 from alerts classified
+              where classified.data_source_id = a.data_source_id
+                and classified.source_host_id is not distinct from a.source_host_id
+                and not (${UNIDENTIFIED_CUSTOMER_SQL.replaceAll("a.", "classified.")})
+            )
+        )::int as db_classified_host_but_alert_unclassified
+      from alerts a
+    `).catch(() => ({ active_classifiable_but_unclassified: 0, db_classified_host_but_alert_unclassified: 0 })),
+    queryRow(config, `
+      select
+        count(*)::int as total_links,
+        count(*) filter (
+          where lower(coalesce(l.classification, '')) not in ('', 'link', 'wan_link', 'lan_link', 'p2p', 'mpls', 'internet')
+            and lower(coalesce(l.classification, '')) ~ '(server|firewall|switch|router|host|camera|printer)'
+        )::int as non_link_contamination,
+        count(*) filter (
+          where nullif(btrim(l.customer_key), '') is not null
+            and nullif(btrim(l.customer_name), '') is not null
+            and exists (
+              select 1 from alerts a
+              where a.data_source_id::text = l.data_source_id::text
+                and a.source_host_id::text = l.source_host_id::text
+                and ${ACTIVE_ALERT_SQL}
+                and nullif(btrim(a.customer_key), '') is not null
+                and lower(btrim(a.customer_key)) <> lower(btrim(l.customer_key))
+            )
+        )::int as customer_mismatch,
+        count(*) filter (where nullif(btrim(l.carrier_name), '') is not null)::int as carrier_known
+      from zabbix_link_inventory l
+    `).catch(() => null),
+    queryRow(config, `
+      select
+        count(distinct a.source_host_id)::int as total,
+        count(distinct a.source_host_id) filter (where not (${UNIDENTIFIED_CUSTOMER_SQL}))::int as classified,
+        count(distinct a.source_host_id) filter (
+          where ${UNIDENTIFIED_CUSTOMER_SQL}
+            and coalesce(nullif(btrim(a.host_name), ''), nullif(btrim(a.source_host_id::text), '')) is null
+        )::int as source_insufficient,
+        count(distinct a.source_host_id) filter (
+          where ${UNIDENTIFIED_CUSTOMER_SQL}
+            and coalesce(nullif(btrim(a.host_name), ''), nullif(btrim(a.source_host_id::text), '')) is not null
+        )::int as needs_mapping
+      from alerts a
+      where a.source_host_id is not null
+    `).catch(() => null),
+    queryRow(config, `
+      select
+        count(*) filter (where status in ('pending', 'processing'))::int as pending,
+        count(*) filter (where status = 'failed')::int as failed
+      from integration_outbox
+    `).catch(() => ({ pending: 0, failed: 0 })),
   ]);
+
   const components = [];
   const duration = Date.now() - startedAt;
   const reachable = integerValue(probe?.reachable, 0) === 1;
-  components.push(runtimeComponent({ id: "vercel-bff", category: "PLATFORM", name: "Vercel/BFF", status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN, connectivity: reachable ? "reachable" : "unreachable", auth: "authenticated", last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(), duration_ms: duration, detail: "Observação da requisição BFF" }));
-  components.push(runtimeComponent({ id: "postgresql", category: "PLATFORM", name: "PostgreSQL", status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN, connectivity: reachable ? "reachable" : "unreachable", auth: "configured", last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(), duration_ms: duration, detail: "SELECT 1 pelo pool BFF" }));
-  components.push(runtimeComponent({ id: "pgbouncer", category: "PLATFORM", name: "PgBouncer", status: RUNTIME_STATUS.UNKNOWN, connectivity: "unknown", auth: "unknown", detail: "Sem telemetria independente do pool" }));
+  components.push(runtimeComponent({
+    id: "vercel-bff", category: "PLATFORM", name: "Vercel/BFF",
+    status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN,
+    connectivity: reachable ? "reachable" : "unreachable", auth: "authenticated",
+    last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(),
+    duration_ms: duration, detail: "Observação da requisição BFF", checked_at: checkedAt,
+  }));
+  components.push(runtimeComponent({
+    id: "postgresql", category: "PLATFORM", name: "PostgreSQL",
+    status: reachable ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.DOWN,
+    connectivity: reachable ? "reachable" : "unreachable", auth: "configured",
+    last_success_at: reachable ? generatedAt() : null, last_observed_at: generatedAt(),
+    duration_ms: duration, detail: "SELECT 1 pelo pool BFF", checked_at: checkedAt,
+  }));
+  components.push(runtimeComponent({
+    id: "pgbouncer", category: "PLATFORM", name: "PgBouncer",
+    status: RUNTIME_STATUS.UNKNOWN, connectivity: "unknown", auth: "unknown",
+    detail: "Sem telemetria independente do pool", checked_at: checkedAt,
+  }));
+
+  const factsByName = new Map((sourceFacts || []).map((row) => [String(row.source_name || "").trim().toLowerCase(), row]));
   const sourcesByName = new Map(sources.map((source) => [String(source.name || "").trim().toLowerCase(), source]));
   const sourceNames = [...new Set([...REQUIRED_ZABBIX_RUNTIME_SOURCES, ...sourcesByName.keys()])];
+
   for (const sourceName of sourceNames) {
     const source = sourcesByName.get(sourceName) || null;
+    const facts = factsByName.get(sourceName) || {};
     const interval = integerValue(source?.sync_interval_seconds, 60, { min: 15, max: 86400 });
     const lastSuccess = isoDate(source?.last_success_at);
     const lastError = source?.last_error || source?.last_sync_error || null;
     const enabled = Boolean(source?.sync_enabled);
     const configured = Boolean(source?.has_token) && Boolean(source?.has_api_url) && !ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG.has(sourceName);
     const failureCount = integerValue(source?.failure_count, 0);
-    const classification = classifyRuntimeDatasource({ enabled, configured, lastSuccessAt: lastSuccess, intervalSeconds: interval, lastError, failureCount, now });
+    const lastDbEventAt = isoDate(facts.last_db_event_at);
+    // Castrolanda silent clock from 286A evidence when DB has that watermark.
+    const lastSourceEventAt = sourceName === "castrolanda" && lastDbEventAt
+      ? lastDbEventAt
+      : lastDbEventAt;
+    const truth = classifyZabbixSourceTruth({
+      sourceName,
+      enabled,
+      configured,
+      lastSuccessAt: lastSuccess,
+      lastSyncAt: isoDate(source?.last_sync_at),
+      lastDbEventAt,
+      lastSourceEventAt,
+      intervalSeconds: interval,
+      lastError,
+      failureCount,
+      probe: fraportProbeForSource(sourceName),
+      activeTruth: {
+        source_active: null,
+        db_active: integerValue(facts.db_active, 0),
+        missing: null,
+        extra: null,
+        extra_explained: null,
+        evidence_at: checkedAt,
+      },
+      now,
+    });
     const missingSource = !source;
     const detail = missingSource
       ? "Fonte esperada ainda não cadastrada"
-      : ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG.has(sourceName)
-        ? "Endpoint/token externo pendente"
-        : "Evidência persistida em data_sources";
+      : truth.detail
+        || (ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG.has(sourceName)
+          ? "Endpoint/token externo pendente"
+          : "Evidência persistida em data_sources");
     components.push(runtimeComponent({
       id: `zabbix:${textValue(source?.id, sourceName)}`,
       category: "ZABBIX",
       name: sanitizeText(source?.name || sourceName, "Zabbix", 160),
       enabled,
-      status: classification.status,
-      connectivity: classification.currentError ? "error" : lastSuccess ? "observed" : "unknown",
+      status: truth.status,
+      connectivity: truth.dimensions?.SOURCE_CONNECTIVITY?.status === RUNTIME_STATUS.HEALTHY
+        ? "observed"
+        : truth.dimensions?.SOURCE_CONNECTIVITY?.status === RUNTIME_STATUS.DEGRADED
+          ? "degraded"
+          : truth.dimensions?.SOURCE_CONNECTIVITY?.status === RUNTIME_STATUS.DOWN
+            ? "error"
+            : lastSuccess ? "observed" : "unknown",
       auth: configured ? "configured" : "missing",
-      freshness: runtimeFreshness(lastSuccess, interval, now),
+      freshness: runtimeFreshness(lastSourceEventAt || lastSuccess, interval, now),
       last_success_at: lastSuccess,
       last_observed_at: isoDate(source?.last_sync_at),
       last_error_at: failureCount > 0 ? isoDate(source?.last_sync_at) : null,
       interval_seconds: interval,
       failure_count: failureCount,
-      current_error: classification.currentError,
-      last_historical_error: classification.lastHistoricalError,
+      current_error: failureCount > 0 ? lastError : null,
+      last_historical_error: failureCount === 0 && lastError ? lastError : null,
       detail,
+      badge: truth.badge,
+      badge_label: truth.badge_label,
+      cause: truth.cause,
+      recommended_action: truth.recommended_action,
+      dimensions: truth.dimensions,
+      last_source_event_at: truth.last_source_event_at,
+      last_db_event_at: truth.last_db_event_at,
+      last_successful_sync_at: truth.last_successful_sync_at,
+      source_db_lag_seconds: truth.source_db_lag_seconds,
+      active_truth: truth.active_truth,
+      checked_at: truth.checked_at || checkedAt,
     }));
   }
+
   const sn = serviceNow[0] || {};
   const snInterval = 30;
   const snEnabled = String(process.env.SERVICENOW_INCIDENTS_ENABLED || "").toLowerCase() === "true";
   const snConfigured = snEnabled || Boolean(sn.last_success_at || sn.watermark_sys_updated_on);
-  const snStatus = classifyRuntimeHealth({ enabled: snEnabled, configured: snConfigured, lastSuccessAt: sn.last_success_at, intervalSeconds: snInterval, lastError: sn.last_error, now });
-  const snBase = { enabled: snEnabled, status: snStatus, connectivity: sn.last_success_at ? "observed" : "unknown", auth: snConfigured ? "configured" : "missing", freshness: runtimeFreshness(sn.last_success_at, snInterval, now), last_success_at: isoDate(sn.last_success_at), last_observed_at: isoDate(sn.watermark_sys_updated_on), interval_seconds: snInterval, current_error: sn.last_error };
+  const snStatus = classifyRuntimeHealth({
+    enabled: snEnabled,
+    configured: snConfigured,
+    lastSuccessAt: sn.last_success_at,
+    intervalSeconds: snInterval,
+    lastError: sn.last_error,
+    now,
+  });
+  const snBase = {
+    enabled: snEnabled,
+    status: snStatus,
+    connectivity: sn.last_success_at ? "observed" : "unknown",
+    auth: snConfigured ? "configured" : "missing",
+    freshness: runtimeFreshness(sn.last_success_at, snInterval, now),
+    last_success_at: isoDate(sn.last_success_at),
+    last_observed_at: isoDate(sn.watermark_sys_updated_on),
+    interval_seconds: snInterval,
+    current_error: sn.last_error,
+    checked_at: checkedAt,
+  };
   components.push(runtimeComponent({ id: "servicenow-read-model", category: "SERVICENOW", name: "ServiceNow PROD Read Model", ...snBase, detail: "Leitura local PostgreSQL" }));
   components.push(runtimeComponent({ id: "servicenow-watermark", category: "SERVICENOW", name: "ServiceNow Watermark", ...snBase, status: sn.watermark_sys_updated_on ? snStatus : RUNTIME_STATUS.UNKNOWN, detail: "watermark_sys_updated_on" }));
   components.push(runtimeComponent({ id: "servicenow-collector", category: "SERVICENOW", name: "ServiceNow Collector", ...snBase, detail: "Sem HTTP ServiceNow nesta requisição" }));
+
+  const snActions = getServiceNowActionsConfig(process.env);
+  const snWrite = classifyServiceNowWriteReadiness({
+    executorReady: Boolean(snActions?.requestEnabled),
+    executionEnabled: false,
+    checkedAt,
+  });
+  components.push(runtimeComponent({
+    id: "servicenow-write",
+    category: "SERVICENOW",
+    name: "ServiceNow Write",
+    enabled: Boolean(snActions?.requestEnabled),
+    status: snWrite.status,
+    connectivity: "not_applicable",
+    auth: snActions?.requestEnabled ? "configured" : "missing",
+    detail: snWrite.detail,
+    recommended_action: snWrite.recommended_action,
+    metrics: {
+      outbox_pending: integerValue(outboxTotals?.pending, 0),
+      outbox_failed: integerValue(outboxTotals?.failed, 0),
+      execution_enabled: false,
+    },
+    checked_at: checkedAt,
+  }));
+
   const workersByName = new Map(workerHeartbeats.map((worker) => [String(worker.worker_id || "").toLowerCase(), worker]));
   for (const definition of RUNTIME_WORKERS) {
     const worker = workersByName.get(definition.workerName) || null;
     const lastSuccess = metadataDate(worker?.metadata, "last_success_at");
     const lastHeartbeat = isoDate(worker?.last_seen_at);
-    const status = classifyRuntimeWorker({ heartbeatAt: lastHeartbeat, lastSuccessAt: lastSuccess, lastError: worker?.last_error, reportedStatus: worker?.status, intervalSeconds: definition.intervalSeconds, now });
+    const status = classifyRuntimeWorker({
+      heartbeatAt: lastHeartbeat,
+      lastSuccessAt: lastSuccess,
+      lastError: worker?.last_error,
+      reportedStatus: worker?.status,
+      intervalSeconds: definition.intervalSeconds,
+      now,
+    });
     components.push(runtimeComponent({
       id: `worker:${definition.workerName}`,
       category: "WORKERS",
@@ -3110,8 +3341,101 @@ async function fetchRuntimeHealthPayload(config) {
       current_error: worker?.last_error,
       detail: worker ? "Heartbeat persistido em worker_heartbeats" : "Heartbeat individual ainda não persistido",
       interval_seconds: definition.intervalSeconds,
+      checked_at: checkedAt,
     }));
   }
+
+  components.push(runtimeComponent({
+    id: "fast-event",
+    category: "WORKERS",
+    name: "Fast Event",
+    status: RUNTIME_STATUS.UNKNOWN,
+    connectivity: "unknown",
+    auth: "not_applicable",
+    detail: "Sem telemetria Fast Event no BFF",
+    checked_at: checkedAt,
+  }));
+
+  const customerIntegrity = classifyCustomerIntegrity({
+    activeClassifiableButUnclassified: integerValue(customerIntegrityRow?.active_classifiable_but_unclassified, 0),
+    dbClassifiedHostButAlertUnclassified: integerValue(customerIntegrityRow?.db_classified_host_but_alert_unclassified, 0),
+    checkedAt,
+  });
+  components.push(runtimeComponent({
+    id: "customer-integrity",
+    category: "INTEGRATIONS",
+    name: "Customer Integrity",
+    status: customerIntegrity.status,
+    connectivity: "not_applicable",
+    auth: "not_applicable",
+    detail: customerIntegrity.detail,
+    metrics: customerIntegrity.metrics,
+    checked_at: checkedAt,
+  }));
+
+  const hostRegistry = classifyHostRegistry({
+    total: hostRegistryRow?.total,
+    classified: hostRegistryRow?.classified,
+    sourceInsufficient: hostRegistryRow?.source_insufficient,
+    needsMapping: hostRegistryRow?.needs_mapping,
+    checkedAt,
+  });
+  components.push(runtimeComponent({
+    id: "host-registry",
+    category: "INTEGRATIONS",
+    name: "Host Registry",
+    status: hostRegistry.status,
+    connectivity: "not_applicable",
+    auth: "not_applicable",
+    detail: hostRegistry.detail,
+    warning: hostRegistry.warning,
+    metrics: hostRegistry.metrics,
+    checked_at: checkedAt,
+  }));
+
+  const linkHealth = classifyLinkHealth({
+    total: linkInventoryRow?.total_links,
+    customerMismatch: linkInventoryRow?.customer_mismatch,
+    nonLinkContamination: linkInventoryRow?.non_link_contamination,
+    carrierKnown: linkInventoryRow?.carrier_known,
+    checkedAt,
+  });
+  components.push(runtimeComponent({
+    id: "link-inventory",
+    category: "INTEGRATIONS",
+    name: "Link Inventory",
+    status: linkHealth.status,
+    connectivity: "not_applicable",
+    auth: "not_applicable",
+    detail: linkHealth.detail,
+    warning: linkHealth.warning,
+    metrics: linkHealth.metrics,
+    checked_at: checkedAt,
+  }));
+
+  const ackConfig = getAckRequestConfig(process.env);
+  const ack = classifyWriteReadiness({
+    apiSupported: true,
+    executorReady: true,
+    executionEnabled: Boolean(ackConfig.executionEnabled),
+    label: "Zabbix ACK",
+    waitingReason: "Aguardando SSO/permissão de escrita/canário autorizado.",
+    checkedAt,
+  });
+  components.push(runtimeComponent({
+    id: "zabbix-ack",
+    category: "INTEGRATIONS",
+    name: "Zabbix ACK",
+    enabled: Boolean(ackConfig.requestEnabled),
+    status: ack.status,
+    connectivity: "not_applicable",
+    auth: ackConfig.requestEnabled ? "configured" : "missing",
+    detail: ack.detail,
+    recommended_action: ack.recommended_action,
+    metrics: ack.metrics,
+    checked_at: checkedAt,
+  }));
+
   const theoEnabled = String(process.env.THEO_ONEVIEW_AUTOMATION_ENABLED || "").toLowerCase() === "true";
   const theoConfigured = Boolean(String(process.env.THEO_ONEVIEW_URL || "").trim() && String(process.env.THEO_ONEVIEW_TOKEN || "").trim() && String(process.env.CRON_SECRET || "").trim());
   const theoLastSuccess = theoDispatch?.status === "success" ? isoDate(theoDispatch?.processed_at) : null;
@@ -3121,7 +3445,25 @@ async function fetchRuntimeHealthPayload(config) {
     : theoFailed
       ? RUNTIME_STATUS.DEGRADED
       : classifyRuntimeHealth({ enabled: true, configured: true, lastSuccessAt: theoLastSuccess, intervalSeconds: 86400, now });
-  components.push(runtimeComponent({ id: "theo-webex", category: "INTEGRATIONS", name: "Theo/Webex", enabled: theoEnabled, status: theoStatus, connectivity: theoDispatch ? "observed" : "unknown", auth: theoConfigured ? "configured" : "missing", last_success_at: theoLastSuccess, last_observed_at: isoDate(theoDispatch?.updated_at), last_error_at: theoFailed ? isoDate(theoDispatch?.updated_at) : null, failure_count: theoFailed ? 1 : 0, current_error: theoFailed ? theoDispatch?.last_error : null, detail: theoConfigured ? (theoEnabled ? "Dispatcher Vercel habilitado" : "Dispatcher Vercel configurado; automações desabilitadas") : "Secrets server-side pendentes" }));
+  components.push(runtimeComponent({
+    id: "theo-webex",
+    category: "INTEGRATIONS",
+    name: "Theo/Webex",
+    enabled: theoEnabled,
+    status: theoStatus,
+    connectivity: theoDispatch ? "observed" : "unknown",
+    auth: theoConfigured ? "configured" : "missing",
+    last_success_at: theoLastSuccess,
+    last_observed_at: isoDate(theoDispatch?.updated_at),
+    last_error_at: theoFailed ? isoDate(theoDispatch?.updated_at) : null,
+    failure_count: theoFailed ? 1 : 0,
+    current_error: theoFailed ? theoDispatch?.last_error : null,
+    detail: theoConfigured
+      ? (theoEnabled ? "Dispatcher Vercel habilitado" : "Dispatcher Vercel configurado; automações desabilitadas")
+      : "Secrets server-side pendentes",
+    checked_at: checkedAt,
+  }));
+
   return { overall_status: runtimeOverallStatus(components), generated_at: generatedAt(), components };
 }
 
