@@ -41,7 +41,6 @@ const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const DEFAULT_PAGE = 1;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
-const MAX_ALERT_ROWS = 500;
 const SAFE_TAB = /^(all|unassigned|following|recent)$/;
 const SAFE_SEVERITY = /^(information|warning|average|high|disaster|critical|not_classified)$/;
 const SAFE_STATE = /^[1-8]$/;
@@ -342,21 +341,23 @@ export function buildOperatorQueuePayload(alerts, incidents, filters, now = Date
     filters,
     counts,
     facets: {
-      operator_tags: uniqueFacet(rows.map((row) => ({ value: row.operator_tag, label: row.operator_tag }))),
-      customers: uniqueFacet(rows.map((row) => ({
+      // Facets share the exact list scope. Returning values from another
+      // customer/datasource would make a filtered BFF response misleading.
+      operator_tags: uniqueFacet(filtered.map((row) => ({ value: row.operator_tag, label: row.operator_tag }))),
+      customers: uniqueFacet(filtered.map((row) => ({
         value: row.customer_key || row.customer_name,
         label: String(row.customer_key || "").toLowerCase() === "unclassified"
           ? "Cliente não identificado"
           : (row.customer_name || row.customer_key),
       }))),
-      datasources: uniqueFacet(rows.map((row) => ({ value: row.datasource_name, label: row.datasource_name }))),
-      analysts: uniqueFacet(rows
+      datasources: uniqueFacet(filtered.map((row) => ({ value: row.datasource_name, label: row.datasource_name }))),
+      analysts: uniqueFacet(filtered
         .filter((row) => row.assigned_to)
         .map((row) => ({ value: row.assigned_to, label: row.assigned_to_display || row.assigned_to }))),
-      states: uniqueFacet(rows
+      states: uniqueFacet(filtered
         .filter((row) => row.incident_state)
         .map((row) => ({ value: row.incident_state, label: row.incident_state_display || row.incident_state }))),
-      severities: uniqueFacet(rows.map((row) => ({ value: row.severity, label: row.severity }))),
+      severities: uniqueFacet(filtered.map((row) => ({ value: row.severity, label: row.severity }))),
     },
     sla_rules_implemented: SLA_RULES_IMPLEMENTED,
     sla_awaiting_business_rules: true,
@@ -407,10 +408,12 @@ export async function fetchOperatorTaggedAlerts({
           or ($2 = 'active' and a.resolved_at is null and coalesce(a.status_source, 'active') = 'active')
           or ($2 = 'resolved' and (a.resolved_at is not null or coalesce(a.status_source, '') = 'resolved'))
         )
+      -- Truth set is intentionally uncapped. Pagination is applied only after
+      -- correlation/filtering, so counts and facets cannot silently reflect
+      -- just the first 500 tagged alerts.
       order by a.last_seen_at desc nulls last, a.id desc
-      limit $3
     `,
-    values: [scopedDataSourceNames, alertStatus, MAX_ALERT_ROWS],
+    values: [scopedDataSourceNames, alertStatus],
   });
   return result.rows || [];
 }
