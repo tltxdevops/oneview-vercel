@@ -1456,6 +1456,9 @@ export type CanonicalLink = {
     host_name?: string;
   } | null;
   updated_at: string | null;
+  active_since_at?: string | null;
+  latest_activity_at?: string | null;
+  resolved_at?: string | null;
   active_alerts: number;
   unack_alerts: number;
   high_alerts: number;
@@ -1465,10 +1468,17 @@ export type CanonicalLink = {
   state: "critical" | "alert" | "attention" | "normal";
   max_severity: OneViewSeverity | null;
   incident_count: number;
+  open_incident_count?: number;
+  resolved_incident_count?: number;
+  closed_incident_count?: number;
+  unknown_incident_count?: number;
+  has_active_alert?: boolean;
+  resolved_recent?: boolean;
+  divergence_type?: "a" | "b" | null;
   incidents: CanonicalLinkIncident[];
   alerts: Array<{ id: string; problem_name: string | null; severity: OneViewSeverity | null }>;
 };
-export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number; known_carriers: number; pending_classification: number }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
+export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number; known_carriers: number; pending_classification: number; operational: { open: number; without_open_incident: number; with_open_incident: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
 export async function fetchCanonicalLinks(params?: Record<string, string | number | undefined> & { signal?: AbortSignal }): Promise<CanonicalLinksResponse> {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params || {})) if (key !== "signal" && value !== undefined && value !== "" && value !== "all") search.set(key, String(value));

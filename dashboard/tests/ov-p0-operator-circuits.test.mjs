@@ -344,7 +344,7 @@ test("ambiguous circuits remain counted as pending classification", () => {
     sanepar("reach", "sdwan.reachability[10.0.41.13]", [{ tag: "site", value: "41013" }]),
   ];
   const rows = composeCircuitLevelLinks({ alertRows: alerts });
-  const filters = { customer:null,datasource:null,classification:null,state:null,ack:null,severity:null,incident:null,carrier:null,search:null,page:1,page_size:100 };
+  const filters = { customer:null,datasource:null,classification:null,state:null,ack:null,severity:null,incident:null,carrier:null,search:null,tab:"all",resolved_window:"today",divergence:null,sort:"recent",page:1,page_size:100 };
   const payload = buildLinksPayload(rows, filters, 0);
   assert.equal(payload.totals.pending_classification, 1);
 });
@@ -394,7 +394,8 @@ test("keys and metrics are deterministic, unique and finite", () => {
   const payload = buildLinksPayload(rows, filters, 0);
   assert.equal(payload.totals.links, 2);
   assert.equal(payload.totals.pending_classification, 0);
-  assert.equal(Object.values(payload.totals).every(Number.isFinite), true);
+  assert.equal(Object.values(payload.totals).filter((value) => typeof value === "number").every(Number.isFinite), true);
+  assert.equal(Object.values(payload.totals.operational).every(Number.isFinite), true);
 });
 
 test("database failure returns an error contract without zero-valued totals", async () => {

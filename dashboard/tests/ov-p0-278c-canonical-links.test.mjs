@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildLinksPayload, parseLinkFilters } from "../api/_lib/oneview-links.js";
 
-const filters = { customer:null,datasource:null,classification:null,state:null,ack:null,severity:null,incident:null,carrier:null,search:null,page:1,page_size:200 };
+const filters = { customer:null,datasource:null,classification:null,state:null,ack:null,severity:null,incident:null,carrier:null,search:null,tab:"all",resolved_window:"today",divergence:null,sort:"recent",page:1,page_size:200 };
 const row = (customer_name, active_alerts = 0, incident_count = 0) => ({ id:customer_name,customer_name,customer_key:customer_name.toLowerCase(),datasource:"teletex-http",classification:"wan_link",carrier_name:null,service_name:`${customer_name}_LINK`,source_host_id:"1",active_alerts,unack_alerts:active_alerts,disaster_alerts:0,high_alerts:0,average_alerts:0,warning_alerts:0,state:active_alerts?"alert":"normal",max_severity:active_alerts?"average":null,incident_count,incidents:[],alerts:[] });
 
 test("OV-P0-278C payload keeps only canonical links and carrier null semantics", () => {
