@@ -59,8 +59,9 @@ function linkTypeLabel(link: CanonicalLink) {
 }
 
 function incidentStatus(link: CanonicalLink) {
+  if (link.incident_correlation_status === "degraded") return "Correlação indisponível";
   if ((link.open_incident_count || 0) > 0) return "Chamado aberto";
-  if (link.incident_count > 0) return "Somente histórico";
+  if ((link.incident_count || 0) > 0) return "Somente histórico";
   return "Sem chamado";
 }
 
@@ -70,6 +71,11 @@ function failureDuration(link: CanonicalLink) {
   const hours = Math.floor(elapsed / 3_600_000);
   if (hours >= 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
   return `${Math.max(0, hours)}h`;
+}
+
+function refreshTime(value: string | null) {
+  if (!value) return null;
+  return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
 }
 
 function Filter({
@@ -147,7 +153,9 @@ function MobileLinkCard({ item, onOpen }: { item: CanonicalLink; onOpen: (item: 
 export default function OperadorasPage() {
   const [payload, setPayload] = useState<CanonicalLinksResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [initialError, setInitialError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState<string | null>(null);
   const [customer, setCustomer] = useState(ALL);
   const [datasource, setDatasource] = useState(ALL);
   const [classification, setClassification] = useState(ALL);
@@ -165,15 +173,26 @@ export default function OperadorasPage() {
   const [selected, setSelected] = useState<CanonicalLink | null>(null);
   const [selectedAlert, setSelectedAlert] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
+  const requestDone = useRef<Promise<void> | null>(null);
+  const requestVersion = useRef(0);
+  const hasPayload = useRef(false);
 
   const load = useCallback(async (mode: "initial" | "quiet" | "manual" = "initial") => {
     if (mode === "quiet" && request.current && !request.current.signal.aborted) return;
-    request.current?.abort();
+    const version = ++requestVersion.current;
+    const previous = request.current;
+    if (previous) {
+      previous.abort();
+      await requestDone.current?.catch(() => undefined);
+    }
+    if (version !== requestVersion.current) return;
     const controller = new AbortController();
     request.current = controller;
-    if (mode !== "quiet") {
+    let finishRequest: (() => void) | null = null;
+    requestDone.current = new Promise<void>((resolve) => { finishRequest = resolve; });
+    if (mode !== "quiet" && !hasPayload.current) {
       setLoading(true);
-      setError(null);
+      setInitialError(null);
     }
     try {
       const result = await fetchCanonicalLinks({
@@ -196,23 +215,29 @@ export default function OperadorasPage() {
       });
       if (!controller.signal.aborted) {
         setPayload(result);
-        setError(null);
+        hasPayload.current = true;
+        setLastSuccessfulRefreshAt(new Date().toISOString());
+        setInitialError(null);
+        setRefreshError(null);
       }
     } catch (cause) {
       if (!controller.signal.aborted && !isAbortError(cause)) {
-        setError(cause instanceof Error ? cause.message : "Não foi possível carregar os links.");
+        if (hasPayload.current) setRefreshError("Não foi possível atualizar agora.");
+        else setInitialError(cause instanceof Error ? cause.message : "Não foi possível carregar os links.");
       }
     } finally {
       if (request.current === controller) {
         request.current = null;
-        if (!controller.signal.aborted && mode !== "quiet") setLoading(false);
+        requestDone.current = null;
+        if (!controller.signal.aborted && !hasPayload.current) setLoading(false);
       }
+      finishRequest?.();
     }
   }, [ack, carrier, classification, customer, datasource, divergence, incident, page, resolvedWindow, search, severity, sort, state, tab]);
 
   useEffect(() => {
     void load();
-    return () => request.current?.abort();
+    return () => { requestVersion.current += 1; request.current?.abort(); };
   }, [load]);
 
   useEffect(() => {
@@ -354,7 +379,19 @@ export default function OperadorasPage() {
           </details>
         </section>
 
-        {error ? <OperationalErrorBanner message={error} onRetry={() => void load("manual")} /> : null}
+        {initialError && !payload ? <OperationalErrorBanner message={initialError} onRetry={() => void load("manual")} /> : null}
+        {refreshError && payload ? (
+          <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+            <span>{refreshError} {lastSuccessfulRefreshAt ? `Última atualização bem-sucedida: ${refreshTime(lastSuccessfulRefreshAt)}.` : ""}</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => void load("manual")} disabled={loading}>Tentar novamente</Button>
+          </div>
+        ) : null}
+        {payload?.integration_status?.servicenow === "degraded" ? (
+          <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+            Correlação ServiceNow indisponível nesta consulta; chamados não foram considerados.
+          </div>
+        ) : null}
+        {lastSuccessfulRefreshAt ? <p className="text-xs text-muted-foreground">Última atualização bem-sucedida: {refreshTime(lastSuccessfulRefreshAt)}</p> : null}
 
         <SectionPanel
           title="Circuitos e links monitorados"
@@ -413,7 +450,7 @@ export default function OperadorasPage() {
                         </TableCell>
                         <TableCell className="max-w-[12rem]">
                           <p className="text-xs font-medium">{incidentStatus(item)}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">{item.open_incident_count || 0} aberto(s) · {item.incident_count} correlacionado(s)</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{item.incident_correlation_status === "degraded" ? "Chamados não verificados" : `${item.open_incident_count || 0} aberto(s) · ${item.incident_count || 0} correlacionado(s)`}</p>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -465,7 +502,7 @@ function LinkDrawer({ link, onClose, onOpenAlert }: { link: CanonicalLink | null
                   <Field label="Estado" value={stateLabel(link.state)} />
                   <Field label="Em falha" value={link.active_alerts ? failureDuration(link) : "Sem alerta ativo"} />
                   <Field label="INC" value={incidentStatus(link)} />
-                  <Field label="Chamados abertos" value={String(link.open_incident_count || 0)} />
+                  <Field label="Chamados abertos" value={link.incident_correlation_status === "degraded" ? "Não verificado" : String(link.open_incident_count || 0)} />
                   <Field label="Operadora" value={text(link.carrier_name)} />
                   <Field label="Tipo" value={linkTypeLabel(link)} />
                 </div>

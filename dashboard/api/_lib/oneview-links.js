@@ -34,6 +34,8 @@ export const EXACT_OPERATOR_TAG_SQL = `exists (
 )`;
 
 function text(value) { const result = String(value || "").trim(); return result || null; }
+function elapsedMs(startedAt) { return Math.max(0, Date.now() - startedAt); }
+function logLinksTiming(payload) { console.info(JSON.stringify({ event: "oneview_links_timing", ...payload })); }
 function oneQuery(req, key) { const value = req?.query?.[key]; return Array.isArray(value) ? value[0] : value; }
 function invalidQuery() { const error = new Error("invalid_query"); error.code = "invalid_query"; return error; }
 function pageInt(value, fallback, max) { const result = Number.parseInt(String(value || ""), 10); return Number.isFinite(result) ? Math.min(Math.max(result, 1), max) : fallback; }
@@ -225,6 +227,7 @@ function inventoryLink(row, alerts, matches) {
     ...alertSummary(related),
     incidents,
     incident_count: incidents.length,
+    incident_correlation_status: "available",
     ...incidentSummary(incidents),
   };
 }
@@ -271,14 +274,15 @@ function circuitLink(circuit, alerts, matches) {
     ...alertSummary(related),
     incidents,
     incident_count: incidents.length,
+    incident_correlation_status: "available",
     ...incidentSummary(incidents),
   };
 }
 
-export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], incidents = [] } = {}) {
+export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], incidents = [], circuits: providedCircuits = null } = {}) {
   const alerts = uniqueAlerts(alertRows);
   const matches = correlateLinkIncidents(alerts, incidents);
-  const circuits = discoverOperatorCircuits(alerts);
+  const circuits = providedCircuits || discoverOperatorCircuits(alerts);
   const resolvedHosts = new Set(circuits
     .filter((circuit) => circuit.resolution_status === "resolved")
     .map(hostKey));
@@ -309,6 +313,7 @@ function filteredBase(rows, filters) {
     if (filters.ack === "pending" && !row.unack_alerts) return false;
     if (filters.ack === "none" && row.unack_alerts) return false;
     if (filters.severity && row.max_severity !== filters.severity) return false;
+    if (filters.incident && filters.incident !== "all" && row.incident_correlation_status === "degraded") return false;
     if (filters.incident === "yes" && !row.incident_count) return false;
     if (filters.incident === "no" && row.incident_count) return false;
     if (filters.incident === "open" && !row.open_incident_count) return false;
@@ -328,17 +333,18 @@ function resolvedWindowStart(window, now) {
 }
 
 function operationalRow(row, now, resolvedWindow) {
+  const incidentAvailable = row.incident_correlation_status !== "degraded";
   const incidents = row.incidents || [];
   const counts = incidentSummary(incidents);
   const active = Number(row.active_alerts || 0) > 0;
   const lastActivity = timestamp(row.latest_activity_at || row.resolved_at || row.updated_at);
   const resolvedRecent = !active && lastActivity !== null && lastActivity >= resolvedWindow;
-  const divergence_type = active && row.incident_count > 0 && !counts.open_incident_count
+  const divergence_type = incidentAvailable && active && row.incident_count > 0 && !counts.open_incident_count
     ? "a"
-    : !active && counts.open_incident_count ? "b" : null;
+    : incidentAvailable && !active && counts.open_incident_count ? "b" : null;
   return {
     ...row,
-    ...counts,
+    ...(incidentAvailable ? counts : { open_incident_count: null, resolved_incident_count: null, closed_incident_count: null, unknown_incident_count: null }),
     has_active_alert: active,
     resolved_recent: resolvedRecent,
     divergence_type,
@@ -350,8 +356,8 @@ function filteredOperational(rows, filters) {
     if (filters.divergence === "any" && !row.divergence_type) return false;
     if (filters.divergence && filters.divergence !== "any" && row.divergence_type !== filters.divergence) return false;
     if (filters.tab === "open") return row.has_active_alert;
-    if (filters.tab === "without_incident") return row.has_active_alert && !row.open_incident_count;
-    if (filters.tab === "with_incident") return row.has_active_alert && row.open_incident_count > 0;
+    if (filters.tab === "without_incident") return row.has_active_alert && row.incident_correlation_status !== "degraded" && !row.open_incident_count;
+    if (filters.tab === "with_incident") return row.has_active_alert && row.incident_correlation_status !== "degraded" && row.open_incident_count > 0;
     if (filters.tab === "resolved") return row.resolved_recent;
     return true;
   });
@@ -374,13 +380,41 @@ function ordered(rows, filters) {
   });
 }
 export async function fetchCanonicalLinks({ pool = getOneViewDbPool() } = {}) {
+  const startedAt = Date.now(); const timings = {};
+  const inventoryStartedAt = Date.now();
   const inventoryResult = await pool.query(`select l.id::text, l.data_source_id::text, l.source_host_id::text, l.customer_key, l.customer_name, l.service_name, l.classification, l.classification_source, l.classification_confidence, l.carrier_name, l.carrier_source, l.source_metadata, l.updated_at, d.name as datasource from zabbix_link_inventory l join data_sources d on d.id::text=l.data_source_id::text order by l.customer_name, l.service_name`);
+  timings.inventory_query_ms = elapsedMs(inventoryStartedAt);
+  const alertsStartedAt = Date.now();
   const alertsResult = await pool.query(`select a.id::text, a.data_source_id::text, a.source_host_id::text, a.source_trigger_id::text, a.source_event_id::text, a.source_problem_id::text, a.client_name, a.customer_name, a.customer_key, a.host_name, a.service_name, a.item_key, a.item_name, a.trigger_description, a.problem_name, a.event_tags, a.trigger_tags, a.host_tags, ${templateTagsSql} as template_tags, a.severity, a.status_source, a.status_internal, a.acknowledged_source, a.first_seen_at, a.resolved_at, a.last_seen_at, a.updated_at, d.name as datasource, (${activeSql}) as is_active from alerts a join data_sources d on d.id::text=a.data_source_id::text where exists (select 1 from zabbix_link_inventory l where l.data_source_id::text=a.data_source_id::text and l.source_host_id::text=a.source_host_id::text) or ${EXACT_OPERATOR_TAG_SQL}`);
+  timings.alerts_query_ms = elapsedMs(alertsStartedAt);
   const alerts = alertsResult.rows || [];
-  const incidents = await fetchLinkIncidents(alerts, { pool });
-  return composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents });
+  let incidents = []; let servicenowStatus = "available";
+  const serviceNowStartedAt = Date.now();
+  try { incidents = await fetchLinkIncidents(alerts, { pool }); }
+  catch { servicenowStatus = "degraded"; }
+  timings.servicenow_correlation_ms = elapsedMs(serviceNowStartedAt);
+  const discoveryStartedAt = Date.now();
+  const circuits = discoverOperatorCircuits(alerts);
+  timings.circuit_discovery_ms = elapsedMs(discoveryStartedAt);
+  const compositionStartedAt = Date.now();
+  const rows = composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits });
+  timings.composition_ms = elapsedMs(compositionStartedAt);
+  if (servicenowStatus === "degraded") {
+    for (const row of rows) {
+      row.incident_correlation_status = "degraded";
+      row.incident_count = null;
+      row.open_incident_count = null;
+      row.resolved_incident_count = null;
+      row.closed_incident_count = null;
+      row.unknown_incident_count = null;
+    }
+  }
+  timings.total_ms = elapsedMs(startedAt);
+  Object.defineProperties(rows, { integration_status: { value: { servicenow: servicenowStatus }, enumerable: false }, timings: { value: timings, enumerable: false } });
+  logLinksTiming({ ...timings, inventory_rows: (inventoryResult.rows || []).length, alert_rows: alerts.length, result_rows: rows.length, servicenow: servicenowStatus });
+  return rows;
 }
-export function buildLinksPayload(rows, filters, now = Date.now()) {
+export function buildLinksPayload(rows, filters, now = Date.now(), integrationStatus = { servicenow: "available" }) {
   const resolvedWindow = resolvedWindowStart(filters.resolved_window, now);
   const all = rows.map((row) => operationalRow(row, now, resolvedWindow));
   const base = filteredBase(all, filters);
@@ -388,14 +422,14 @@ export function buildLinksPayload(rows, filters, now = Date.now()) {
   const facets = (field) => [...new Map(all.map((row) => [String(row[field] || ""), row[field]]).filter(([value]) => value)).entries()].map(([value,label])=>({value,label})).sort((a,b)=>String(a.label).localeCompare(String(b.label),"pt-BR"));
   const operational = {
     open: base.filter((row) => row.has_active_alert).length,
-    without_open_incident: base.filter((row) => row.has_active_alert && !row.open_incident_count).length,
-    with_open_incident: base.filter((row) => row.has_active_alert && row.open_incident_count > 0).length,
+    without_open_incident: base.filter((row) => row.has_active_alert && row.incident_correlation_status !== "degraded" && !row.open_incident_count).length,
+    with_open_incident: base.filter((row) => row.has_active_alert && row.incident_correlation_status !== "degraded" && row.open_incident_count > 0).length,
     divergences: base.filter((row) => row.divergence_type).length,
     divergence_a: base.filter((row) => row.divergence_type === "a").length,
     divergence_b: base.filter((row) => row.divergence_type === "b").length,
     resolved_today: base.filter((row) => !row.has_active_alert && (timestamp(row.latest_activity_at || row.resolved_at || row.updated_at) || 0) >= resolvedWindowStart("today", now)).length,
   };
-  return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
+  return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:integrationStatus.servicenow === "degraded" ? null : base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, integration_status:integrationStatus, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
 }
-export function createLinksHandler({ authorize=(req,res)=>requireOneViewAuth(req,res,"viewer"), list=fetchCanonicalLinks, now=()=>Date.now() }={}) { return async (req,res) => { res.setHeader("Cache-Control",NO_CACHE); res.setHeader("X-Content-Type-Options","nosniff"); if(req.method!=="GET") return methodNotAllowed(res,["GET"]); if(!await authorize(req,res)) return; try { const filters=parseLinkFilters(req); const payload=buildLinksPayload(await list(),filters,now()); res.setHeader("X-OneView-Data-Source","database"); return sendJson(res,200,payload); } catch (error) { return sendJson(res,error?.code==="invalid_query"?400:503,{error:error?.code==="invalid_query"?"invalid_query":"database_unavailable",data_source:"database"}); } }; }
+export function createLinksHandler({ authorize=(req,res)=>requireOneViewAuth(req,res,"viewer"), list=fetchCanonicalLinks, now=()=>Date.now() }={}) { return async (req,res) => { const startedAt=Date.now(); let status=500; res.setHeader("Cache-Control",NO_CACHE); res.setHeader("X-Content-Type-Options","nosniff"); try { if(req.method!=="GET") { status=405; return methodNotAllowed(res,["GET"]); } if(!await authorize(req,res)) { status=res.statusCode||401; return; } const filters=parseLinkFilters(req); const result=await list(); const rows=Array.isArray(result)?result:result.rows; const integrationStatus=result?.integration_status||{servicenow:"available"}; const payload=buildLinksPayload(rows,filters,now(),integrationStatus); res.setHeader("X-OneView-Data-Source","database"); status=200; return sendJson(res,200,payload); } catch (error) { status=error?.code==="invalid_query"?400:503; return sendJson(res,status,{error:error?.code==="invalid_query"?"invalid_query":"database_unavailable",data_source:"database"}); } finally { logLinksTiming({ route:"/api/oneview/links", request_total_ms:elapsedMs(startedAt), status }); } }; }
 export default createLinksHandler();
