@@ -1421,8 +1421,54 @@ export async function fetchServiceNowIncidentActionStatus(sysId: string, actionI
 }
 
 export type CanonicalLinkIncident = { sys_id: string | null; number: string | null; state: string | null; state_display?: string | null; priority: string | null; priority_display?: string | null; assigned_to: string | null; assigned_to_display?: string | null; assignment_group: string | null; assignment_group_display?: string | null; };
-export type CanonicalLink = { id: string; data_source_id: string; source_host_id: string; customer_key: string; customer_name: string; service_name: string; classification: string; classification_source: string; classification_confidence: string; carrier_name: string | null; carrier_source: string | null; source_metadata: { classification_evidence?: { type?: string; group_name?: string } } | null; updated_at: string | null; datasource: string; active_alerts: number; unack_alerts: number; high_alerts: number; disaster_alerts: number; average_alerts: number; warning_alerts: number; state: "critical" | "alert" | "attention" | "normal"; max_severity: OneViewSeverity | null; incident_count: number; incidents: CanonicalLinkIncident[]; alerts: Array<{ id: string; problem_name: string | null; severity: OneViewSeverity | null }>; };
-export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number; known_carriers: number }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
+export type CanonicalLink = {
+  id: string;
+  circuit_key: string | null;
+  resolution_status: "resolved" | "unresolved";
+  data_source_id: string;
+  datasource: string;
+  source_host_id: string;
+  host_name: string | null;
+  customer_key: string;
+  customer_name: string;
+  service_name: string;
+  classification: string;
+  classification_source: string;
+  classification_confidence: string;
+  site_key: string | null;
+  site_name: string | null;
+  link_type: string | null;
+  member_key: string | null;
+  healthcheck_key: string | null;
+  uplink_key: string | null;
+  endpoint_ip: string | null;
+  carrier_name: string | null;
+  carrier_source: string | null;
+  carrier_reference: string | null;
+  strategy: string;
+  confidence: string | null;
+  trigger_ids: string[];
+  alert_ids: string[];
+  source_metadata: {
+    classification_evidence?: { type?: string; group_name?: string };
+    circuit_evidence?: Record<string, unknown>;
+    unresolved_reason?: string | null;
+    host_name?: string;
+  } | null;
+  updated_at: string | null;
+  active_alerts: number;
+  unack_alerts: number;
+  high_alerts: number;
+  disaster_alerts: number;
+  average_alerts: number;
+  warning_alerts: number;
+  state: "critical" | "alert" | "attention" | "normal";
+  max_severity: OneViewSeverity | null;
+  incident_count: number;
+  incidents: CanonicalLinkIncident[];
+  alerts: Array<{ id: string; problem_name: string | null; severity: OneViewSeverity | null }>;
+};
+export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number; known_carriers: number; pending_classification: number }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
 export async function fetchCanonicalLinks(params?: Record<string, string | number | undefined> & { signal?: AbortSignal }): Promise<CanonicalLinksResponse> {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params || {})) if (key !== "signal" && value !== undefined && value !== "" && value !== "all") search.set(key, String(value));

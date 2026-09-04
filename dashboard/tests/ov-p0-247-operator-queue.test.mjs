@@ -301,7 +301,7 @@ test("OV-P0-247 handler returns INC link and keeps read-only contract", async ()
   assert.equal(denied.statusCode, 405);
 });
 
-test("OV-P0-247 legacy route remains; OV-P0-278C presents canonical links", async () => {
+test("OV-P0-247 legacy route remains; Links presents circuit-level entities", async () => {
   const [page, app, sidebar, index, api, lib] = await Promise.all([
     read("src/pages/Operadoras.tsx"),
     read("src/App.tsx"),
@@ -323,7 +323,8 @@ test("OV-P0-247 legacy route remains; OV-P0-278C presents canonical links", asyn
   assert.match(page, /request\.current = null/);
   assert.match(page, /Todos/);
   assert.match(page, /Não informada na origem/);
-  assert.match(page, /Link \/ Serviço/);
+  assert.match(page, /Serviço \/ Circuito/);
+  assert.match(page, /Pendente de classificação/);
   assert.match(api, /export async function fetchOperatorQueue/);
   assert.match(api, /\/oneview\/operator-queue/);
   assert.doesNotMatch(page, /Assumir|Transferir|Hold|Comentar no chamado/);

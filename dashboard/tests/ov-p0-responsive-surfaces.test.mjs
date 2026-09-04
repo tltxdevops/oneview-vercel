@@ -40,8 +40,8 @@ test("Links uses progressive filters, mobile cards and a compact desktop table",
   assert.match(links, /Mais filtros/);
   assert.match(links, /md:hidden/);
   assert.match(links, /hidden overflow-x-auto md:block/);
-  assert.match(links, /last:col-span-2 lg:last:col-span-1/);
-  assert.match(links, /Inventário de links/);
+  assert.match(links, /md:grid-cols-3 xl:grid-cols-6/);
+  assert.match(links, /Circuitos e links monitorados/);
   assert.match(links, /fetchCanonicalLinks/);
   assert.match(links, /mode === "quiet"/);
   assert.match(links, /if \(document\.hidden\) return/);

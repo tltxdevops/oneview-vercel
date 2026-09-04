@@ -27,12 +27,6 @@ function isAbortError(cause: unknown) {
 }
 
 const text = (value: unknown, empty = "Não informada na origem") => String(value || "").trim() || empty;
-const formatDate = (value: string | null) => {
-  const date = value ? new Date(value) : null;
-  return date && !Number.isNaN(date.getTime())
-    ? date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })
-    : "Não informada na origem";
-};
 const optionList = (items: Array<{ value: string; label: string }> | undefined, allLabel = "Todos") => [
   { value: ALL, label: allLabel },
   ...(items || []),
@@ -48,6 +42,19 @@ function StateBadge({ state }: { state: CanonicalLink["state"] }) {
       {stateLabel(state)}
     </Badge>
   );
+}
+
+function ResolutionBadge({ link }: { link: CanonicalLink }) {
+  if (link.resolution_status !== "unresolved") return null;
+  return <Badge variant="secondary">Pendente de classificação</Badge>;
+}
+
+function linkTypeLabel(link: CanonicalLink) {
+  if (link.resolution_status === "unresolved") return "Não classificado";
+  if (link.link_type === "public-internet") return "Internet pública";
+  if (link.link_type === "sd-wan") return "SD-WAN";
+  if (link.link_type === "uplink") return link.uplink_key || "Uplink";
+  return text(link.link_type || link.classification, "Não informado");
 }
 
 function Filter({
@@ -80,7 +87,7 @@ function Filter({
 
 function KpiCard({ label, value, tone = "default" }: { label: string; value?: number; tone?: "default" | "danger" }) {
   return (
-    <div className="rounded-lg border border-border/70 bg-card px-3 py-3 shadow-sm last:col-span-2 lg:last:col-span-1">
+    <div className="rounded-lg border border-border/70 bg-card px-3 py-3 shadow-sm">
       <p className="text-xs font-medium text-muted-foreground">{label}</p>
       <p className={cn("mt-1 text-2xl font-semibold tabular-nums", tone === "danger" && "text-red-700 dark:text-red-300")}>
         {typeof value === "number" ? value.toLocaleString("pt-BR") : "—"}
@@ -103,7 +110,11 @@ function MobileLinkCard({ item, onOpen }: { item: CanonicalLink; onOpen: (item: 
             {text(item.customer_name)} · {zabbixSourceDisplayName(item.datasource)}
           </p>
         </div>
-        <StateBadge state={item.state} />
+        <div className="flex shrink-0 flex-col items-end gap-1"><StateBadge state={item.state} /><ResolutionBadge link={item} /></div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div><p className="text-muted-foreground">Tipo</p><p className="truncate font-medium">{linkTypeLabel(item)}</p></div>
+        <div><p className="text-muted-foreground">Operadora</p><p className="truncate font-medium">{text(item.carrier_name)}</p></div>
       </div>
       <div className="grid grid-cols-3 gap-2 text-xs">
         <div><p className="text-muted-foreground">Alertas</p><p className="font-semibold tabular-nums">{item.active_alerts}</p></div>
@@ -211,6 +222,7 @@ export default function OperadorasPage() {
     { label: "Sem alerta ativo", value: totals ? totals.links - totals.active_alert_links : undefined },
     { label: "Com chamado", value: totals?.incident_links },
     { label: "Operadora identificada", value: totals?.known_carriers },
+    { label: "Pendentes de classificação", value: totals?.pending_classification },
   ], [totals]);
 
   const clearFilters = () => {
@@ -237,7 +249,7 @@ export default function OperadorasPage() {
       checkedAt={payload?.checked_at}
     >
       <div className="min-w-0 space-y-3">
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
           {kpis.map((item) => <KpiCard key={item.label} {...item} />)}
         </div>
 
@@ -303,8 +315,8 @@ export default function OperadorasPage() {
         {error ? <OperationalErrorBanner message={error} onRetry={() => void load("manual")} /> : null}
 
         <SectionPanel
-          title="Inventário de links"
-          description="zabbix_link_inventory · correlação por Fonte Zabbix + Host ID"
+          title="Circuitos e links monitorados"
+          description="zabbix_link_inventory + escalation=operator · visão circuit-level"
           aside={<span className="text-xs text-muted-foreground">{loading ? "Carregando…" : `${payload?.pagination.total_items ?? 0} links`}</span>}
           bodyClassName="p-0"
         >
@@ -323,15 +335,16 @@ export default function OperadorasPage() {
                 {items.map((item) => <MobileLinkCard key={item.id} item={item} onOpen={setSelected} />)}
               </div>
               <div className="hidden overflow-x-auto md:block">
-                <Table className="min-w-[62rem]">
+                <Table className="min-w-[72rem]">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Link / Serviço</TableHead>
-                      <TableHead>Cliente / Fonte</TableHead>
+                      <TableHead>Serviço / Circuito</TableHead>
+                      <TableHead>Cliente</TableHead>
+                      <TableHead>Tipo</TableHead>
+                      <TableHead>Operadora</TableHead>
                       <TableHead>Estado</TableHead>
-                      <TableHead>Alertas</TableHead>
-                      <TableHead>Atendimento</TableHead>
-                      <TableHead>Última atualização</TableHead>
+                      <TableHead>Alerta</TableHead>
+                      <TableHead>Chamado</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -339,12 +352,14 @@ export default function OperadorasPage() {
                       <TableRow key={item.id} className="cursor-pointer" onClick={() => setSelected(item)}>
                         <TableCell className="max-w-[18rem]">
                           <p className="truncate font-mono text-xs font-medium">{text(item.service_name, "Link sem identificação")}</p>
-                          <p className="mt-1 truncate text-xs text-muted-foreground">{text(item.classification, "Sem classificação")}</p>
+                          <div className="mt-1"><ResolutionBadge link={item} /></div>
                         </TableCell>
                         <TableCell className="max-w-[15rem]">
                           <p className="truncate text-sm font-medium">{text(item.customer_name)}</p>
                           <p className="truncate text-xs text-muted-foreground">{zabbixSourceDisplayName(item.datasource)}</p>
                         </TableCell>
+                        <TableCell className="max-w-[11rem] text-xs">{linkTypeLabel(item)}</TableCell>
+                        <TableCell className="max-w-[11rem] truncate text-xs">{text(item.carrier_name)}</TableCell>
                         <TableCell><StateBadge state={item.state} /></TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2 text-xs">
@@ -353,11 +368,9 @@ export default function OperadorasPage() {
                           </div>
                           {item.max_severity ? <SeverityBadge severity={item.max_severity} className="mt-1" /> : null}
                         </TableCell>
-                        <TableCell className="max-w-[14rem]">
+                        <TableCell className="max-w-[12rem]">
                           <p className="text-xs"><b>{item.incident_count}</b> chamado(s)</p>
-                          <p className="truncate text-xs text-muted-foreground">{text(item.carrier_name)}</p>
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(item.updated_at)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -395,18 +408,27 @@ function LinkDrawer({ link, onClose, onOpenAlert }: { link: CanonicalLink | null
         {link ? (
           <>
             <SheetHeader className="border-b border-border/60 px-5 py-5 pr-12 text-left">
-              <div className="flex flex-wrap items-center gap-2"><StateBadge state={link.state} />{link.max_severity ? <SeverityBadge severity={link.max_severity} /> : null}</div>
+              <div className="flex flex-wrap items-center gap-2"><StateBadge state={link.state} /><ResolutionBadge link={link} />{link.max_severity ? <SeverityBadge severity={link.max_severity} /> : null}</div>
               <SheetTitle className="break-words font-mono text-base">{text(link.service_name, "Link sem identificação")}</SheetTitle>
               <SheetDescription>{link.customer_name} · {zabbixSourceDisplayName(link.datasource)}</SheetDescription>
             </SheetHeader>
             <div className="space-y-5 px-5 py-5">
-              <section className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
-                <Field label="Cliente" value={link.customer_name} />
-                <Field label="Fonte Zabbix" value={zabbixSourceDisplayName(link.datasource)} />
-                <Field label="Host ID" value={link.source_host_id} />
-                <Field label="Classificação" value={link.classification} />
-                <Field label="Evidência" value={link.source_metadata?.classification_evidence?.group_name || link.classification_source} />
-                <Field label="Operadora" value={text(link.carrier_name)} />
+              <section>
+                <h3 className="mb-2 text-sm font-semibold">Detalhes técnicos</h3>
+                <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
+                  <Field label="Circuito" value={text(link.circuit_key || link.service_name)} />
+                  <Field label="Site" value={text(link.site_name || link.site_key)} />
+                  <Field label="Tipo" value={linkTypeLabel(link)} />
+                  <Field label="Member / Uplink" value={text(link.member_key || link.uplink_key)} />
+                  <Field label="Health-check" value={text(link.healthcheck_key)} />
+                  <Field label="IP" value={text(link.endpoint_ip)} />
+                  <Field label="Host Zabbix" value={`${text(link.host_name)} · ID ${text(link.source_host_id)}`} />
+                  <Field label="Trigger(s)" value={link.trigger_ids.length ? link.trigger_ids.join(", ") : "Não informado"} />
+                  <Field label="Fonte" value={`${zabbixSourceDisplayName(link.datasource)} · ${text(link.strategy)}`} />
+                  <Field label="Qualidade da identificação" value={text(link.confidence)} />
+                  <Field label="Operadora" value={text(link.carrier_name)} />
+                  <Field label="Referência da operadora" value={text(link.carrier_reference)} />
+                </div>
               </section>
               <section>
                 <h3 className="mb-2 text-sm font-semibold">Alertas ativos · {link.alerts.length}</h3>
