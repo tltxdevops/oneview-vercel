@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  assertExclusiveOperatorCircuitOwnership,
   discoverOperatorCircuits,
   hasExactOperatorEscalation,
 } from "../api/_lib/oneview-operator-circuits.js";
@@ -134,6 +135,38 @@ test("Havan wan1, wan2 and cellular are three circuits and stores do not collide
   assert.deepEqual(new Set(circuits.map((item) => item.uplink_key)), new Set(["wan1", "wan2", "cellular"]));
 });
 
+test("Havan trigger 132532 has only the resolved Rondonopolis wan2 owner", () => {
+  const current = meraki("132532", "059 - Rondonopolis", "wan2");
+  const historicalWithoutItem = baseAlert({
+    id: "historical-132532",
+    source_host_id: "havan-aggregator",
+    source_trigger_id: "132532",
+    host_name: "HAVAN",
+    customer_key: "havan",
+    customer_name: "Havan",
+    trigger_description: "Operator uplink history without stable identity",
+  });
+  const circuits = discoverOperatorCircuits([historicalWithoutItem, current]);
+  assert.equal(circuits.length, 1);
+  assert.equal(circuits[0].strategy, "meraki");
+  assert.equal(circuits[0].uplink_key, "wan2");
+  assert.match(circuits[0].circuit_key, /059-rondonopolis:wan2$/);
+  assert.deepEqual(circuits[0].trigger_ids, ["132532"]);
+  assert.deepEqual(circuits[0].alert_ids, ["alert-132532", "historical-132532"]);
+});
+
+test("same-authority circuit identities for one trigger become one ambiguous owner", () => {
+  const circuits = discoverOperatorCircuits([
+    meraki("conflicting-uplink", "059 - Rondonopolis", "wan1"),
+    { ...meraki("conflicting-uplink", "059 - Rondonopolis", "wan2"), id: "alert-conflicting-uplink-2" },
+  ]);
+  assert.equal(circuits.length, 1);
+  assert.equal(circuits[0].resolution_status, "ambiguous");
+  assert.equal(circuits[0].uplink_key, null);
+  assert.deepEqual(circuits[0].trigger_ids, ["conflicting-uplink"]);
+  assert.equal(circuits[0].candidate_keys.length, 2);
+});
+
 test("Sanepar classe and auxiliary reachability on same host/IP consolidate", () => {
   const circuits = discoverOperatorCircuits([
     sanepar("class", "sdwan.tunel.classe[10.20.30.40,MPLS]", [{ tag: "site_id", value: "42" }]),
@@ -152,6 +185,39 @@ test("Sanepar MPLS and LTE at same site remain distinct", () => {
   ]);
   assert.equal(circuits.length, 2);
   assert.deepEqual(new Set(circuits.map((item) => item.link_type)), new Set(["mpls", "lte"]));
+});
+
+test("Sanepar explicit public-internet item wins over historical LTE problem text", () => {
+  const records = [
+    sanepar("869223", "sdwan.tunel.classe[10.0.41.13,public-internet]", [{ tag: "site", value: "41013" }], {
+      id: "current-869223",
+      problem_name: "PUBLIC-INTERNET unavailable",
+    }),
+    sanepar("869223", "sdwan.tunel.classe[10.0.41.13,public-internet]", [{ tag: "site", value: "41013" }], {
+      id: "historical-869223",
+      problem_name: "Historical LTE wording",
+    }),
+  ];
+  const circuits = discoverOperatorCircuits(records);
+  assert.equal(circuits.length, 1);
+  assert.equal(circuits[0].resolution_status, "resolved");
+  assert.equal(circuits[0].link_type, "public-internet");
+  assert.match(circuits[0].circuit_key, /site-41013:public-internet:10\.0\.41\.13$/);
+  assert.deepEqual(circuits[0].trigger_ids, ["869223"]);
+});
+
+test("Sanepar auxiliary with two exact circuit candidates remains ambiguous", () => {
+  const circuits = discoverOperatorCircuits([
+    sanepar("lte", "sdwan.tunel.classe[10.0.41.13,lte]", [{ tag: "site", value: "41013" }]),
+    sanepar("public", "sdwan.tunel.classe[10.0.41.13,public-internet]", [{ tag: "site", value: "41013" }]),
+    sanepar("reach", "sdwan.reachability[10.0.41.13]", [{ tag: "site", value: "41013" }]),
+  ]);
+  assert.equal(circuits.length, 3);
+  const auxiliary = circuits.find((circuit) => circuit.trigger_ids.includes("reach"));
+  assert.equal(auxiliary.resolution_status, "ambiguous");
+  assert.equal(auxiliary.link_type, null);
+  assert.equal(auxiliary.unresolved_reason, "sanepar_auxiliary_ambiguous_match");
+  assert.equal(circuits.filter((circuit) => circuit.trigger_ids.includes("reach")).length, 1);
 });
 
 test("Sanepar without safe type stays visible and does not invent link_type", () => {
@@ -180,6 +246,24 @@ test("generic explicit circuit may resolve carrier, while operator tag alone sta
   assert.equal(unresolved.link_type, null);
 });
 
+test("Protege technical item evidence owns conflicting historical problem text", () => {
+  const technical = fortigate("campinas", 2, {
+    id: "campinas-current",
+    item_key: "fgVWLHealthCheckLinkState[24]",
+    item_name: "Health Check State to PING_AZ_Telecom on SD-WAN member 2 - 1100",
+    trigger_description: "Health Check State to PING_AZ_Telecom",
+    problem_name: "Health Check State Failed to PING_TEAMS on member 20 - 1200",
+  });
+  const historical = { ...technical, id: "campinas-history" };
+  const circuits = discoverOperatorCircuits([historical, technical]);
+  assert.equal(circuits.length, 1);
+  assert.equal(circuits[0].resolution_status, "resolved");
+  assert.equal(circuits[0].member_key, "2");
+  assert.match(circuits[0].circuit_key, /ping-az-telecom:member-2$/);
+  assert.doesNotMatch(circuits[0].circuit_key, /member-20/);
+  assert.equal(circuits[0].evidence_conflicts.length > 0, true);
+});
+
 test("circuits on same host receive only their trigger alerts and incidents", () => {
   const sys1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const sys2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -198,6 +282,71 @@ test("circuits on same host receive only their trigger alerts and incidents", ()
   assert.deepEqual(member1.incidents.map((item) => item.number), ["INC0001"]);
   assert.deepEqual(member2.incidents.map((item) => item.number), ["INC0002"]);
   assert.equal(links.some((link) => link.strategy === "inventory_host"), false);
+});
+
+test("same datasource and trigger id on different hosts do not share alerts", () => {
+  const first = fortigate("same-trigger", 1, { id: "host-a-alert", source_host_id: "host-a" });
+  const second = fortigate("same-trigger", 2, { id: "host-b-alert", source_host_id: "host-b" });
+  const links = composeCircuitLevelLinks({ alertRows: [first, second] });
+  assert.equal(links.length, 2);
+  assert.deepEqual(links.find((link) => link.source_host_id === "host-a").alert_ids, ["host-a-alert"]);
+  assert.deepEqual(links.find((link) => link.source_host_id === "host-b").alert_ids, ["host-b-alert"]);
+});
+
+test("final circuit model enforces exclusive trigger and alert ownership", () => {
+  const alerts = [
+    fortigate("loss-37", 37),
+    fortigate("state-37", 37, { item_key: "fgVWLHealthCheckLinkState[16]" }),
+    meraki("132532", "059 - Rondonopolis", "wan2"),
+    sanepar("869223", "sdwan.tunel.classe[10.0.41.13,public-internet]", [{ tag: "site", value: "41013" }]),
+  ];
+  const circuits = discoverOperatorCircuits(alerts);
+  const ownership = assertExclusiveOperatorCircuitOwnership(circuits);
+  assert.equal(ownership.triggerOwner.size, 4);
+  assert.equal(ownership.alertOwner.size, 4);
+  const links = composeCircuitLevelLinks({ alertRows: alerts });
+  const alertOwners = new Map();
+  for (const link of links.filter((item) => item.circuit_key)) {
+    for (const alertId of link.alert_ids) {
+      assert.equal(alertOwners.has(alertId), false, `duplicate alert owner: ${alertId}`);
+      alertOwners.set(alertId, link.circuit_key);
+    }
+  }
+});
+
+test("ownership validation fails loudly on a second trigger owner", () => {
+  assert.throws(
+    () => assertExclusiveOperatorCircuitOwnership([
+      { circuit_key: "circuit-a", data_source_id: "ds", source_host_id: "host", trigger_ids: ["trigger"], alert_ids: ["alert-a"] },
+      { circuit_key: "circuit-b", data_source_id: "ds", source_host_id: "host", trigger_ids: ["trigger"], alert_ids: ["alert-b"] },
+    ]),
+    (error) => error.code === "operator_trigger_owner_conflict",
+  );
+});
+
+test("same incident may be referenced by distinct exclusive alerts without trigger contamination", () => {
+  const sysId = "cccccccccccccccccccccccccccccccc";
+  const first = fortigate("member-1", 1, { id: "member-1-alert", event_tags: [...escalation, { tag: "__zbx_servicenow_sys_id", value: sysId }] });
+  const second = fortigate("member-2", 2, { id: "member-2-alert", event_tags: [...escalation, { tag: "__zbx_servicenow_sys_id", value: sysId }] });
+  const links = composeCircuitLevelLinks({
+    alertRows: [first, second],
+    incidents: [{ sys_id: sysId, number: "INC-SHARED" }],
+  });
+  assert.equal(links.length, 2);
+  assert.deepEqual(new Set(links.flatMap((link) => link.alert_ids)), new Set(["member-1-alert", "member-2-alert"]));
+  assert.equal(links.every((link) => link.incidents[0].number === "INC-SHARED"), true);
+});
+
+test("ambiguous circuits remain counted as pending classification", () => {
+  const alerts = [
+    sanepar("lte", "sdwan.tunel.classe[10.0.41.13,lte]", [{ tag: "site", value: "41013" }]),
+    sanepar("public", "sdwan.tunel.classe[10.0.41.13,public-internet]", [{ tag: "site", value: "41013" }]),
+    sanepar("reach", "sdwan.reachability[10.0.41.13]", [{ tag: "site", value: "41013" }]),
+  ];
+  const rows = composeCircuitLevelLinks({ alertRows: alerts });
+  const filters = { customer:null,datasource:null,classification:null,state:null,ack:null,severity:null,incident:null,carrier:null,search:null,page:1,page_size:100 };
+  const payload = buildLinksPayload(rows, filters, 0);
+  assert.equal(payload.totals.pending_classification, 1);
 });
 
 test("legacy inventory without operator circuit remains host-level", () => {

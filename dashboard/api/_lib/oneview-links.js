@@ -145,7 +145,8 @@ function alertsForCircuit(circuit, alerts) {
   const triggerIds = new Set((circuit.trigger_ids || []).map(String));
   return uniqueAlerts(alerts).filter((alert) => {
     if (!triggerIds.has(String(alert.source_trigger_id || ""))) return false;
-    return String(alert.data_source_id || "") === String(circuit.data_source_id || "");
+    return String(alert.data_source_id || "") === String(circuit.data_source_id || "")
+      && String(alert.source_host_id || "") === String(circuit.source_host_id || "");
   });
 }
 
@@ -180,7 +181,7 @@ function inventoryLink(row, alerts, matches) {
 function circuitLink(circuit, alerts, matches) {
   const related = alertsForCircuit(circuit, alerts);
   const incidents = incidentsForAlerts(related, matches);
-  const unresolved = circuit.resolution_status === "unresolved";
+  const unresolved = circuit.resolution_status !== "resolved";
   return {
     id: circuit.circuit_key,
     circuit_key: circuit.circuit_key,
@@ -198,7 +199,12 @@ function circuitLink(circuit, alerts, matches) {
     carrier_name: circuit.carrier_name,
     carrier_source: circuit.carrier_name ? circuit.strategy : null,
     carrier_reference: circuit.carrier_reference,
-    source_metadata: { circuit_evidence: circuit.evidence, unresolved_reason: circuit.unresolved_reason },
+    source_metadata: {
+      circuit_evidence: circuit.evidence,
+      evidence_conflicts: circuit.evidence_conflicts || [],
+      candidate_keys: circuit.candidate_keys || [],
+      unresolved_reason: circuit.unresolved_reason,
+    },
     updated_at: circuit.updated_at,
     site_key: circuit.site_key,
     site_name: circuit.site_name,
@@ -268,7 +274,7 @@ export async function fetchCanonicalLinks({ pool = getOneViewDbPool() } = {}) {
 export function buildLinksPayload(rows, filters, now = Date.now()) {
   const all = rows; const scoped = filtered(all, filters); const start=(filters.page-1)*filters.page_size;
   const facets = (field) => [...new Map(all.map((row) => [String(row[field] || ""), row[field]]).filter(([value]) => value)).entries()].map(([value,label])=>({value,label})).sort((a,b)=>String(a.label).localeCompare(String(b.label),"pt-BR"));
-  return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:all.length,active_alert_links:all.filter(x=>x.active_alerts>0).length,incident_links:all.filter(x=>x.incident_count>0).length,known_carriers:all.filter(x=>x.carrier_name).length,pending_classification:all.filter(x=>x.resolution_status==="unresolved").length}, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
+  return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:all.length,active_alert_links:all.filter(x=>x.active_alerts>0).length,incident_links:all.filter(x=>x.incident_count>0).length,known_carriers:all.filter(x=>x.carrier_name).length,pending_classification:all.filter(x=>x.resolution_status!=="resolved").length}, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
 }
 export function createLinksHandler({ authorize=(req,res)=>requireOneViewAuth(req,res,"viewer"), list=fetchCanonicalLinks, now=()=>Date.now() }={}) { return async (req,res) => { res.setHeader("Cache-Control",NO_CACHE); res.setHeader("X-Content-Type-Options","nosniff"); if(req.method!=="GET") return methodNotAllowed(res,["GET"]); if(!await authorize(req,res)) return; try { const filters=parseLinkFilters(req); const payload=buildLinksPayload(await list(),filters,now()); res.setHeader("X-OneView-Data-Source","database"); return sendJson(res,200,payload); } catch (error) { return sendJson(res,error?.code==="invalid_query"?400:503,{error:error?.code==="invalid_query"?"invalid_query":"database_unavailable",data_source:"database"}); } }; }
 export default createLinksHandler();

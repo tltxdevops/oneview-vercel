@@ -45,12 +45,12 @@ function StateBadge({ state }: { state: CanonicalLink["state"] }) {
 }
 
 function ResolutionBadge({ link }: { link: CanonicalLink }) {
-  if (link.resolution_status !== "unresolved") return null;
+  if (link.resolution_status === "resolved") return null;
   return <Badge variant="secondary">Pendente de classificação</Badge>;
 }
 
 function linkTypeLabel(link: CanonicalLink) {
-  if (link.resolution_status === "unresolved") return "Não classificado";
+  if (link.resolution_status !== "resolved") return "Não classificado";
   if (link.link_type === "public-internet") return "Internet pública";
   if (link.link_type === "sd-wan") return "SD-WAN";
   if (link.link_type === "uplink") return link.uplink_key || "Uplink";

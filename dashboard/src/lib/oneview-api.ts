@@ -1424,7 +1424,7 @@ export type CanonicalLinkIncident = { sys_id: string | null; number: string | nu
 export type CanonicalLink = {
   id: string;
   circuit_key: string | null;
-  resolution_status: "resolved" | "unresolved";
+  resolution_status: "resolved" | "unresolved" | "ambiguous";
   data_source_id: string;
   datasource: string;
   source_host_id: string;
