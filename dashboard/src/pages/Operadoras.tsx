@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
 import { ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
@@ -13,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { fetchCanonicalLinks, type CanonicalLink, type CanonicalLinksResponse } from "@/lib/oneview-api";
+import { fetchCanonicalLinkDetail, fetchCanonicalLinks, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinksResponse } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -76,6 +75,11 @@ function failureDuration(link: CanonicalLink) {
 function refreshTime(value: string | null) {
   if (!value) return null;
   return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+}
+
+function timestampLabel(value: string | null | undefined) {
+  if (!value) return "Horário indisponível";
+  return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
 function Filter({
@@ -171,11 +175,16 @@ export default function OperadorasPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<CanonicalLink | null>(null);
-  const [selectedAlert, setSelectedAlert] = useState<string | null>(null);
+  const [detail, setDetail] = useState<CanonicalLinkDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const requestDone = useRef<Promise<void> | null>(null);
   const requestVersion = useRef(0);
   const hasPayload = useRef(false);
+  const selectedId = useRef<string | null>(null);
+  const detailCache = useRef(new Map<string, CanonicalLinkDetail>());
+  const detailRequests = useRef(new Map<string, Promise<CanonicalLinkDetail>>());
 
   const load = useCallback(async (mode: "initial" | "quiet" | "manual" = "initial") => {
     if (mode === "quiet" && request.current && !request.current.signal.aborted) return;
@@ -234,6 +243,50 @@ export default function OperadorasPage() {
       finishRequest?.();
     }
   }, [ack, carrier, classification, customer, datasource, divergence, incident, page, resolvedWindow, search, severity, sort, state, tab]);
+
+  const loadDetail = useCallback(async (link: CanonicalLink) => {
+    const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
+    let pending = detailRequests.current.get(key);
+    if (!pending) {
+      pending = fetchCanonicalLinkDetail(link);
+      detailRequests.current.set(key, pending);
+    }
+    if (selectedId.current === key && !detailCache.current.has(key)) {
+      setDetailLoading(true);
+      setDetailError(null);
+    }
+    try {
+      const result = await pending;
+      detailCache.current.set(key, result);
+      if (selectedId.current === key) {
+        setDetail(result);
+        setDetailError(null);
+      }
+    } catch (cause) {
+      if (selectedId.current === key) setDetailError(cause instanceof Error ? cause.message : "Não foi possível carregar o detalhe.");
+    } finally {
+      if (detailRequests.current.get(key) === pending) detailRequests.current.delete(key);
+      if (selectedId.current === key) setDetailLoading(false);
+    }
+  }, []);
+
+  const openLink = useCallback((link: CanonicalLink) => {
+    const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
+    selectedId.current = key;
+    setSelected(link);
+    setDetail(detailCache.current.get(key) || null);
+    setDetailError(null);
+    setDetailLoading(!detailCache.current.has(key));
+    void loadDetail(link);
+  }, [loadDetail]);
+
+  const closeLink = useCallback(() => {
+    selectedId.current = null;
+    setSelected(null);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(false);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -411,7 +464,7 @@ export default function OperadorasPage() {
           ) : (
             <>
               <div className="divide-y divide-border/60 md:hidden">
-                {items.map((item) => <MobileLinkCard key={item.id} item={item} onOpen={setSelected} />)}
+                {items.map((item) => <MobileLinkCard key={item.id} item={item} onOpen={openLink} />)}
               </div>
               <div className="hidden overflow-x-auto md:block">
                 <Table className="min-w-[64rem]">
@@ -428,7 +481,7 @@ export default function OperadorasPage() {
                   </TableHeader>
                   <TableBody>
                     {items.map((item) => (
-                      <TableRow key={item.id} className="cursor-pointer" onClick={() => setSelected(item)}>
+                      <TableRow key={item.id} className="cursor-pointer" onClick={() => openLink(item)}>
                         <TableCell className="max-w-[18rem]">
                           <p className="truncate font-mono text-xs font-medium">{text(item.service_name, "Link sem identificação")}</p>
                           <div className="mt-1"><ResolutionBadge link={item} /></div>
@@ -472,103 +525,31 @@ export default function OperadorasPage() {
         ) : null}
       </div>
 
-      <LinkDrawer link={selected} onClose={() => setSelected(null)} onOpenAlert={setSelectedAlert} />
-      {selectedAlert ? <AlertNavigator id={selectedAlert} onClose={() => setSelectedAlert(null)} /> : null}
+      <QueueLinkDrawer link={selected} detail={detail} loading={detailLoading} error={detailError} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />
     </AppLayout>
   );
 }
 
+function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { link: CanonicalLink | null; detail: CanonicalLinkDetail | null; loading: boolean; error: string | null; onClose: () => void; onRetry: () => void }) {
+  const view = detail || link;
+  const currentIncident = detail?.current_incident || link?.current_incident;
+  const latestIncident = detail?.latest_incident || link?.latest_incident;
+  const currentAlert = detail?.current_alert || link?.current_alert;
+  return <Sheet open={Boolean(link)} onOpenChange={(open) => { if (!open) onClose(); }}><SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-xl">{view ? <>
+    <SheetHeader className="border-b border-border/60 px-5 py-5 pr-12 text-left"><div className="flex flex-wrap items-center gap-2"><StateBadge state={view.state} />{view.max_severity ? <SeverityBadge severity={view.max_severity} /> : null}</div><SheetTitle className="break-words text-base">{text(view.service_name, "Circuito sem identificação")}</SheetTitle><SheetDescription>{view.customer_name} · {zabbixSourceDisplayName(view.datasource)}</SheetDescription></SheetHeader>
+    <div className="space-y-5 px-5 py-5">
+      {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
+      <section><h3 className="mb-2 text-sm font-semibold">Resumo</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Link / circuito" value={text(view.service_name)} /><Field label="Estado" value={stateLabel(view.state)} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Em falha" value={view.active_alerts ? failureDuration(view) : "Sem alerta ativo"} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta" value={timestampLabel(view.latest_alert_at)} /><Field label="Operadora / tipo" value={`${text(view.carrier_name)} · ${linkTypeLabel(view)}`} /></div></section>
+      {loading && !detail ? <div className="space-y-2"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /></div> : <>
+        <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p><b>{currentIncident.number || "INC"}</b> · {text(currentIncident.state_display || currentIncident.state)}</p><p className="mt-1 text-xs text-muted-foreground">Aberto às {timestampLabel(currentIncident.opened_at)} · Atualizado às {timestampLabel(currentIncident.updated_at)}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentIncident.assignment_group_display || currentIncident.assignment_group)} · {text(currentIncident.assigned_to_display || currentIncident.assigned_to)}</p></div> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <p className="mt-2 text-xs text-muted-foreground">Último chamado relacionado: <b>{latestIncident.number}</b> · {text(latestIncident.state_display || latestIncident.state)}</p> : null}</section>
+        <section><h3 className="mb-2 text-sm font-semibold">Alerta atual</h3>{currentAlert ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p className="font-medium">{text(currentAlert.problem_name || currentAlert.trigger_description, "Alerta sem título")}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentAlert.severity)} · Início: {timestampLabel(currentAlert.started_at)} · Última ocorrência: {timestampLabel(currentAlert.last_seen_at)}</p></div> : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}</section>
+        <section><h3 className="mb-2 text-sm font-semibold">Histórico recente de chamados</h3>{detail?.incident_history.length ? <div className="space-y-2">{detail.incident_history.map((incident) => <div key={incident.sys_id || incident.number} className="rounded-lg border border-border/60 p-3 text-sm"><p><b>{incident.number || "INC"}</b> · {text(incident.state_display || incident.state)}</p><p className="mt-1 text-xs text-muted-foreground">{timestampLabel(incident.updated_at || incident.opened_at)} · {text(incident.short_description, "Sem resumo")}</p></div>)}</div> : <p className="text-sm text-muted-foreground">Sem histórico disponível</p>}</section>
+        {detail ? <section><h3 className="mb-2 text-sm font-semibold">Detalhes técnicos</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Circuito" value={text(detail.technical.circuit_key || detail.service_name)} /><Field label="Host Zabbix" value={`${text(detail.technical.host_name)} · ID ${text(detail.technical.source_host_id)}`} /><Field label="Trigger(s)" value={detail.technical.trigger_ids.length ? detail.technical.trigger_ids.join(", ") : "Não informado"} /><Field label="Member / uplink" value={text(detail.technical.member_key || detail.technical.uplink_key)} /><Field label="Health-check" value={text(detail.technical.healthcheck_key)} /><Field label="IP" value={text(detail.technical.endpoint_ip)} /><Field label="Fonte" value={`${zabbixSourceDisplayName(detail.technical.source)} · ${text(detail.technical.strategy)}`} /><Field label="Confiança" value={text(detail.technical.confidence)} /></div></section> : null}
+      </>}
+    </div>
+  </> : null}</SheetContent></Sheet>;
+}
+
 function Field({ label, value }: { label: string; value: string }) {
   return <div className="min-w-0"><p className="text-xs text-muted-foreground">{label}</p><p className="break-words text-sm">{value}</p></div>;
-}
-
-function LinkDrawer({ link, onClose, onOpenAlert }: { link: CanonicalLink | null; onClose: () => void; onOpenAlert: (id: string) => void }) {
-  return (
-    <Sheet open={Boolean(link)} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-xl">
-        {link ? (
-          <>
-            <SheetHeader className="border-b border-border/60 px-5 py-5 pr-12 text-left">
-              <div className="flex flex-wrap items-center gap-2"><StateBadge state={link.state} /><ResolutionBadge link={link} />{link.max_severity ? <SeverityBadge severity={link.max_severity} /> : null}</div>
-              <SheetTitle className="break-words font-mono text-base">{text(link.service_name, "Link sem identificação")}</SheetTitle>
-              <SheetDescription>{link.customer_name} · {zabbixSourceDisplayName(link.datasource)}</SheetDescription>
-            </SheetHeader>
-            <div className="space-y-5 px-5 py-5">
-              <section>
-                <h3 className="mb-2 text-sm font-semibold">Situação operacional</h3>
-                <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
-                  <Field label="Cliente" value={text(link.customer_name)} />
-                  <Field label="Circuito" value={text(link.service_name, "Circuito sem identificação")} />
-                  <Field label="Estado" value={stateLabel(link.state)} />
-                  <Field label="Em falha" value={link.active_alerts ? failureDuration(link) : "Sem alerta ativo"} />
-                  <Field label="INC" value={incidentStatus(link)} />
-                  <Field label="Chamados abertos" value={link.incident_correlation_status === "degraded" ? "Não verificado" : String(link.open_incident_count || 0)} />
-                  <Field label="Operadora" value={text(link.carrier_name)} />
-                  <Field label="Tipo" value={linkTypeLabel(link)} />
-                </div>
-              </section>
-              <section>
-                <h3 className="mb-2 text-sm font-semibold">Detalhes técnicos</h3>
-                <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
-                  <Field label="Circuito" value={text(link.circuit_key || link.service_name)} />
-                  <Field label="Site" value={text(link.site_name || link.site_key)} />
-                  <Field label="Tipo" value={linkTypeLabel(link)} />
-                  <Field label="Member / Uplink" value={text(link.member_key || link.uplink_key)} />
-                  <Field label="Health-check" value={text(link.healthcheck_key)} />
-                  <Field label="IP" value={text(link.endpoint_ip)} />
-                  <Field label="Host Zabbix" value={`${text(link.host_name)} · ID ${text(link.source_host_id)}`} />
-                  <Field label="Trigger(s)" value={link.trigger_ids.length ? link.trigger_ids.join(", ") : "Não informado"} />
-                  <Field label="Fonte" value={`${zabbixSourceDisplayName(link.datasource)} · ${text(link.strategy)}`} />
-                  <Field label="Qualidade da identificação" value={text(link.confidence)} />
-                  <Field label="Operadora" value={text(link.carrier_name)} />
-                  <Field label="Referência da operadora" value={text(link.carrier_reference)} />
-                </div>
-              </section>
-              <section>
-                <h3 className="mb-2 text-sm font-semibold">Alertas ativos · {link.alerts.length}</h3>
-                {link.alerts.length ? (
-                  <div className="space-y-2">
-                    {link.alerts.map((alert) => (
-                      <Button key={alert.id} variant="outline" className="h-auto w-full justify-start whitespace-normal py-2 text-left" onClick={() => onOpenAlert(alert.id)}>
-                        {alert.problem_name || "Alerta sem título"} · {alert.severity || "—"}
-                      </Button>
-                    ))}
-                  </div>
-                ) : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}
-              </section>
-              <section>
-                <h3 className="mb-2 text-sm font-semibold">Chamados correlacionados · {link.incidents.length}</h3>
-                {link.incidents.length ? (
-                  <div className="space-y-2">
-                    {link.incidents.map((incidentItem) => (
-                      <div key={incidentItem.sys_id || incidentItem.number} className="rounded-lg border border-border/60 p-3 text-sm">
-                        <p><b>{incidentItem.number || "INC"}</b> · {text(incidentItem.state_display || incidentItem.state, "Estado não informado")}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {text(incidentItem.assigned_to_display || incidentItem.assigned_to, "Responsável não informado")} · {text(incidentItem.assignment_group_display || incidentItem.assignment_group, "Grupo não informado")}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                ) : <p className="text-sm text-muted-foreground">Sem chamado correlacionado</p>}
-              </section>
-            </div>
-          </>
-        ) : null}
-      </SheetContent>
-    </Sheet>
-  );
-}
-
-function AlertNavigator({ id, onClose }: { id: string; onClose: () => void }) {
-  return (
-    <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <SheetContent>
-        <SheetHeader>
-          <SheetTitle>Alerta operacional</SheetTitle>
-          <SheetDescription>Abra o alerta no drawer operacional normal.</SheetDescription>
-        </SheetHeader>
-        <Button className="mt-5" asChild><RouterLink to={`/alertas?alert=${encodeURIComponent(id)}`}>Abrir alerta no OneView</RouterLink></Button>
-      </SheetContent>
-    </Sheet>
-  );
 }

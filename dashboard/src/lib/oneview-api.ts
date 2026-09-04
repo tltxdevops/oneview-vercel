@@ -1420,7 +1420,8 @@ export async function fetchServiceNowIncidentActionStatus(sysId: string, actionI
   return fetchApi<ServiceNowIncidentActionStatus>(`/oneview/incidents/${encodeURIComponent(sysId)}/actions?outbox_id=${encodeURIComponent(actionId)}`, { signal });
 }
 
-export type CanonicalLinkIncident = { sys_id: string | null; number: string | null; state: string | null; state_display?: string | null; priority: string | null; priority_display?: string | null; assigned_to: string | null; assigned_to_display?: string | null; assignment_group: string | null; assignment_group_display?: string | null; };
+export type CanonicalLinkIncident = { sys_id: string | null; number: string | null; state: string | null; state_display?: string | null; priority?: string | null; priority_display?: string | null; assigned_to: string | null; assigned_to_display?: string | null; assignment_group: string | null; assignment_group_display?: string | null; opened_at?: string | null; updated_at?: string | null; short_description?: string | null; servicenow_url?: string | null; };
+export type CanonicalLinkAlert = { id: string; problem_name: string | null; trigger_description?: string | null; severity: OneViewSeverity | null; started_at?: string | null; last_seen_at?: string | null; };
 export type CanonicalLink = {
   id: string;
   circuit_key: string | null;
@@ -1459,6 +1460,8 @@ export type CanonicalLink = {
   active_since_at?: string | null;
   latest_activity_at?: string | null;
   resolved_at?: string | null;
+  alert_started_at?: string | null;
+  latest_alert_at?: string | null;
   active_alerts: number;
   unack_alerts: number;
   high_alerts: number;
@@ -1476,15 +1479,22 @@ export type CanonicalLink = {
   has_active_alert?: boolean;
   resolved_recent?: boolean;
   divergence_type?: "a" | "b" | null;
-  incidents: CanonicalLinkIncident[];
-  alerts: Array<{ id: string; problem_name: string | null; severity: OneViewSeverity | null }>;
+  current_alert?: CanonicalLinkAlert | null;
+  latest_alert?: CanonicalLinkAlert | null;
+  current_incident?: CanonicalLinkIncident | null;
+  latest_incident?: CanonicalLinkIncident | null;
 };
+export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
 export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; without_open_incident: number; with_open_incident: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
 export async function fetchCanonicalLinks(params?: Record<string, string | number | undefined> & { signal?: AbortSignal }): Promise<CanonicalLinksResponse> {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params || {})) if (key !== "signal" && value !== undefined && value !== "" && value !== "all") search.set(key, String(value));
   if (!search.has("page")) search.set("page", "1"); if (!search.has("page_size")) search.set("page_size", "50");
   return fetchApi<CanonicalLinksResponse>(`/oneview/links?${search}`, { signal: params?.signal });
+}
+export async function fetchCanonicalLinkDetail(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, signal?: AbortSignal): Promise<CanonicalLinkDetail> {
+  const query = new URLSearchParams({ data_source_id: link.data_source_id, source_host_id: link.source_host_id });
+  return fetchApi<CanonicalLinkDetail>(`/oneview/links/${encodeURIComponent(link.id)}?${query.toString()}`, { signal });
 }
 
 /** SN-P0-08 — lookup read-only alerta ↔ incidente via zabbix_event_id. */

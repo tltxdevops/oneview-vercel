@@ -1,5 +1,5 @@
 /** Circuit-level links read model: canonical inventory plus operator-tagged alerts. */
-import { methodNotAllowed, sendJson } from "./http.js";
+import { getId, methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewDbPool } from "./oneview-db.js";
 import { extractServiceNowRefsFromAlertTags } from "./oneview-inc-correlation.js";
@@ -86,7 +86,7 @@ function refsForAlerts(alerts) {
 export async function fetchLinkIncidents(alerts, { pool = getOneViewDbPool() } = {}) {
   const refs = refsForAlerts(alerts);
   if (!refs.sysIds.length && !refs.numbers.length && !refs.eventIds.length) return [];
-  const result = await pool.query({ text: `select sys_id, number, state, priority, assigned_to, assignment_group, display_values, correlation_id from servicenow_incidents where ($1::text[] <> '{}' and lower(sys_id::text)=any($1::text[])) or ($2::text[] <> '{}' and upper(number::text)=any($2::text[])) or ($3::text[] <> '{}' and correlation_id::text=any($3::text[]))`, values: [refs.sysIds, refs.numbers, refs.eventIds] });
+  const result = await pool.query({ text: `select sys_id, number, state, priority, assigned_to, assignment_group, short_description, opened_at, resolved_at, closed_at, sys_updated_on, display_values, correlation_id from servicenow_incidents where ($1::text[] <> '{}' and lower(sys_id::text)=any($1::text[])) or ($2::text[] <> '{}' and upper(number::text)=any($2::text[])) or ($3::text[] <> '{}' and correlation_id::text=any($3::text[]))`, values: [refs.sysIds, refs.numbers, refs.eventIds] });
   return (result.rows || []).map(mapReadModelIncident);
 }
 export function correlateLinkIncidents(alerts, incidents) {
@@ -133,6 +133,19 @@ function latestTimestamp(values) {
   return timestamps.length ? new Date(Math.max(...timestamps)).toISOString() : null;
 }
 
+function valueTimestamp(value) { return timestamp(value) || 0; }
+function alertSortValue(alert) { return valueTimestamp(alert.last_seen_at || alert.updated_at || alert.first_seen_at); }
+function incidentSortValue(incident) { return valueTimestamp(incident?.updatedAt || incident?.sys_updated_on || incident?.resolvedAt || incident?.closedAt || incident?.openedAt); }
+function severityValue(value) { const rank = ["disaster", "critical", "high", "average", "warning", "information", "not_classified"].indexOf(String(value || "")); return rank < 0 ? 99 : rank; }
+function alertRecord(alert) {
+  if (!alert) return null;
+  return { id: String(alert.id), problem_name: text(alert.problem_name), trigger_description: text(alert.trigger_description), severity: text(alert.severity), started_at: text(alert.first_seen_at), last_seen_at: text(alert.last_seen_at || alert.updated_at) };
+}
+function incidentRecord(incident) {
+  if (!incident) return null;
+  return { sys_id: incident.sys_id || null, number: incident.number || null, state: incident.state || null, state_display: incident.state_display || null, opened_at: incident.openedAt || incident.opened_at || null, updated_at: incident.updatedAt || incident.sys_updated_on || null, assignment_group: incident.assignment_group || null, assignment_group_display: incident.assignment_group_display || null, assigned_to: incident.assigned_to || null, assigned_to_display: incident.assigned_to_display || null, short_description: incident.short_description || incident.shortDescription || null, servicenow_url: incident.servicenow_url || null };
+}
+
 /** ServiceNow state classification for operational queueing. */
 export function classifyLinkIncidentState(incident) {
   const state = String(incident?.state || "").trim();
@@ -163,11 +176,9 @@ function alertSummary(alerts) {
     active_since_at: oldestTimestamp(active.map((alert) => alert.first_seen_at)),
     latest_activity_at: latestTimestamp(unique.map((alert) => alert.last_seen_at || alert.updated_at || alert.resolved_at)),
     resolved_at: latestTimestamp(unique.filter((alert) => !isActiveAlert(alert)).map((alert) => alert.resolved_at)),
-    alerts: active.map((alert) => ({
-      id: String(alert.id),
-      problem_name: text(alert.problem_name),
-      severity: text(alert.severity),
-    })),
+    current_alert: alertRecord([...active].sort((a, b) => severityValue(a.severity) - severityValue(b.severity) || alertSortValue(b) - alertSortValue(a) || String(a.id).localeCompare(String(b.id)))[0]),
+    latest_alert: alertRecord([...unique].sort((a, b) => alertSortValue(b) - alertSortValue(a) || String(a.id).localeCompare(String(b.id)))[0]),
+    alerts: active.map(alertRecord),
   };
 }
 
@@ -184,12 +195,16 @@ function incidentsForAlerts(alerts, matches) {
 function incidentSummary(incidents) {
   const buckets = { open: [], resolved: [], closed: [], unknown: [] };
   for (const incident of incidents) buckets[classifyLinkIncidentState(incident)].push(incident);
+  const orderedOpen = [...buckets.open].sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || valueTimestamp(b.openedAt || b.opened_at) - valueTimestamp(a.openedAt || a.opened_at) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)));
+  const orderedAll = [...incidents].sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)));
   return {
     open_incident_count: buckets.open.length,
     resolved_incident_count: buckets.resolved.length,
     closed_incident_count: buckets.closed.length,
     unknown_incident_count: buckets.unknown.length,
     open_incidents: buckets.open,
+    current_incident: incidentRecord(orderedOpen[0]),
+    latest_incident: incidentRecord(orderedAll[0]),
   };
 }
 
@@ -335,7 +350,14 @@ function resolvedWindowStart(window, now) {
 function operationalRow(row, now, resolvedWindow) {
   const incidentAvailable = row.incident_correlation_status !== "degraded";
   const incidents = row.incidents || [];
-  const counts = incidentSummary(incidents);
+  const counts = row.open_incident_count !== undefined
+    ? {
+      open_incident_count: row.open_incident_count,
+      resolved_incident_count: row.resolved_incident_count,
+      closed_incident_count: row.closed_incident_count,
+      unknown_incident_count: row.unknown_incident_count,
+    }
+    : incidentSummary(incidents);
   const active = Number(row.active_alerts || 0) > 0;
   const lastActivity = timestamp(row.latest_activity_at || row.resolved_at || row.updated_at);
   const resolvedRecent = !active && lastActivity !== null && lastActivity >= resolvedWindow;
@@ -379,19 +401,42 @@ function ordered(rows, filters) {
     return activityB - activityA || String(a.id).localeCompare(String(b.id));
   });
 }
-export async function fetchCanonicalLinks({ pool = getOneViewDbPool() } = {}) {
+const INVENTORY_SELECT = "select l.id::text, l.data_source_id::text, l.source_host_id::text, l.customer_key, l.customer_name, l.service_name, l.classification, l.classification_source, l.classification_confidence, l.carrier_name, l.carrier_source, l.source_metadata, l.updated_at, d.name as datasource from zabbix_link_inventory l join data_sources d on d.id::text=l.data_source_id::text";
+const ALERTS_SELECT = `select a.id::text, a.data_source_id::text, a.source_host_id::text, a.source_trigger_id::text, a.source_event_id::text, a.source_problem_id::text, a.client_name, a.customer_name, a.customer_key, a.host_name, a.service_name, a.item_key, a.item_name, a.trigger_description, a.problem_name, a.event_tags, a.trigger_tags, a.host_tags, ${templateTagsSql} as template_tags, a.severity, a.status_source, a.status_internal, a.acknowledged_source, a.first_seen_at, a.resolved_at, a.last_seen_at, a.updated_at, d.name as datasource, (${activeSql}) as is_active from alerts a join data_sources d on d.id::text=a.data_source_id::text`;
+
+function markIncidentDegraded(rows) {
+  for (const row of rows) {
+    row.incident_correlation_status = "degraded";
+    row.incident_count = null;
+    row.open_incident_count = null;
+    row.resolved_incident_count = null;
+    row.closed_incident_count = null;
+    row.unknown_incident_count = null;
+    row.current_incident = null;
+    row.latest_incident = null;
+  }
+}
+
+async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId = null, includeIncidents = true } = {}) {
   const startedAt = Date.now(); const timings = {};
+  const scoped = Boolean(dataSourceId && sourceHostId);
   const inventoryStartedAt = Date.now();
-  const inventoryResult = await pool.query(`select l.id::text, l.data_source_id::text, l.source_host_id::text, l.customer_key, l.customer_name, l.service_name, l.classification, l.classification_source, l.classification_confidence, l.carrier_name, l.carrier_source, l.source_metadata, l.updated_at, d.name as datasource from zabbix_link_inventory l join data_sources d on d.id::text=l.data_source_id::text order by l.customer_name, l.service_name`);
+  const inventoryResult = await pool.query(scoped
+    ? { text: `${INVENTORY_SELECT} where l.data_source_id::text=$1 and l.source_host_id::text=$2 order by l.customer_name, l.service_name`, values: [dataSourceId, sourceHostId] }
+    : `${INVENTORY_SELECT} order by l.customer_name, l.service_name`);
   timings.inventory_query_ms = elapsedMs(inventoryStartedAt);
   const alertsStartedAt = Date.now();
-  const alertsResult = await pool.query(`select a.id::text, a.data_source_id::text, a.source_host_id::text, a.source_trigger_id::text, a.source_event_id::text, a.source_problem_id::text, a.client_name, a.customer_name, a.customer_key, a.host_name, a.service_name, a.item_key, a.item_name, a.trigger_description, a.problem_name, a.event_tags, a.trigger_tags, a.host_tags, ${templateTagsSql} as template_tags, a.severity, a.status_source, a.status_internal, a.acknowledged_source, a.first_seen_at, a.resolved_at, a.last_seen_at, a.updated_at, d.name as datasource, (${activeSql}) as is_active from alerts a join data_sources d on d.id::text=a.data_source_id::text where exists (select 1 from zabbix_link_inventory l where l.data_source_id::text=a.data_source_id::text and l.source_host_id::text=a.source_host_id::text) or ${EXACT_OPERATOR_TAG_SQL}`);
+  const alertsResult = await pool.query(scoped
+    ? { text: `${ALERTS_SELECT} where a.data_source_id::text=$1 and a.source_host_id::text=$2`, values: [dataSourceId, sourceHostId] }
+    : `${ALERTS_SELECT} where exists (select 1 from zabbix_link_inventory l where l.data_source_id::text=a.data_source_id::text and l.source_host_id::text=a.source_host_id::text) or ${EXACT_OPERATOR_TAG_SQL}`);
   timings.alerts_query_ms = elapsedMs(alertsStartedAt);
   const alerts = alertsResult.rows || [];
   let incidents = []; let servicenowStatus = "available";
   const serviceNowStartedAt = Date.now();
-  try { incidents = await fetchLinkIncidents(alerts, { pool }); }
-  catch { servicenowStatus = "degraded"; }
+  if (includeIncidents) {
+    try { incidents = await fetchLinkIncidents(alerts, { pool }); }
+    catch { servicenowStatus = "degraded"; }
+  }
   timings.servicenow_correlation_ms = elapsedMs(serviceNowStartedAt);
   const discoveryStartedAt = Date.now();
   const circuits = discoverOperatorCircuits(alerts);
@@ -399,20 +444,71 @@ export async function fetchCanonicalLinks({ pool = getOneViewDbPool() } = {}) {
   const compositionStartedAt = Date.now();
   const rows = composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits });
   timings.composition_ms = elapsedMs(compositionStartedAt);
-  if (servicenowStatus === "degraded") {
-    for (const row of rows) {
-      row.incident_correlation_status = "degraded";
-      row.incident_count = null;
-      row.open_incident_count = null;
-      row.resolved_incident_count = null;
-      row.closed_incident_count = null;
-      row.unknown_incident_count = null;
-    }
-  }
+  if (servicenowStatus === "degraded") markIncidentDegraded(rows);
   timings.total_ms = elapsedMs(startedAt);
-  Object.defineProperties(rows, { integration_status: { value: { servicenow: servicenowStatus }, enumerable: false }, timings: { value: timings, enumerable: false } });
-  logLinksTiming({ ...timings, inventory_rows: (inventoryResult.rows || []).length, alert_rows: alerts.length, result_rows: rows.length, servicenow: servicenowStatus });
+  return { rows, alerts, circuits, inventory_rows_data: inventoryResult.rows || [], integration_status: { servicenow: servicenowStatus }, timings, inventory_rows: (inventoryResult.rows || []).length, alert_rows: alerts.length };
+}
+
+function queueLink(row) {
+  return {
+    id: row.id, circuit_key: row.circuit_key, resolution_status: row.resolution_status,
+    data_source_id: row.data_source_id, datasource: row.datasource, source_host_id: row.source_host_id,
+    host_name: row.host_name, customer_key: row.customer_key, customer_name: row.customer_name,
+    service_name: row.service_name, classification: row.classification, classification_source: row.classification_source,
+    classification_confidence: row.classification_confidence, site_key: row.site_key, site_name: row.site_name,
+    link_type: row.link_type, carrier_name: row.carrier_name, carrier_source: row.carrier_source,
+    carrier_reference: row.carrier_reference, strategy: row.strategy, confidence: row.confidence, updated_at: row.updated_at,
+    active_alerts: row.active_alerts, unack_alerts: row.unack_alerts, high_alerts: row.high_alerts,
+    disaster_alerts: row.disaster_alerts, average_alerts: row.average_alerts, warning_alerts: row.warning_alerts,
+    state: row.state, max_severity: row.max_severity, active_since_at: row.active_since_at,
+    latest_activity_at: row.latest_activity_at, resolved_at: row.resolved_at,
+    alert_started_at: row.active_since_at, latest_alert_at: row.latest_alert?.last_seen_at || row.latest_activity_at,
+    current_alert: row.current_alert, latest_alert: row.latest_alert,
+    incident_count: row.incident_count, incident_correlation_status: row.incident_correlation_status,
+    open_incident_count: row.open_incident_count, resolved_incident_count: row.resolved_incident_count,
+    closed_incident_count: row.closed_incident_count, unknown_incident_count: row.unknown_incident_count,
+    current_incident: row.current_incident, latest_incident: row.latest_incident,
+  };
+}
+
+export async function fetchCanonicalLinks({ pool = getOneViewDbPool() } = {}) {
+  const model = await fetchCanonicalLinkModel({ pool });
+  const rows = model.rows.map(queueLink);
+  Object.defineProperties(rows, { integration_status: { value: model.integration_status, enumerable: false }, timings: { value: model.timings, enumerable: false } });
+  logLinksTiming({ ...model.timings, inventory_rows: model.inventory_rows, alert_rows: model.alert_rows, result_rows: rows.length, servicenow: model.integration_status.servicenow });
   return rows;
+}
+
+export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId, pool = getOneViewDbPool() } = {}) {
+  const model = await fetchCanonicalLinkModel({ pool, dataSourceId, sourceHostId, includeIncidents: false });
+  const candidate = model.rows.find((row) => String(row.id) === String(id));
+  if (!candidate) return null;
+  const circuit = model.circuits.find((item) => String(item.circuit_key) === String(id));
+  const relatedAlerts = circuit ? alertsForCircuit(circuit, model.alerts) : model.alerts;
+  let incidents = []; let servicenowStatus = "available";
+  const serviceNowStartedAt = Date.now();
+  try { incidents = await fetchLinkIncidents(relatedAlerts, { pool }); }
+  catch { servicenowStatus = "degraded"; }
+  model.timings.servicenow_correlation_ms = elapsedMs(serviceNowStartedAt);
+  const detailCompositionStartedAt = Date.now();
+  const rows = composeCircuitLevelLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, circuits: model.circuits });
+  model.timings.composition_ms = elapsedMs(detailCompositionStartedAt);
+  if (servicenowStatus === "degraded") markIncidentDegraded(rows);
+  model.integration_status = { servicenow: servicenowStatus };
+  model.timings.total_ms = model.timings.inventory_query_ms + model.timings.alerts_query_ms + model.timings.circuit_discovery_ms + model.timings.composition_ms + model.timings.servicenow_correlation_ms;
+  const row = rows.find((item) => String(item.id) === String(id));
+  if (!row) return null;
+  const incidentHistory = [...(row.incidents || [])].sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number))).slice(0, 20).map(incidentRecord);
+  const detail = {
+    ...queueLink(row),
+    current_alert: row.current_alert, latest_alert: row.latest_alert, active_alerts_detail: row.alerts || [],
+    current_incident: row.current_incident, latest_incident: row.latest_incident, incident_history: incidentHistory,
+    technical: { circuit_key: row.circuit_key, resolution_status: row.resolution_status, source: row.datasource, host_name: row.host_name, source_host_id: row.source_host_id, trigger_ids: row.trigger_ids || [], member_key: row.member_key, uplink_key: row.uplink_key, healthcheck_key: row.healthcheck_key, endpoint_ip: row.endpoint_ip, confidence: row.confidence, strategy: row.strategy },
+    integration_status: model.integration_status,
+    checked_at: new Date().toISOString(),
+  };
+  logLinksTiming({ route: "/api/oneview/links/:id", detail_request_total_ms: model.timings.total_ms, inventory_rows: model.inventory_rows, alert_rows: model.alert_rows, servicenow: model.integration_status.servicenow, status: 200 });
+  return detail;
 }
 export function buildLinksPayload(rows, filters, now = Date.now(), integrationStatus = { servicenow: "available" }) {
   const resolvedWindow = resolvedWindowStart(filters.resolved_window, now);
@@ -432,4 +528,5 @@ export function buildLinksPayload(rows, filters, now = Date.now(), integrationSt
   return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:integrationStatus.servicenow === "degraded" ? null : base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, integration_status:integrationStatus, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
 }
 export function createLinksHandler({ authorize=(req,res)=>requireOneViewAuth(req,res,"viewer"), list=fetchCanonicalLinks, now=()=>Date.now() }={}) { return async (req,res) => { const startedAt=Date.now(); let status=500; res.setHeader("Cache-Control",NO_CACHE); res.setHeader("X-Content-Type-Options","nosniff"); try { if(req.method!=="GET") { status=405; return methodNotAllowed(res,["GET"]); } if(!await authorize(req,res)) { status=res.statusCode||401; return; } const filters=parseLinkFilters(req); const result=await list(); const rows=Array.isArray(result)?result:result.rows; const integrationStatus=result?.integration_status||{servicenow:"available"}; const payload=buildLinksPayload(rows,filters,now(),integrationStatus); res.setHeader("X-OneView-Data-Source","database"); status=200; return sendJson(res,200,payload); } catch (error) { status=error?.code==="invalid_query"?400:503; return sendJson(res,status,{error:error?.code==="invalid_query"?"invalid_query":"database_unavailable",data_source:"database"}); } finally { logLinksTiming({ route:"/api/oneview/links", request_total_ms:elapsedMs(startedAt), status }); } }; }
+export function createLinkDetailHandler({ authorize=(req,res)=>requireOneViewAuth(req,res,"viewer"), detail=fetchCanonicalLinkDetail }={}) { return async (req,res) => { const startedAt=Date.now(); let status=500; res.setHeader("Cache-Control",NO_CACHE); res.setHeader("X-Content-Type-Options","nosniff"); try { if(req.method!=="GET") { status=405; return methodNotAllowed(res,["GET"]); } if(!await authorize(req,res)) { status=res.statusCode||401; return; } const id=text(getId(req,"id")); const dataSourceId=text(oneQuery(req,"data_source_id")); const sourceHostId=text(oneQuery(req,"source_host_id")); if(!id||!dataSourceId||!sourceHostId||![id,dataSourceId,sourceHostId].every((value)=>SAFE.test(value))) { status=400; return sendJson(res,400,{error:"invalid_query",data_source:"database"}); } const payload=await detail({id,dataSourceId,sourceHostId}); if(!payload) { status=404; return sendJson(res,404,{error:"not_found",data_source:"database"}); } res.setHeader("X-OneView-Data-Source","database"); status=200; return sendJson(res,200,{...payload,data_source:"database",fallback_code:null}); } catch { status=503; return sendJson(res,503,{error:"database_unavailable",data_source:"database"}); } finally { logLinksTiming({route:"/api/oneview/links/:id",detail_request_total_ms:elapsedMs(startedAt),status}); } }; }
 export default createLinksHandler();
