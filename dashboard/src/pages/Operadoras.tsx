@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
+import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { fetchCanonicalLinkDetail, fetchCanonicalLinks, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinksResponse } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchOperatorReminders, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinksResponse, type OperatorReminder } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -598,6 +598,7 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
   return <Sheet open={Boolean(link)} onOpenChange={(open) => { if (!open) onClose(); }}><SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-xl">{view ? <>
     <SheetHeader className="border-b border-border/60 px-5 py-5 pr-12 text-left"><div className="flex flex-wrap items-center gap-2"><StateBadge state={view.state} />{view.max_severity ? <SeverityBadge severity={view.max_severity} /> : null}</div><SheetTitle className="break-words text-base">{linkLabel(view)}</SheetTitle><SheetDescription>{view.customer_name} · {localLabel(view)}</SheetDescription></SheetHeader>
     <div className="space-y-5 px-5 py-5">
+      <CircuitReminderPanel link={view} />
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
       <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Estado" value={stateLabel(view.state)} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Em falha há" value={view.active_alerts ? failureDuration(view) : "Sem alerta ativo"} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /></div></section>
       {loading && !detail ? <div className="space-y-2"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /></div> : <>
@@ -608,6 +609,81 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
       </>}
     </div>
   </> : null}</SheetContent></Sheet>;
+}
+
+function reminderDateTime(value?: string | null) {
+  const date = value ? new Date(value) : new Date(Date.now() + 60 * 60 * 1000);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString();
+  return { date: local.slice(0, 10), time: local.slice(11, 16) };
+}
+
+function reminderLabel(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Horário indisponível";
+  const today = new Date();
+  const time = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(date);
+  return date.toDateString() === today.toDateString()
+    ? `Hoje às ${time}`
+    : new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
+  const identity = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
+  const [reminders, setReminders] = useState<OperatorReminder[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [date, setDate] = useState(() => reminderDateTime().date);
+  const [time, setTime] = useState(() => reminderDateTime().time);
+  const reminder = reminders[0] || null;
+  const canSchedule = Boolean(link.circuit_key && Number(link.active_alerts) > 0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true); setError(null); setOpen(false);
+    const initial = reminderDateTime(); setDate(initial.date); setTime(initial.time);
+    void fetchOperatorReminders(link, controller.signal).then((items) => {
+      if (!controller.signal.aborted) setReminders(items);
+    }).catch((cause) => {
+      if (!controller.signal.aborted && !isAbortError(cause)) setError(cause instanceof Error ? cause.message : "Não foi possível carregar o lembrete.");
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [identity, link]); // circuit change reloads persistent reminder state; list polling does not replace drawer state.
+
+  const save = async () => {
+    const scheduledFor = new Date(`${date}T${time}:00`);
+    if (!date || !time || Number.isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now()) {
+      setError("Escolha uma data e horário futuros."); return;
+    }
+    setSaving(true); setError(null);
+    try {
+      const saved = reminder
+        ? await updateOperatorReminder(link, reminder.id, scheduledFor.toISOString())
+        : await createOperatorReminder(link, scheduledFor.toISOString());
+      setReminders([saved]); setOpen(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível salvar o lembrete.");
+    } finally { setSaving(false); }
+  };
+  const cancel = async () => {
+    if (!reminder) return;
+    setSaving(true); setError(null);
+    try { await cancelOperatorReminder(link, reminder.id); setReminders([]); setOpen(false); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível cancelar o lembrete."); }
+    finally { setSaving(false); }
+  };
+  const edit = () => { const initial = reminderDateTime(reminder?.scheduled_for); setDate(initial.date); setTime(initial.time); setOpen(true); };
+
+  return <section><h3 className="mb-2 text-sm font-semibold">Acompanhamento</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
+    {loading ? <Skeleton className="h-9 w-48" /> : reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />Lembrete agendado</p><p className="mt-1 text-xs text-muted-foreground">{reminderLabel(reminder.scheduled_for)} · Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-muted-foreground">Agende um retorno se o circuito continuar pendente.</p>{!canSchedule ? <p className="mt-1 text-xs text-muted-foreground">Lembretes são permitidos apenas para circuito com alerta ativo.</p> : null}</div><Popover open={open} onOpenChange={setOpen}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
+    {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}
+    {reminder ? <Popover open={open} onOpenChange={setOpen}><PopoverContent className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover> : null}
+  </div></section>;
+}
+
+function ReminderForm({ date, time, saving, submitLabel, onDate, onTime, onCancel, onSubmit }: { date: string; time: string; saving: boolean; submitLabel: string; onDate: (value: string) => void; onTime: (value: string) => void; onCancel: () => void; onSubmit: () => void }) {
+  return <div className="space-y-3"><div><p className="font-medium">Lembrar se continuar pendente</p><p className="text-xs text-muted-foreground">O horário é salvo no seu fuso local.</p></div><label className="grid gap-1 text-sm">Data<Input aria-label="Data do lembrete" type="date" value={date} onChange={(event) => onDate(event.target.value)} /></label><label className="grid gap-1 text-sm">Horário<Input aria-label="Horário do lembrete" type="time" value={time} onChange={(event) => onTime(event.target.value)} /></label><div className="flex justify-end gap-2"><Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button><Button size="sm" onClick={onSubmit} disabled={saving}>{submitLabel}</Button></div></div>;
 }
 
 function Field({ label, value }: { label: string; value: string }) {

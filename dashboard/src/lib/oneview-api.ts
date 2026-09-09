@@ -1498,6 +1498,42 @@ export async function fetchCanonicalLinkDetail(link: Pick<CanonicalLink, "id" | 
 }
 
 /** SN-P0-08 — lookup read-only alerta ↔ incidente via zabbix_event_id. */
+export type OperatorReminder = {
+  id: string;
+  circuit_key: string;
+  data_source_id: string;
+  source_host_id: string | null;
+  scheduled_for: string;
+  status: "scheduled" | "processing" | "sent" | "cancelled" | "skipped" | "failed";
+  created_by: string;
+  created_by_name: string;
+  initial_alert_id: string | null;
+  initial_incident_sys_id: string | null;
+  initial_incident_number: string | null;
+  context_snapshot: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+  cancelled_at: string | null;
+};
+type OperatorRemindersResponse = { items: OperatorReminder[] };
+function operatorReminderPath(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, reminderId?: string) {
+  const query = new URLSearchParams({ data_source_id: link.data_source_id, source_host_id: link.source_host_id });
+  if (reminderId) query.set("reminder_id", reminderId);
+  return `/oneview/links/${encodeURIComponent(link.id)}/reminders?${query.toString()}`;
+}
+export async function fetchOperatorReminders(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, signal?: AbortSignal): Promise<OperatorReminder[]> {
+  return (await fetchApi<OperatorRemindersResponse>(operatorReminderPath(link), { signal })).items;
+}
+export async function createOperatorReminder(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, scheduledFor: string): Promise<OperatorReminder> {
+  return (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), { method: "POST", body: JSON.stringify({ scheduled_for: scheduledFor }) })).item;
+}
+export async function updateOperatorReminder(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, reminderId: string, scheduledFor: string): Promise<OperatorReminder> {
+  return (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "PATCH", body: JSON.stringify({ reminder_id: reminderId, scheduled_for: scheduledFor }) })).item;
+}
+export async function cancelOperatorReminder(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, reminderId: string): Promise<OperatorReminder> {
+  return (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "DELETE", body: JSON.stringify({ reminder_id: reminderId }) })).item;
+}
+
 export async function fetchIncidentRelatedAlert(
   reference: string | { sysId?: string | null; number?: string | null; sourceEventId?: string | null },
   signal?: AbortSignal,
