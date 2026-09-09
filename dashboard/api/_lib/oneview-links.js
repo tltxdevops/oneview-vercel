@@ -391,8 +391,8 @@ function severityRank(value) {
 
 function ordered(rows, filters) {
   return [...rows].sort((a, b) => {
-    const activityA = timestamp(a.latest_activity_at || a.updated_at) || 0;
-    const activityB = timestamp(b.latest_activity_at || b.updated_at) || 0;
+    const activityA = timestamp(a.latest_alert_at || a.latest_activity_at || a.updated_at) || 0;
+    const activityB = timestamp(b.latest_alert_at || b.latest_activity_at || b.updated_at) || 0;
     const startedA = timestamp(a.active_since_at) || Number.MAX_SAFE_INTEGER;
     const startedB = timestamp(b.active_since_at) || Number.MAX_SAFE_INTEGER;
     if (filters.sort === "oldest") return activityA - activityB || String(a.id).localeCompare(String(b.id));
