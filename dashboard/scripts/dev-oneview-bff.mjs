@@ -31,19 +31,25 @@ for (const file of [
   "api/oneview/operations/health.js",
   "api/oneview/runtime-health.js",
   "api/oneview/links.js",
+  "api/oneview/links/[id].js",
+  "api/oneview/links/[id]/reminders.js",
   "api/oneview/attention-required.js",
   "api/oneview/history.js",
   "api/oneview/clients-summary.js",
   "api/oneview/incidents.js",
+  "api/oneview/incidents/detail/[id].js",
   "api/oneview/incidents/related-alert.js",
   "api/oneview/alerts/related-incidents.js",
   "api/oneview/operator-queue.js",
   "api/_lib/oneview-incidents.js",
+  "api/_lib/oneview-incidents-read-model.js",
+  "api/_lib/oneview-incident-detail.js",
   "api/_lib/oneview-incident-relation.js",
   "api/_lib/oneview-alert-incidents.js",
   "api/_lib/oneview-operator-queue.js",
   "api/_lib/oneview-runtime-health-truth.js",
   "api/_lib/oneview-links.js",
+  "api/_lib/oneview-operator-reminders.js",
   "api/_lib/servicenow-client.js",
   "api/_lib/servicenow-normalize.js",
 ]) codeHash.update(readFileSync(path.join(rootDir, file)));
@@ -83,7 +89,13 @@ async function getHandler(routeName) {
       : routeName === "alert-history"
         ? path.join("alerts", "[id]", "history.js")
         : routeName === "alert-ack-request"
-          ? path.join("alerts", "[id]", "ack-request.js")
+        ? path.join("alerts", "[id]", "ack-request.js")
+        : routeName === "link-detail"
+          ? path.join("links", "[id].js")
+          : routeName === "link-reminders"
+            ? path.join("links", "[id]", "reminders.js")
+            : routeName === "incident-detail"
+              ? path.join("incidents", "detail", "[id].js")
         : routeName === "operations-health"
           ? path.join("operations", "health.js")
         : routeName === "runtime-health"
@@ -103,6 +115,12 @@ async function getHandler(routeName) {
 function resolveRoute(pathname) {
   const exact = routes.get(pathname);
   if (exact) return { routeName: exact, params: {} };
+  const incidentDetail = pathname.match(/^\/api\/oneview\/incidents\/detail\/([^/]+)$/);
+  if (incidentDetail) return { routeName: "incident-detail", params: { id: decodeURIComponent(incidentDetail[1]) } };
+  const linkReminders = pathname.match(/^\/api\/oneview\/links\/([^/]+)\/reminders$/);
+  if (linkReminders) return { routeName: "link-reminders", params: { id: decodeURIComponent(linkReminders[1]) } };
+  const linkDetail = pathname.match(/^\/api\/oneview\/links\/([^/]+)$/);
+  if (linkDetail) return { routeName: "link-detail", params: { id: decodeURIComponent(linkDetail[1]) } };
   const ackRequest = pathname.match(/^\/api\/oneview\/alerts\/([^/]+)\/ack-request$/);
   if (ackRequest) return { routeName: "alert-ack-request", params: { id: decodeURIComponent(ackRequest[1]) } };
   const history = pathname.match(/^\/api\/oneview\/alerts\/([^/]+)\/history$/);
@@ -118,6 +136,9 @@ function routeTemplate(routeName) {
   if (routeName === "alert-detail") return "/api/oneview/alerts/:id";
   if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
   if (routeName === "alert-ack-request") return "/api/oneview/alerts/:id/ack-request";
+  if (routeName === "link-detail") return "/api/oneview/links/:id";
+  if (routeName === "link-reminders") return "/api/oneview/links/:id/reminders";
+  if (routeName === "incident-detail") return "/api/oneview/incidents/detail/:id";
   if (routeName === "operations-health") return "/api/oneview/operations/health";
   if (routeName === "runtime-health") return "/api/oneview/runtime-health";
   if (routeName === "incidents") return "/api/oneview/incidents";
@@ -251,7 +272,8 @@ const server = http.createServer(async (req, res) => {
 
   try {
     req.query = { ...buildQuery(url), ...route.params };
-    if (route.routeName === "alert-ack-request" && req.method === "POST") {
+    if ((route.routeName === "alert-ack-request" && req.method === "POST")
+      || (route.routeName === "link-reminders" && ["POST", "PATCH", "DELETE"].includes(req.method || ""))) {
       try {
         req.body = await readJsonBody(req);
       } catch (error) {

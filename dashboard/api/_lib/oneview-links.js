@@ -4,7 +4,7 @@ import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewDbPool } from "./oneview-db.js";
 import { extractServiceNowRefsFromAlertTags } from "./oneview-inc-correlation.js";
 import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
-import { discoverOperatorCircuits, hasExactOperatorEscalation } from "./oneview-operator-circuits.js";
+import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const SAFE = /^[\p{L}\p{N}._:@/| -]{1,240}$/u;
@@ -22,16 +22,40 @@ const templateTagsSql = `case
   when jsonb_typeof(a.payload_raw->'trigger'->'template_tags') = 'array' then a.payload_raw->'trigger'->'template_tags'
   when jsonb_typeof(a.payload_raw->'trigger'->'tags') = 'array' then a.payload_raw->'trigger'->'tags'
   else '[]'::jsonb end`;
-export const EXACT_OPERATOR_TAG_SQL = `exists (
+function operatorTagExistsSql({ includeTemplateTags = true } = {}) {
+  const bags = [
+    `select jsonb_array_elements(${safeJsonArray("a.event_tags")}) as tag`,
+    `select jsonb_array_elements(${safeJsonArray("a.trigger_tags")})`,
+    `select jsonb_array_elements(${safeJsonArray("a.host_tags")})`,
+  ];
+  if (includeTemplateTags) bags.push(`select jsonb_array_elements(${templateTagsSql})`);
+  return `exists (
   select 1 from (
-    select jsonb_array_elements(${safeJsonArray("a.event_tags")}) as tag
-    union all select jsonb_array_elements(${safeJsonArray("a.trigger_tags")})
-    union all select jsonb_array_elements(${safeJsonArray("a.host_tags")})
-    union all select jsonb_array_elements(${templateTagsSql})
+    ${bags.join("\n    union all ")}
   ) operator_tags
   where lower(btrim(coalesce(operator_tags.tag->>'tag', operator_tags.tag->>'name', ''))) = 'escalation'
     and lower(btrim(coalesce(operator_tags.tag->>'value', ''))) = 'operator'
 )`;
+}
+
+/** Full eligibility (includes payload-derived template_tags). Kept for detail/compat. */
+export const EXACT_OPERATOR_TAG_SQL = operatorTagExistsSql({ includeTemplateTags: true });
+
+/**
+ * List-path operator filter avoids payload_raw/payload_normalized. On current prod data,
+ * escalation=operator lives in event/trigger/host tags for inventory-relevant alerts.
+ */
+const LIST_OPERATOR_TAG_SQL = operatorTagExistsSql({ includeTemplateTags: false });
+
+/** Keep older alerts that still carry explicit ServiceNow refs (open INC / divergence B). */
+const SERVICENOW_TAG_EXISTS_SQL = `(
+  coalesce(a.event_tags::text, '') ilike '%__zbx_servicenow_sys_id%'
+  or coalesce(a.event_tags::text, '') ilike '%__zbx_servicenow_number%'
+  or coalesce(a.trigger_tags::text, '') ilike '%__zbx_servicenow_sys_id%'
+  or coalesce(a.trigger_tags::text, '') ilike '%__zbx_servicenow_number%'
+)`;
+
+/** Operational queue needs active + resolved_window(7d); SN residuals are queried separately. */
 
 function text(value) { const result = String(value || "").trim(); return result || null; }
 function elapsedMs(startedAt) { return Math.max(0, Date.now() - startedAt); }
@@ -217,6 +241,29 @@ function alertsForCircuit(circuit, alerts) {
   });
 }
 
+function circuitTriggerKey(row, triggerId = row?.source_trigger_id) {
+  return `${hostKey(row)}:${String(triggerId || "")}`;
+}
+
+function indexAlertsByCircuitTrigger(alerts) {
+  const index = new Map();
+  for (const alert of uniqueAlerts(alerts)) {
+    const key = circuitTriggerKey(alert);
+    const current = index.get(key) || [];
+    current.push(alert);
+    index.set(key, current);
+  }
+  return index;
+}
+
+function indexedAlertsForCircuit(circuit, index) {
+  const found = [];
+  for (const triggerId of circuit.trigger_ids || []) {
+    found.push(...(index.get(circuitTriggerKey(circuit, triggerId)) || []));
+  }
+  return uniqueAlerts(found);
+}
+
 function inventoryLink(row, alerts, matches) {
   const related = uniqueAlerts(alerts);
   const incidents = incidentsForAlerts(related, matches);
@@ -247,8 +294,8 @@ function inventoryLink(row, alerts, matches) {
   };
 }
 
-function circuitLink(circuit, alerts, matches) {
-  const related = alertsForCircuit(circuit, alerts);
+function circuitLink(circuit, alerts, matches, alertIndex = null) {
+  const related = alertIndex ? indexedAlertsForCircuit(circuit, alertIndex) : alertsForCircuit(circuit, alerts);
   const incidents = incidentsForAlerts(related, matches);
   const unresolved = circuit.resolution_status !== "resolved";
   return {
@@ -298,6 +345,7 @@ export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], i
   const alerts = uniqueAlerts(alertRows);
   const matches = correlateLinkIncidents(alerts, incidents);
   const circuits = providedCircuits || discoverOperatorCircuits(alerts);
+  const alertIndex = indexAlertsByCircuitTrigger(alerts);
   const resolvedHosts = new Set(circuits
     .filter((circuit) => circuit.resolution_status === "resolved")
     .map(hostKey));
@@ -311,7 +359,7 @@ export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], i
   const legacy = inventoryRows
     .filter((row) => !resolvedHosts.has(hostKey(row)))
     .map((row) => inventoryLink(row, alertsByHost.get(hostKey(row)) || [], matches));
-  const derived = circuits.map((circuit) => circuitLink(circuit, alerts, matches));
+  const derived = circuits.map((circuit) => circuitLink(circuit, alerts, matches, alertIndex));
   return [...legacy, ...derived].sort((a, b) => (
     String(a.customer_name || "").localeCompare(String(b.customer_name || ""), "pt-BR")
     || String(a.service_name || "").localeCompare(String(b.service_name || ""), "pt-BR")
@@ -401,8 +449,19 @@ function ordered(rows, filters) {
     return activityB - activityA || String(a.id).localeCompare(String(b.id));
   });
 }
-const INVENTORY_SELECT = "select l.id::text, l.data_source_id::text, l.source_host_id::text, l.customer_key, l.customer_name, l.service_name, l.classification, l.classification_source, l.classification_confidence, l.carrier_name, l.carrier_source, l.source_metadata, l.updated_at, d.name as datasource from zabbix_link_inventory l join data_sources d on d.id::text=l.data_source_id::text";
-const ALERTS_SELECT = `select a.id::text, a.data_source_id::text, a.source_host_id::text, a.source_trigger_id::text, a.source_event_id::text, a.source_problem_id::text, a.client_name, a.customer_name, a.customer_key, a.host_name, a.service_name, a.item_key, a.item_name, a.trigger_description, a.problem_name, a.event_tags, a.trigger_tags, a.host_tags, ${templateTagsSql} as template_tags, a.severity, a.status_source, a.status_internal, a.acknowledged_source, a.first_seen_at, a.resolved_at, a.last_seen_at, a.updated_at, d.name as datasource, (${activeSql}) as is_active from alerts a join data_sources d on d.id::text=a.data_source_id::text`;
+const INVENTORY_SELECT = "select l.id::text, l.data_source_id::text, l.source_host_id::text, l.customer_key, l.customer_name, l.service_name, l.classification, l.classification_source, l.classification_confidence, l.carrier_name, l.carrier_source, l.source_metadata, l.updated_at, d.name as datasource from zabbix_link_inventory l join data_sources d on d.id=l.data_source_id";
+/** Shared alert identity/tags for circuit discovery + SN correlation. No raw_payload blob. */
+const ALERTS_CORE_PROJECTION = `a.id::text, a.data_source_id::text, a.source_host_id::text, a.source_trigger_id::text, a.source_event_id::text, a.source_problem_id::text, a.customer_name, a.customer_key, a.host_name, a.service_name, a.item_key, a.item_name, a.trigger_description, a.problem_name, a.event_tags, a.trigger_tags, a.host_tags, a.severity, a.status_source, a.status_internal, a.acknowledged_source, a.first_seen_at, a.resolved_at, a.last_seen_at, a.updated_at, d.name as datasource, (${activeSql}) as is_active`;
+/** Detail keeps payload-derived template_tags for full escalation eligibility. */
+const ALERTS_DETAIL_PROJECTION = `${ALERTS_CORE_PROJECTION}, ${templateTagsSql} as template_tags`;
+/**
+ * List skips payload_raw/payload_normalized. Template tags are rare for escalation=operator
+ * once event/trigger/host bags are present; empty array preserves contract shape.
+ */
+const ALERTS_LIST_PROJECTION = `${ALERTS_CORE_PROJECTION}, '[]'::jsonb as template_tags`;
+const ALERTS_FROM = "alerts a join data_sources d on d.id=a.data_source_id";
+const ALERTS_LIST_SELECT = `select ${ALERTS_LIST_PROJECTION} from ${ALERTS_FROM}`;
+const ALERTS_DETAIL_SELECT = `select ${ALERTS_DETAIL_PROJECTION} from ${ALERTS_FROM}`;
 
 function markIncidentDegraded(rows) {
   for (const row of rows) {
@@ -420,17 +479,41 @@ function markIncidentDegraded(rows) {
 async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId = null, includeIncidents = true } = {}) {
   const startedAt = Date.now(); const timings = {};
   const scoped = Boolean(dataSourceId && sourceHostId);
-  const inventoryStartedAt = Date.now();
-  const inventoryResult = await pool.query(scoped
-    ? { text: `${INVENTORY_SELECT} where l.data_source_id::text=$1 and l.source_host_id::text=$2 order by l.customer_name, l.service_name`, values: [dataSourceId, sourceHostId] }
-    : `${INVENTORY_SELECT} order by l.customer_name, l.service_name`);
-  timings.inventory_query_ms = elapsedMs(inventoryStartedAt);
-  const alertsStartedAt = Date.now();
-  const alertsResult = await pool.query(scoped
-    ? { text: `${ALERTS_SELECT} where a.data_source_id::text=$1 and a.source_host_id::text=$2`, values: [dataSourceId, sourceHostId] }
-    : `${ALERTS_SELECT} where exists (select 1 from zabbix_link_inventory l where l.data_source_id::text=a.data_source_id::text and l.source_host_id::text=a.source_host_id::text) or ${EXACT_OPERATOR_TAG_SQL}`);
-  timings.alerts_query_ms = elapsedMs(alertsStartedAt);
-  const alerts = alertsResult.rows || [];
+  const timedQuery = async (query) => {
+    const queryStartedAt = Date.now();
+    const result = await pool.query(query);
+    return { result, elapsed_ms: elapsedMs(queryStartedAt) };
+  };
+  const listScopeSql = `(
+    exists (select 1 from zabbix_link_inventory l where l.data_source_id=a.data_source_id and l.source_host_id=a.source_host_id)
+    or ${LIST_OPERATOR_TAG_SQL}
+  )`;
+  const recentWindowSql = `((${activeSql})
+    or a.resolved_at >= now() - interval '7 days'
+    or coalesce(a.last_seen_at, a.updated_at, a.first_seen_at) >= now() - interval '7 days')`;
+  const [inventoryQuery, recentAlertsQuery, residualAlertsQuery] = scoped
+    ? await Promise.all([
+      timedQuery({ text: `${INVENTORY_SELECT} where l.data_source_id=$1 and l.source_host_id=$2 order by l.customer_name, l.service_name`, values: [dataSourceId, sourceHostId] }),
+      timedQuery({ text: `${ALERTS_DETAIL_SELECT} where a.data_source_id=$1 and a.source_host_id=$2`, values: [dataSourceId, sourceHostId] }),
+      Promise.resolve({ result: { rows: [] }, elapsed_ms: 0 }),
+    ])
+    : await Promise.all([
+      timedQuery(`${INVENTORY_SELECT} order by l.customer_name, l.service_name`),
+      timedQuery(`${ALERTS_LIST_SELECT} where ${listScopeSql} and ${recentWindowSql}`),
+      timedQuery(`${ALERTS_LIST_SELECT} where exists (
+          select 1 from zabbix_link_inventory l
+          where l.data_source_id=a.data_source_id and l.source_host_id=a.source_host_id
+        ) and ${SERVICENOW_TAG_EXISTS_SQL} and not ${recentWindowSql}`),
+    ]);
+  const inventoryResult = inventoryQuery.result;
+  const alerts = uniqueAlerts([
+    ...(recentAlertsQuery.result.rows || []),
+    ...(residualAlertsQuery.result.rows || []),
+  ]);
+  timings.inventory_query_ms = inventoryQuery.elapsed_ms;
+  timings.alerts_query_ms = Math.max(recentAlertsQuery.elapsed_ms, residualAlertsQuery.elapsed_ms);
+  timings.alerts_recent_query_ms = recentAlertsQuery.elapsed_ms;
+  timings.alerts_residual_query_ms = residualAlertsQuery.elapsed_ms;
   let incidents = []; let servicenowStatus = "available";
   const serviceNowStartedAt = Date.now();
   if (includeIncidents) {

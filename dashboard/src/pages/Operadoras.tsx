@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchOperatorReminders, OneViewApiError, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinksResponse, type OperatorReminder } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminders, OneViewApiError, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -319,10 +319,13 @@ export default function OperadorasPage() {
   const openLink = useCallback((link: CanonicalLink) => {
     const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
     selectedId.current = key;
-    setSelected(link);
-    setDetail(detailCache.current.get(key) || null);
-    setDetailError(null);
-    setDetailLoading(!detailCache.current.has(key));
+    // Open the drawer first; defer heavy detail state work off the click INP path.
+    startTransition(() => {
+      setSelected(link);
+      setDetail(detailCache.current.get(key) || null);
+      setDetailError(null);
+      setDetailLoading(!detailCache.current.has(key));
+    });
     void loadDetail(link);
   }, [loadDetail]);
 
@@ -585,12 +588,13 @@ export default function OperadorasPage() {
         ) : null}
       </div>
 
-      <QueueLinkDrawer link={selected} detail={detail} loading={detailLoading} error={detailError} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />
+      <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />
     </AppLayout>
   );
 }
 
 function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { link: CanonicalLink | null; detail: CanonicalLinkDetail | null; loading: boolean; error: string | null; onClose: () => void; onRetry: () => void }) {
+  const [expandedIncidentKey, setExpandedIncidentKey] = useState<string | null>(null);
   const view = detail || link;
   const currentIncident = detail?.current_incident || link?.current_incident;
   const latestIncident = detail?.latest_incident || link?.latest_incident;
@@ -602,13 +606,101 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
       <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Estado" value={stateLabel(view.state)} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Em falha há" value={view.active_alerts ? failureDuration(view) : "Sem alerta ativo"} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /></div></section>
       {loading && !detail ? <div className="space-y-2"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /></div> : <>
-        <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p><b>{currentIncident.number || "INC"}</b> · {text(currentIncident.state_display, incidentStateLabel(currentIncident.state))}</p><p className="mt-1 text-xs text-muted-foreground">Aberto em {timestampLabel(currentIncident.opened_at)} · Atualizado em {timestampLabel(currentIncident.updated_at)}</p><p className="mt-1 text-xs text-muted-foreground">Grupo: {text(currentIncident.assignment_group_display || currentIncident.assignment_group)} · Responsável: {text(currentIncident.assigned_to_display || currentIncident.assigned_to)}</p></div> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <p className="mt-2 text-xs text-muted-foreground">Último chamado relacionado: <b>{latestIncident.number}</b> · {text(latestIncident.state_display, incidentStateLabel(latestIncident.state))}</p> : null}</section>
+        <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>
         <section><h3 className="mb-2 text-sm font-semibold">Alerta atual</h3>{currentAlert ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p className="font-medium">{text(currentAlert.problem_name || currentAlert.trigger_description, "Alerta sem título")}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentAlert.severity)} · Início: {timestampLabel(currentAlert.started_at)} · Último alerta: {timestampLabel(currentAlert.last_seen_at || view.latest_alert_at)}</p></div> : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}</section>
-        <section><h3 className="mb-2 text-sm font-semibold">Histórico recente</h3>{detail?.incident_history.length ? <div className="space-y-2">{detail.incident_history.map((incident) => <div key={incident.sys_id || incident.number} className="rounded-lg border border-border/60 p-3 text-sm"><p><b>{incident.number || "INC"}</b> · {text(incident.state_display, incidentStateLabel(incident.state))}</p><p className="mt-1 text-xs text-muted-foreground">{timestampLabel(incident.updated_at || incident.opened_at)} · {text(incident.short_description, "Sem resumo")}</p></div>)}</div> : <p className="text-sm text-muted-foreground">Sem histórico disponível</p>}</section>
+        <section><h3 className="mb-2 text-sm font-semibold">Histórico recente</h3>{detail?.incident_history.length ? <div className="space-y-2">{detail.incident_history.map((incident) => { const key = `history:${incident.sys_id || incident.number}`; return <IncidentSummaryCard key={key} incident={incident} slotKey="history" expanded={expandedIncidentKey === key} onToggle={() => setExpandedIncidentKey((value) => value === key ? null : key)} />; })}</div> : <p className="text-sm text-muted-foreground">Sem histórico disponível</p>}</section>
         {detail ? <Accordion type="single" collapsible className="rounded-lg border border-border/60 px-3"><AccordionItem value="technical" className="border-b-0"><AccordionTrigger className="py-3 text-sm">Detalhes técnicos</AccordionTrigger><AccordionContent><div className="grid gap-3 sm:grid-cols-2"><Field label="Circuit key" value={text(detail.technical.circuit_key || detail.service_name)} /><Field label="Host Zabbix" value={`${text(detail.technical.host_name)} · ID ${text(detail.technical.source_host_id)}`} /><Field label="Trigger(s)" value={detail.technical.trigger_ids.length ? detail.technical.trigger_ids.join(", ") : "Não informado"} /><Field label="Member / uplink" value={text(detail.technical.member_key || detail.technical.uplink_key)} /><Field label="Health-check" value={text(detail.technical.healthcheck_key)} /><Field label="IP" value={text(detail.technical.endpoint_ip)} /><Field label="Fonte" value={`${zabbixSourceDisplayName(detail.technical.source)} · ${text(detail.technical.strategy)}`} /><Field label="Confiança" value={text(detail.technical.confidence)} /></div></AccordionContent></AccordionItem></Accordion> : null}
       </>}
     </div>
   </> : null}</SheetContent></Sheet>;
+}
+
+function incidentDateTime(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  }).format(date);
+}
+
+function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
+  incident: CanonicalLinkIncident;
+  slotKey: "current" | "history" | "latest";
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const detailId = `incident-detail-${slotKey}-${incident.sys_id || incident.number || "unknown"}`;
+  const canExpand = Boolean(incident.sys_id);
+  return <div className="rounded-lg border border-border/60 p-3 text-sm">
+    <button
+      type="button"
+      className="flex w-full flex-wrap items-start justify-between gap-2 rounded-md text-left disabled:cursor-not-allowed disabled:opacity-60"
+      aria-expanded={expanded}
+      aria-controls={detailId}
+      disabled={!canExpand}
+      onClick={onToggle}
+    >
+      <div className="min-w-0">
+        <p><b>{incident.number || "INC"}</b> · {text(incident.state_display, incidentStateLabel(incident.state))}</p>
+        <p className="mt-1 text-xs text-muted-foreground">Aberto {timestampLabel(incident.opened_at)} · Atualizado {timestampLabel(incident.updated_at)}</p>
+        {incident.short_description ? <p className="mt-1 text-xs text-muted-foreground">{incident.short_description}</p> : null}
+      </div>
+      <span className="shrink-0 text-xs font-medium text-primary">{expanded ? "Recolher" : "Ver detalhes"}</span>
+    </button>
+    {expanded && incident.sys_id ? <div id={detailId}><IncidentDetailPanel incident={incident} /></div> : null}
+  </div>;
+}
+
+function IncidentDetailPanel({ incident }: { incident: CanonicalLinkIncident }) {
+  const [detail, setDetail] = useState<OneViewIncident | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    void fetchIncidentDetail(String(incident.sys_id)).then((item) => {
+      if (active) setDetail(item);
+    }).catch((cause) => {
+      if (active) setError(cause instanceof Error ? cause.message : "Não foi possível carregar o chamado.");
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [attempt, incident.sys_id]);
+
+  if (loading && !detail) return <div className="mt-3 space-y-2 border-t border-border/60 pt-3"><Skeleton className="h-4 w-40" /><Skeleton className="h-20 w-full" /></div>;
+  if (error && !detail) return <div className="mt-3 border-t border-border/60 pt-3"><OperationalErrorBanner message={error} onRetry={() => setAttempt((value) => value + 1)} /></div>;
+  if (!detail) return null;
+
+  const group = detail.assignment_group_display || detail.assignmentGroup || detail.assignment_group;
+  const assignee = detail.assigned_to_display || detail.assignedTo || detail.assigned_to;
+  const caller = detail.caller_id_display || detail.caller_id;
+  const company = detail.company_display || detail.customer || detail.company;
+  return <section aria-label="Detalhes do chamado" className="mt-3 space-y-3 border-t border-border/60 pt-3">
+    <div>
+      <p className="font-semibold">Detalhes do chamado</p>
+      <p className="mt-1 font-medium">{detail.number || incident.number || "INC"}</p>
+      {detail.short_description ? <p className="mt-1 break-words">{detail.short_description}</p> : null}
+    </div>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <Field label="Status" value={text(detail.state_display, incidentStateLabel(detail.state))} />
+      {detail.priority || detail.priority_display ? <Field label="Prioridade" value={text(detail.priority_display || detail.priority)} /> : null}
+      {group ? <Field label="Grupo" value={group} /> : null}
+      {assignee ? <Field label="Responsável" value={assignee} /> : null}
+      {caller ? <Field label="Solicitante" value={caller} /> : null}
+      {company ? <Field label="Empresa" value={company} /> : null}
+      {detail.opened_at ? <Field label="Aberto" value={incidentDateTime(detail.opened_at)} /> : null}
+      {detail.sys_updated_on ? <Field label="Atualizado" value={incidentDateTime(detail.sys_updated_on)} /> : null}
+      {detail.resolved_at ? <Field label="Resolvido" value={incidentDateTime(detail.resolved_at)} /> : null}
+      {detail.closed_at ? <Field label="Fechado" value={incidentDateTime(detail.closed_at)} /> : null}
+    </div>
+    {detail.description ? <div><p className="text-xs text-muted-foreground">Descrição</p><p className="mt-1 whitespace-pre-wrap break-words">{detail.description}</p></div> : null}
+    {detail.close_notes ? <div><p className="text-xs text-muted-foreground">Notas de resolução</p><p className="mt-1 whitespace-pre-wrap break-words">{detail.close_notes}</p></div> : null}
+  </section>;
 }
 
 function reminderDateTime(value?: string | null) {
@@ -644,7 +736,13 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
   const [date, setDate] = useState(() => reminderDateTime().date);
   const [time, setTime] = useState(() => reminderDateTime().time);
   const reminder = reminders[0] || null;
-  const canSchedule = Boolean(link.circuit_key && Number(link.active_alerts) > 0);
+  const hasConfirmedCircuitIdentity = Boolean(link.circuit_key && link.resolution_status === "resolved");
+  const canSchedule = Boolean(hasConfirmedCircuitIdentity && Number(link.active_alerts) > 0);
+  const reminderUnavailableReason = !hasConfirmedCircuitIdentity
+    ? "Lembrete indisponível: este link ainda não possui identidade circuit-level confirmada."
+    : !Number(link.active_alerts)
+      ? "Lembretes são permitidos apenas para circuito com alerta ativo."
+      : null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -683,7 +781,7 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
   const edit = () => { const initial = reminderDateTime(reminder?.scheduled_for); setDate(initial.date); setTime(initial.time); setOpen(true); };
 
   return <section><h3 className="mb-2 text-sm font-semibold">Acompanhamento</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
-    {loading ? <Skeleton className="h-9 w-48" /> : reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />Lembrete agendado</p><p className="mt-1 text-xs text-muted-foreground">{reminderLabel(reminder.scheduled_for)} · Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-muted-foreground">Agende um retorno se o circuito continuar pendente.</p>{!canSchedule ? <p className="mt-1 text-xs text-muted-foreground">Lembretes são permitidos apenas para circuito com alerta ativo.</p> : null}</div><Popover open={open} onOpenChange={setOpen}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
+    {loading ? <Skeleton className="h-9 w-48" /> : reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />Lembrete agendado</p><p className="mt-1 text-xs text-muted-foreground">{reminderLabel(reminder.scheduled_for)} · Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-muted-foreground">Agende um retorno se o circuito continuar pendente.</p>{reminderUnavailableReason ? <p className="mt-1 text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={setOpen}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
     {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}
     {reminder ? <Popover open={open} onOpenChange={setOpen}><PopoverContent className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover> : null}
   </div></section>;

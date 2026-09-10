@@ -108,6 +108,9 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
     short_description: text(row.short_description),
     description: text(row.description),
     opened_at: row.opened_at ? new Date(row.opened_at).toISOString() : null,
+    resolved_at: row.resolved_at ? new Date(row.resolved_at).toISOString() : null,
+    closed_at: row.closed_at ? new Date(row.closed_at).toISOString() : null,
+    sys_created_on: row.sys_created_on ? new Date(row.sys_created_on).toISOString() : null,
     sys_updated_on: row.sys_updated_on ? new Date(row.sys_updated_on).toISOString() : null,
     zabbix_event_id: text(zabbixEventId),
     correlation_id: text(row.correlation_id),
@@ -135,6 +138,23 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
     relatedAlert: normalizeRelatedAlert(relatedAlert),
     servicenow_url: servicenowUrl,
   };
+}
+
+export async function fetchReadModelIncidentDetail(sysId, { pool = getOneViewDbPool() } = {}) {
+  const normalized = text(sysId)?.toLowerCase();
+  if (!normalized || !/^[a-z0-9._:-]{1,80}$/.test(normalized)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
+  const result = await pool.query({
+    text: `select ${READ_MODEL_INCIDENT_SELECT}
+      from servicenow_incidents
+      where lower(sys_id::text) = $1
+      limit 1`,
+    values: [normalized],
+  });
+  return result.rows?.[0] ? mapReadModelIncident(result.rows[0]) : null;
 }
 
 function addParam(values, value) {

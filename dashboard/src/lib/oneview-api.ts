@@ -109,7 +109,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       actions_database_not_configured: "O canal seguro de solicitações ainda não está configurado.",
       authenticated_actions_disabled: "Seu usuário não possui permissão para solicitar esta ação.",
       servicenow_actions_disabled: "As solicitações ServiceNow ainda não estão habilitadas.",
-      incident_not_found: "Chamado não localizado no read-model ServiceNow.",
+      incident_not_found: "Chamado não encontrado.",
       incident_number_mismatch: "O número do chamado não corresponde ao incidente selecionado.",
       invalid_target_group: "Selecione um grupo permitido.",
       invalid_work_note: "A nota deve ser texto simples, não vazio, com no máximo 2000 caracteres.",
@@ -1437,6 +1437,33 @@ export async function fetchServiceNowIncidentActionStatus(sysId: string, actionI
 
 export type CanonicalLinkIncident = { sys_id: string | null; number: string | null; state: string | null; state_display?: string | null; priority?: string | null; priority_display?: string | null; assigned_to: string | null; assigned_to_display?: string | null; assignment_group: string | null; assignment_group_display?: string | null; opened_at?: string | null; updated_at?: string | null; short_description?: string | null; servicenow_url?: string | null; };
 export type CanonicalLinkAlert = { id: string; problem_name: string | null; trigger_description?: string | null; severity: OneViewSeverity | null; started_at?: string | null; last_seen_at?: string | null; };
+const incidentDetailCache = new Map<string, OneViewIncident>();
+const incidentDetailInFlight = new Map<string, Promise<OneViewIncident>>();
+
+export function clearIncidentDetailCache() {
+  incidentDetailCache.clear();
+  incidentDetailInFlight.clear();
+}
+
+export async function fetchIncidentDetail(sysId: string): Promise<OneViewIncident> {
+  const key = String(sysId || "").trim().toLowerCase();
+  const cached = incidentDetailCache.get(key);
+  if (cached) return cached;
+  const pending = incidentDetailInFlight.get(key);
+  if (pending) return pending;
+  const request = fetchApi<{ item: OneViewIncident }>(`/oneview/incidents/detail/${encodeURIComponent(key)}`)
+    .then(({ item }) => {
+      incidentDetailCache.set(key, item);
+      return item;
+    });
+  incidentDetailInFlight.set(key, request);
+  try {
+    return await request;
+  } finally {
+    incidentDetailInFlight.delete(key);
+  }
+}
+
 export type CanonicalLink = {
   id: string;
   circuit_key: string | null;

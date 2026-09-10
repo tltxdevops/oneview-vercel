@@ -377,10 +377,15 @@ test("BFF reads inventory plus PostgreSQL operator evidence without persistence"
   const links = await fetchCanonicalLinks({ pool });
   assert.equal(links.length, 1);
   assert.equal(links[0].strategy, "meraki");
-  assert.equal(queries.length, 2);
-  assert.match(queries[1], /source_trigger_id/);
-  assert.match(queries[1], /zabbix_link_inventory/);
-  assert.match(queries[1], /payload_normalized->'template_tags'/);
+  assert.equal(queries.filter((sql) => /from alerts a join data_sources/.test(sql)).length, 2);
+  assert.equal(queries.filter((sql) => /from zabbix_link_inventory l join data_sources/.test(sql)).length, 1);
+  const alertsSql = queries.filter((sql) => /from alerts a join data_sources/.test(sql)).join("\n");
+  assert.match(alertsSql, /source_trigger_id/);
+  assert.match(alertsSql, /zabbix_link_inventory/);
+  assert.match(alertsSql, /interval '7 days'/);
+  assert.match(alertsSql, /__zbx_servicenow_sys_id/);
+  assert.doesNotMatch(alertsSql, /payload_raw|payload_normalized/);
+  assert.match(EXACT_OPERATOR_TAG_SQL, /payload_normalized->'template_tags'/);
 });
 
 test("keys and metrics are deterministic, unique and finite", () => {
