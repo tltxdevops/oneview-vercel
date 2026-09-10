@@ -1558,22 +1558,93 @@ export type OperatorReminder = {
   cancelled_at: string | null;
 };
 type OperatorRemindersResponse = { items: OperatorReminder[] };
+const OPERATOR_REMINDER_CACHE_TTL_MS = 45_000;
+const operatorReminderCache = new Map<string, { items: OperatorReminder[]; expiresAt: number }>();
+const operatorReminderInFlight = new Map<string, Promise<OperatorReminder[]>>();
+const operatorReminderGeneration = new Map<string, number>();
+type ReminderLinkIdentity = Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id"> & { circuit_key?: string | null };
+
+export function operatorReminderCacheKey(link: ReminderLinkIdentity) {
+  return `${link.data_source_id}:${link.circuit_key || link.id}`;
+}
+
+export function getCachedOperatorReminders(link: ReminderLinkIdentity): OperatorReminder[] | null {
+  const cached = operatorReminderCache.get(operatorReminderCacheKey(link));
+  if (!cached || cached.expiresAt <= Date.now()) {
+    if (cached) operatorReminderCache.delete(operatorReminderCacheKey(link));
+    return null;
+  }
+  return cached.items;
+}
+
+export function clearOperatorReminderCache() {
+  operatorReminderCache.clear();
+  operatorReminderInFlight.clear();
+  operatorReminderGeneration.clear();
+}
+
 function operatorReminderPath(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, reminderId?: string) {
   const query = new URLSearchParams({ data_source_id: link.data_source_id, source_host_id: link.source_host_id });
   if (reminderId) query.set("reminder_id", reminderId);
   return `/oneview/links/${encodeURIComponent(link.id)}/reminders?${query.toString()}`;
 }
-export async function fetchOperatorReminders(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, signal?: AbortSignal): Promise<OperatorReminder[]> {
-  return (await fetchApi<OperatorRemindersResponse>(operatorReminderPath(link), { signal })).items;
+function storeOperatorReminders(link: ReminderLinkIdentity, items: OperatorReminder[]) {
+  operatorReminderCache.set(operatorReminderCacheKey(link), { items, expiresAt: Date.now() + OPERATOR_REMINDER_CACHE_TTL_MS });
+  return items;
 }
-export async function createOperatorReminder(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, scheduledFor: string): Promise<OperatorReminder> {
-  return (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), { method: "POST", body: JSON.stringify({ scheduled_for: scheduledFor }) })).item;
+function replaceOperatorReminders(link: ReminderLinkIdentity, items: OperatorReminder[]) {
+  const key = operatorReminderCacheKey(link);
+  operatorReminderGeneration.set(key, (operatorReminderGeneration.get(key) || 0) + 1);
+  return storeOperatorReminders(link, items);
 }
-export async function updateOperatorReminder(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, reminderId: string, scheduledFor: string): Promise<OperatorReminder> {
-  return (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "PATCH", body: JSON.stringify({ reminder_id: reminderId, scheduled_for: scheduledFor }) })).item;
+export async function fetchOperatorReminders(link: ReminderLinkIdentity, options: { force?: boolean } = {}): Promise<OperatorReminder[]> {
+  const cacheKey = operatorReminderCacheKey(link);
+  if (!options.force) {
+    const cached = getCachedOperatorReminders(link);
+    if (cached) return cached;
+  }
+  const pending = operatorReminderInFlight.get(cacheKey);
+  if (pending) return pending;
+  const path = operatorReminderPath(link);
+  if (options.force) readCache.delete(oneViewReadCacheKey(path));
+  const startedAt = performance.now();
+  const generation = operatorReminderGeneration.get(cacheKey) || 0;
+  const request = fetchApi<OperatorRemindersResponse>(path)
+    .then(({ items }) => {
+      if ((operatorReminderGeneration.get(cacheKey) || 0) !== generation) {
+        return getCachedOperatorReminders(link) || items;
+      }
+      return storeOperatorReminders(link, items);
+    })
+    .catch((cause) => {
+      console.info(JSON.stringify({
+        event: "oneview_reminder_request",
+        route: "/api/oneview/links/:id/reminders",
+        method: "GET",
+        status: cause instanceof OneViewApiError ? cause.status : 0,
+        error_code: cause instanceof OneViewApiError ? cause.code : "request_failed",
+        duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+      }));
+      throw cause;
+    })
+    .finally(() => operatorReminderInFlight.delete(cacheKey));
+  operatorReminderInFlight.set(cacheKey, request);
+  return request;
 }
-export async function cancelOperatorReminder(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, reminderId: string): Promise<OperatorReminder> {
-  return (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "DELETE", body: JSON.stringify({ reminder_id: reminderId }) })).item;
+export async function createOperatorReminder(link: ReminderLinkIdentity, scheduledFor: string): Promise<OperatorReminder> {
+  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), { method: "POST", body: JSON.stringify({ scheduled_for: scheduledFor }) })).item;
+  replaceOperatorReminders(link, [item]);
+  return item;
+}
+export async function updateOperatorReminder(link: ReminderLinkIdentity, reminderId: string, scheduledFor: string): Promise<OperatorReminder> {
+  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "PATCH", body: JSON.stringify({ reminder_id: reminderId, scheduled_for: scheduledFor }) })).item;
+  replaceOperatorReminders(link, [item]);
+  return item;
+}
+export async function cancelOperatorReminder(link: ReminderLinkIdentity, reminderId: string): Promise<OperatorReminder> {
+  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "DELETE", body: JSON.stringify({ reminder_id: reminderId }) })).item;
+  replaceOperatorReminders(link, []);
+  return item;
 }
 
 export async function fetchIncidentRelatedAlert(

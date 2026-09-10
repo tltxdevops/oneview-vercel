@@ -39,7 +39,7 @@ function database(initial = []) {
 }
 
 function handler({ db = database(), link = activeLink(), authorize = async () => actor } = {}) {
-  return { db, handler: createOperatorReminderHandler({ authorize, transaction: db.transaction, resolveLink: async () => link, idFactory: () => REMINDER_ID, now: () => NOW }) };
+  return { db, handler: createOperatorReminderHandler({ authorize, query: db.transaction, transaction: db.transaction, resolveLink: async () => link, idFactory: () => REMINDER_ID, now: () => NOW }) };
 }
 
 test("OV-P0-290 creates future reminder from backend actor and snapshots a circuit with INC", async () => {
@@ -90,7 +90,54 @@ test("OV-P0-290 requires viewer for GET and operator for every mutation", async 
 test("OV-P0-290 drawer uses persisted reminder CRUD and has no Theo/Webex behavior", async () => {
   const page = await readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8");
   const api = await readFile(new URL("../src/lib/oneview-api.ts", import.meta.url), "utf8");
-  assert.match(page, /Lembrete agendado/); assert.match(page, /fetchOperatorReminders/); assert.match(page, /Criado por/);
+  assert.match(page, /reminderLabel\(reminder\.scheduled_for\)/); assert.match(page, /fetchOperatorReminders/); assert.match(page, /Criado por/);
   assert.match(api, /createOperatorReminder/); assert.match(api, /updateOperatorReminder/); assert.match(api, /cancelOperatorReminder/);
   assert.doesNotMatch(page, /Theo|Webex/);
+});
+
+test("OV-P0-290 reminder route logs only sanitized request diagnostics", async () => {
+  const logs = [];
+  const unavailable = createOperatorReminderHandler({
+    authorize: async () => actor,
+    query: async () => {
+      const error = new Error("secret database detail");
+      error.code = "actions_database_not_configured";
+      throw error;
+    },
+    logger: (entry) => logs.push(entry),
+    now: () => NOW,
+  });
+  const res = response();
+  await unavailable(request("GET"), res);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.error, "actions_database_not_configured");
+  assert.deepEqual(logs[0], {
+    event: "oneview_reminder_request",
+    route: "/api/oneview/links/:id/reminders",
+    method: "GET",
+    status: 503,
+    error_code: "actions_database_not_configured",
+    cause: "missing_env",
+    duration_ms: logs[0].duration_ms,
+  });
+  assert.equal(Number.isFinite(logs[0].duration_ms), true);
+  assert.doesNotMatch(JSON.stringify(logs), /secret|ana@|analyst-1/i);
+});
+
+test("OV-P0-290 duplicate reminder returns a specific 409 for client reconciliation", async () => {
+  const duplicate = createOperatorReminderHandler({
+    authorize: async () => actor,
+    transaction: async () => {
+      const error = new Error("duplicate");
+      error.code = "23505";
+      throw error;
+    },
+    resolveLink: async () => activeLink(),
+    logger: () => undefined,
+    now: () => NOW,
+  });
+  const res = response();
+  await duplicate(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }), res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, "active_reminder_exists");
 });

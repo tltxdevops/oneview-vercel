@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { insertAuditLog } from "./audit.js";
 import { getId, methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
-import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
+import { classifyActionsFailure, withOneViewActionsQuery, withOneViewActionsTransaction } from "./oneview-actions-db.js";
 import { fetchCanonicalLinkDetail } from "./oneview-links.js";
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,239}$/i;
@@ -64,37 +64,63 @@ const SELECT_COLUMNS = `id, circuit_key, data_source_id, source_host_id, schedul
 
 export function createOperatorReminderHandler({
   authorize = (req, res, role) => requireOneViewAuth(req, res, role),
+  query = withOneViewActionsQuery,
   transaction = withOneViewActionsTransaction,
   resolveLink = fetchCanonicalLinkDetail,
   idFactory = randomUUID,
   now = () => new Date(),
+  logger = (entry) => console.info(JSON.stringify(entry)),
 } = {}) {
   return async function operatorReminderHandler(req, res) {
+    const startedAt = Date.now();
+    const method = String(req.method || "UNKNOWN").toUpperCase();
+    const reply = (status, payload, extra = {}) => {
+      logger({
+        event: "oneview_reminder_request",
+        route: "/api/oneview/links/:id/reminders",
+        method,
+        status,
+        error_code: typeof payload?.error === "string" ? payload.error : null,
+        cause: extra.cause || null,
+        duration_ms: Math.max(0, Date.now() - startedAt),
+      });
+      return sendJson(res, status, payload);
+    };
     res.setHeader("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (!["GET", "POST", "PATCH", "DELETE"].includes(req.method)) return methodNotAllowed(res, ["GET", "POST", "PATCH", "DELETE"]);
     const requested = identity(req);
-    if (!requested) return sendJson(res, 400, { error: "invalid_query" });
+    if (!requested) return reply(400, { error: "invalid_query" });
     const auth = await authorize(req, res, req.method === "GET" ? "viewer" : "operator");
-    if (!auth) return;
+    if (!auth) {
+      logger({
+        event: "oneview_reminder_request",
+        route: "/api/oneview/links/:id/reminders",
+        method,
+        status: res.statusCode || 401,
+        error_code: res.statusCode === 403 ? "authorization_denied" : "authentication_required",
+        duration_ms: Math.max(0, Date.now() - startedAt),
+      });
+      return;
+    }
     const user = actor(auth);
-    if (!user.id) return sendJson(res, 401, { error: "authentication_required" });
+    if (!user.id) return reply(401, { error: "authentication_required" });
 
     try {
       if (req.method === "GET") {
-        const result = await transaction(async (client) => client.query(
+        const result = await query(async (client) => client.query(
           `select ${SELECT_COLUMNS} from operator_reminders where circuit_key = $1 and data_source_id = $2 and source_host_id = $3 and status = any($4::text[]) order by scheduled_for asc`,
           [requested.id, requested.dataSourceId, requested.sourceHostId, ACTIVE_STATUSES],
         ));
-        return sendJson(res, 200, { items: result.rows.map(reminderRecord) });
+        return reply(200, { items: result.rows.map(reminderRecord) });
       }
 
       const body = requestBody(req);
       const scheduledFor = futureTimestamp(body.scheduled_for, now());
       if (req.method === "POST") {
-        if (!scheduledFor) return sendJson(res, 400, { error: "invalid_scheduled_for" });
+        if (!scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
         const link = currentCircuit(await resolveLink(requested), requested);
-        if (!link) return sendJson(res, 409, { error: "circuit_not_active" });
+        if (!link) return reply(409, { error: "circuit_not_active" });
         const context = snapshot(link); const id = idFactory(); const createdAt = now();
         const result = await transaction(async (client) => {
           const inserted = await client.query(
@@ -109,12 +135,12 @@ export function createOperatorReminderHandler({
           await insertAuditLog(client, { actorName: user.name, actorId: user.id, actorType: "sso_user", action: "REMINDER_CREATED", entityType: "operator_reminder", entityId: id, dataSourceId: requested.dataSourceId, alertId: context.alert?.id || null, afterData: { status: "scheduled", scheduled_for: scheduledFor.toISOString() }, metadata: { circuit_key: requested.id, source_host_id: requested.sourceHostId }, req });
           return row;
         });
-        return sendJson(res, 201, { item: reminderRecord(result) });
+        return reply(201, { item: reminderRecord(result) });
       }
 
       const id = reminderId(req, body);
-      if (!id) return sendJson(res, 400, { error: "invalid_reminder_id" });
-      if (req.method === "PATCH" && !scheduledFor) return sendJson(res, 400, { error: "invalid_scheduled_for" });
+      if (!id) return reply(400, { error: "invalid_reminder_id" });
+      if (req.method === "PATCH" && !scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
       const result = await transaction(async (client) => {
         const existingResult = await client.query(
           `select ${SELECT_COLUMNS} from operator_reminders where id = $1 and circuit_key = $2 and data_source_id = $3 and source_host_id = $4 and created_by = $5 and status = 'scheduled' for update`,
@@ -134,10 +160,10 @@ export function createOperatorReminderHandler({
         });
         return row;
       });
-      return result ? sendJson(res, 200, { item: reminderRecord(result) }) : sendJson(res, 404, { error: "reminder_not_found" });
+      return result ? reply(200, { item: reminderRecord(result) }) : reply(404, { error: "reminder_not_found" });
     } catch (error) {
-      if (error?.code === "23505") return sendJson(res, 409, { error: "active_reminder_exists" });
-      return sendJson(res, 503, { error: publicDatabaseError(error) });
+      if (error?.code === "23505") return reply(409, { error: "active_reminder_exists" });
+      return reply(503, { error: publicDatabaseError(error) }, { cause: classifyActionsFailure(error) });
     }
   };
 }

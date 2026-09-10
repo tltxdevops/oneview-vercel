@@ -29,6 +29,30 @@ function sslConfig(config) {
   return config.rejectUnauthorized === false ? { rejectUnauthorized: false } : true;
 }
 
+export function actionsPasswordSource(env = process.env) {
+  if (String(env.POSTGRES_ACTIONS_PASSWORD || "").trim()) return "POSTGRES_ACTIONS_PASSWORD";
+  if (String(env.ONEVIEW_ACTIONS_PASSWORD || "").trim()) return "ONEVIEW_ACTIONS_PASSWORD";
+  return "missing";
+}
+
+export function classifyActionsFailure(error) {
+  if (error?.code === "actions_database_not_configured") return "missing_env";
+  const code = String(error?.code || "").toUpperCase();
+  const message = String(error?.message || "").toLowerCase();
+  if (["ENOTFOUND", "EAI_AGAIN"].includes(code) || message.includes("getaddrinfo")) return "dns_error";
+  if (["ECONNREFUSED", "ECONNRESET"].includes(code) || message.includes("connection refused")) return "connection_refused";
+  if (message.includes("unsupported startup parameter") || message.includes("too many clients") || message.includes("remaining connection slots")) {
+    return "pool_error";
+  }
+  if (["ETIMEDOUT", "ESOCKETTIMEDOUT", "57014"].includes(code) || message.includes("timeout")) return "timeout";
+  if (["28P01", "28000"].includes(code) || message.includes("password authentication failed")) return "authentication_failed";
+  if (code.includes("CERT") || message.includes("certificate") || message.includes("tls") || message.includes("ssl")) return "ssl_error";
+  if (["42501", "42503"].includes(code) || message.includes("permission denied")) return "permission_denied";
+  if (["42P01", "42703", "42601", "22P02"].includes(code)) return "query_error";
+  if (message.includes("connect")) return "pool_error";
+  return "query_error";
+}
+
 function poolSignature(config) {
   return JSON.stringify([
     config.host,
@@ -93,12 +117,21 @@ export function getOneViewActionsPool(config = getOneViewActionsDbConfig()) {
       ssl: sslConfig(config),
       application_name: "oneview-actions-bff",
     });
-    actionsPool.on("error", () => {
-      console.error(JSON.stringify({ event: "oneview_actions_pool_error", code: "database_unavailable" }));
+    actionsPool.on("error", (error) => {
+      console.error(JSON.stringify({ event: "oneview_actions_pool_error", code: "database_unavailable", cause: classifyActionsFailure(error) }));
     });
     actionsPoolKey = signature;
   }
   return actionsPool;
+}
+
+export async function withOneViewActionsQuery(work, config = getOneViewActionsDbConfig()) {
+  const client = await getOneViewActionsPool(config).connect();
+  try {
+    return await work(client);
+  } finally {
+    client.release();
+  }
 }
 
 export async function withOneViewActionsTransaction(work, config = getOneViewActionsDbConfig()) {

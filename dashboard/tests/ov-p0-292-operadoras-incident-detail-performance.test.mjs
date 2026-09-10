@@ -198,7 +198,7 @@ test("OV-P0-292 drawer expands current/history INC in place with session cache a
   assert.match(page, /startTransition/);
   assert.match(page, /document\.hidden/);
   assert.match(page, /visibilitychange/);
-  assert.match(page, /Lembrete indisponível: este link ainda não possui identidade circuit-level confirmada\./);
+  assert.match(page, /Lembrete indisponível: identidade do circuito ainda não confirmada\./);
   assert.match(page, /hasConfirmedCircuitIdentity/);
   assert.doesNotMatch(page, /Abrir no ServiceNow/);
   assert.doesNotMatch(page, /navigate\([^)]*incident|window\.open\([^)]*incident/i);

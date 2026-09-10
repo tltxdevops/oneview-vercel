@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminders, OneViewApiError, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -23,6 +23,7 @@ import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 const ALL = "all";
 const REFRESH_MS = 10_000;
 const COLUMN_STORAGE_KEY = "oneview.operadoras.columns.v1";
+let drawerOpenedAt = 0;
 const REQUIRED_COLUMNS = ["link_local", "situation", "latest_alert", "current_incident", "follow_up"] as const;
 const OPTIONAL_COLUMNS = [
   ["link_type", "Tipo do link"], ["carrier", "Operadora"], ["datasource", "Fonte Zabbix"],
@@ -319,6 +320,7 @@ export default function OperadorasPage() {
   const openLink = useCallback((link: CanonicalLink) => {
     const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
     selectedId.current = key;
+    drawerOpenedAt = performance.now();
     // Open the drawer first; defer heavy detail state work off the click INP path.
     startTransition(() => {
       setSelected(link);
@@ -720,69 +722,156 @@ function reminderLabel(value: string) {
 }
 
 function reminderMutationError(cause: unknown, action: "criar" | "alterar" | "cancelar") {
-  if (cause instanceof OneViewApiError && cause.status === 403 && cause.code === "operator_required") {
-    return `Você não possui permissão operacional para ${action} lembretes.`;
+  if (cause instanceof OneViewApiError) {
+    if (cause.status === 401) return "Sua sessão expirou. Entre novamente.";
+    if (cause.status === 403) return "Você não possui permissão para esta ação.";
+    if (cause.status === 409 && cause.code === "active_reminder_exists") return "Já existe um lembrete ativo para este circuito.";
+    if (cause.status === 409 && cause.code === "circuit_not_active") return "Lembrete disponível somente enquanto houver alerta ativo.";
+    if (cause.status === 400 || cause.status === 422) {
+      return cause.code === "invalid_scheduled_for"
+        ? "Escolha uma data e horário futuros."
+        : `Não foi possível ${action} o lembrete: dados inválidos.`;
+    }
+    if (cause.status === 500 || cause.status === 503) return "Não foi possível agendar agora. Tente novamente.";
   }
   return cause instanceof Error ? cause.message : `Não foi possível ${action} o lembrete.`;
 }
 
 function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
-  const identity = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
-  const [reminders, setReminders] = useState<OperatorReminder[]>([]);
+  const reminderLink = useMemo(() => ({
+    id: link.id,
+    circuit_key: link.circuit_key,
+    data_source_id: link.data_source_id,
+    source_host_id: link.source_host_id,
+  }), [link.id, link.circuit_key, link.data_source_id, link.source_host_id]);
+  const identity = `${reminderLink.data_source_id}:${reminderLink.circuit_key || reminderLink.id}`;
+  const [reminders, setReminders] = useState<OperatorReminder[]>(() => getCachedOperatorReminders(reminderLink) || []);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [date, setDate] = useState(() => reminderDateTime().date);
   const [time, setTime] = useState(() => reminderDateTime().time);
+  const requestVersion = useRef(0);
+  const clickStartedAt = useRef<number | null>(null);
+  const drawerMetricSent = useRef(false);
   const reminder = reminders[0] || null;
   const hasConfirmedCircuitIdentity = Boolean(link.circuit_key && link.resolution_status === "resolved");
   const canSchedule = Boolean(hasConfirmedCircuitIdentity && Number(link.active_alerts) > 0);
   const reminderUnavailableReason = !hasConfirmedCircuitIdentity
-    ? "Lembrete indisponível: este link ainda não possui identidade circuit-level confirmada."
+    ? "Lembrete indisponível: identidade do circuito ainda não confirmada."
     : !Number(link.active_alerts)
-      ? "Lembretes são permitidos apenas para circuito com alerta ativo."
+      ? "Lembrete disponível somente enquanto houver alerta ativo."
       : null;
 
+  const loadReminderState = useCallback(async (force = false) => {
+    if (!hasConfirmedCircuitIdentity) {
+      setLoading(false);
+      setLoadFailed(false);
+      setReminders([]);
+      return;
+    }
+    const version = ++requestVersion.current;
+    const cached = getCachedOperatorReminders(reminderLink);
+    if (cached) setReminders(cached);
+    setLoading(true);
+    setLoadFailed(false);
+    const startedAt = performance.now();
+    let outcome = "completed";
+    try {
+      const items = await fetchOperatorReminders(reminderLink, { force });
+      if (requestVersion.current === version) setReminders(items);
+    } catch (cause) {
+      outcome = "failed";
+      if (requestVersion.current === version && !isAbortError(cause)) setLoadFailed(true);
+    } finally {
+      if (requestVersion.current === version) {
+        setLoading(false);
+        console.info(JSON.stringify({
+          event: "oneview_reminder_ui_timing",
+          metric: "reminder_get_ms",
+          duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+          outcome,
+        }));
+      }
+    }
+  }, [hasConfirmedCircuitIdentity, reminderLink]);
+
   useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true); setError(null); setOpen(false);
-    const initial = reminderDateTime(); setDate(initial.date); setTime(initial.time);
-    void fetchOperatorReminders(link, controller.signal).then((items) => {
-      if (!controller.signal.aborted) setReminders(items);
-    }).catch((cause) => {
-      if (!controller.signal.aborted && !isAbortError(cause)) setError(cause instanceof Error ? cause.message : "Não foi possível carregar o lembrete.");
-    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [identity, link]); // circuit change reloads persistent reminder state; list polling does not replace drawer state.
+    const initial = reminderDateTime();
+    setDate(initial.date);
+    setTime(initial.time);
+    setMutationError(null);
+    void loadReminderState(true);
+    return () => { requestVersion.current += 1; };
+  }, [identity, loadReminderState]);
+
+  useLayoutEffect(() => {
+    if (!drawerMetricSent.current && drawerOpenedAt > 0) {
+      drawerMetricSent.current = true;
+      console.info(JSON.stringify({
+        event: "oneview_reminder_ui_timing",
+        metric: "drawer_open_to_render_ms",
+        duration_ms: Math.max(0, Math.round(performance.now() - drawerOpenedAt)),
+      }));
+    }
+    if (open && clickStartedAt.current !== null) {
+      console.info(JSON.stringify({
+        event: "oneview_reminder_ui_timing",
+        metric: "reminder_button_click_to_modal_ms",
+        duration_ms: Math.max(0, Math.round(performance.now() - clickStartedAt.current)),
+      }));
+      clickStartedAt.current = null;
+    }
+  }, [open]);
 
   const save = async () => {
     const scheduledFor = new Date(`${date}T${time}:00`);
     if (!date || !time || Number.isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now()) {
-      setError("Escolha uma data e horário futuros."); return;
+      setMutationError("Escolha uma data e horário futuros."); return;
     }
-    setSaving(true); setError(null);
+    setSaving(true); setMutationError(null);
     try {
       const saved = reminder
-        ? await updateOperatorReminder(link, reminder.id, scheduledFor.toISOString())
-        : await createOperatorReminder(link, scheduledFor.toISOString());
+        ? await updateOperatorReminder(reminderLink, reminder.id, scheduledFor.toISOString())
+        : await createOperatorReminder(reminderLink, scheduledFor.toISOString());
       setReminders([saved]); setOpen(false);
     } catch (cause) {
-      setError(reminderMutationError(cause, reminder ? "alterar" : "criar"));
+      setMutationError(reminderMutationError(cause, reminder ? "alterar" : "criar"));
+      if (cause instanceof OneViewApiError && cause.status === 409 && cause.code === "active_reminder_exists") {
+        try {
+          const existing = await fetchOperatorReminders(reminderLink, { force: true });
+          setReminders(existing);
+          setOpen(false);
+        } catch {
+          // Preserve the specific conflict; retry remains available through the persisted-state control.
+        }
+      }
     } finally { setSaving(false); }
   };
   const cancel = async () => {
     if (!reminder) return;
-    setSaving(true); setError(null);
-    try { await cancelOperatorReminder(link, reminder.id); setReminders([]); setOpen(false); }
-    catch (cause) { setError(reminderMutationError(cause, "cancelar")); }
+    setSaving(true); setMutationError(null);
+    try { await cancelOperatorReminder(reminderLink, reminder.id); setReminders([]); setOpen(false); }
+    catch (cause) { setMutationError(reminderMutationError(cause, "cancelar")); }
     finally { setSaving(false); }
   };
   const edit = () => { const initial = reminderDateTime(reminder?.scheduled_for); setDate(initial.date); setTime(initial.time); setOpen(true); };
+  const create = () => {
+    const initial = reminderDateTime();
+    setDate(initial.date);
+    setTime(initial.time);
+    setMutationError(null);
+    clickStartedAt.current = performance.now();
+    setOpen(true);
+  };
 
   return <section><h3 className="mb-2 text-sm font-semibold">Acompanhamento</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
-    {loading ? <Skeleton className="h-9 w-48" /> : reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />Lembrete agendado</p><p className="mt-1 text-xs text-muted-foreground">{reminderLabel(reminder.scheduled_for)} · Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-muted-foreground">Agende um retorno se o circuito continuar pendente.</p>{reminderUnavailableReason ? <p className="mt-1 text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={setOpen}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
-    {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}
+    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />{reminderLabel(reminder.scheduled_for)}</p><p className="mt-1 text-xs text-muted-foreground">Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted-foreground">Agende um retorno se o circuito continuar pendente.</p>{reminderUnavailableReason ? <p className="mt-1 text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
+    {loading ? <p className="mt-2 text-xs text-muted-foreground">Carregando acompanhamento…</p> : null}
+    {loadFailed ? <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Não foi possível carregar o acompanhamento.</span><Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void loadReminderState(true)}>Tentar novamente</Button></div> : null}
+    {mutationError ? <p role="alert" className="mt-2 text-xs text-destructive">{mutationError}</p> : null}
     {reminder ? <Popover open={open} onOpenChange={setOpen}><PopoverContent className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover> : null}
   </div></section>;
 }
