@@ -22,10 +22,11 @@ function response() {
   };
 }
 
-function request(method, { email = "viewer@example.com", roles = ["viewer"], groups = [] } = {}) {
+function request(method, { email = "viewer@example.com", roles = ["viewer"], groups = [], body = undefined } = {}) {
   const token = createSessionToken({ id: email, email, name: "Test User", roles, groups }).token;
   return {
     method,
+    body,
     url: "/api/oneview/links/circuit-1/reminders?data_source_id=ds-1",
     headers: { cookie: `oneview_session=${encodeURIComponent(token)}` },
   };
@@ -62,6 +63,18 @@ test("OV-P0-291 resolves explicit operator authorization and remains fail-closed
       assert.equal(denied.res.statusCode, 403);
       assert.deepEqual(denied.res.body, { error: "operator_required" });
     }
+
+    for (const method of ["POST", "PATCH", "DELETE"]) {
+      const appRole = await authorize(method, { email: "external@not-allowlisted.invalid", roles: ["OneView.Operator"] });
+      assert.equal(appRole.res.statusCode, 200);
+      assert.equal(appRole.auth?.roles.includes("operator"), true);
+    }
+    const missingAppRole = await authorize("POST", { email: "viewer@example.com", roles: [] });
+    assert.equal(missingAppRole.res.statusCode, 403);
+    const similarAppRole = await authorize("POST", { email: "viewer@example.com", roles: ["OneView.Operator.Other"] });
+    assert.equal(similarAppRole.res.statusCode, 403);
+    const bodyRole = await authorize("POST", { email: "viewer@example.com", roles: ["viewer"], body: { roles: ["OneView.Operator"] } });
+    assert.equal(bodyRole.res.statusCode, 403);
 
     process.env.ONEVIEW_OPERATOR_EMAILS = "  Operator.One@Example.COM  ";
     for (const method of ["POST", "PATCH", "DELETE"]) {
@@ -103,9 +116,15 @@ test("OV-P0-291 resolves explicit operator authorization and remains fail-closed
     assert.equal(admin.res.statusCode, 200);
     assert.equal(admin.auth?.roles.includes("admin"), true);
 
+    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "true";
+    const broadFlagDoesNotGrant = await authorize("POST", { email: "viewer@example.com", roles: ["viewer"] });
+    assert.equal(broadFlagDoesNotGrant.res.statusCode, 403);
+    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "false";
+
     const roleLogs = logs.filter((entry) => entry.event === "auth_role_resolution");
     assert.ok(roleLogs.some((entry) => entry.resolved_role === "operator" && entry.matched_operator_email === true));
     assert.ok(roleLogs.some((entry) => entry.resolved_role === "operator" && entry.matched_operator_group === true));
+    assert.ok(roleLogs.some((entry) => entry.resolved_role === "operator" && entry.matched_app_role === true));
     assert.ok(roleLogs.some((entry) => entry.resolved_role === "viewer"));
     assert.ok(roleLogs.every((entry) => entry.authenticated === true && entry.route === "/api/oneview/links/circuit-1/reminders"));
     assert.doesNotMatch(JSON.stringify(roleLogs), /operator\.one@example\.com|group-abc|unit-test-secret/i);
@@ -122,6 +141,18 @@ test("OV-P0-291 resolves explicit operator authorization and remains fail-closed
 test("OV-P0-291 reminder UI distinguishes mutation 403 from consultation errors", async () => {
   const page = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8"));
   const api = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/lib/oneview-api.ts", import.meta.url), "utf8"));
+  const { readFile } = await import("node:fs/promises");
+  const [callback, sso, session] = await Promise.all([
+    readFile(new URL("../api/auth/microsoft/callback.js", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/microsoft-sso.js", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/session.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(callback, /trustedMicrosoftIdTokenClaims\(tokenPayload\.id_token\)/);
+  assert.match(callback, /fetchMicrosoftProfile\(tokenPayload\.access_token, trustedClaims\)/);
+  assert.match(sso, /jwtVerify\(token, getIdTokenJwks\(\)/);
+  assert.match(sso, /issuer: `https:\/\/login\.microsoftonline\.com\/\$\{tenant\}\/v2\.0`/);
+  assert.match(session, /roles: Array\.isArray\(user\?\.roles\)/);
+  assert.doesNotMatch(sso, /memberOf|GroupMember\.Read\.All|Directory\.Read\.All/);
   assert.match(api, /class OneViewApiError/);
   assert.match(page, /Você não possui permissão operacional para \$\{action\} lembretes\./);
   assert.match(page, /fetchOperatorReminders[\s\S]*Não foi possível carregar o lembrete\./);

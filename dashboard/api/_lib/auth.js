@@ -3,6 +3,7 @@ import { sendJson } from "./http.js";
 import { isAllowedRequestOrigin, sessionUserFromRequest, sessionUserFromToken } from "./microsoft-sso.js";
 
 let jwks;
+const OPERATOR_APP_ROLE = "OneView.Operator";
 
 function splitCsv(value) {
   return String(value || "")
@@ -85,13 +86,13 @@ function rolesFor(identity) {
   const identityGroups = normalizedValues(identity?.groups);
   const matchedOperatorEmail = operatorEmails.has(normalizeEmail(identity?.email));
   const matchedOperatorGroup = identityGroups.some((groupId) => operatorGroups.has(groupId));
+  // Entra App Role values are case-sensitive: exact value only.
+  const matchedOperatorAppRole = Array.isArray(identity?.roles)
+    && identity.roles.some((value) => String(value || "").trim() === OPERATOR_APP_ROLE);
 
   if (existingRoles.has("admin")) roles.add("admin");
-  if (matchedOperatorEmail || matchedOperatorGroup) roles.add("operator");
-  if (String(process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS || "").trim().toLowerCase() === "true") {
-    roles.add("operator");
-  }
-  return { roles, matchedOperatorEmail, matchedOperatorGroup };
+  if (matchedOperatorAppRole || matchedOperatorEmail || matchedOperatorGroup) roles.add("operator");
+  return { roles, matchedOperatorAppRole, matchedOperatorEmail, matchedOperatorGroup };
 }
 
 function resolvedRole(roles) {
@@ -113,6 +114,7 @@ function logRoleResolution(req, resolution) {
     event: "auth_role_resolution",
     authenticated: true,
     resolved_role: resolvedRole(resolution.roles),
+    matched_app_role: resolution.matchedOperatorAppRole,
     matched_operator_group: resolution.matchedOperatorGroup,
     matched_operator_email: resolution.matchedOperatorEmail,
     route: requestRoute(req),
@@ -149,6 +151,7 @@ function authorizeIdentity(req, res, identity, role, source) {
   const claim = identity?.emailClaim || identity?.email_claim || (source === "session" ? "session.email" : "unknown");
   const allowed = allowedEmailDomains();
   const domain = email.includes("@") ? email.slice(email.lastIndexOf("@") + 1) : "";
+  const resolution = rolesFor(identity);
 
   if (!email) {
     return deny(res, "email_not_allowed", {
@@ -159,7 +162,9 @@ function authorizeIdentity(req, res, identity, role, source) {
     });
   }
 
-  if (!domain || !allowed.includes(domain)) {
+  // OneView.Operator comes from a verified Entra token and does not require
+  // an email-domain allowlist.
+  if (!resolution.matchedOperatorAppRole && (!domain || !allowed.includes(domain))) {
     return deny(res, "domain_not_allowed", {
       claim,
       received_domain: domain || null,
@@ -179,9 +184,8 @@ function authorizeIdentity(req, res, identity, role, source) {
     });
   }
 
-  // Cookies antigos com role operator não concedem acesso. Operator vem de
-  // allowlist server-side (ou da flag geral mantida apenas para dev/teste).
-  const resolution = rolesFor(identity);
+  // Session roles originate from the verified SSO ID token; browser input is
+  // never an authorization source.
   const { roles } = resolution;
   logRoleResolution(req, resolution);
   if (!hasRole(roles, role)) {

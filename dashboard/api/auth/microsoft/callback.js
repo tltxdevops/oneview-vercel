@@ -1,5 +1,5 @@
 import { methodNotAllowed, sendJson } from "../../_lib/http.js";
-import { exchangeMicrosoftCode, fetchMicrosoftProfile, fetchMicrosoftProfilePhoto, publicAppOrigin, setSessionCookie } from "../../_lib/microsoft-sso.js";
+import { exchangeMicrosoftCode, fetchMicrosoftProfile, fetchMicrosoftProfilePhoto, publicAppOrigin, setSessionCookie, trustedMicrosoftIdTokenClaims } from "../../_lib/microsoft-sso.js";
 
 function redirect(res, location) {
   res.statusCode = 302;
@@ -43,7 +43,8 @@ export default async function handler(req, res) {
 
   try {
     const tokenPayload = await exchangeMicrosoftCode(req, code);
-    const user = await fetchMicrosoftProfile(tokenPayload.access_token);
+    const trustedClaims = await trustedMicrosoftIdTokenClaims(tokenPayload.id_token);
+    const user = await fetchMicrosoftProfile(tokenPayload.access_token, trustedClaims);
     const photo = await fetchMicrosoftProfilePhoto(tokenPayload.access_token).catch((error) => {
       // Ausência/indisponibilidade de avatar não pode impedir o login SSO.
       console.warn("[sso-profile-photo]", error instanceof Error ? error.message : "unavailable");

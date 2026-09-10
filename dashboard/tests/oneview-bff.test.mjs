@@ -321,7 +321,7 @@ test("domínio permitido ausente falha fechado", async () => {
   }
 });
 
-test("flag geral concede ação ao usuário autenticado sem lista individual", async () => {
+test("flag geral não concede ação ao usuário autenticado", async () => {
   const names = ["APP_SESSION_SECRET", "ONEVIEW_ALLOWED_EMAIL_DOMAINS", "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS"];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
@@ -330,8 +330,9 @@ test("flag geral concede ação ao usuário autenticado sem lista individual", a
     process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "true";
     const res = response();
     const auth = await requireAuth(authenticatedSessionRequest("qualquer.usuario@teletex.com.br"), res, { role: "operator" });
-    assert.equal(auth?.email, "qualquer.usuario@teletex.com.br");
-    assert.equal(auth?.roles.includes("operator"), true);
+    assert.equal(auth, null);
+    assert.equal(res.statusCode, 403);
+    assert.deepEqual(res.body, { error: "operator_required" });
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name];

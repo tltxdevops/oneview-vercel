@@ -1,4 +1,5 @@
 import { buildClearSessionCookie, buildSessionCookie, createSessionToken, sessionTokenFromRequest, verifySessionToken } from "./session.js";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const DEFAULT_TENANT_ID = "9c36f529-164f-47cd-bca0-ba7c0d710407";
 const DEFAULT_SCOPE = "openid profile email User.Read";
@@ -6,6 +7,7 @@ const MICROSOFT_CALLBACK_PATH = "/api/auth/microsoft/callback";
 const GRAPH_PROFILE_PHOTO_URL = "https://graph.microsoft.com/v1.0/me/photo/$value";
 const MAX_PROFILE_PHOTO_BYTES = 512 * 1024;
 const PROFILE_PHOTO_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+let idTokenJwks;
 
 function clean(value) {
   return String(value || "").trim();
@@ -21,6 +23,20 @@ function clientId() {
 
 function clientSecret() {
   return clean(process.env.MICROSOFT_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET);
+}
+
+function getIdTokenJwks() {
+  if (!idTokenJwks) {
+    idTokenJwks = createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${tenantId()}/discovery/v2.0/keys`));
+  }
+  return idTokenJwks;
+}
+
+function trustedStringArray(value, maximum = 200) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, maximum);
 }
 
 function scope() {
@@ -146,7 +162,27 @@ export async function exchangeMicrosoftCode(req, code) {
   return tokenPayload;
 }
 
-export async function fetchMicrosoftProfile(accessToken) {
+export async function trustedMicrosoftIdTokenClaims(idToken) {
+  const token = clean(idToken);
+  if (!token) return { roles: [], groups: [] };
+  const tenant = tenantId();
+  const audience = clientId();
+  if (!tenant || !audience) throw new Error("microsoft_id_token_config_incomplete");
+
+  const { payload } = await jwtVerify(token, getIdTokenJwks(), {
+    issuer: `https://login.microsoftonline.com/${tenant}/v2.0`,
+    audience,
+  });
+  if (payload.tid && String(payload.tid).toLowerCase() !== tenant.toLowerCase()) {
+    throw new Error("microsoft_id_token_invalid_tenant");
+  }
+  return {
+    roles: trustedStringArray(payload.roles),
+    groups: trustedStringArray(payload.groups),
+  };
+}
+
+export async function fetchMicrosoftProfile(accessToken, trustedClaims = {}) {
   const profile = await fetchJson("https://graph.microsoft.com/v1.0/me", {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -186,9 +222,10 @@ export async function fetchMicrosoftProfile(accessToken) {
     lastName: clean(profile.surname),
     jobTitle: clean(profile.jobTitle),
     username: clean(profile.userPrincipalName || email),
-    roles: ["viewer"],
-    // User.Read + /me does not return Entra group memberships.
-    groups: [],
+    roles: trustedStringArray(trustedClaims.roles).length ? trustedStringArray(trustedClaims.roles) : ["viewer"],
+    // User.Read + /me does not return memberships. These are verified ID-token
+    // claims when the tenant is configured to emit them.
+    groups: trustedStringArray(trustedClaims.groups),
   };
 }
 
