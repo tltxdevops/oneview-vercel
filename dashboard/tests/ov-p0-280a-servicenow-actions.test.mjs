@@ -31,7 +31,6 @@ function request(overrides = {}) {
 
 function enabledConfig() {
   return {
-    allowAllAuthenticatedActions: true,
     requestEnabled: true,
     assignableGroups: ["noc-primary"],
     holdReasons: ["vendor_wait_audited_value"],

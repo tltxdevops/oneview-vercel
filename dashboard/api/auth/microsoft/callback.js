@@ -29,6 +29,11 @@ function cleanCallbackUrl(req) {
   return `${origin}/sso/callback?${params.toString()}`;
 }
 
+function logEntraClaimDiagnostic(diagnostic) {
+  if (!diagnostic) return;
+  console.info(JSON.stringify({ event: "entra_claim_diagnostic", ...diagnostic }));
+}
+
 export default async function handler(req, res) {
   if (!["GET", "POST"].includes(req.method)) return methodNotAllowed(res, ["GET", "POST"]);
 
@@ -44,15 +49,18 @@ export default async function handler(req, res) {
   try {
     const tokenPayload = await exchangeMicrosoftCode(req, code);
     const trustedClaims = await trustedMicrosoftIdTokenClaims(tokenPayload.id_token);
+    logEntraClaimDiagnostic(trustedClaims.diagnostic);
     const user = await fetchMicrosoftProfile(tokenPayload.access_token, trustedClaims);
     const photo = await fetchMicrosoftProfilePhoto(tokenPayload.access_token).catch((error) => {
       // Ausência/indisponibilidade de avatar não pode impedir o login SSO.
       console.warn("[sso-profile-photo]", error instanceof Error ? error.message : "unavailable");
       return undefined;
     });
-    const session = setSessionCookie(res, req, user);
-    return sendJson(res, 200, { user: photo ? { ...user, photo } : user, session });
+    setSessionCookie(res, req, user);
+    // Session credential stays HttpOnly in the cookie; never return it to JS.
+    return sendJson(res, 200, { user: photo ? { ...user, photo } : user });
   } catch (err) {
+    logEntraClaimDiagnostic(err?.entra_claim_diagnostic);
     console.error("[sso-callback]", err?.message || err);
     return sendJson(res, 401, { error: "callback_failed", message: "Falha ao concluir SSO Microsoft." });
   }

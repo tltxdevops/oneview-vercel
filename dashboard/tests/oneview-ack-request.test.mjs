@@ -30,7 +30,6 @@ function requestMock(overrides = {}) {
 
 function enabledConfig(allowed = ["teletex-http"]) {
   return {
-    allowAllAuthenticatedActions: true,
     requestEnabled: true,
     executionEnabled: false,
     allowedDatasources: new Set(allowed),
@@ -114,20 +113,19 @@ test("ACK request: usuario sem permissao retorna 403 antes do banco", async () =
 test("ACK request: sessão corporativa usa flag geral sem lista individual", async () => {
   const names = [
     "APP_SESSION_SECRET",
-    "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
-    "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS",
   ];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const database = fakeDatabase();
   try {
     process.env.APP_SESSION_SECRET = "ack-session-test-secret";
-    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "teletex.com.br";
-    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "true";
     const session = createSessionToken({
+      oid: "entra-object-test",
       id: "entra-object-test",
+      tid: "test-tenant",
+      sub: "test-subject",
       name: "Pessoa Autenticada",
       email: "pessoa.autenticada@teletex.com.br",
-      roles: ["viewer"],
+      roles: ["OneView.Operator"],
     });
     const handler = createAckRequestHandler({
       transaction: database.transaction,
@@ -161,7 +159,6 @@ test("ACK request: flag de apresentação desabilita antes do banco", async () =
     authorize: async () => operator,
     transaction: async () => { transactionCalled = true; },
     configProvider: () => ({
-      allowAllAuthenticatedActions: true,
       requestEnabled: false,
       executionEnabled: false,
       allowedDatasources: new Set(["teletex-http"]),
@@ -319,14 +316,10 @@ test("pool de actions usa role fixa e senha exclusiva", () => {
   assert.equal(config.password, "actions-secret");
   assert.equal(config.poolMax, 1);
   assert.equal(getAckRequestConfig({
-    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",
     ONEVIEW_ACK_EXECUTION_ENABLED: "false",
     ONEVIEW_ACK_ALLOWED_DATASOURCES: "teletex-http",
   }).allowedDatasources.has("teletex-http"), true);
-  assert.equal(getAckRequestConfig({
-    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
-  }).allowAllAuthenticatedActions, true);
 });
 
 test("pool de actions aceita a senha oficial do projeto", () => {
@@ -338,18 +331,18 @@ test("pool de actions aceita a senha oficial do projeto", () => {
   assert.equal(config.password, "official-actions-secret");
 });
 
-test("ACK request: flag geral desabilitada falha fechado antes do banco", async () => {
+test("ACK request: flag geral legado nÃ£o concede nem bloqueia operator", async () => {
   let transactionCalled = false;
   const handler = createAckRequestHandler({
     authorize: async () => operator,
     transaction: async () => { transactionCalled = true; },
-    configProvider: () => ({ ...enabledConfig(), allowAllAuthenticatedActions: false }),
+    configProvider: () => enabledConfig(),
   });
   const res = responseMock();
   await handler(requestMock(), res);
-  assert.equal(res.statusCode, 403);
-  assert.equal(res.body.error, "authenticated_actions_disabled");
-  assert.equal(transactionCalled, false);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.error, "database_unavailable");
+  assert.equal(transactionCalled, true);
 });
 
 test("pool de actions sem senha exclusiva falha fechado", () => {

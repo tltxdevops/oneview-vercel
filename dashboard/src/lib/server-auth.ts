@@ -13,22 +13,6 @@ export type ServerAuthUser = {
 
 const API_BASE = typeof window !== "undefined" ? `${window.location.origin}/api` : "/api";
 const OAUTH_STATE_KEY = "oneview_oauth_state";
-const SESSION_TOKEN_KEY = "oneview_session_token";
-// Versionada para não reaproveitar o marcador de sessão de builds anteriores.
-const SERVER_SESSION_ACTIVE_KEY = "oneview_server_session_active_v2";
-
-export function hasActiveServerSession() {
-  return typeof window !== "undefined" && window.sessionStorage.getItem(SERVER_SESSION_ACTIVE_KEY) === "true";
-}
-
-function setActiveServerSession(active: boolean) {
-  if (typeof window === "undefined") return;
-  if (active) {
-    window.sessionStorage.setItem(SERVER_SESSION_ACTIVE_KEY, "true");
-  } else {
-    window.sessionStorage.removeItem(SERVER_SESSION_ACTIVE_KEY);
-  }
-}
 
 function randomState() {
   if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
@@ -43,32 +27,6 @@ export function serverAuthEnabled() {
   return import.meta.env.VITE_AUTH_MODE !== "msal";
 }
 
-export function getServerAuthToken() {
-  if (typeof window === "undefined") return "";
-  if (!hasActiveServerSession()) return "";
-  return (
-    window.localStorage.getItem(SESSION_TOKEN_KEY) ||
-    window.sessionStorage.getItem(SESSION_TOKEN_KEY) ||
-    ""
-  );
-}
-
-function storeServerAuthToken(token?: string) {
-  if (typeof window === "undefined") return;
-  if (token) {
-    window.localStorage.setItem(SESSION_TOKEN_KEY, token);
-    window.sessionStorage.setItem(SESSION_TOKEN_KEY, token);
-    return;
-  }
-  window.localStorage.removeItem(SESSION_TOKEN_KEY);
-  window.sessionStorage.removeItem(SESSION_TOKEN_KEY);
-}
-
-function authHeader() {
-  const token = getServerAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 function callbackParamsFromUrl() {
   if (typeof window === "undefined") return null;
   const search = new URLSearchParams(window.location.search);
@@ -81,28 +39,21 @@ function callbackParamsFromUrl() {
 }
 
 function clearCallbackParamsFromUrl() {
-  if (typeof window === "undefined") return;
-  window.history.replaceState({}, document.title, window.location.pathname || "/");
+  if (typeof window !== "undefined") window.history.replaceState({}, document.title, window.location.pathname || "/");
 }
 
 export async function startServerMicrosoftLogin() {
   const state = randomState();
   window.sessionStorage.setItem(OAUTH_STATE_KEY, state);
-  setActiveServerSession(false);
-
   const response = await fetch(`${API_BASE}/auth/microsoft/login?state=${encodeURIComponent(state)}`, {
-    credentials: "include",
-    cache: "no-store",
+    credentials: "include", cache: "no-store",
   });
-
   if (!response.ok) {
     let errorCode = "";
     try {
       const body = await response.json() as { error?: unknown };
       errorCode = typeof body.error === "string" ? body.error : "";
-    } catch {
-      // Mantém mensagem segura quando a API não retorna JSON.
-    }
+    } catch { /* safe generic message */ }
     if (errorCode === "microsoft_sso_not_configured") {
       throw new Error("SSO server-side não configurado. Defina MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET e APP_SESSION_SECRET no ambiente local.");
     }
@@ -116,41 +67,18 @@ export async function startServerMicrosoftLogin() {
 export async function completeServerMicrosoftLoginFromUrl(): Promise<ServerAuthUser | null> {
   const params = callbackParamsFromUrl();
   if (!params) return null;
-
   try {
     if (params.error) throw new Error(`SSO Microsoft retornou erro: ${params.error}`);
-
     const expectedState = window.sessionStorage.getItem(OAUTH_STATE_KEY) || "";
-    if (!params.state || params.state !== expectedState) {
-      throw new Error("Estado SSO inválido. Inicie o login novamente.");
-    }
-
+    if (!params.state || params.state !== expectedState) throw new Error("Estado SSO inválido. Inicie o login novamente.");
     if (!params.code) throw new Error("Código SSO ausente. Inicie o login novamente.");
-
     const response = await fetch(`${API_BASE}/auth/microsoft/callback`, {
-      method: "POST",
-      credentials: "include",
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ code: params.code }),
+      method: "POST", credentials: "include", cache: "no-store",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: params.code }),
     });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Falha ao finalizar SSO Microsoft: ${response.status}${text ? ` - ${text}` : ""}`);
-    }
-
-    const payload = (await response.json()) as {
-      user?: ServerAuthUser | null;
-      session?: { token?: string };
-    };
-
-    if (!payload.user?.email) throw new Error("Sessão SSO não retornou usuário válido.");
-
-    storeServerAuthToken(payload.session?.token);
-    setActiveServerSession(true);
+    if (!response.ok) throw new Error(`Falha ao finalizar SSO Microsoft: ${response.status}`);
+    const payload = (await response.json()) as { user?: ServerAuthUser | null };
+    if (!payload.user?.id) throw new Error("Sessão SSO não retornou usuário válido.");
     window.sessionStorage.removeItem(OAUTH_STATE_KEY);
     return payload.user;
   } finally {
@@ -158,27 +86,21 @@ export async function completeServerMicrosoftLoginFromUrl(): Promise<ServerAuthU
   }
 }
 
+/** Cookie HttpOnly is the sole browser credential; no auth token reaches storage. */
 export async function fetchServerAuthUser(): Promise<ServerAuthUser | null> {
-  const response = await fetch(`${API_BASE}/auth/me`, {
-    credentials: "include",
-    cache: "no-store",
-    headers: {
-      ...authHeader(),
-    },
-  });
+  const response = await fetch(`${API_BASE}/auth/me`, { credentials: "include", cache: "no-store" });
   if (!response.ok) return null;
   const payload = (await response.json()) as { user?: ServerAuthUser | null };
-  return payload.user?.email ? payload.user : null;
+  return payload.user?.id ? payload.user : null;
 }
 
 export async function logoutServerAuth() {
-  await fetch(`${API_BASE}/auth/logout`, {
-    method: "POST",
-    credentials: "include",
-  }).catch(() => undefined);
-  storeServerAuthToken(undefined);
-  setActiveServerSession(false);
-  if (typeof window !== "undefined") window.sessionStorage.removeItem(OAUTH_STATE_KEY);
+  const response = await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" }).catch(() => null);
+  if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(OAUTH_STATE_KEY);
+  if (!response?.ok) return;
+  const payload = await response.json().catch(() => ({})) as { logout_url?: unknown };
+  if (typeof payload.logout_url === "string" && payload.logout_url) window.location.assign(payload.logout_url);
 }
 
 export function accountFromServerUser(user: ServerAuthUser): AccountInfo {

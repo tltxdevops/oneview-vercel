@@ -1,7 +1,7 @@
 import { Alert, Client, Severity } from "@/types";
 import { isSsoEnvironmentReady, loginRequest, msalInstance } from "@/lib/auth/msal";
 import { isReadOnlyMode } from "@/lib/demo-mode";
-import { getServerAuthToken, serverAuthEnabled } from "@/lib/server-auth";
+import { serverAuthEnabled } from "@/lib/server-auth";
 import { canonicalClientName, canonicalHostName } from "@/components/oneview/ClientIdentity";
 
 const API_BASE_URL = "/api";
@@ -19,8 +19,8 @@ export function canShareOneViewRead(init?: RequestInit) {
 
 async function authHeaders(): Promise<Record<string, string>> {
   if (serverAuthEnabled()) {
-    const token = getServerAuthToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    // HttpOnly OneView session cookie is sent by fetch(credentials: include).
+    return {};
   }
   if (import.meta.env.VITE_ONEVIEW_API_AUTH_DISABLED === "true") return {};
   if (!msalInstance || !isSsoEnvironmentReady) return {};

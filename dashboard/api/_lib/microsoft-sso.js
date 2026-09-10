@@ -39,6 +39,41 @@ function trustedStringArray(value, maximum = 200) {
     .slice(0, maximum);
 }
 
+function hasOwnClaim(payload, claim) {
+  return Boolean(payload && Object.prototype.hasOwnProperty.call(payload, claim));
+}
+
+function claimCount(value, maximum = 200) {
+  return Array.isArray(value) ? Math.min(value.length, maximum) : 0;
+}
+
+function audienceMatches(value, expected) {
+  const audiences = Array.isArray(value) ? value : [value];
+  return audiences.some((item) => clean(item) === expected);
+}
+
+export function entraClaimDiagnostic(payload, { tenant, audience, issuer } = {}) {
+  const expectedTenant = clean(tenant).toLowerCase();
+  const tokenTenant = clean(payload?.tid).toLowerCase();
+  return {
+    has_roles_claim: hasOwnClaim(payload, "roles"),
+    roles_count: claimCount(payload?.roles),
+    has_groups_claim: hasOwnClaim(payload, "groups"),
+    groups_count: claimCount(payload?.groups),
+    aud_matches_expected: audienceMatches(payload?.aud, clean(audience)),
+    // Preserve the existing acceptance rule: Entra normally sends tid, but
+    // an absent tid is not a newly introduced authentication failure.
+    tenant_matches_expected: !tokenTenant || tokenTenant === expectedTenant,
+    issuer_matches_expected: clean(payload?.iss) === clean(issuer),
+  };
+}
+
+function invalidIdToken(code, diagnostic) {
+  const error = new Error(code);
+  error.entra_claim_diagnostic = diagnostic;
+  return error;
+}
+
 function scope() {
   return clean(process.env.MICROSOFT_SCOPE || process.env.VITE_AZURE_SCOPES || DEFAULT_SCOPE);
 }
@@ -128,6 +163,13 @@ export function buildMicrosoftAuthorizeUrl(req, state = "") {
   return `https://login.microsoftonline.com/${tenantId()}/oauth2/v2.0/authorize?${params.toString()}`;
 }
 
+export function buildMicrosoftLogoutUrl(req) {
+  const origin = publicAppOrigin(req);
+  if (!origin) return "";
+  const params = new URLSearchParams({ post_logout_redirect_uri: `${origin}/login` });
+  return `https://login.microsoftonline.com/${tenantId()}/oauth2/v2.0/logout?${params.toString()}`;
+}
+
 async function fetchJson(url, init) {
   const response = await fetch(url, init);
   const text = await response.text();
@@ -169,20 +211,34 @@ export async function trustedMicrosoftIdTokenClaims(idToken) {
   const audience = clientId();
   if (!tenant || !audience) throw new Error("microsoft_id_token_config_incomplete");
 
+  const issuer = `https://login.microsoftonline.com/${tenant}/v2.0`;
+
+  // jwtVerify validates the signature/JWKS, temporal claims and issuer.
+  // Audience remains fail-closed below so the callback can log aggregate,
+  // non-sensitive diagnostic flags for a signed token from the wrong app.
   const { payload } = await jwtVerify(token, getIdTokenJwks(), {
     issuer: `https://login.microsoftonline.com/${tenant}/v2.0`,
-    audience,
   });
-  if (payload.tid && String(payload.tid).toLowerCase() !== tenant.toLowerCase()) {
-    throw new Error("microsoft_id_token_invalid_tenant");
-  }
+  const diagnostic = entraClaimDiagnostic(payload, { tenant, audience, issuer });
+  if (!diagnostic.issuer_matches_expected) throw invalidIdToken("microsoft_id_token_invalid_issuer", diagnostic);
+  if (!diagnostic.aud_matches_expected) throw invalidIdToken("microsoft_id_token_invalid_audience", diagnostic);
+  if (!diagnostic.tenant_matches_expected) throw invalidIdToken("microsoft_id_token_invalid_tenant", diagnostic);
   return {
+    oid: clean(payload.oid),
+    tid: clean(payload.tid),
+    sub: clean(payload.sub),
+    name: clean(payload.name),
+    preferred_username: clean(payload.preferred_username),
     roles: trustedStringArray(payload.roles),
     groups: trustedStringArray(payload.groups),
+    diagnostic,
   };
 }
 
 export async function fetchMicrosoftProfile(accessToken, trustedClaims = {}) {
+  if (!clean(trustedClaims.oid) || !clean(trustedClaims.sub) || !clean(trustedClaims.tid)) {
+    throw new Error("microsoft_identity_claims_missing");
+  }
   const profile = await fetchJson("https://graph.microsoft.com/v1.0/me", {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -202,8 +258,7 @@ export async function fetchMicrosoftProfile(accessToken, trustedClaims = {}) {
     emailRaw = profile.email;
   }
 
-  const email = clean(emailRaw).toLowerCase();
-  if (!email) throw new Error("microsoft_email_missing");
+  const email = clean(emailRaw || trustedClaims.preferred_username).toLowerCase();
 
   const domain = email.includes("@") ? email.slice(email.lastIndexOf("@") + 1) : "";
   // OV-P0-16B temporary safe diagnostic: claim + domain only (never email/token).
@@ -214,15 +269,19 @@ export async function fetchMicrosoftProfile(accessToken, trustedClaims = {}) {
   }));
 
   return {
-    id: clean(profile.id || email),
-    name: clean(profile.displayName || email),
+    id: clean(trustedClaims.oid),
+    oid: clean(trustedClaims.oid),
+    tid: clean(trustedClaims.tid),
+    sub: clean(trustedClaims.sub),
+    name: clean(trustedClaims.name || profile.displayName || email),
     email,
     emailClaim,
     firstName: clean(profile.givenName),
     lastName: clean(profile.surname),
     jobTitle: clean(profile.jobTitle),
-    username: clean(profile.userPrincipalName || email),
-    roles: trustedStringArray(trustedClaims.roles).length ? trustedStringArray(trustedClaims.roles) : ["viewer"],
+    username: clean(trustedClaims.preferred_username || profile.userPrincipalName || email),
+    preferred_username: clean(trustedClaims.preferred_username || profile.userPrincipalName || email),
+    roles: trustedStringArray(trustedClaims.roles),
     // User.Read + /me does not return memberships. These are verified ID-token
     // claims when the tenant is configured to emit them.
     groups: trustedStringArray(trustedClaims.groups),
@@ -269,13 +328,18 @@ export function sessionUserFromToken(token) {
 }
 
 function sessionUserFromPayload(session) {
-  if (!session) return null;
+  if (!session?.oid) return null;
   return {
-    id: session.sub || session.email,
-    name: session.name || session.email,
+    id: session.oid,
+    oid: session.oid,
+    tid: session.tid || "",
+    sub: session.sub || session.oid,
+    name: session.name || session.oid,
     email: session.email,
     emailClaim: session.email_claim || "session.email",
-    roles: Array.isArray(session.roles) ? session.roles : ["viewer"],
+    username: session.preferred_username || session.email || "",
+    preferred_username: session.preferred_username || session.email || "",
+    roles: Array.isArray(session.roles) ? session.roles : [],
     groups: Array.isArray(session.groups) ? session.groups : [],
   };
 }

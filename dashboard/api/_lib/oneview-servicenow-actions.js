@@ -93,7 +93,7 @@ function actionResponse(row, idempotent = false) {
 
 function configOptions(config) {
   return {
-    enabled: config.requestEnabled && config.allowAllAuthenticatedActions,
+    enabled: config.requestEnabled,
     actions: SERVICENOW_INCIDENT_ACTIONS,
     assignable_groups: config.assignableGroups,
     hold_reasons: config.holdReasons,
@@ -128,7 +128,6 @@ function sanitizeActionPayload(action, rawPayload, config) {
 
 export function getServiceNowActionsConfig(env = process.env) {
   return Object.freeze({
-    allowAllAuthenticatedActions: booleanValue(env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS),
     requestEnabled: booleanValue(env.ONEVIEW_SERVICENOW_ACTIONS_ENABLED),
     // Values are environment-audited logical choices; no group/vendor is embedded in code.
     assignableGroups: csv(env.ONEVIEW_SERVICENOW_ASSIGNABLE_GROUPS),
@@ -163,7 +162,6 @@ export function createServiceNowIncidentActionsHandler({
     const config = configProvider();
 
     if (req.method === "GET" && !requestOutboxId(req)) return sendJson(res, 200, configOptions(config));
-    if (!config.allowAllAuthenticatedActions) return sendJson(res, 403, { error: "authenticated_actions_disabled" });
     if (!config.requestEnabled) return sendJson(res, 403, { error: "servicenow_actions_disabled" });
 
     const incidentSysId = requestSysId(req);

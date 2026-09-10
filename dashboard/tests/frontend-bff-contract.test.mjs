@@ -102,11 +102,10 @@ test("SSO server-side só restaura sessão iniciada explicitamente nesta aba", a
     read("src/lib/oneview-api.ts"),
   ]);
   assert.match(context, /useState<AuthUser \| null>\(null\)/);
-  assert.match(context, /hasActiveServerSession\(\) \? await fetchServerAuthUser\(\) : null/);
-  assert.match(serverAuth, /SERVER_SESSION_ACTIVE_KEY/);
-  assert.match(serverAuth, /setActiveServerSession\(true\)/);
-  assert.match(serverAuth, /setActiveServerSession\(false\)/);
-  assert.match(context, /msalInstance\.clearCache\(\)/);
+  assert.match(context, /await fetchServerAuthUser\(\)/);
+  assert.doesNotMatch(serverAuth, /oneview_session_token|localStorage/);
+  assert.match(serverAuth, /credentials: "include"/);
+  assert.match(context, /logoutRedirect\(\{ postLogoutRedirectUri \}\)/);
   assert.doesNotMatch(`${context}\n${api}`, /getAllAccounts\(\)\[0\]/);
 });
 

@@ -77,7 +77,6 @@ function publicDatabaseError(error) {
 
 export function getAckRequestConfig(env = process.env) {
   return Object.freeze({
-    allowAllAuthenticatedActions: booleanValue(env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS, false),
     requestEnabled: booleanValue(env.ONEVIEW_ACK_REQUEST_ENABLED, false),
     executionEnabled: booleanValue(env.ONEVIEW_ACK_EXECUTION_ENABLED, false),
     allowedDatasources: csv(env.ONEVIEW_ACK_ALLOWED_DATASOURCES),
@@ -101,9 +100,6 @@ export function createAckRequestHandler({
     if (!auth) return;
 
     const config = configProvider();
-    if (!config.allowAllAuthenticatedActions) {
-      return sendJson(res, 403, { error: "authenticated_actions_disabled" });
-    }
     if (!config.requestEnabled) return sendJson(res, 403, { error: "ack_request_disabled" });
     if (config.executionEnabled) return sendJson(res, 503, { error: "ack_execution_not_supported" });
 

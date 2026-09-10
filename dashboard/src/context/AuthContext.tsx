@@ -13,7 +13,6 @@ import {
 import {
   completeServerMicrosoftLoginFromUrl,
   fetchServerAuthUser,
-  hasActiveServerSession,
   logoutServerAuth,
   serverAuthEnabled,
   startServerMicrosoftLogin,
@@ -250,7 +249,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (serverAuthEnabled()) {
         try {
           const callbackUser = await completeServerMicrosoftLoginFromUrl();
-          const serverUser = hydrateCachedPhoto(callbackUser ?? (hasActiveServerSession() ? await fetchServerAuthUser() : null));
+          const serverUser = hydrateCachedPhoto(callbackUser ?? await fetchServerAuthUser());
           if (cancelled || !isMountedRef.current) return;
           setUser(serverUser);
           persistUser(serverUser);
@@ -358,6 +357,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const logout = useCallback(async () => {
     if (serverAuthEnabled()) {
       await logoutServerAuth();
+      persistUser(null);
+      setUser(null);
+      return;
     }
 
     // Limpa apenas a sessão local da dashboard, sem fazer logout da Microsoft
@@ -367,8 +369,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     
     // Remove o cache local da aplicação; a sessão global Microsoft não recebe logout redirect.
     if (msalInstance && isSsoEnvironmentReady) {
-      msalInstance.setActiveAccount(null);
-      msalInstance.clearCache();
+      await msalInstance.logoutRedirect({ postLogoutRedirectUri });
+      return;
     }
     
     // Redireciona para a página de login sem fazer logout da Microsoft
@@ -379,7 +381,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setIsLoading(true);
     if (serverAuthEnabled()) {
       try {
-        const serverUser = hydrateCachedPhoto(hasActiveServerSession() ? await fetchServerAuthUser() : null);
+        const serverUser = hydrateCachedPhoto(await fetchServerAuthUser());
         if (!isMountedRef.current) return;
         setUser(serverUser);
         persistUser(serverUser);

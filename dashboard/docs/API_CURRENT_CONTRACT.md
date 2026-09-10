@@ -18,7 +18,7 @@ O frontend V1 (`oneview-api.ts` + páginas Index/Alerts/Historico/Settings) cons
 
 Todas as leituras operacionais OneView e a maioria das escritas legadas de alerta aplicam escopo obrigatório `data_sources.name = teletex-http` (env `ONEVIEW_PRIMARY_DATA_SOURCE_NAME`). Exceção relevante: `GET /api/data-sources` legado lista **todas** as fontes.
 
-Auth SSO é obrigatória para rotas autenticadas (`requireAuth` / `requireOneViewAuth`). Papel `viewer` é concedido a todo autenticado no domínio permitido; `operator` só com `ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS=true`. Papel `admin` existe no código mas **não é atribuído via SSO**.
+Auth SSO é obrigatória para rotas autenticadas (`requireAuth` / `requireOneViewAuth`). Todo usuário Microsoft Entra autenticado e validado recebe `operator`; `OneView.Admin` confiável eleva para `admin`.
 
 Respostas OneView (`createOneViewHandler`) sempre usam `Cache-Control: no-store…`, sanitizam secrets/URLs/IPs e anexam `data_source` / `fallback_code` / `checked_at`. Fallback para snapshot (`oneview-real-snapshot.safe.json`) depende de flags de env.
 
@@ -99,9 +99,9 @@ Respostas OneView (`createOneViewHandler`) sempre usam `Cache-Control: no-store�
 
 Convenções comuns:
 
-- **Auth viewer:** sessão cookie SSO ou `Authorization: Bearer` (Azure JWT / session token); domínio em `ONEVIEW_ALLOWED_EMAIL_DOMAINS`; origin permitido.
-- **Auth operator:** viewer + `ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS=true` (senão 403 `operator_required` / `authenticated_actions_disabled`).
-- **Erros auth:** 401 `authentication_required` | `invalid_token`; 403 `email_not_allowed` | `domain_not_allowed` | `origin_not_allowed` | `operator_required`.
+- **Auth:** sessão cookie SSO válida ou Azure JWT validado; origin permitido; todo autenticado é `operator`.
+- **Admin:** claim confiável exata `OneView.Admin`.
+- **Erros auth:** 401 `authentication_required` | `invalid_token`; 403 `identity_not_allowed` | `origin_not_allowed`.
 - **Escopo teletex:** `getPrimaryDataSourceName()` → default `teletex-http`.
 - **Envelope OneView GET:** headers `Cache-Control: no-store, no-cache, max-age=0, must-revalidate`, `X-Content-Type-Options: nosniff`, opcional `X-OneView-Data-Source`; body + `data_source`, `fallback_code`, `checked_at` (após sanitize).
 - **Erros OneView GET:** 405; 400 `invalid_query`; 404 `not_found`; 503 `live_data_not_configured` | `live_database_disabled` | `unsafe_database_user` | `snapshot_unavailable` | `database_unavailable` | `database_*`.
@@ -642,7 +642,7 @@ Documentação operacional completa (params, nullability, filtros combinados, ex
 | Headers | `Idempotency-Key` opcional (`^[a-z0-9][a-z0-9._:-]{7,127}$`); `X-Request-Id`; `X-Correlation-Id` |
 | Path `id` | `[a-z0-9][a-z0-9_-]{0,79}` |
 | Body | `{ comment: string }` obrigatório, max 500 chars |
-| Gates | `ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS`; `ONEVIEW_ACK_REQUEST_ENABLED`; `ONEVIEW_ACK_EXECUTION_ENABLED` deve ser **false** (senão 503); datasource ∈ `ONEVIEW_ACK_ALLOWED_DATASOURCES` |
+| Gates | `ONEVIEW_ACK_REQUEST_ENABLED`; `ONEVIEW_ACK_EXECUTION_ENABLED` deve ser **false** (senão 503); datasource ∈ `ONEVIEW_ACK_ALLOWED_DATASOURCES` |
 | Sucesso 202 | `{ request_id, status: "recorded", idempotent, execution_enabled: false, actor_name, message }` |
 | Erros | 400 `invalid_alert_id`\|`invalid_comment`\|`invalid_idempotency_key`; 401; 403 `authenticated_actions_disabled`\|`ack_request_disabled`\|`datasource_not_allowed`; 404 `not_found`; 409 `alert_already_recognized`; 503 `ack_execution_not_supported`\|`actions_database_not_configured`\|`database_unavailable`; 405 |
 | DB | **Actions pool** (`oneview_actions`): escreve `alert_acknowledgements`, `audit_logs`; lê `alerts`, `data_sources` |
@@ -837,7 +837,7 @@ Pools:
 | Nenhuma | — | `/api`, `/api/auth/config`, login, logout, GET callback |
 | Sessão válida (sem role) | cookie/Bearer | `/api/auth/me`, POST callback |
 | `viewer` | qualquer auth no domínio permitido | todos OneView GET; alerts GET; data-sources GET; health* |
-| `operator` | flag `ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS=true` | ack-request; notes; assign; status; ack bloqueado; request-sync |
+| `operator` | Usuário Entra autenticado e validado | ack-request; notes; assign; status; ack bloqueado; request-sync |
 | `admin` | **nunca via SSO atual** | POST data-sources; PATCH data-sources |
 
 Gates adicionais ack-request: `ONEVIEW_ACK_REQUEST_ENABLED`, allowlist datasources, execução desligada.
@@ -1028,29 +1028,30 @@ Fluxo SSO (`VITE_AUTH_MODE=server`, ou seja `≠ "msal"`):
 1. UI chama `GET /api/auth/microsoft/login?state=…` → `{ authUrl }`.
 2. Browser autentica no Microsoft; `GET /api/auth/microsoft/callback` redireciona `302` para `/?code&state` (ou `sso_error`).
 3. SPA faz `POST /api/auth/microsoft/callback` com `{ code }` → troca o code, lê Graph `/me`, emite JWT de sessão HMAC e `Set-Cookie`.
-4. Cliente guarda o token como `oneview_session_token` e envia `Authorization: Bearer …` + `credentials: "include"` nas chamadas.
-5. BFF/Vercel validam via `requireAuth` / `requireOneViewAuth` (cookie **ou** Bearer). `authRequired()` é **sempre true** — não há bypass local.
+4. O browser recebe somente cookie de sessão HttpOnly; nenhum token é retornado, persistido em `localStorage` ou enviado em `Authorization` pelo cliente.
+5. BFF/Vercel validam `requireAuth` / `requireOneViewAuth` pela sessão cookie; Bearer Azure só é aceito em integrações server-to-server validadas por JWKS.
 
 #### Endpoints de autenticação
 
 | Endpoint | Auth | Função |
 |----------|------|--------|
 | `GET /api/auth/config` | pública | Flags de leitura + placeholders MSAL limpos para bootstrap (`main.tsx`) |
-| `GET /api/auth/me` | sessão/Bearer | `{ user }` da sessão atual |
+| `GET /api/auth/me` | sessão cookie | `{ user }` da sessão atual |
 | `GET /api/auth/microsoft/login` | pública | URL de autorização Microsoft |
 | `GET /api/auth/microsoft/callback` | pública | Redirect pós-OAuth |
-| `POST /api/auth/microsoft/callback` | pública | Troca `code` → `{ user, session }` + cookie |
-| `POST /api/auth/logout` | qualquer | Limpa cookie → `{ ok: true }` |
+| `POST /api/auth/microsoft/callback` | pública | Troca `code` → `{ user }` + cookie HttpOnly |
+| `POST /api/auth/logout` | qualquer | Limpa cookie + retorna logout Entra compatível |
 
 #### Cookie / sessão / Bearer
 
 | Item | Valor atual |
 |------|-------------|
 | Cookie | `APP_SESSION_COOKIE_NAME` ou default **`oneview_session`** (`session.js`) |
-| TTL | `APP_SESSION_TTL_SEC` ou default **30 dias** (`DEFAULT_TTL_SEC`) |
+| TTL | `ONEVIEW_SESSION_TTL_HOURS` ou default **12 horas** (`DEFAULT_TTL_SEC`) |
 | Segredo | `APP_SESSION_SECRET` / `ONEVIEW_SESSION_SECRET` |
-| Token Bearer | mesmo JWT de sessão **ou** Azure ID token (JWKS tenant `/v2.0`, audience = client id) |
-| Preferência | `sessionUserFromRequest` (cookie) → senão `sessionUserFromToken` (Bearer) |
+| Cookie | Assinado HMAC, `HttpOnly`, `SameSite=Lax`, `Secure` em produção, `Max-Age` + `exp` |
+| Token Bearer | Azure ID token somente para integrações server-to-server; JWT de sessão nunca é aceito via Bearer |
+| Identidade | `oid`, `tid`, `sub`, `name`, `preferred_username`, `roles`; `oid` é o ator estável |
 
 #### Validação de origem
 
@@ -1059,32 +1060,25 @@ Fluxo SSO (`VITE_AUTH_MODE=server`, ou seja `≠ "msal"`):
 - `Origin` presente e fora da allowlist → **403** `origin_not_allowed`.
 - BFF local adicional: Origin não-loopback/não-localhost → **403** `local_access_only`.
 
-#### Validação de domínio
-
-- Domínios = CSV `ONEVIEW_ALLOWED_EMAIL_DOMAINS` (lowercased, `@` removido).
-- E-mail sem domínio permitido → **403** `domain_not_allowed`.
-- E-mail ausente / não listável → **403** `email_not_allowed`.
-
 #### Grupos / roles
 
 | Role | Como se obtém | Uso |
 |------|---------------|-----|
-| `viewer` | Todo autenticado no domínio permitido | Leituras OneView e legado |
-| `operator` | Somente se `ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS=true` | Escritas (ack-request, notes, assign, status, request-sync) |
-| `admin` | Existe no gate; **não é atribuído via SSO atual** | POST/PATCH data-sources (na prática inacessível) |
+| `viewer` | `OneView.Viewer` ou autenticado sem role operacional | Leituras OneView |
+| `operator` | Todo usuário Entra autenticado e validado | Mutations permitidas pelo endpoint/gate próprio |
+| `admin` | Claim exata `OneView.Admin` no ID token validado | Permissões admin |
 
-Listas `ONEVIEW_ALLOWED_EMAILS` / `OPERATOR_EMAILS` / `ADMIN_EMAILS` podem existir no env, mas o fluxo SSO atual concede `viewer` por domínio e `operator` só via flag geral.
+Produção usa somente a identidade Entra autenticada. Não há allowlist de e-mail/grupo nem flag geral de actions. `OneView.Admin` é a única elevação atual.
 
 #### Erros de autenticação / autorização
 
 | HTTP | `error` | Quando |
 |------|---------|--------|
-| 401 | `authentication_required` | Sem cookie/sessão e sem Bearer válido |
+| 401 | `authentication_required` | Sem sessão cookie válida |
 | 401 | `invalid_token` | Azure JWT inválido |
-| 403 | `domain_not_allowed` | Domínio do e-mail fora da allowlist |
 | 403 | `origin_not_allowed` | Origin fora da allowlist |
-| 403 | `email_not_allowed` | E-mail ausente / papel insuficiente genérico |
-| 403 | `operator_required` | Rota exige operator/admin e flag não concede |
+| 403 | `identity_not_allowed` | Sessão sem `oid` canônico |
+| 403 | `operator_required` | Reservado a future gate operacional específico; não é exigido para usuário Entra autenticado atual |
 | 403 | — | **Não existe** literal `"forbidden"` no contrato atual; usar os códigos acima |
 
 Outros auth: `missing_code`, `callback_failed`, `microsoft_sso_not_configured`, `method_not_allowed`.
@@ -1376,7 +1370,7 @@ Itens podem expor: comentário (`description`/`comment`), ator (`actor_name` / `
 | `POST /api/data-sources` | Criar fonte | admin | admin | — | Não | **Sim** secret management blocked | Não | Não | Sim | Não |
 | `PATCH /api/data-sources/:id` | Metadados fonte | admin | admin | `data_sources`, `audit_logs` | Código existe | Prático (admin inacessível) | Não | Não | Sim | Não |
 
-Gates ack-request: `ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS`, `ONEVIEW_ACK_REQUEST_ENABLED`, `ONEVIEW_ACK_EXECUTION_ENABLED=false`, allowlist `ONEVIEW_ACK_ALLOWED_DATASOURCES`, `POSTGRES_ACTIONS_PASSWORD`.
+Gates ack-request: `ONEVIEW_ACK_REQUEST_ENABLED`, `ONEVIEW_ACK_EXECUTION_ENABLED=false`, allowlist `ONEVIEW_ACK_ALLOWED_DATASOURCES`, `POSTGRES_ACTIONS_PASSWORD`.
 
 ---
 

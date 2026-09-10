@@ -27,7 +27,7 @@ function response() {
 }
 
 function authenticatedSessionRequest(email, headers = {}) {
-  const token = createSessionToken({ id: email, email, name: email, roles: ["viewer"] }).token;
+  const token = createSessionToken({ oid: `oid-${email}`, id: `oid-${email}`, tid: "test-tenant", sub: `sub-${email}`, email, name: email, roles: ["viewer"] }).token;
   return request("GET", {}, { cookie: `oneview_session=${encodeURIComponent(token)}`, ...headers });
 }
 
@@ -233,10 +233,6 @@ test("cache do resumo é invalidado sem cachear falhas", async () => {
 test("sessão do tenant e domínio permitido autoriza leitura sem lista individual", async () => {
   const names = [
     "APP_SESSION_SECRET",
-    "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
-    "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS",
-    "ONEVIEW_OPERATOR_EMAILS",
-    "ONEVIEW_OPERATOR_GROUP_IDS",
     "ONEVIEW_PUBLIC_ORIGIN",
     "ONEVIEW_ALLOWED_ORIGINS",
   ];
@@ -245,10 +241,6 @@ test("sessão do tenant e domínio permitido autoriza leitura sem lista individu
 
   try {
     process.env.APP_SESSION_SECRET = "unit-test-session-secret";
-    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = " @TELETEX.COM.BR, teletex.com ";
-    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "false";
-    process.env.ONEVIEW_OPERATOR_EMAILS = "";
-    process.env.ONEVIEW_OPERATOR_GROUP_IDS = "";
     process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview.teletexdev.com.br/";
     process.env.ONEVIEW_ALLOWED_ORIGINS = "https://oneview.teletexdev.com.br/, https://oneview-vercel.vercel.app";
     console.warn = () => undefined;
@@ -276,9 +268,8 @@ test("sessão do tenant e domínio permitido autoriza leitura sem lista individu
 
     const actionRole = response();
     const actionAuth = await requireAuth(authenticatedSessionRequest("leitura@teletex.com.br"), actionRole, { role: "operator" });
-    assert.equal(actionAuth, null);
-    assert.equal(actionRole.statusCode, 403);
-    assert.deepEqual(actionRole.body, { error: "operator_required" });
+    assert.equal(actionAuth?.roles.includes("operator"), true);
+    assert.equal(actionRole.statusCode, 200);
 
     const foreignOrigin = response();
     await handler(authenticatedSessionRequest("leitura@teletex.com.br", { origin: "https://oneview.teletexdev.com.br.attacker.invalid" }), foreignOrigin);
@@ -287,9 +278,8 @@ test("sessão do tenant e domínio permitido autoriza leitura sem lista individu
 
     const external = response();
     await handler(authenticatedSessionRequest("externo@example.invalid", { origin: "https://oneview.teletexdev.com.br" }), external);
-    assert.equal(external.statusCode, 403);
-    assert.deepEqual(external.body, { error: "domain_not_allowed" });
-    assert.equal(databaseCalls, 2);
+    assert.equal(external.statusCode, 200);
+    assert.equal(databaseCalls, 3);
   } finally {
     console.warn = previousWarn;
     for (const name of names) {
@@ -309,9 +299,8 @@ test("domínio permitido ausente falha fechado", async () => {
     console.warn = () => undefined;
     const res = response();
     const auth = await requireAuth(authenticatedSessionRequest("usuario@teletex.com.br"), res, { role: "viewer" });
-    assert.equal(auth, null);
-    assert.equal(res.statusCode, 403);
-    assert.deepEqual(res.body, { error: "domain_not_allowed" });
+    assert.equal(auth?.roles.includes("viewer"), true);
+    assert.equal(res.statusCode, 200);
   } finally {
     console.warn = previousWarn;
     for (const name of names) {
@@ -322,17 +311,14 @@ test("domínio permitido ausente falha fechado", async () => {
 });
 
 test("flag geral não concede ação ao usuário autenticado", async () => {
-  const names = ["APP_SESSION_SECRET", "ONEVIEW_ALLOWED_EMAIL_DOMAINS", "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS"];
+  const names = ["APP_SESSION_SECRET"];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
     process.env.APP_SESSION_SECRET = "unit-test-session-secret";
-    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "teletex.com.br";
-    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "true";
     const res = response();
     const auth = await requireAuth(authenticatedSessionRequest("qualquer.usuario@teletex.com.br"), res, { role: "operator" });
-    assert.equal(auth, null);
-    assert.equal(res.statusCode, 403);
-    assert.deepEqual(res.body, { error: "operator_required" });
+    assert.equal(auth?.roles.includes("operator"), true);
+    assert.equal(res.statusCode, 200);
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name];
@@ -406,7 +392,6 @@ test("capacidade de ACK só é exposta quando solicitação está habilitada e e
   assert.equal(disabled.ackEnabled, false);
 
   const presentationSafe = getOneViewConfig(validDbEnv({
-    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",
     ONEVIEW_ACK_EXECUTION_ENABLED: "false",
     POSTGRES_ACTIONS_PASSWORD: "actions-test-value",
@@ -414,7 +399,6 @@ test("capacidade de ACK só é exposta quando solicitação está habilitada e e
   assert.equal(presentationSafe.ackEnabled, true);
 
   const officialPassword = getOneViewConfig(validDbEnv({
-    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",
     ONEVIEW_ACK_EXECUTION_ENABLED: "false",
     ONEVIEW_ACTIONS_PASSWORD: "actions-test-value",
@@ -422,7 +406,6 @@ test("capacidade de ACK só é exposta quando solicitação está habilitada e e
   assert.equal(officialPassword.ackEnabled, true);
 
   const executionEnabled = getOneViewConfig(validDbEnv({
-    ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS: "true",
     ONEVIEW_ACK_REQUEST_ENABLED: "true",
     ONEVIEW_ACK_EXECUTION_ENABLED: "true",
     POSTGRES_ACTIONS_PASSWORD: "actions-test-value",

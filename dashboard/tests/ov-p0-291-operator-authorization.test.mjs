@@ -1,159 +1,71 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
-import { requireAuth } from "../api/_lib/auth.js";
+import { getAuthenticatedActor, requireAuth } from "../api/_lib/auth.js";
 import { createSessionToken } from "../api/_lib/session.js";
 
-const ENV_NAMES = [
-  "APP_SESSION_SECRET",
-  "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
-  "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS",
-  "ONEVIEW_OPERATOR_EMAILS",
-  "ONEVIEW_OPERATOR_GROUP_IDS",
-];
-
 function response() {
-  return {
-    statusCode: 200,
-    body: undefined,
-    status(value) { this.statusCode = value; return this; },
-    setHeader() { return this; },
-    end(value) { this.body = value ? JSON.parse(value) : undefined; return this; },
-  };
+  return { statusCode: 200, body: undefined, status(value) { this.statusCode = value; return this; }, setHeader() { return this; }, end(value) { this.body = value ? JSON.parse(value) : undefined; return this; } };
 }
 
-function request(method, { email = "viewer@example.com", roles = ["viewer"], groups = [], body = undefined } = {}) {
-  const token = createSessionToken({ id: email, email, name: "Test User", roles, groups }).token;
-  return {
-    method,
-    body,
-    url: "/api/oneview/links/circuit-1/reminders?data_source_id=ds-1",
-    headers: { cookie: `oneview_session=${encodeURIComponent(token)}` },
-  };
+function request(method, { oid = "oid-user", email = "user@example.com", roles = [], body } = {}) {
+  const token = createSessionToken({ oid, id: oid, tid: "tenant-1", sub: `sub-${oid}`, email, name: "Test User", preferred_username: email, roles }).token;
+  return { method, body, url: "/api/oneview/links/circuit-1/reminders?data_source_id=ds-1", headers: { cookie: `oneview_session=${encodeURIComponent(token)}` } };
 }
 
 async function authorize(method, identity, role = method === "GET" ? "viewer" : "operator") {
   const res = response();
-  const auth = await requireAuth(request(method, identity), res, { role });
-  return { auth, res };
+  const req = request(method, identity);
+  const auth = await requireAuth(req, res, { role });
+  return { auth, req, res };
 }
 
-test("OV-P0-291 resolves explicit operator authorization and remains fail-closed", async () => {
-  const previous = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]));
+test("OV-P0-291 every validated Entra session is operator; only App Role Admin elevates", async () => {
+  const previousSecret = process.env.APP_SESSION_SECRET;
   const previousInfo = console.info;
   const previousWarn = console.warn;
   const logs = [];
-
   try {
     process.env.APP_SESSION_SECRET = "operator-auth-unit-test-secret";
-    process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = "example.com";
-    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "false";
-    process.env.ONEVIEW_OPERATOR_EMAILS = "";
-    process.env.ONEVIEW_OPERATOR_GROUP_IDS = "";
     console.info = (line) => logs.push(JSON.parse(line));
     console.warn = () => undefined;
 
-    const viewerRead = await authorize("GET");
-    assert.equal(viewerRead.res.statusCode, 200);
-    assert.deepEqual(viewerRead.auth?.roles, ["viewer"]);
-
-    for (const method of ["POST", "PATCH", "DELETE"]) {
-      const denied = await authorize(method);
-      assert.equal(denied.auth, null);
-      assert.equal(denied.res.statusCode, 403);
-      assert.deepEqual(denied.res.body, { error: "operator_required" });
+    for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
+      const result = await authorize(method);
+      assert.equal(result.res.statusCode, 200);
+      assert.equal(result.auth?.roles.includes("operator"), true);
     }
+    assert.equal((await authorize("POST", { roles: ["OneView.Viewer"] })).auth?.roles.includes("operator"), true);
+    assert.equal((await authorize("POST", { roles: ["OneView.Operator.Other"] })).auth?.roles.includes("operator"), true);
+    assert.equal((await authorize("POST", { roles: ["OneView.Admin"] })).auth?.roles.includes("admin"), true);
 
-    for (const method of ["POST", "PATCH", "DELETE"]) {
-      const appRole = await authorize(method, { email: "external@not-allowlisted.invalid", roles: ["OneView.Operator"] });
-      assert.equal(appRole.res.statusCode, 200);
-      assert.equal(appRole.auth?.roles.includes("operator"), true);
-    }
-    const missingAppRole = await authorize("POST", { email: "viewer@example.com", roles: [] });
-    assert.equal(missingAppRole.res.statusCode, 403);
-    const similarAppRole = await authorize("POST", { email: "viewer@example.com", roles: ["OneView.Operator.Other"] });
-    assert.equal(similarAppRole.res.statusCode, 403);
-    const bodyRole = await authorize("POST", { email: "viewer@example.com", roles: ["viewer"], body: { roles: ["OneView.Operator"] } });
-    assert.equal(bodyRole.res.statusCode, 403);
+    const forged = await authorize("POST", { oid: "oid-real", body: { oid: "oid-forged", roles: ["OneView.Admin"] } });
+    assert.equal(forged.auth?.oid, "oid-real");
+    assert.equal(forged.auth?.roles.includes("admin"), false);
+    assert.deepEqual(getAuthenticatedActor(forged.req), {
+      actor_id: "oid-real", actor_name: "Test User", actor_username: "user@example.com", actor_role: "operator",
+    });
 
-    process.env.ONEVIEW_OPERATOR_EMAILS = "  Operator.One@Example.COM  ";
-    for (const method of ["POST", "PATCH", "DELETE"]) {
-      const allowed = await authorize(method, { email: "operator.one@example.com" });
-      assert.equal(allowed.res.statusCode, 200);
-      assert.equal(allowed.auth?.roles.includes("operator"), true);
-    }
-
-    const differentEmail = await authorize("POST", { email: "different@example.com" });
-    assert.equal(differentEmail.res.statusCode, 403);
-    assert.deepEqual(differentEmail.auth, null);
-    const differentViewer = await authorize("GET", { email: "different@example.com" });
-    assert.deepEqual(differentViewer.auth?.roles, ["viewer"]);
-
-    process.env.ONEVIEW_OPERATOR_EMAILS = "";
-    process.env.ONEVIEW_OPERATOR_GROUP_IDS = " Group-ABC,group-def ";
-    for (const method of ["POST", "PATCH", "DELETE"]) {
-      const allowed = await authorize(method, { email: "group.member@example.com", groups: [" group-abc "] });
-      assert.equal(allowed.res.statusCode, 200);
-      assert.equal(allowed.auth?.roles.includes("operator"), true);
-    }
-
-    process.env.ONEVIEW_OPERATOR_GROUP_IDS = "";
-    const noConfiguration = await authorize("POST", { email: "group.member@example.com", groups: ["group-abc"] });
-    assert.equal(noConfiguration.res.statusCode, 403);
-    assert.deepEqual(noConfiguration.auth, null);
-
-    process.env.ONEVIEW_OPERATOR_EMAILS = "*@example.com,operator.one";
-    const noWildcardOrSubstring = await authorize("POST", { email: "operator.one@example.com" });
-    assert.equal(noWildcardOrSubstring.res.statusCode, 403);
-
-    process.env.ONEVIEW_OPERATOR_EMAILS = "operator.one@example.com";
-    const explicitWithGlobalFalse = await authorize("POST", { email: "OPERATOR.ONE@EXAMPLE.COM" });
-    assert.equal(explicitWithGlobalFalse.res.statusCode, 200);
-    assert.equal(explicitWithGlobalFalse.auth?.roles.includes("operator"), true);
-
-    process.env.ONEVIEW_OPERATOR_EMAILS = "";
-    const admin = await authorize("POST", { email: "admin@example.com", roles: ["viewer", "ADMIN"] });
-    assert.equal(admin.res.statusCode, 200);
-    assert.equal(admin.auth?.roles.includes("admin"), true);
-
-    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "true";
-    const broadFlagDoesNotGrant = await authorize("POST", { email: "viewer@example.com", roles: ["viewer"] });
-    assert.equal(broadFlagDoesNotGrant.res.statusCode, 403);
-    process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "false";
-
-    const roleLogs = logs.filter((entry) => entry.event === "auth_role_resolution");
-    assert.ok(roleLogs.some((entry) => entry.resolved_role === "operator" && entry.matched_operator_email === true));
-    assert.ok(roleLogs.some((entry) => entry.resolved_role === "operator" && entry.matched_operator_group === true));
-    assert.ok(roleLogs.some((entry) => entry.resolved_role === "operator" && entry.matched_app_role === true));
-    assert.ok(roleLogs.some((entry) => entry.resolved_role === "viewer"));
-    assert.ok(roleLogs.every((entry) => entry.authenticated === true && entry.route === "/api/oneview/links/circuit-1/reminders"));
-    assert.doesNotMatch(JSON.stringify(roleLogs), /operator\.one@example\.com|group-abc|unit-test-secret/i);
+    const missing = response();
+    assert.equal(await requireAuth({ method: "POST", url: "/api/oneview/links/x/reminders", headers: {} }, missing, { role: "operator" }), null);
+    assert.equal(missing.statusCode, 401);
+    assert.ok(logs.some((entry) => entry.event === "auth_role_resolution" && entry.resolved_role === "operator" && entry.matched_app_role === false));
+    assert.ok(logs.every((entry) => !JSON.stringify(entry).match(/user@example\.com|oid-real|unit-test-secret/i)));
   } finally {
-    console.info = previousInfo;
-    console.warn = previousWarn;
-    for (const name of ENV_NAMES) {
-      if (previous[name] === undefined) delete process.env[name];
-      else process.env[name] = previous[name];
-    }
+    console.info = previousInfo; console.warn = previousWarn;
+    previousSecret === undefined ? delete process.env.APP_SESSION_SECRET : process.env.APP_SESSION_SECRET = previousSecret;
   }
 });
 
-test("OV-P0-291 reminder UI distinguishes mutation 403 from consultation errors", async () => {
-  const page = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8"));
-  const api = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/lib/oneview-api.ts", import.meta.url), "utf8"));
-  const { readFile } = await import("node:fs/promises");
-  const [callback, sso, session] = await Promise.all([
+test("OV-P0-291 server session never returns or stores browser bearer token", async () => {
+  const [callback, serverAuth, api] = await Promise.all([
     readFile(new URL("../api/auth/microsoft/callback.js", import.meta.url), "utf8"),
-    readFile(new URL("../api/_lib/microsoft-sso.js", import.meta.url), "utf8"),
-    readFile(new URL("../api/_lib/session.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/server-auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/oneview-api.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(callback, /trustedMicrosoftIdTokenClaims\(tokenPayload\.id_token\)/);
-  assert.match(callback, /fetchMicrosoftProfile\(tokenPayload\.access_token, trustedClaims\)/);
-  assert.match(sso, /jwtVerify\(token, getIdTokenJwks\(\)/);
-  assert.match(sso, /issuer: `https:\/\/login\.microsoftonline\.com\/\$\{tenant\}\/v2\.0`/);
-  assert.match(session, /roles: Array\.isArray\(user\?\.roles\)/);
-  assert.doesNotMatch(sso, /memberOf|GroupMember\.Read\.All|Directory\.Read\.All/);
-  assert.match(api, /class OneViewApiError/);
-  assert.match(page, /Você não possui permissão operacional para \$\{action\} lembretes\./);
-  assert.match(page, /fetchOperatorReminders[\s\S]*Não foi possível carregar o lembrete\./);
+  assert.doesNotMatch(callback, /session\s*:/);
+  assert.doesNotMatch(serverAuth, /localStorage.*session_token|oneview_session_token/);
+  assert.doesNotMatch(api, /getServerAuthToken/);
+  assert.match(api, /credentials: "include"/);
 });

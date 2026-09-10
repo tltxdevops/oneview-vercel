@@ -158,8 +158,8 @@ const msalConfig: Configuration = {
     navigateToLoginRequestUrl: false,
   },
   cache: {
-    cacheLocation: "localStorage",
-    temporaryCacheLocation: "localStorage",
+    cacheLocation: "sessionStorage",
+    temporaryCacheLocation: "sessionStorage",
     storeAuthStateInCookie: false,
   },
   system: {
