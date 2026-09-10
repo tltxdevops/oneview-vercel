@@ -60,13 +60,14 @@ test("OV-P0-290 permits no-INC snapshot, rejects past time and normal circuit", 
   await normal.handler(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }), refused); assert.equal(refused.statusCode, 409); assert.equal(refused.body.error, "circuit_not_active");
 });
 
-test("OV-P0-290 authenticated API scopes GET, updates schedule and cancels without physical deletion", async () => {
+test("OV-P0-290 authenticated API scopes GET and POST commands, updates and soft-cancels", async () => {
   const requiredRoles = [];
   const authorize = async (_req, _res, role) => { requiredRoles.push(role); return actor; };
   const db = database([row(), row({ id: "22222222-2222-4222-8222-222222222222", circuit_key: "other-circuit" })]); const { handler: route } = handler({ db, authorize });
   const get = response(); await route(request("GET"), get); assert.equal(get.statusCode, 200); assert.deepEqual(get.body.items.map((item) => item.id), [REMINDER_ID]);
-  const patch = response(); await route(request("PATCH", { reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), patch); assert.equal(patch.statusCode, 200); assert.equal(patch.body.item.scheduled_for, "2026-09-04T14:00:00.000Z");
-  const cancel = response(); await route(request("DELETE", { reminder_id: REMINDER_ID }), cancel); assert.equal(cancel.statusCode, 200); assert.equal(cancel.body.item.status, "cancelled"); assert.equal(db.rows.find((item) => item.id === REMINDER_ID).status, "cancelled");
+  const patch = response(); await route(request("POST", { action: "update", reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), patch); assert.equal(patch.statusCode, 200); assert.equal(patch.body.item.scheduled_for, "2026-09-04T14:00:00.000Z");
+  const cancel = response(); await route(request("POST", { action: "cancel", reminder_id: REMINDER_ID }), cancel); assert.equal(cancel.statusCode, 200); assert.equal(cancel.body.item.status, "cancelled"); assert.equal(db.rows.find((item) => item.id === REMINDER_ID).status, "cancelled");
+  assert.equal(db.rows.some((item) => item.id === REMINDER_ID), true);
   assert.deepEqual(requiredRoles, ["viewer", "operator", "operator"]);
   assert.ok(db.queries.filter(({ sql }) => /insert into audit_logs/i.test(sql)).length >= 2);
 });
@@ -75,15 +76,16 @@ test("OV-P0-290 requires auth and owner for mutations", async () => {
   const unauthenticated = handler({ authorize: async () => null }); const denied = response();
   await unauthenticated.handler(request("GET"), denied); assert.equal(denied.statusCode, 0);
   const db = database([row({ created_by: "another-user" })]); const own = handler({ db }); const forbidden = response();
-  await own.handler(request("DELETE", { reminder_id: REMINDER_ID }), forbidden); assert.equal(forbidden.statusCode, 404); assert.equal(forbidden.body.error, "reminder_not_found");
+  await own.handler(request("POST", { action: "cancel", reminder_id: REMINDER_ID }), forbidden); assert.equal(forbidden.statusCode, 404); assert.equal(forbidden.body.error, "reminder_not_found");
 });
 
-test("OV-P0-290 requires viewer for GET and operator for every mutation", async () => {
+test("OV-P0-290 requires viewer for GET and operator for every POST command", async () => {
   const required = [];
   const scoped = handler({ authorize: async (_req, _res, role) => { required.push(role); return null; } });
-  for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
-    await scoped.handler(request(method), response());
-  }
+  await scoped.handler(request("GET"), response());
+  await scoped.handler(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }), response());
+  await scoped.handler(request("POST", { action: "update", reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), response());
+  await scoped.handler(request("POST", { action: "cancel", reminder_id: REMINDER_ID }), response());
   assert.deepEqual(required, ["viewer", "operator", "operator", "operator"]);
 });
 
@@ -115,6 +117,7 @@ test("OV-P0-290 reminder route logs only sanitized request diagnostics", async (
     event: "oneview_reminder_request",
     route: "/api/oneview/links/:id/reminders",
     method: "GET",
+    operation: "list",
     status: 503,
     error_code: "actions_database_not_configured",
     cause: "missing_env",
@@ -140,4 +143,43 @@ test("OV-P0-290 duplicate reminder returns a specific 409 for client reconciliat
   await duplicate(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }), res);
   assert.equal(res.statusCode, 409);
   assert.equal(res.body.error, "active_reminder_exists");
+});
+
+test("OV-P0-290 update/cancel reject missing or cancelled reminders and preserve audit actions", async () => {
+  const missingDb = database();
+  const missingRoute = handler({ db: missingDb }).handler;
+  const missingUpdate = response();
+  await missingRoute(request("POST", { action: "update", reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), missingUpdate);
+  assert.equal(missingUpdate.statusCode, 404);
+  assert.equal(missingUpdate.body.error, "reminder_not_found");
+
+  const cancelledDb = database([row({ status: "cancelled" })]);
+  const cancelledRoute = handler({ db: cancelledDb }).handler;
+  const cancelledUpdate = response();
+  await cancelledRoute(request("POST", { action: "update", reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), cancelledUpdate);
+  assert.equal(cancelledUpdate.statusCode, 404);
+  const cancelledAgain = response();
+  await cancelledRoute(request("POST", { action: "cancel", reminder_id: REMINDER_ID }), cancelledAgain);
+  assert.equal(cancelledAgain.statusCode, 404);
+  assert.equal(cancelledDb.rows.length, 1);
+
+  const auditDb = database([row()]);
+  const auditRoute = handler({ db: auditDb }).handler;
+  await auditRoute(request("POST", { action: "update", reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), response());
+  await auditRoute(request("POST", { action: "cancel", reminder_id: REMINDER_ID }), response());
+  const auditValues = auditDb.queries.filter(({ sql }) => /insert into audit_logs/i.test(sql)).flatMap(({ values }) => values);
+  assert.ok(auditValues.includes("REMINDER_UPDATED"));
+  assert.ok(auditValues.includes("REMINDER_CANCELLED"));
+});
+
+test("OV-P0-290 public mutation contract uses POST commands because corporate proxy rejects PATCH/DELETE", async () => {
+  const [routeSource, clientSource] = await Promise.all([
+    readFile(new URL("../api/_lib/oneview-operator-reminders.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/oneview-api.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(routeSource, /\["GET", "POST"\]\.includes\(req\.method\)/);
+  assert.match(clientSource, /updateOperatorReminder[\s\S]{0,260}method: "POST"[\s\S]{0,160}action: "update"/);
+  assert.match(clientSource, /cancelOperatorReminder[\s\S]{0,260}method: "POST"[\s\S]{0,160}action: "cancel"/);
+  assert.doesNotMatch(clientSource.match(/export async function updateOperatorReminder[\s\S]*?^}/m)?.[0] || "", /method: "PATCH"/);
+  assert.doesNotMatch(clientSource.match(/export async function cancelOperatorReminder[\s\S]*?^}/m)?.[0] || "", /method: "DELETE"/);
 });

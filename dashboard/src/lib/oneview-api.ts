@@ -1637,12 +1637,18 @@ export async function createOperatorReminder(link: ReminderLinkIdentity, schedul
   return item;
 }
 export async function updateOperatorReminder(link: ReminderLinkIdentity, reminderId: string, scheduledFor: string): Promise<OperatorReminder> {
-  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "PATCH", body: JSON.stringify({ reminder_id: reminderId, scheduled_for: scheduledFor }) })).item;
+  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), {
+    method: "POST",
+    body: JSON.stringify({ action: "update", reminder_id: reminderId, scheduled_for: scheduledFor }),
+  })).item;
   replaceOperatorReminders(link, [item]);
   return item;
 }
 export async function cancelOperatorReminder(link: ReminderLinkIdentity, reminderId: string): Promise<OperatorReminder> {
-  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link, reminderId), { method: "DELETE", body: JSON.stringify({ reminder_id: reminderId }) })).item;
+  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), {
+    method: "POST",
+    body: JSON.stringify({ action: "cancel", reminder_id: reminderId }),
+  })).item;
   replaceOperatorReminders(link, []);
   return item;
 }

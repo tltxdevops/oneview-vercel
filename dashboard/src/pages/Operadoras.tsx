@@ -732,7 +732,13 @@ function reminderMutationError(cause: unknown, action: "criar" | "alterar" | "ca
         ? "Escolha uma data e horário futuros."
         : `Não foi possível ${action} o lembrete: dados inválidos.`;
     }
-    if (cause.status === 500 || cause.status === 503) return "Não foi possível agendar agora. Tente novamente.";
+    if (cause.status >= 500) {
+      return action === "alterar"
+        ? "Não foi possível alterar agora. Tente novamente."
+        : action === "cancelar"
+          ? "Não foi possível cancelar agora. Tente novamente."
+          : "Não foi possível agendar agora. Tente novamente.";
+    }
   }
   return cause instanceof Error ? cause.message : `Não foi possível ${action} o lembrete.`;
 }

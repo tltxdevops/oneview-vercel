@@ -74,11 +74,13 @@ export function createOperatorReminderHandler({
   return async function operatorReminderHandler(req, res) {
     const startedAt = Date.now();
     const method = String(req.method || "UNKNOWN").toUpperCase();
+    let operation = method === "GET" ? "list" : "create";
     const reply = (status, payload, extra = {}) => {
       logger({
         event: "oneview_reminder_request",
         route: "/api/oneview/links/:id/reminders",
         method,
+        operation,
         status,
         error_code: typeof payload?.error === "string" ? payload.error : null,
         cause: extra.cause || null,
@@ -88,7 +90,7 @@ export function createOperatorReminderHandler({
     };
     res.setHeader("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    if (!["GET", "POST", "PATCH", "DELETE"].includes(req.method)) return methodNotAllowed(res, ["GET", "POST", "PATCH", "DELETE"]);
+    if (!["GET", "POST"].includes(req.method)) return methodNotAllowed(res, ["GET", "POST"]);
     const requested = identity(req);
     if (!requested) return reply(400, { error: "invalid_query" });
     const auth = await authorize(req, res, req.method === "GET" ? "viewer" : "operator");
@@ -116,8 +118,10 @@ export function createOperatorReminderHandler({
       }
 
       const body = requestBody(req);
+      operation = text(body.action).toLowerCase() || "create";
+      if (!["create", "update", "cancel"].includes(operation)) return reply(400, { error: "invalid_reminder_action" });
       const scheduledFor = futureTimestamp(body.scheduled_for, now());
-      if (req.method === "POST") {
+      if (operation === "create") {
         if (!scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
         const link = currentCircuit(await resolveLink(requested), requested);
         if (!link) return reply(409, { error: "circuit_not_active" });
@@ -140,7 +144,7 @@ export function createOperatorReminderHandler({
 
       const id = reminderId(req, body);
       if (!id) return reply(400, { error: "invalid_reminder_id" });
-      if (req.method === "PATCH" && !scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
+      if (operation === "update" && !scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
       const result = await transaction(async (client) => {
         const existingResult = await client.query(
           `select ${SELECT_COLUMNS} from operator_reminders where id = $1 and circuit_key = $2 and data_source_id = $3 and source_host_id = $4 and created_by = $5 and status = 'scheduled' for update`,
@@ -148,12 +152,12 @@ export function createOperatorReminderHandler({
         );
         const existing = existingResult.rows[0];
         if (!existing) return null;
-        const changed = req.method === "PATCH"
+        const changed = operation === "update"
           ? await client.query(`update operator_reminders set scheduled_for = $1, updated_at = $2 where id = $3 returning ${SELECT_COLUMNS}`, [scheduledFor, now(), id])
           : await client.query(`update operator_reminders set status = 'cancelled', cancelled_at = $1, updated_at = $1 where id = $2 returning ${SELECT_COLUMNS}`, [now(), id]);
         const row = changed.rows[0];
         await insertAuditLog(client, {
-          actorName: user.name, actorId: user.id, actorType: "sso_user", action: req.method === "PATCH" ? "REMINDER_UPDATED" : "REMINDER_CANCELLED",
+          actorName: user.name, actorId: user.id, actorType: "sso_user", action: operation === "update" ? "REMINDER_UPDATED" : "REMINDER_CANCELLED",
           entityType: "operator_reminder", entityId: id, dataSourceId: requested.dataSourceId,
           alertId: existing.initial_alert_id || null, beforeData: { status: existing.status, scheduled_for: new Date(existing.scheduled_for).toISOString() },
           afterData: { status: row.status, scheduled_for: new Date(row.scheduled_for).toISOString() }, metadata: { circuit_key: requested.id, source_host_id: requested.sourceHostId }, req,
