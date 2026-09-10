@@ -187,6 +187,8 @@ export async function fetchMicrosoftProfile(accessToken) {
     jobTitle: clean(profile.jobTitle),
     username: clean(profile.userPrincipalName || email),
     roles: ["viewer"],
+    // User.Read + /me does not return Entra group memberships.
+    groups: [],
   };
 }
 
@@ -237,6 +239,7 @@ function sessionUserFromPayload(session) {
     email: session.email,
     emailClaim: session.email_claim || "session.email",
     roles: Array.isArray(session.roles) ? session.roles : ["viewer"],
+    groups: Array.isArray(session.groups) ? session.groups : [],
   };
 }
 

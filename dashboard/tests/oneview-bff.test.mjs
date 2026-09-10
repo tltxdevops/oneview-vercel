@@ -235,6 +235,8 @@ test("sessão do tenant e domínio permitido autoriza leitura sem lista individu
     "APP_SESSION_SECRET",
     "ONEVIEW_ALLOWED_EMAIL_DOMAINS",
     "ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS",
+    "ONEVIEW_OPERATOR_EMAILS",
+    "ONEVIEW_OPERATOR_GROUP_IDS",
     "ONEVIEW_PUBLIC_ORIGIN",
     "ONEVIEW_ALLOWED_ORIGINS",
   ];
@@ -245,6 +247,8 @@ test("sessão do tenant e domínio permitido autoriza leitura sem lista individu
     process.env.APP_SESSION_SECRET = "unit-test-session-secret";
     process.env.ONEVIEW_ALLOWED_EMAIL_DOMAINS = " @TELETEX.COM.BR, teletex.com ";
     process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS = "false";
+    process.env.ONEVIEW_OPERATOR_EMAILS = "";
+    process.env.ONEVIEW_OPERATOR_GROUP_IDS = "";
     process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview.teletexdev.com.br/";
     process.env.ONEVIEW_ALLOWED_ORIGINS = "https://oneview.teletexdev.com.br/, https://oneview-vercel.vercel.app";
     console.warn = () => undefined;

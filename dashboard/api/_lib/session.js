@@ -52,6 +52,9 @@ export function createSessionToken(user) {
     email_claim: String(user?.emailClaim || user?.email_claim || "session.email").slice(0, 64),
     name: String(user?.name || user?.nome || user?.email || ""),
     roles: Array.isArray(user?.roles) ? user.roles : ["viewer"],
+    groups: Array.isArray(user?.groups)
+      ? user.groups.map((group) => String(group || "").trim()).filter(Boolean).slice(0, 200)
+      : [],
     iat: nowSec,
     exp: expSec,
   };

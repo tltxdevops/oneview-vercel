@@ -41,6 +41,17 @@ async function authHeaders(): Promise<Record<string, string>> {
   }
 }
 
+export class OneViewApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = "OneViewApiError";
+  }
+}
+
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   const isRead = !init?.method || init.method.toUpperCase() === "GET";
   // A Promise bound to one component's AbortSignal cannot be shared safely:
@@ -105,7 +116,11 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       invalid_hold_reason: "Selecione um motivo de espera homologado.",
       action_not_found: "Solicitação operacional não encontrada.",
     };
-    throw new Error(messages[errorCode] || `Não foi possível consultar o OneView (${response.status}).`);
+    throw new OneViewApiError(
+      messages[errorCode] || `Não foi possível consultar o OneView (${response.status}).`,
+      response.status,
+      errorCode,
+    );
   }
 
   const body = (await response.json()) as T;

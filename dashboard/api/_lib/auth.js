@@ -71,12 +71,53 @@ function allowedEmailDomains() {
     .filter(Boolean);
 }
 
-function rolesFor() {
+function normalizedValues(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function rolesFor(identity) {
   const roles = new Set(["viewer"]);
+  const existingRoles = new Set(normalizedValues(identity?.roles));
+  const operatorEmails = new Set(splitCsv(process.env.ONEVIEW_OPERATOR_EMAILS));
+  const operatorGroups = new Set(splitCsv(process.env.ONEVIEW_OPERATOR_GROUP_IDS));
+  const identityGroups = normalizedValues(identity?.groups);
+  const matchedOperatorEmail = operatorEmails.has(normalizeEmail(identity?.email));
+  const matchedOperatorGroup = identityGroups.some((groupId) => operatorGroups.has(groupId));
+
+  if (existingRoles.has("admin")) roles.add("admin");
+  if (matchedOperatorEmail || matchedOperatorGroup) roles.add("operator");
   if (String(process.env.ONEVIEW_ALLOW_ALL_AUTHENTICATED_ACTIONS || "").trim().toLowerCase() === "true") {
     roles.add("operator");
   }
-  return roles;
+  return { roles, matchedOperatorEmail, matchedOperatorGroup };
+}
+
+function resolvedRole(roles) {
+  if (roles.has("admin")) return "admin";
+  if (roles.has("operator")) return "operator";
+  return "viewer";
+}
+
+function requestRoute(req) {
+  try {
+    return new URL(String(req?.url || req?.originalUrl || "/"), "http://oneview.local").pathname;
+  } catch {
+    return "/";
+  }
+}
+
+function logRoleResolution(req, resolution) {
+  console.info(JSON.stringify({
+    event: "auth_role_resolution",
+    authenticated: true,
+    resolved_role: resolvedRole(resolution.roles),
+    matched_operator_group: resolution.matchedOperatorGroup,
+    matched_operator_email: resolution.matchedOperatorEmail,
+    route: requestRoute(req),
+    action: String(req?.method || "UNKNOWN").toUpperCase(),
+  }));
 }
 
 function hasRole(roles, requiredRole) {
@@ -138,9 +179,11 @@ function authorizeIdentity(req, res, identity, role, source) {
     });
   }
 
-  // Cookies antigos não concedem permissão operacional. A liberação
-  // de ações vem exclusivamente da flag geral server-side.
-  const roles = rolesFor();
+  // Cookies antigos com role operator não concedem acesso. Operator vem de
+  // allowlist server-side (ou da flag geral mantida apenas para dev/teste).
+  const resolution = rolesFor(identity);
+  const { roles } = resolution;
+  logRoleResolution(req, resolution);
   if (!hasRole(roles, role)) {
     return deny(res, role === "operator" || role === "admin" ? "operator_required" : "email_not_allowed", {
       claim,
@@ -193,7 +236,8 @@ export async function requireAuth(req, res, { role = "viewer" } = {}) {
       email,
       emailClaim: claim,
       name: String(payload.name || email),
-      roles: [],
+      roles: Array.isArray(payload.roles) ? payload.roles : [],
+      groups: Array.isArray(payload.groups) ? payload.groups : [],
     }, role, "bearer");
   } catch (error) {
     console.error("[api-auth]", error?.message || "invalid_token");

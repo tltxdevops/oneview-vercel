@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchOperatorReminders, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinksResponse, type OperatorReminder } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchOperatorReminders, OneViewApiError, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinksResponse, type OperatorReminder } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -627,6 +627,13 @@ function reminderLabel(value: string) {
     : new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
+function reminderMutationError(cause: unknown, action: "criar" | "alterar" | "cancelar") {
+  if (cause instanceof OneViewApiError && cause.status === 403 && cause.code === "operator_required") {
+    return `Você não possui permissão operacional para ${action} lembretes.`;
+  }
+  return cause instanceof Error ? cause.message : `Não foi possível ${action} o lembrete.`;
+}
+
 function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
   const identity = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
   const [reminders, setReminders] = useState<OperatorReminder[]>([]);
@@ -663,14 +670,14 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
         : await createOperatorReminder(link, scheduledFor.toISOString());
       setReminders([saved]); setOpen(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Não foi possível salvar o lembrete.");
+      setError(reminderMutationError(cause, reminder ? "alterar" : "criar"));
     } finally { setSaving(false); }
   };
   const cancel = async () => {
     if (!reminder) return;
     setSaving(true); setError(null);
     try { await cancelOperatorReminder(link, reminder.id); setReminders([]); setOpen(false); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível cancelar o lembrete."); }
+    catch (cause) { setError(reminderMutationError(cause, "cancelar")); }
     finally { setSaving(false); }
   };
   const edit = () => { const initial = reminderDateTime(reminder?.scheduled_for); setDate(initial.date); setTime(initial.time); setOpen(true); };

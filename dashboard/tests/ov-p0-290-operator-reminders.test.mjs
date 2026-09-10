@@ -61,10 +61,13 @@ test("OV-P0-290 permits no-INC snapshot, rejects past time and normal circuit", 
 });
 
 test("OV-P0-290 authenticated API scopes GET, updates schedule and cancels without physical deletion", async () => {
-  const db = database([row(), row({ id: "22222222-2222-4222-8222-222222222222", circuit_key: "other-circuit" })]); const { handler: route } = handler({ db });
+  const requiredRoles = [];
+  const authorize = async (_req, _res, role) => { requiredRoles.push(role); return actor; };
+  const db = database([row(), row({ id: "22222222-2222-4222-8222-222222222222", circuit_key: "other-circuit" })]); const { handler: route } = handler({ db, authorize });
   const get = response(); await route(request("GET"), get); assert.equal(get.statusCode, 200); assert.deepEqual(get.body.items.map((item) => item.id), [REMINDER_ID]);
   const patch = response(); await route(request("PATCH", { reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), patch); assert.equal(patch.statusCode, 200); assert.equal(patch.body.item.scheduled_for, "2026-09-04T14:00:00.000Z");
   const cancel = response(); await route(request("DELETE", { reminder_id: REMINDER_ID }), cancel); assert.equal(cancel.statusCode, 200); assert.equal(cancel.body.item.status, "cancelled"); assert.equal(db.rows.find((item) => item.id === REMINDER_ID).status, "cancelled");
+  assert.deepEqual(requiredRoles, ["viewer", "operator", "operator"]);
   assert.ok(db.queries.filter(({ sql }) => /insert into audit_logs/i.test(sql)).length >= 2);
 });
 
@@ -73,6 +76,15 @@ test("OV-P0-290 requires auth and owner for mutations", async () => {
   await unauthenticated.handler(request("GET"), denied); assert.equal(denied.statusCode, 0);
   const db = database([row({ created_by: "another-user" })]); const own = handler({ db }); const forbidden = response();
   await own.handler(request("DELETE", { reminder_id: REMINDER_ID }), forbidden); assert.equal(forbidden.statusCode, 404); assert.equal(forbidden.body.error, "reminder_not_found");
+});
+
+test("OV-P0-290 requires viewer for GET and operator for every mutation", async () => {
+  const required = [];
+  const scoped = handler({ authorize: async (_req, _res, role) => { required.push(role); return null; } });
+  for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
+    await scoped.handler(request(method), response());
+  }
+  assert.deepEqual(required, ["viewer", "operator", "operator", "operator"]);
 });
 
 test("OV-P0-290 drawer uses persisted reminder CRUD and has no Theo/Webex behavior", async () => {
