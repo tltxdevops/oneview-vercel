@@ -346,7 +346,7 @@ export async function recordTheoDispatcherHeartbeat(client, {
         last_error, metadata, created_at, updated_at
       ) values (
         $1, 'running', $2, $3, now(), now(), $4,
-        jsonb_build_object('worker_name', $1, 'last_success_at', case when $5::boolean then to_jsonb(now()) else null end),
+        jsonb_build_object('worker_name', $1::text, 'last_success_at', case when $5::boolean then to_jsonb(now()) else null end),
         now(), now()
       )
       on conflict (worker_id) do update
@@ -357,7 +357,7 @@ export async function recordTheoDispatcherHeartbeat(client, {
              last_cycle_at = now(),
              last_error = excluded.last_error,
              metadata = jsonb_build_object(
-               'worker_name', $1,
+               'worker_name', $1::text,
                'last_success_at', case when $5::boolean then to_jsonb(now()) else worker_heartbeats.metadata->'last_success_at' end
              ),
              updated_at = now()
