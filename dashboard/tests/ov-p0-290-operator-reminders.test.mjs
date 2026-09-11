@@ -89,12 +89,12 @@ test("OV-P0-290 requires viewer for GET and operator for every POST command", as
   assert.deepEqual(required, ["viewer", "operator", "operator", "operator"]);
 });
 
-test("OV-P0-290 drawer uses persisted reminder CRUD and has no Theo/Webex behavior", async () => {
+test("OV-P0-290 drawer keeps persisted reminder CRUD and does not implement Theo dispatch", async () => {
   const page = await readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8");
   const api = await readFile(new URL("../src/lib/oneview-api.ts", import.meta.url), "utf8");
   assert.match(page, /reminderLabel\(reminder\.scheduled_for\)/); assert.match(page, /fetchOperatorReminders/); assert.match(page, /Criado por/);
   assert.match(api, /createOperatorReminder/); assert.match(api, /updateOperatorReminder/); assert.match(api, /cancelOperatorReminder/);
-  assert.doesNotMatch(page, /Theo|Webex/);
+  assert.doesNotMatch(page, /oneview-theo-dispatch|\/api\/internal\/theo/);
 });
 
 test("OV-P0-290 reminder route logs only sanitized request diagnostics", async () => {

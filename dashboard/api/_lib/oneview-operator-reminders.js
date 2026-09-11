@@ -28,7 +28,12 @@ function reminderRecord(row) {
     initial_incident_number: row.initial_incident_number || null, context_snapshot: rowValue(row.context_snapshot) || {},
     created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
     updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    sent_at: row.sent_at ? new Date(row.sent_at).toISOString() : null,
     cancelled_at: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : null,
+    skipped_at: row.skipped_at ? new Date(row.skipped_at).toISOString() : null,
+    skip_reason: row.skip_reason || null,
+    last_error: row.last_error || null,
+    activity_at: row.activity_at ? new Date(row.activity_at).toISOString() : null,
   };
 }
 function identity(req) {
@@ -60,7 +65,8 @@ function snapshot(link) {
   };
 }
 const SELECT_COLUMNS = `id, circuit_key, data_source_id, source_host_id, scheduled_for, status, created_by, created_by_name,
-  initial_alert_id, initial_incident_sys_id, initial_incident_number, context_snapshot, created_at, updated_at, cancelled_at`;
+  initial_alert_id, initial_incident_sys_id, initial_incident_number, context_snapshot, created_at, updated_at,
+  sent_at, cancelled_at, skipped_at, skip_reason, last_error`;
 
 export function createOperatorReminderHandler({
   authorize = (req, res, role) => requireOneViewAuth(req, res, role),
@@ -174,13 +180,97 @@ export function createOperatorReminderHandler({
 
 export default createOperatorReminderHandler();
 
-const FEED_LIMIT = 200;
+const REMINDER_STATUSES = ["scheduled", "processing", "sent", "cancelled", "skipped", "failed"];
+const FEED_LIMIT = 50;
+const FEED_LIMIT_MAX = 100;
 const FEED_SCOPES = ["all", "mine"];
+const FEED_SORTS = ["recent", "oldest"];
+const FEED_SEVERITIES = ["not_classified", "information", "warning", "average", "high", "critical", "disaster"];
+const ACTIVITY_AT_SQL = `case
+  when r.status = 'sent' then r.sent_at
+  when r.status = 'skipped' then r.skipped_at
+  when r.status = 'cancelled' then r.cancelled_at
+  when r.status = 'failed' then r.updated_at
+  else r.scheduled_for
+end`;
+
+function positiveInteger(value, fallback, maximum) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, maximum) : fallback;
+}
+function optionalTimestamp(value) {
+  const raw = text(value);
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isFinite(parsed.getTime()) && /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw) ? parsed.toISOString() : undefined;
+}
+function optionalFilterText(value, maximum = 160) {
+  const raw = text(value);
+  return raw && raw.length <= maximum ? raw : raw ? undefined : null;
+}
+function reminderStatuses(value) {
+  const raw = text(value);
+  if (!raw) return ACTIVE_STATUSES;
+  const values = [...new Set(raw.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean))];
+  if (!values.length || values.some((item) => !REMINDER_STATUSES.includes(item))) return null;
+  return values;
+}
+function reminderFeedRequest(req) {
+  const scope = (queryValue(req, "scope") || "all").toLowerCase();
+  const statuses = reminderStatuses(queryValue(req, "status"));
+  const from = optionalTimestamp(queryValue(req, "from"));
+  const to = optionalTimestamp(queryValue(req, "to"));
+  const client = optionalFilterText(queryValue(req, "client"), 120);
+  const severity = (queryValue(req, "severity") || "").toLowerCase();
+  const hasIncidentRaw = (queryValue(req, "has_incident") || "").toLowerCase();
+  const search = optionalFilterText(queryValue(req, "search"));
+  const sort = (queryValue(req, "sort") || "").toLowerCase();
+  if (!FEED_SCOPES.includes(scope) || !statuses || from === undefined || to === undefined || client === undefined || search === undefined
+    || (severity && !FEED_SEVERITIES.includes(severity)) || (hasIncidentRaw && !["true", "false"].includes(hasIncidentRaw))
+    || (sort && !FEED_SORTS.includes(sort))) return null;
+  if (from && to && from > to) return null;
+  return {
+    scope, statuses, from, to, client, severity: severity || null,
+    hasIncident: hasIncidentRaw ? hasIncidentRaw === "true" : null,
+    search, sort: sort || null,
+    limit: Math.max(1, positiveInteger(queryValue(req, "limit"), FEED_LIMIT, FEED_LIMIT_MAX)),
+    offset: positiveInteger(queryValue(req, "offset"), 0, 10_000),
+  };
+}
+function feedWhere(filters, actorId, { includeStatus = true } = {}) {
+  const clauses = [];
+  const values = [];
+  const bind = (value) => { values.push(value); return `$${values.length}`; };
+  if (includeStatus) clauses.push(`r.status = any(${bind(filters.statuses)}::text[])`);
+  if (filters.scope === "mine") clauses.push(`r.created_by = ${bind(actorId)}`);
+  if (filters.from) clauses.push(`${ACTIVITY_AT_SQL} >= ${bind(filters.from)}::timestamptz`);
+  if (filters.to) clauses.push(`${ACTIVITY_AT_SQL} <= ${bind(filters.to)}::timestamptz`);
+  if (filters.client) clauses.push(`coalesce(r.context_snapshot -> 'customer' ->> 'name', r.context_snapshot -> 'customer' ->> 'key', '') ilike ${bind(`%${filters.client}%`)}`);
+  if (filters.severity) clauses.push(`lower(coalesce(r.context_snapshot -> 'alert' ->> 'severity', '')) = ${bind(filters.severity)}`);
+  if (filters.hasIncident !== null) {
+    const hasIncident = `coalesce(nullif(r.initial_incident_number, ''), nullif(r.context_snapshot -> 'incident' ->> 'number', '')) is not null`;
+    clauses.push(filters.hasIncident ? hasIncident : `not (${hasIncident})`);
+  }
+  if (filters.search) clauses.push(`concat_ws(' ', coalesce(r.context_snapshot -> 'customer' ->> 'name', ''), coalesce(r.context_snapshot -> 'circuit' ->> 'host_name', ''), r.circuit_key, coalesce(r.initial_incident_number, ''), coalesce(r.context_snapshot -> 'incident' ->> 'number', '')) ilike ${bind(`%${filters.search}%`)}`);
+  return { where: clauses.length ? `where ${clauses.join(" and ")}` : "", values };
+}
+function feedOrder(filters) {
+  if (filters.sort === "recent") return "activity_at desc nulls last, r.id desc";
+  if (filters.sort === "oldest") return "activity_at asc nulls last, r.id asc";
+  if (filters.statuses.every((status) => ACTIVE_STATUSES.includes(status))) return "r.scheduled_for asc, r.id asc";
+  if (filters.statuses.length === 1 && filters.statuses[0] === "sent") return "r.sent_at desc nulls last, r.id desc";
+  if (filters.statuses.length === 1 && filters.statuses[0] === "skipped") return "r.skipped_at desc nulls last, r.id desc";
+  if (filters.statuses.length === 1 && filters.statuses[0] === "cancelled") return "r.cancelled_at desc nulls last, r.id desc";
+  if (filters.statuses.length === 1 && filters.statuses[0] === "failed") return "r.updated_at desc nulls last, r.id desc";
+  return "activity_at desc nulls last, r.id desc";
+}
 
 /** The feed is cross-circuit, so created_by (Entra oid) never leaves the BFF; ownership travels as a boolean. */
 function feedRecord(row, actorId) {
   const record = reminderRecord(row);
   delete record.created_by;
+  // Historical diagnostics remain server-side. The operational feed uses a safe status label only.
+  delete record.last_error;
   return { ...record, mine: row.created_by === actorId };
 }
 
@@ -209,8 +299,8 @@ export function createOperatorReminderFeedHandler({
     res.setHeader("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (method !== "GET") return methodNotAllowed(res, ["GET"]);
-    const scope = (queryValue(req, "scope") || "all").toLowerCase();
-    if (!FEED_SCOPES.includes(scope)) return reply(400, { error: "invalid_query" });
+    const filters = reminderFeedRequest(req);
+    if (!filters) return reply(400, { error: "invalid_query" });
     const auth = await authorize(req, res);
     if (!auth) {
       logger({
@@ -228,15 +318,49 @@ export function createOperatorReminderFeedHandler({
     if (!user.id) return reply(401, { error: "authentication_required" });
 
     try {
-      const result = await query(async (client) => client.query(
-        `select ${SELECT_COLUMNS} from operator_reminders where status = any($1::text[]) order by scheduled_for asc limit $2`,
-        [ACTIVE_STATUSES, FEED_LIMIT],
-      ));
-      const items = result.rows.map((row) => feedRecord(row, user.id));
-      const mine = items.filter((item) => item.mine);
+      const result = await query(async (client) => {
+        const page = feedWhere(filters, user.id);
+        const base = feedWhere(filters, user.id, { includeStatus: false });
+        const countResult = await client.query(
+          `select r.status, count(*)::int as count, count(*) filter (where r.created_by = $${base.values.length + 1})::int as mine_count,
+                  count(*) filter (where r.status = 'sent' and r.sent_at >= now() - interval '4 hours')::int as recent_sent_count
+             from operator_reminders r ${base.where} group by r.status`,
+          [...base.values, user.id],
+        );
+        const facetResult = await client.query(
+          `select coalesce(nullif(r.context_snapshot -> 'customer' ->> 'name', ''), nullif(r.context_snapshot -> 'customer' ->> 'key', '')) as value, count(*)::int as count
+             from operator_reminders r ${base.where}
+            group by value
+            having coalesce(nullif(r.context_snapshot -> 'customer' ->> 'name', ''), nullif(r.context_snapshot -> 'customer' ->> 'key', '')) is not null
+            order by count desc, value asc limit 50`,
+          base.values,
+        );
+        const pageResult = await client.query(
+          `select ${SELECT_COLUMNS}, ${ACTIVITY_AT_SQL} as activity_at, count(*) over()::int as total_items
+             from operator_reminders r ${page.where}
+            order by ${feedOrder(filters)} limit $${page.values.length + 1} offset $${page.values.length + 2}`,
+          [...page.values, filters.limit, filters.offset],
+        );
+        return { countRows: countResult.rows, facetRows: facetResult.rows, pageRows: pageResult.rows };
+      });
+      const byStatus = Object.fromEntries(REMINDER_STATUSES.map((status) => [status, 0]));
+      let mine = 0;
+      let recentSentCount = 0;
+      for (const row of result.countRows) {
+        if (REMINDER_STATUSES.includes(row.status)) byStatus[row.status] = Number(row.count) || 0;
+        mine += Number(row.mine_count) || 0;
+        recentSentCount += Number(row.recent_sent_count) || 0;
+      }
+      const total = Object.values(byStatus).reduce((sum, value) => sum + value, 0);
+      const items = result.pageRows.map((row) => feedRecord(row, user.id));
+      const totalItems = Number(result.pageRows[0]?.total_items) || 0;
       return reply(200, {
-        items: scope === "mine" ? mine : items,
-        counts: { all: items.length, mine: mine.length },
+        items,
+        counts: { all: total, mine, ...byStatus },
+        recent_sent_count: recentSentCount,
+        facets: { clients: result.facetRows.map((row) => ({ value: row.value, label: row.value, count: Number(row.count) || 0 })) },
+        pagination: { limit: filters.limit, offset: filters.offset, total_items: totalItems, has_next: filters.offset + items.length < totalItems },
+        filters: { ...filters, from: filters.from, to: filters.to },
         data_source: "postgresql",
         checked_at: now().toISOString(),
       });

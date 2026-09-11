@@ -32,6 +32,10 @@ const OPTIONAL_COLUMNS = [
 type QueueTab = "open" | "without_incident" | "with_incident" | "resolved" | "all";
 type PageView = "queue" | "reminders";
 type ReminderScope = "all" | "mine";
+type ReminderView = "scheduled" | "sent" | "skipped" | "failed" | "cancelled" | "all";
+type ReminderPeriod = "all" | "30m" | "1h" | "4h" | "8h" | "24h" | "7d" | "custom";
+type ReminderIncidentFilter = "all" | "with" | "without";
+type ReminderSort = "default" | "recent" | "oldest";
 type OptionalColumn = typeof OPTIONAL_COLUMNS[number][0];
 type VisibleColumns = Record<OptionalColumn, boolean>;
 
@@ -425,7 +429,7 @@ export default function OperadorasPage() {
           </Button>
         </nav>
 
-        {view === "reminders" ? <OperatorRemindersPanel /> : <>
+        {view === "reminders" ? <OperatorRemindersPanel onOpenCircuit={openLink} /> : <>
         <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
           {kpis.map(({ tab: targetTab, divergence: targetDivergence, ...item }) => <KpiCard key={item.label} {...item} onClick={() => { setView("queue"); setTab(targetTab); setDivergence(targetDivergence || ""); setPage(1); }} />)}
         </div>
@@ -832,7 +836,7 @@ function ReminderFeedCard({ item, saving, editing, date, time, onDate, onTime, o
   );
 }
 
-function OperatorRemindersPanel() {
+function LegacyOperatorRemindersPanel() {
   const [feed, setFeed] = useState<OperatorReminderFeed | null>(null);
   const [scope, setScope] = useState<ReminderScope>("all");
   const [loading, setLoading] = useState(true);
@@ -971,6 +975,153 @@ function OperatorRemindersPanel() {
       )}
     </SectionPanel>
   );
+}
+
+const REMINDER_HISTORY_VIEWS: Array<{ value: ReminderView; label: string; statuses?: OperatorReminderFeedItem["status"][] }> = [
+  { value: "scheduled", label: "Agendados", statuses: ["scheduled", "processing"] },
+  { value: "sent", label: "Lembrados", statuses: ["sent"] },
+  { value: "skipped", label: "Ignorados", statuses: ["skipped"] },
+  { value: "failed", label: "Falhas", statuses: ["failed"] },
+  { value: "cancelled", label: "Cancelados", statuses: ["cancelled"] },
+  { value: "all", label: "Todos" },
+];
+
+function reminderHistoryTime(value: string | null | undefined) {
+  if (!value) return "Horário indisponível";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Horário indisponível";
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function reminderHistoryRange(period: ReminderPeriod, customFrom: string, customTo: string) {
+  if (period === "custom") {
+    const from = customFrom ? new Date(customFrom) : null;
+    const to = customTo ? new Date(customTo) : null;
+    return { from: from && Number.isFinite(from.getTime()) ? from.toISOString() : undefined, to: to && Number.isFinite(to.getTime()) ? to.toISOString() : undefined };
+  }
+  const durations: Partial<Record<ReminderPeriod, number>> = { "30m": 30 * 60_000, "1h": 60 * 60_000, "4h": 4 * 60 * 60_000, "8h": 8 * 60 * 60_000, "24h": 24 * 60 * 60_000, "7d": 7 * 24 * 60 * 60_000 };
+  const duration = durations[period];
+  return duration ? { from: new Date(Date.now() - duration).toISOString(), to: new Date().toISOString() } : {};
+}
+
+function reminderHistoryStatus(item: OperatorReminderFeedItem) {
+  if (item.status === "sent") return `✅ Theo acionado às ${timestampLabel(item.sent_at)}`;
+  if (item.status === "skipped") return item.skip_reason === "alert_resolved" ? "Alerta normalizou antes do horário" : "Lembrete ignorado por alteração no circuito";
+  if (item.status === "failed") return "Falha no envio";
+  if (item.status === "cancelled") return `Cancelado às ${timestampLabel(item.cancelled_at)}`;
+  if (item.status === "processing") return "Processando envio pelo Theo";
+  return `Agendado para ${reminderHistoryTime(item.scheduled_for)}`;
+}
+
+function reminderHistoryCircuit(item: OperatorReminderFeedItem): CanonicalLink {
+  const snapshot = item.context_snapshot as Record<string, unknown> | null;
+  return {
+    id: item.circuit_key,
+    circuit_key: item.circuit_key,
+    data_source_id: item.data_source_id,
+    datasource: item.data_source_id,
+    source_host_id: item.source_host_id || "",
+    customer_name: snapshotText(snapshot, "customer", "name"),
+    customer_key: snapshotText(snapshot, "customer", "key"),
+    host_name: snapshotText(snapshot, "circuit", "host_name"),
+    service_name: snapshotText(snapshot, "link", "service_name"),
+    link_type: snapshotText(snapshot, "link", "link_type"),
+    member_key: snapshotText(snapshot, "link", "member_key"),
+    uplink_key: snapshotText(snapshot, "link", "uplink_key"),
+    max_severity: snapshotText(snapshot, "alert", "severity"),
+    active_alerts: 0,
+    state: "normal",
+  } as CanonicalLink;
+}
+
+function ReminderHistoryCard({ item, saving, editing, date, time, onDate, onTime, onEdit, onCloseEdit, onSave, onCancel, onOpenCircuit }: {
+  item: OperatorReminderFeedItem;
+  saving: boolean;
+  editing: boolean;
+  date: string;
+  time: string;
+  onDate: (value: string) => void;
+  onTime: (value: string) => void;
+  onEdit: () => void;
+  onCloseEdit: () => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onOpenCircuit: () => void;
+}) {
+  const snapshot = item.context_snapshot as Record<string, unknown> | null;
+  const member = snapshotText(snapshot, "link", "member_key");
+  const uplink = snapshotText(snapshot, "link", "uplink_key");
+  const severity = snapshotText(snapshot, "alert", "severity");
+  const identity = [snapshotText(snapshot, "customer", "name"), snapshotText(snapshot, "circuit", "host_name")].filter(Boolean).join(" · ");
+  const circuit = [snapshotText(snapshot, "link", "service_name") || snapshotText(snapshot, "alert", "problem_name") || item.circuit_key, member ? `member ${member}` : uplink].filter(Boolean).join(" · ");
+  const incident = item.initial_incident_number || snapshotText(snapshot, "incident", "number");
+  const canMutate = item.mine && item.status === "scheduled";
+  return <article className="space-y-2 rounded-lg border border-border/60 bg-card p-3 shadow-sm">
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="flex items-center gap-2 text-sm font-semibold"><Bell className="h-4 w-4 text-muted-foreground" />{reminderHistoryStatus(item)}</p><p className="mt-1 text-xs text-muted-foreground">{reminderHistoryTime(item.activity_at || item.scheduled_for)}</p></div><div className="flex gap-1">{severity ? <Badge variant="outline">{severity}</Badge> : null}{item.mine ? <Badge variant="secondary">Criado por você</Badge> : null}</div></div>
+    <div className="space-y-0.5 text-sm"><p className="break-words font-medium">{identity || item.circuit_key}</p><p className="break-words text-xs text-muted-foreground">{circuit}</p><p className="break-words text-xs text-muted-foreground">{incident ? `${incident} · ${incidentStateLabel(snapshotText(snapshot, "incident", "state"))}` : "Sem chamado vinculado"}</p></div>
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2"><p className="text-xs text-muted-foreground">Criado por {text(item.created_by_name, "Operador não identificado")}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={onOpenCircuit}>Abrir circuito</Button>{canMutate ? <><Popover open={editing} onOpenChange={(next) => { if (next) onEdit(); else onCloseEdit(); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={saving}>Alterar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={onDate} onTime={onTime} onCancel={onCloseEdit} onSubmit={onSave} /></PopoverContent></Popover><Button size="sm" variant="ghost" disabled={saving} onClick={onCancel}>Cancelar</Button></> : null}</div></div>
+  </article>;
+}
+
+function OperatorRemindersPanel({ onOpenCircuit }: { onOpenCircuit: (link: CanonicalLink) => void }) {
+  const [feed, setFeed] = useState<OperatorReminderFeed | null>(null);
+  const [view, setView] = useState<ReminderView>("scheduled");
+  const [scope, setScope] = useState<ReminderScope>("all");
+  const [period, setPeriod] = useState<ReminderPeriod>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [client, setClient] = useState(ALL);
+  const [severity, setSeverity] = useState(ALL);
+  const [incident, setIncident] = useState<ReminderIncidentFilter>("all");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<ReminderSort>("default");
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [date, setDate] = useState(() => reminderDateTime().date);
+  const [time, setTime] = useState(() => reminderDateTime().time);
+  const requestVersion = useRef(0);
+  const activeView = REMINDER_HISTORY_VIEWS.find((item) => item.value === view) || REMINDER_HISTORY_VIEWS[0];
+  const range = useMemo(() => reminderHistoryRange(period, customFrom, customTo), [customFrom, customTo, period]);
+  const requestFilters = useMemo(() => ({ status: activeView.statuses, scope, from: range.from, to: range.to, client: client === ALL ? undefined : client, severity: severity === ALL ? undefined : severity, hasIncident: incident === "all" ? undefined : incident === "with", search: search.trim() || undefined, sort: sort === "default" ? undefined : sort, limit: 50, offset }), [activeView.statuses, client, incident, offset, range.from, range.to, scope, search, severity, sort]);
+  const load = useCallback(async (force = false) => {
+    const version = ++requestVersion.current;
+    setLoading(true);
+    try { const result = await fetchOperatorReminderFeed({ ...requestFilters, force }); if (requestVersion.current === version) { setFeed(result); setError(null); } }
+    catch (cause) { if (requestVersion.current === version && !isAbortError(cause)) setError(cause instanceof Error ? cause.message : "Não foi possível carregar os lembretes."); }
+    finally { if (requestVersion.current === version) setLoading(false); }
+  }, [requestFilters]);
+  useEffect(() => { void load(true); return () => { requestVersion.current += 1; }; }, [load]);
+  useEffect(() => {
+    if (view !== "scheduled") return undefined;
+    const refresh = () => { if (!document.hidden) void load(true); };
+    const id = window.setInterval(refresh, 30_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", refresh); };
+  }, [load, view]);
+  const items = feed?.items || [];
+  const counts = feed?.counts || { all: 0, mine: 0, scheduled: 0, processing: 0, sent: 0, skipped: 0, failed: 0, cancelled: 0 };
+  const viewCount = (value: ReminderView) => value === "scheduled" ? counts.scheduled + counts.processing : value === "all" ? counts.all : counts[value];
+  const chooseView = (next: ReminderView) => { setView(next); setOffset(0); };
+  const startEdit = (item: OperatorReminderFeedItem) => { const initial = reminderDateTime(item.scheduled_for); setDate(initial.date); setTime(initial.time); setMutationError(null); setEditingId(item.id); };
+  const save = async (item: OperatorReminderFeedItem) => { const scheduledFor = new Date(`${date}T${time}:00`); if (!date || !time || Number.isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now()) { setMutationError("Escolha uma data e horário futuros."); return; } setSavingId(item.id); setMutationError(null); try { await updateOperatorReminder(operatorReminderIdentity(item), item.id, scheduledFor.toISOString()); setEditingId(null); void load(true); } catch (cause) { setMutationError(reminderMutationError(cause, "alterar")); } finally { setSavingId(null); } };
+  const cancel = async (item: OperatorReminderFeedItem) => { setSavingId(item.id); setMutationError(null); try { await cancelOperatorReminder(operatorReminderIdentity(item), item.id); void load(true); } catch (cause) { setMutationError(reminderMutationError(cause, "cancelar")); } finally { setSavingId(null); } };
+  return <SectionPanel title="Lembretes" description="Retornos agendados, enviados e históricos dos circuitos monitorados" aside={<Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void load(true)}>Atualizar</Button>} bodyClassName="space-y-3 p-3">
+    <nav aria-label="Visões de lembretes" className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-border/70 p-1">{REMINDER_HISTORY_VIEWS.map((item) => <Button key={item.value} type="button" size="sm" variant={view === item.value ? "default" : "ghost"} className="shrink-0" onClick={() => chooseView(item.value)}>{item.label} ({viewCount(item.value)})</Button>)}</nav>
+    <div aria-label="Período dos lembretes" className="flex min-w-0 gap-1 overflow-x-auto">{(["all", "30m", "1h", "4h", "8h", "24h", "7d", "custom"] as ReminderPeriod[]).map((item) => <Button key={item} type="button" size="sm" variant={period === item ? "secondary" : "ghost"} className="shrink-0" onClick={() => { setPeriod(item); setOffset(0); }}>{item === "all" ? "Todo período" : item === "custom" ? "Personalizado" : item}</Button>)}</div>
+    {period === "custom" ? <div className="grid gap-2 sm:grid-cols-2"><label className="grid gap-1 text-xs text-muted-foreground">De<Input type="datetime-local" value={customFrom} onChange={(event) => { setCustomFrom(event.target.value); setOffset(0); }} /></label><label className="grid gap-1 text-xs text-muted-foreground">Até<Input type="datetime-local" value={customTo} onChange={(event) => { setCustomTo(event.target.value); setOffset(0); }} /></label></div> : null}
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"><Filter label="Cliente" value={client} options={optionList(feed?.facets?.clients)} onChange={(value) => { setClient(value); setOffset(0); }} /><Filter label="Severidade" value={severity} options={[{ value: ALL, label: "Todas" }, { value: "disaster", label: "Disaster" }, { value: "high", label: "High" }, { value: "average", label: "Average" }, { value: "warning", label: "Warning" }]} onChange={(value) => { setSeverity(value); setOffset(0); }} /><Filter label="Chamado" value={incident} options={[{ value: "all", label: "Todos" }, { value: "with", label: "Com INC" }, { value: "without", label: "Sem INC" }]} onChange={(value) => { setIncident(value as ReminderIncidentFilter); setOffset(0); }} /><Filter label="Criador" value={scope} options={[{ value: "all", label: "Todos" }, { value: "mine", label: "Criados por mim" }]} onChange={(value) => { setScope(value as ReminderScope); setOffset(0); }} /><Filter label="Ordenação" value={sort} options={[{ value: "default", label: "Padrão da visão" }, { value: "recent", label: "Mais recentes" }, { value: "oldest", label: "Mais antigos" }]} onChange={(value) => { setSort(value as ReminderSort); setOffset(0); }} /></div>
+    <div className="relative"><Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" /><Input aria-label="Buscar lembretes" className="h-8 pl-8" value={search} onChange={(event) => { setSearch(event.target.value); setOffset(0); }} placeholder="Cliente, local, circuito ou INC" /></div>
+    <p className="text-xs text-muted-foreground">ACK: filtro adiado; o contrato atual de `operator_reminders` não traz reconhecimento confiável.</p>
+    {mutationError ? <p role="alert" className="text-xs text-destructive">{mutationError}</p> : null}
+    {error && !feed ? <OperationalErrorBanner message={error} onRetry={() => void load(true)} /> : null}
+    {error && feed ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><span>Não foi possível atualizar os lembretes.</span><Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void load(true)}>Tentar novamente</Button></div> : null}
+    {loading && !feed ? <div className="space-y-2"><Skeleton className="h-28 w-full" /><Skeleton className="h-28 w-full" /></div> : !items.length ? <div className="space-y-2"><OperationalEmptyState compact icon={<Bell className="h-5 w-5" />} title={view === "scheduled" ? "Nenhum lembrete aguardando envio." : "Nenhum lembrete nesta visão."} description={view === "scheduled" ? "Agende um retorno pelo botão Lembrar no detalhe de um circuito com alerta ativo." : "Ajuste período ou filtros para consultar o histórico."} />{view === "scheduled" && (feed?.recent_sent_count || 0) > 0 ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 p-3 text-sm"><span>{feed?.recent_sent_count} lembrados nas últimas 4h</span><Button size="sm" variant="outline" onClick={() => { setPeriod("4h"); chooseView("sent"); }}>Ver lembrados</Button></div> : null}</div> : <div className="grid gap-2 lg:grid-cols-2">{items.map((item) => <ReminderHistoryCard key={item.id} item={item} saving={savingId === item.id} editing={editingId === item.id} date={date} time={time} onDate={setDate} onTime={setTime} onEdit={() => startEdit(item)} onCloseEdit={() => setEditingId(null)} onSave={() => void save(item)} onCancel={() => void cancel(item)} onOpenCircuit={() => onOpenCircuit(reminderHistoryCircuit(item))} />)}</div>}
+    {feed?.pagination && feed.pagination.total_items > feed.pagination.limit ? <div className="flex items-center justify-between gap-2"><p className="text-xs text-muted-foreground">{feed.pagination.offset + 1}–{feed.pagination.offset + items.length} de {feed.pagination.total_items}</p><div className="flex gap-2"><Button size="sm" variant="outline" disabled={feed.pagination.offset === 0} onClick={() => setOffset(Math.max(0, feed.pagination!.offset - feed.pagination!.limit))}>Anterior</Button><Button size="sm" variant="outline" disabled={!feed.pagination.has_next} onClick={() => setOffset(feed.pagination!.offset + feed.pagination!.limit)}>Próxima</Button></div></div> : null}
+  </SectionPanel>;
 }
 
 function CircuitReminderPanel({ link }: { link: CanonicalLink }) {

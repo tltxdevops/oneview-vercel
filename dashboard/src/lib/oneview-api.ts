@@ -1555,7 +1555,12 @@ export type OperatorReminder = {
   context_snapshot: Record<string, unknown>;
   created_at: string | null;
   updated_at: string | null;
+  sent_at: string | null;
   cancelled_at: string | null;
+  skipped_at: string | null;
+  skip_reason: string | null;
+  last_error: string | null;
+  activity_at?: string | null;
 };
 type OperatorRemindersResponse = { items: OperatorReminder[] };
 const OPERATOR_REMINDER_CACHE_TTL_MS = 45_000;
@@ -1655,9 +1660,26 @@ export async function cancelOperatorReminder(link: ReminderLinkIdentity, reminde
 
 /** OV-P0-297 — feed de lembretes ativos entre circuitos, base da aba "Lembretes". */
 export type OperatorReminderFeedItem = Omit<OperatorReminder, "created_by"> & { mine: boolean };
+export type OperatorReminderStatus = OperatorReminderFeedItem["status"];
+export type OperatorReminderFeedFilters = {
+  status?: OperatorReminderStatus[];
+  scope?: "all" | "mine";
+  from?: string;
+  to?: string;
+  client?: string;
+  severity?: string;
+  hasIncident?: boolean;
+  search?: string;
+  sort?: "recent" | "oldest";
+  limit?: number;
+  offset?: number;
+};
 export type OperatorReminderFeed = {
   items: OperatorReminderFeedItem[];
-  counts: { all: number; mine: number };
+  counts: { all: number; mine: number } & Record<OperatorReminderStatus, number>;
+  recent_sent_count?: number;
+  facets?: { clients: Array<{ value: string; label: string; count: number }> };
+  pagination?: { limit: number; offset: number; total_items: number; has_next: boolean };
   checked_at?: string;
 };
 const OPERATOR_REMINDER_FEED_PATH = "/oneview/reminders";
@@ -1672,11 +1694,24 @@ export function operatorReminderIdentity(item: Pick<OperatorReminderFeedItem, "c
   };
 }
 
-export async function fetchOperatorReminderFeed(options: { signal?: AbortSignal; force?: boolean } = {}): Promise<OperatorReminderFeed> {
-  if (options.force) readCache.delete(oneViewReadCacheKey(OPERATOR_REMINDER_FEED_PATH));
+export async function fetchOperatorReminderFeed(options: OperatorReminderFeedFilters & { signal?: AbortSignal; force?: boolean } = {}): Promise<OperatorReminderFeed> {
+  const search = new URLSearchParams();
+  if (options.status?.length) search.set("status", options.status.join(","));
+  if (options.scope && options.scope !== "all") search.set("scope", options.scope);
+  if (options.from) search.set("from", options.from);
+  if (options.to) search.set("to", options.to);
+  if (options.client) search.set("client", options.client);
+  if (options.severity) search.set("severity", options.severity);
+  if (typeof options.hasIncident === "boolean") search.set("has_incident", String(options.hasIncident));
+  if (options.search) search.set("search", options.search);
+  if (options.sort) search.set("sort", options.sort);
+  if (options.limit) search.set("limit", String(options.limit));
+  if (typeof options.offset === "number" && options.offset > 0) search.set("offset", String(options.offset));
+  const path = `${OPERATOR_REMINDER_FEED_PATH}${search.size ? `?${search.toString()}` : ""}`;
+  if (options.force) readCache.delete(oneViewReadCacheKey(path));
   const startedAt = performance.now();
   try {
-    return await fetchApi<OperatorReminderFeed>(OPERATOR_REMINDER_FEED_PATH, { signal: options.signal });
+    return await fetchApi<OperatorReminderFeed>(path, { signal: options.signal });
   } catch (cause) {
     console.info(JSON.stringify({
       event: "oneview_reminder_request",
