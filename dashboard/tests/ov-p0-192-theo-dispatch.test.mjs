@@ -747,6 +747,7 @@ test("OV-P0-194 heartbeat UPSERT casts worker_id in both JSONB branches", async 
 
   await recordTheoDispatcherHeartbeat(client, { success: true, hostname: "vercel", version: "abc" });
   assert.equal(calls[0].values[4], true);
+  assert.match(calls[0].sql, /\$1::varchar\(120\), 'running', \$2::varchar\(255\), \$3::varchar\(80\), now\(\), now\(\), \$4::text/i);
   assert.equal([...calls[0].sql.matchAll(/'worker_name',\s*\$1::text/gi)].length, 2);
   assert.doesNotMatch(calls[0].sql, /'worker_name',\s*\$1(?!::text)/i);
   assert.match(calls[0].sql, /case when \$5::boolean then to_jsonb\(now\(\)\) else null end/i);
@@ -772,4 +773,31 @@ test("OV-P0-194 heartbeat UPSERT casts worker_id in both JSONB branches", async 
   assert.equal(calls[3].values[4], false);
   assert.match(calls[3].sql, /on conflict \(worker_id\) do update/i);
   assert.equal(calls.length, 4);
+});
+
+test("OV-P0-194 heartbeat failure log exposes only sanitized PostgreSQL diagnostics and SQL fingerprint", async () => {
+  const logs = [];
+  const heartbeatError = Object.assign(new Error("password=do-not-log"), {
+    code: "42P08", position: "217", constraint: "worker_heartbeats_pkey", column: "worker_id", dataType: "varchar",
+  });
+  const handler = dispatcher({
+    heartbeat: async () => { throw heartbeatError; },
+    logger: (entry) => logs.push(entry),
+  });
+
+  await handler(req({ smoke: "1" }), res());
+
+  const heartbeatLog = logs.find((entry) => entry.event === "theo_dispatch_heartbeat");
+  assert.deepEqual(heartbeatLog, {
+    event: "theo_dispatch_heartbeat",
+    status: "failed",
+    code: "database_unavailable",
+    pg_code: "42P08",
+    pg_position: "217",
+    pg_constraint: "worker_heartbeats_pkey",
+    pg_column: "worker_id",
+    pg_datatype: "varchar",
+    heartbeat_sql_version: "v3-explicit-param-types",
+  });
+  assert.doesNotMatch(JSON.stringify(heartbeatLog), /do-not-log|password/i);
 });

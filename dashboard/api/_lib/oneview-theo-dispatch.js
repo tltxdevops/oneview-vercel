@@ -33,6 +33,7 @@ export const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
 export const THEO_CANARY_DEDUPE_PREFIX = "theo:canary:alert:";
 export const THEO_DISPATCHER_WORKER_NAME = "theo_dispatcher";
 export const THEO_DISPATCHER_CREATED_BY = "vercel-theo-dispatcher";
+const THEO_HEARTBEAT_SQL_VERSION = "v3-explicit-param-types";
 const THEO_TIMEOUT_MS = 10_000;
 const THEO_AUTO_BATCH_SIZE = 5;
 const LOCK_TTL_SECONDS = 600;
@@ -111,6 +112,26 @@ function publicErrorCode(error) {
   const message = String(error?.message || error || "").toLowerCase();
   if (error?.name === "AbortError" || /abort|timeout|timed out/.test(message)) return "timeout";
   return "network_error";
+}
+
+function safePgIdentifier(value, maxLength = 120) {
+  const normalized = text(value);
+  return /^[A-Za-z_][A-Za-z0-9_.$ -]*$/.test(normalized) ? normalized.slice(0, maxLength) : null;
+}
+
+function heartbeatFailureLog(error) {
+  const position = String(error?.position || "").trim();
+  return {
+    event: "theo_dispatch_heartbeat",
+    status: "failed",
+    code: "database_unavailable",
+    pg_code: /^[0-9A-Z]{5}$/.test(String(error?.code || "")) ? String(error.code) : null,
+    pg_position: /^\d{1,8}$/.test(position) ? position : null,
+    pg_constraint: safePgIdentifier(error?.constraint),
+    pg_column: safePgIdentifier(error?.column),
+    pg_datatype: safePgIdentifier(error?.dataType || error?.datatype),
+    heartbeat_sql_version: THEO_HEARTBEAT_SQL_VERSION,
+  };
 }
 
 function retryDelaySeconds(attempts) {
@@ -345,7 +366,7 @@ export async function recordTheoDispatcherHeartbeat(client, {
         worker_id, status, hostname, version, last_seen_at, last_cycle_at,
         last_error, metadata, created_at, updated_at
       ) values (
-        $1, 'running', $2, $3, now(), now(), $4,
+        $1::varchar(120), 'running', $2::varchar(255), $3::varchar(80), now(), now(), $4::text,
         jsonb_build_object('worker_name', $1::text, 'last_success_at', case when $5::boolean then to_jsonb(now()) else null end),
         now(), now()
       )
@@ -527,8 +548,8 @@ export function createTheoDispatchHandler({
           }));
           try {
             await transaction((client) => heartbeat(client, { success: false, errorCode: enrichmentFailure.code }));
-          } catch {
-            logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
+          } catch (error) {
+            logger(heartbeatFailureLog(error));
           }
           const latencyMs = Math.max(Date.now() - startedAt, 0);
           logger({ event: "theo_dispatch", outbox_id: claimed.id, status: "failed", code: enrichmentFailure.code, retryable: enrichmentFailure.retryable, latency_ms: latencyMs });
@@ -602,8 +623,8 @@ export function createTheoDispatchHandler({
           success: succeeded,
           errorCode: failure?.code || null,
         }));
-      } catch {
-        logger({ event: "theo_dispatch_heartbeat", status: "failed", code: "database_unavailable" });
+      } catch (error) {
+        logger(heartbeatFailureLog(error));
       }
 
       const latencyMs = Math.max(Date.now() - startedAt, 0);
