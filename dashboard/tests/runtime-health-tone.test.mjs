@@ -45,6 +45,19 @@ test("tons operacionais: verde / amarelo parcial / vermelho 14min / branco down"
   assert.equal(operationalToneFromStatus("UNKNOWN"), "unknown");
 });
 
+test("chip Theo: verde operacional / amarelo degradado / cinza desativado / vermelho falha", () => {
+  const theoChipTone = (status) => {
+    if (status === "HEALTHY") return "ok";
+    if (status === "DEGRADED") return "partial";
+    if (status === "DOWN" || status === "STALE") return "stale";
+    return "unknown";
+  };
+  assert.equal(theoChipTone("HEALTHY"), "ok");
+  assert.equal(theoChipTone("DEGRADED"), "partial");
+  assert.equal(theoChipTone("READY_DISABLED"), "unknown");
+  assert.equal(theoChipTone("DOWN"), "stale");
+});
+
 test("Zabbix parcial não vira branco quando ainda há link saudável", () => {
   assert.equal(operationalToneFromGroup([
     { status: "HEALTHY", last_success_at: at(1) },

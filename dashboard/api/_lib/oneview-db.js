@@ -17,8 +17,11 @@ import {
   classifyLinkHealth,
   classifyServiceNowWriteReadiness,
   classifyWriteReadiness,
+  classifyTheoWebexHealth,
   classifyZabbixSourceTruth,
   fraportProbeForSource,
+  THEO_DISPATCHER_HEARTBEAT_WORKER_ID,
+  THEO_HEALTH_ACTION_TYPES,
 } from "./oneview-runtime-health-truth.js";
 
 const { Pool } = pg;
@@ -3038,10 +3041,6 @@ const RUNTIME_WORKERS = Object.freeze([
   { workerName: "servicenow_sync", name: "ServiceNow Sync", intervalSeconds: 30 },
   { workerName: "theo_dispatcher", name: "Theo Dispatcher", intervalSeconds: 60 },
 ]);
-const THEO_BFF_CREATED_BY = "vercel-theo-dispatcher";
-const THEO_LEGACY_BFF_CREATED_BY = "ov-p0-192";
-const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
-
 function metadataDate(value, key) {
   return isoDate(value?.[key]);
 }
@@ -3068,7 +3067,7 @@ async function fetchRuntimeHealthPayload(config) {
     sources,
     serviceNow,
     workerHeartbeats,
-    theoDispatch,
+    theoSignals,
     sourceFacts,
     customerIntegrityRow,
     linkInventoryRow,
@@ -3079,7 +3078,46 @@ async function fetchRuntimeHealthPayload(config) {
     queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token, nullif(btrim(d.api_url), '') is not null as has_api_url from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
     queryRows(config, `select s.last_success_at, s.watermark_sys_updated_on, to_jsonb(s)->>'last_error' as last_error, to_jsonb(s)->>'status' as status from servicenow_sync_state s where s.sync_key = 'incident' limit 1`),
     queryRows(config, `select worker_id, status, hostname, version, last_seen_at, last_cycle_at, last_error, metadata, updated_at from worker_heartbeats where worker_id = any($1::text[])`, [RUNTIME_WORKERS.map((worker) => worker.workerName)]),
-    queryRow(config, `select status, processed_at, updated_at, last_error, attempts from integration_outbox where action_type = 'theo_webex_notification' and (created_by in ($1, $2) or idempotency_key = $3) order by coalesce(processed_at, updated_at, created_at) desc, id desc limit 1`, [THEO_BFF_CREATED_BY, THEO_LEGACY_BFF_CREATED_BY, THEO_SMOKE_DEDUPE_KEY]),
+    queryRow(config, `
+      select
+        (select coalesce(processed_at, updated_at)
+           from integration_outbox
+          where action_type = any($1::text[])
+            and status = 'success'
+          order by coalesce(processed_at, updated_at) desc nulls last
+          limit 1) as last_success_at,
+        (select action_type
+           from integration_outbox
+          where action_type = any($1::text[])
+            and status = 'success'
+          order by coalesce(processed_at, updated_at) desc nulls last
+          limit 1) as last_success_action_type,
+        (select updated_at
+           from integration_outbox
+          where action_type = any($1::text[])
+            and status = 'failed'
+          order by updated_at desc
+          limit 1) as last_failed_at,
+        (select last_error
+           from integration_outbox
+          where action_type = any($1::text[])
+            and status = 'failed'
+          order by updated_at desc
+          limit 1) as last_failed_error,
+        (select count(*)::int
+           from integration_outbox
+          where action_type = any($1::text[])
+            and status in ('pending', 'processing')) as pending,
+        (select count(*)::int
+           from integration_outbox
+          where action_type = any($1::text[])
+            and status in ('pending', 'processing')
+            and attempts > 0) as retrying,
+        (select min(created_at)
+           from integration_outbox
+          where action_type = any($1::text[])
+            and status in ('pending', 'processing')) as oldest_pending_at
+    `, [THEO_HEALTH_ACTION_TYPES]).catch(() => ({ query_failed: true })),
     queryRows(config, `
       select
         d.name as source_name,
@@ -3438,29 +3476,45 @@ async function fetchRuntimeHealthPayload(config) {
 
   const theoEnabled = String(process.env.THEO_ONEVIEW_AUTOMATION_ENABLED || "").toLowerCase() === "true";
   const theoConfigured = Boolean(String(process.env.THEO_ONEVIEW_URL || "").trim() && String(process.env.THEO_ONEVIEW_TOKEN || "").trim() && String(process.env.CRON_SECRET || "").trim());
-  const theoLastSuccess = theoDispatch?.status === "success" ? isoDate(theoDispatch?.processed_at) : null;
-  const theoFailed = theoDispatch?.status === "failed";
-  const theoStatus = !theoConfigured
-    ? RUNTIME_STATUS.CONFIG_MISSING
-    : theoFailed
-      ? RUNTIME_STATUS.DEGRADED
-      : classifyRuntimeHealth({ enabled: true, configured: true, lastSuccessAt: theoLastSuccess, intervalSeconds: 86400, now });
+  const theoWorker = workersByName.get(THEO_DISPATCHER_HEARTBEAT_WORKER_ID) || null;
+  const theoHealth = classifyTheoWebexHealth({
+    automationEnabled: theoEnabled,
+    configured: theoConfigured,
+    heartbeatAt: isoDate(theoWorker?.last_seen_at),
+    lastSuccessAt: isoDate(theoSignals?.last_success_at),
+    lastSuccessActionType: nullableText(sanitizeText(theoSignals?.last_success_action_type, "", 80)),
+    lastFailedAt: isoDate(theoSignals?.last_failed_at),
+    lastError: theoSignals?.last_failed_error || null,
+    pendingCount: integerValue(theoSignals?.pending, 0),
+    retryCount: integerValue(theoSignals?.retrying, 0),
+    oldestPendingAt: isoDate(theoSignals?.oldest_pending_at),
+    signalsQueryFailed: Boolean(theoSignals?.query_failed),
+    heartbeatQueryFailed: false,
+    now,
+  });
   components.push(runtimeComponent({
     id: "theo-webex",
     category: "INTEGRATIONS",
     name: "Theo/Webex",
     enabled: theoEnabled,
-    status: theoStatus,
-    connectivity: theoDispatch ? "observed" : "unknown",
+    status: theoHealth.status,
+    connectivity: theoHealth.last_success_at || theoWorker ? "observed" : "unknown",
     auth: theoConfigured ? "configured" : "missing",
-    last_success_at: theoLastSuccess,
-    last_observed_at: isoDate(theoDispatch?.updated_at),
-    last_error_at: theoFailed ? isoDate(theoDispatch?.updated_at) : null,
-    failure_count: theoFailed ? 1 : 0,
-    current_error: theoFailed ? theoDispatch?.last_error : null,
-    detail: theoConfigured
-      ? (theoEnabled ? "Dispatcher Vercel habilitado" : "Dispatcher Vercel configurado; automações desabilitadas")
-      : "Secrets server-side pendentes",
+    last_success_at: theoHealth.last_success_at,
+    last_observed_at: isoDate(theoWorker?.last_seen_at) || theoHealth.last_success_at,
+    last_error_at: theoHealth.last_error_at,
+    failure_count: theoHealth.semantic === "FAILED" || theoHealth.current_error ? 1 : 0,
+    current_error: theoHealth.current_error,
+    detail: theoHealth.detail,
+    cause: theoHealth.cause,
+    metrics: {
+      semantic_status: theoHealth.semantic,
+      heartbeat: theoHealth.heartbeat,
+      pending: theoHealth.pending,
+      retrying: theoHealth.retrying,
+      last_success_action_type: theoHealth.last_success_action_type,
+      dispatch_means: "theo_accepted_http",
+    },
     checked_at: checkedAt,
   }));
 

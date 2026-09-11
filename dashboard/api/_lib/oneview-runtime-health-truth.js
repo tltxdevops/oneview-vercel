@@ -609,6 +609,228 @@ export function classifyServiceNowWriteReadiness({
   };
 }
 
+/**
+ * Theo/Webex runtime health.
+ *
+ * Legacy algorithm (do not restore): a single integration_outbox row for
+ * theo_webex_notification (BFF/smoke created_by) plus classifyRuntimeHealth
+ * with enabled forced to true and intervalSeconds=86400. That marked Theo
+ * STALE/FAILED when operator reminders and auto-dispatch succeeded on other
+ * action_types, and painted DISABLED as if the dispatcher were enabled.
+ */
+export const THEO_HEALTH_ACTION_TYPES = Object.freeze([
+  "theo_webex_notification",
+  "theo_alert_notification_v1",
+  "theo_unseen_alert_notification_v1",
+  "theo_operator_reminder_v1",
+]);
+export const THEO_DISPATCHER_HEARTBEAT_WORKER_ID = "theo_dispatcher";
+export const THEO_HEARTBEAT_FRESH_MS = 3 * 60 * 1000;
+export const THEO_HEARTBEAT_STALE_MS = 5 * 60 * 1000;
+export const THEO_DISPATCH_RECENT_MS = 15 * 60 * 1000;
+export const THEO_BACKLOG_OLD_MS = 10 * 60 * 1000;
+export const THEO_TERMINAL_FAILURE_RECENT_MS = 15 * 60 * 1000;
+
+export const THEO_SEMANTIC_STATUS = Object.freeze({
+  HEALTHY: "HEALTHY",
+  DEGRADED: "DEGRADED",
+  DISABLED: "DISABLED",
+  FAILED: "FAILED",
+  UNKNOWN: "UNKNOWN",
+});
+
+function sanitizeTheoError(value) {
+  const raw = String(value || "").split(/\r?\n/)[0].replace(/\s+/g, " ").trim();
+  if (!raw) return null;
+  return raw
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/\bBearer\s+\S+/gi, "[token]")
+    .replace(/\b(password|senha|secret|token|api[_-]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/postgres(?:ql)?:\/\/\S+/gi, "[db]")
+    .slice(0, 140) || null;
+}
+
+function theoHeartbeatState(heartbeatAt, now, queryFailed) {
+  if (queryFailed) return "unavailable";
+  const age = ageMs(heartbeatAt, now);
+  if (age == null) return "unavailable";
+  if (age <= THEO_HEARTBEAT_FRESH_MS) return "fresh";
+  if (age <= THEO_HEARTBEAT_STALE_MS) return "stale";
+  return "severe";
+}
+
+function theoSemanticToRuntime(semantic) {
+  if (semantic === THEO_SEMANTIC_STATUS.DISABLED) return RUNTIME_TRUTH_STATUS.READY_DISABLED;
+  if (semantic === THEO_SEMANTIC_STATUS.FAILED) return RUNTIME_TRUTH_STATUS.DOWN;
+  if (semantic === THEO_SEMANTIC_STATUS.UNKNOWN) return RUNTIME_TRUTH_STATUS.UNKNOWN;
+  if (semantic === THEO_SEMANTIC_STATUS.DEGRADED) return RUNTIME_TRUTH_STATUS.DEGRADED;
+  return RUNTIME_TRUTH_STATUS.HEALTHY;
+}
+
+function theoResult({
+  semantic,
+  heartbeat,
+  detail,
+  currentError = null,
+  lastSuccessAt = null,
+  lastFailedAt = null,
+  lastSuccessActionType = null,
+  pendingCount = 0,
+  retryCount = 0,
+  cause = null,
+  configured = true,
+} = {}) {
+  return {
+    semantic,
+    status: semantic === "CONFIG_MISSING" ? RUNTIME_TRUTH_STATUS.CONFIG_MISSING : theoSemanticToRuntime(semantic),
+    heartbeat,
+    detail,
+    current_error: sanitizeTheoError(currentError),
+    last_success_at: isoOrNull(lastSuccessAt),
+    last_error_at: isoOrNull(lastFailedAt),
+    last_success_action_type: lastSuccessActionType || null,
+    pending: Math.max(0, Number(pendingCount) || 0),
+    retrying: Math.max(0, Number(retryCount) || 0),
+    cause,
+    configured,
+  };
+}
+
+export function classifyTheoWebexHealth({
+  automationEnabled = false,
+  configured = true,
+  heartbeatAt = null,
+  lastSuccessAt = null,
+  lastSuccessActionType = null,
+  lastFailedAt = null,
+  lastError = null,
+  pendingCount = 0,
+  retryCount = 0,
+  oldestPendingAt = null,
+  signalsQueryFailed = false,
+  heartbeatQueryFailed = false,
+  now = Date.now(),
+} = {}) {
+  const pending = Math.max(0, Number(pendingCount) || 0);
+  const retrying = Math.max(0, Number(retryCount) || 0);
+  const heartbeat = theoHeartbeatState(heartbeatAt, now, heartbeatQueryFailed);
+  const successAge = ageMs(lastSuccessAt, now);
+  const failAge = ageMs(lastFailedAt, now);
+  const oldestPendingAge = ageMs(oldestPendingAt, now);
+  const recentSuccess = successAge != null && successAge <= THEO_DISPATCH_RECENT_MS;
+  const relevantTerminalFailure = failAge != null
+    && failAge <= THEO_TERMINAL_FAILURE_RECENT_MS
+    && (successAge == null || failAge < successAge);
+  const inFlightPending = pending > 0 && retrying === 0 && oldestPendingAge != null && oldestPendingAge <= THEO_HEARTBEAT_FRESH_MS;
+  const delayedPending = pending > 0 && oldestPendingAge != null && oldestPendingAge > THEO_HEARTBEAT_FRESH_MS;
+  const staleBacklog = pending > 0 && oldestPendingAge != null && oldestPendingAge > THEO_BACKLOG_OLD_MS;
+  const retryBacklog = pending > 0 && retrying > 0;
+  const backlogIssue = retryBacklog || staleBacklog || delayedPending || (pending > 0 && !inFlightPending && oldestPendingAge == null);
+
+  const base = {
+    lastSuccessAt,
+    lastFailedAt: relevantTerminalFailure ? lastFailedAt : null,
+    lastSuccessActionType,
+    pendingCount: pending,
+    retryCount: retrying,
+    configured,
+  };
+
+  if (!automationEnabled) {
+    return theoResult({
+      ...base,
+      semantic: THEO_SEMANTIC_STATUS.DISABLED,
+      heartbeat,
+      detail: "Desativado",
+      lastFailedAt: null,
+    });
+  }
+
+  if (!configured) {
+    return theoResult({
+      ...base,
+      semantic: "CONFIG_MISSING",
+      heartbeat,
+      detail: "Secrets server-side pendentes",
+    });
+  }
+
+  if (signalsQueryFailed || heartbeatQueryFailed) {
+    const telemetryDetail = recentSuccess
+      ? "Dispatch Theo recente; problema de telemetria/heartbeat"
+      : "Falha ao consultar health Theo; não afirmar indisponibilidade";
+    return theoResult({
+      ...base,
+      semantic: THEO_SEMANTIC_STATUS.DEGRADED,
+      heartbeat: heartbeatQueryFailed ? "unavailable" : heartbeat,
+      detail: telemetryDetail,
+      currentError: heartbeatQueryFailed ? "heartbeat_unavailable" : "database_unavailable",
+      cause: "TELEMETRY",
+    });
+  }
+
+  if (heartbeat === "fresh" && !backlogIssue && !relevantTerminalFailure) {
+    return theoResult({
+      ...base,
+      semantic: THEO_SEMANTIC_STATUS.HEALTHY,
+      heartbeat,
+      detail: "Dispatcher operacional",
+    });
+  }
+
+  if (heartbeat === "fresh" && (backlogIssue || relevantTerminalFailure)) {
+    return theoResult({
+      ...base,
+      semantic: THEO_SEMANTIC_STATUS.DEGRADED,
+      heartbeat,
+      detail: relevantTerminalFailure
+        ? "Falha terminal recente no dispatch Theo"
+        : "Fila Theo com retry ou itens pendentes",
+      currentError: relevantTerminalFailure ? lastError : null,
+    });
+  }
+
+  if (recentSuccess && (heartbeat === "stale" || heartbeat === "severe" || heartbeat === "unavailable")) {
+    return theoResult({
+      ...base,
+      semantic: THEO_SEMANTIC_STATUS.DEGRADED,
+      heartbeat,
+      detail: "Dispatch Theo recente; heartbeat/telemetria com problema",
+      currentError: heartbeat === "unavailable" ? "heartbeat_unavailable" : null,
+      cause: "TELEMETRY",
+    });
+  }
+
+  if (heartbeat === "severe" && !recentSuccess) {
+    return theoResult({
+      ...base,
+      semantic: THEO_SEMANTIC_STATUS.FAILED,
+      heartbeat,
+      detail: "Dispatcher sem heartbeat recente e sem dispatch Theo recente",
+      currentError: lastError,
+    });
+  }
+
+  if (heartbeat === "stale") {
+    return theoResult({
+      ...base,
+      semantic: THEO_SEMANTIC_STATUS.DEGRADED,
+      heartbeat,
+      detail: backlogIssue || relevantTerminalFailure
+        ? "Heartbeat atrasado e fila/erro Theo"
+        : "Heartbeat do dispatcher atrasado",
+      currentError: relevantTerminalFailure ? lastError : null,
+    });
+  }
+
+  return theoResult({
+    ...base,
+    semantic: THEO_SEMANTIC_STATUS.UNKNOWN,
+    heartbeat,
+    detail: "Sem evidência suficiente de health Theo",
+  });
+}
+
 /** Fraport probe evidence must be supplied by a current live probe, never replayed from a prior audit. */
 export function fraportProbeForSource(sourceName, override = null) {
   const name = lower(sourceName);

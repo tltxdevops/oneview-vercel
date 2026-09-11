@@ -238,6 +238,11 @@ test("OV-P0-281 wire-up keeps runtime-health as single frontend source", () => {
   assert.match(db, /host-registry/);
   assert.match(db, /link-inventory/);
   assert.match(db, /READY_DISABLED/);
+  assert.match(db, /classifyTheoWebexHealth/);
+  assert.match(db, /THEO_HEALTH_ACTION_TYPES/);
+  assert.doesNotMatch(db, /intervalSeconds: 86400/);
+  assert.doesNotMatch(db, /classifyRuntimeHealth\(\{ enabled: true, configured: true, lastSuccessAt: theoLastSuccess/);
+  assert.match(truth, /theo_operator_reminder_v1/);
   assert.match(truth, /TLS_HOSTNAME_MISMATCH\+PRIVATE_CA_NOT_IN_SYSTEM_TRUST/);
   assert.match(truth, /HEALTHY_SILENT/);
   assert.match(settings, /dimensions|badge|recommended_action|Origem silenciosa/);

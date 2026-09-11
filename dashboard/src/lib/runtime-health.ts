@@ -25,6 +25,36 @@ export function runtimeStatusLabel(status: RuntimeHealthStatus) {
   })[status];
 }
 
+export function theoStateLabel(status: RuntimeHealthStatus | undefined) {
+  if (status === "HEALTHY") return "Operacional";
+  if (status === "DEGRADED") return "Degradado";
+  if (status === "READY_DISABLED") return "Desativado";
+  if (status === "DOWN") return "Falha";
+  if (status === "CONFIG_MISSING") return "Degradado";
+  if (status === "UNKNOWN") return "Degradado";
+  return "Degradado";
+}
+
+export function theoChipTone(status: RuntimeHealthStatus | undefined): OperationalTone {
+  if (status === "HEALTHY") return "ok";
+  if (status === "DEGRADED") return "partial";
+  if (status === "DOWN" || status === "STALE") return "stale";
+  return "unknown";
+}
+
+function formatTheoHm(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
+function theoHeartbeatLabel(heartbeat: unknown) {
+  if (heartbeat === "fresh") return "heartbeat recente";
+  if (heartbeat === "stale" || heartbeat === "severe") return "atrasado";
+  return "indisponível";
+}
+
 export function operationalToneLabel(tone: OperationalTone) {
   return ({
     ok: "Saudável",
@@ -132,7 +162,7 @@ export function runtimeSummary(health: RuntimeHealthResponse | null, now = Date.
   const oneviewTone = operationalToneFromStatus(oneview?.status, oneview?.last_success_at, now);
   const databaseTone = operationalToneFromStatus(database?.status, database?.last_success_at, now);
   const servicenowTone = operationalToneFromStatus(servicenow?.status, servicenow?.last_success_at, now);
-  const theoTone = operationalToneFromStatus(theo?.status, theo?.last_success_at, now);
+  const theoTone = theoChipTone(theo?.status);
   const zabbixTone = operationalToneFromGroup(zabbix, now);
   const zabbixHealthy = zabbix.filter((item) => item.status === "HEALTHY").length;
   const zabbixLastSuccess = latestSuccessAt(zabbix);
@@ -206,11 +236,19 @@ export function runtimeSummary(health: RuntimeHealthResponse | null, now = Date.
       status: theo?.status ?? "UNKNOWN",
       tone: theoTone,
       lastSuccessAt: theo?.last_success_at ?? null,
-      tooltipLines: [
-        operationalToneLabel(theoTone),
-        ...lastSyncLines(theo?.last_success_at, now),
-        theo?.current_error ? `Erro atual: ${theo.current_error}` : null,
-      ].filter(Boolean) as string[],
+      tooltipLines: (() => {
+        const pending = Number(theo?.metrics?.pending ?? 0);
+        const queueCount = Number.isFinite(pending) ? pending : 0;
+        const dispatchHm = formatTheoHm(theo?.last_success_at);
+        const lastError = String(theo?.current_error || "").trim();
+        return [
+          `Estado: ${theoStateLabel(theo?.status)}`,
+          `Último dispatch Theo: ${dispatchHm || "—"}`,
+          `Dispatcher: ${theoHeartbeatLabel(theo?.metrics?.heartbeat)}`,
+          `Fila: ${queueCount <= 0 ? "0 pendentes" : `${queueCount} aguardando/retry`}`,
+          lastError ? `Último erro: ${lastError.slice(0, 140)}` : null,
+        ].filter(Boolean) as string[];
+      })(),
     },
   ];
 }
