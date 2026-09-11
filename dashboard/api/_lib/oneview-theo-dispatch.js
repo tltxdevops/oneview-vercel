@@ -8,17 +8,26 @@ import {
 } from "./oneview-inc-correlation.js";
 import { findTheoCanaryAlert, findTheoProducedAlert } from "./oneview-db.js";
 import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
+import {
+  finalizeOperatorReminderDispatch,
+  processDueOperatorReminders,
+  THEO_OPERATOR_REMINDER_ACTION_TYPE,
+} from "./oneview-operator-reminder-execution.js";
 
 // Legacy type is reserved for explicit smoke/canary operations. Automatic
 // dispatch may claim only rows created by the persisted Worker producer.
 export const THEO_ACTION_TYPE = "theo_webex_notification";
 export const THEO_AUTO_ACTION_TYPE = "theo_alert_notification_v1";
 export const THEO_UNSEEN_ALERT_ACTION_TYPE = "theo_unseen_alert_notification_v1";
-// Automatic dispatch accepts only persisted Worker producer notifications.
+// Automatic dispatch accepts persisted Worker alert rows plus operator reminder rows.
 // Explicit smoke/canary rows remain restricted to THEO_ACTION_TYPE.
 export const THEO_AUTO_ACTION_TYPES = Object.freeze([
   THEO_AUTO_ACTION_TYPE,
   THEO_UNSEEN_ALERT_ACTION_TYPE,
+]);
+export const THEO_DISPATCH_AUTOMATION_ACTION_TYPES = Object.freeze([
+  ...THEO_AUTO_ACTION_TYPES,
+  THEO_OPERATOR_REMINDER_ACTION_TYPE,
 ]);
 export const THEO_SMOKE_DEDUPE_KEY = "theo:smoke:ov-p0-192";
 export const THEO_CANARY_DEDUPE_PREFIX = "theo:canary:alert:";
@@ -282,7 +291,7 @@ export async function claimEligibleTheoOutbox(client, {
              updated_at = now()
         from candidate
        where o.id = candidate.id
-      returning o.id, o.action_type, o.payload, o.attempts, o.max_attempts, o.idempotency_key
+       returning o.id, o.aggregate_type, o.aggregate_id, o.action_type, o.payload, o.attempts, o.max_attempts, o.idempotency_key
     `,
     [actionTypes, outboxId, allowAutomation, THEO_SMOKE_DEDUPE_KEY, allowedDedupeKey, lockedBy, lockTtlSeconds],
   );
@@ -316,7 +325,7 @@ export async function finishTheoOutbox(client, {
          and action_type = $2
          and status = 'processing'
          and locked_by = $8
-      returning id, status, attempts, processed_at, next_attempt_at
+       returning id, aggregate_type, aggregate_id, status, attempts, processed_at, next_attempt_at
     `,
     [outboxId, actionType, success, retryable, httpStatus, errorCode, retryAfter, lockedBy],
   );
@@ -396,6 +405,8 @@ export function createTheoDispatchHandler({
   createCanary = createTheoCanaryOutbox,
   claim = claimEligibleTheoOutbox,
   finish = finishTheoOutbox,
+  processDueReminders = processDueOperatorReminders,
+  finalizeReminder = finalizeOperatorReminderDispatch,
   heartbeat = recordTheoDispatcherHeartbeat,
   fetchFn = globalThis.fetch,
   idFactory = randomUUID,
@@ -417,7 +428,7 @@ export function createTheoDispatchHandler({
     if (canary.present && config.automationEnabled) return sendJson(res, 403, { error: "canary_requires_automation_disabled" });
     let targetId = requestedOutboxId(req);
     let allowedDedupeKey = null;
-    let actionType = THEO_AUTO_ACTION_TYPES;
+    let actionType = THEO_DISPATCH_AUTOMATION_ACTION_TYPES;
     let automaticDispatch = true;
     if (smoke) {
       const smokeOutbox = await transaction((client) => createSmoke(client, { idFactory, now: now() }));
@@ -451,6 +462,17 @@ export function createTheoDispatchHandler({
       automaticDispatch = false;
     } else if (!config.automationEnabled) {
       return sendJson(res, 403, { error: "theo_automation_disabled" });
+    }
+
+    let reminderSummary = { due_found: 0, skipped: 0, enqueued: 0, already_processing: 0, failed: 0 };
+    let reminderProcessorFailed = false;
+    if (automaticDispatch) {
+      try {
+        reminderSummary = await processDueReminders({ transaction, now, logger, req });
+      } catch {
+        reminderProcessorFailed = true;
+        reminderSummary = { ...reminderSummary, failed: reminderSummary.failed + 1 };
+      }
     }
 
     const automaticBatch = automaticDispatch && !targetId;
@@ -551,16 +573,28 @@ export function createTheoDispatchHandler({
       }
 
       const succeeded = !failure;
-      await transaction((client) => finish(client, {
-        actionType: claimedActionType,
-        outboxId: claimed.id,
-        lockedBy: lockId,
-        success: succeeded,
-        retryable: failure?.retryable || false,
-        httpStatus,
-        errorCode: failure?.code || null,
-        retryAfterSeconds: failure?.retry_after_seconds || 0,
-      }));
+      await transaction(async (client) => {
+        const finished = await finish(client, {
+          actionType: claimedActionType,
+          outboxId: claimed.id,
+          lockedBy: lockId,
+          success: succeeded,
+          retryable: failure?.retryable || false,
+          httpStatus,
+          errorCode: failure?.code || null,
+          retryAfterSeconds: failure?.retry_after_seconds || 0,
+        });
+        await finalizeReminder(client, {
+          aggregateType: claimed.aggregate_type || finished?.aggregate_type,
+          aggregateId: claimed.aggregate_id || finished?.aggregate_id,
+          actionType: claimedActionType,
+          success: succeeded,
+          retryable: failure?.retryable || false,
+          error: failure?.code || null,
+          now: now(),
+          req,
+        });
+      });
       // Finishing the outbox precedes telemetry: a heartbeat write failure must
       // never leave a delivered message eligible for another external send.
       try {
@@ -592,6 +626,13 @@ export function createTheoDispatchHandler({
       });
     }
 
+    const dispatchSummary = {
+      ...reminderSummary,
+      failed: reminderSummary.failed + results.filter((result) => result.status === "failed" && !result.retryable).length,
+      dispatch_attempted: results.length,
+      dispatch_success: results.filter((result) => result.status === "success").length,
+    };
+    if (automaticDispatch) logger({ event: "operator_reminder_cron_summary", ...dispatchSummary, ...(reminderProcessorFailed ? { error_code: "processor_failed" } : {}) });
     if (!results.length) return sendJson(res, 200, { claimed: false, status: "not_eligible" });
     const failures = results.filter((result) => result.status === "failed");
     const last = results.at(-1);

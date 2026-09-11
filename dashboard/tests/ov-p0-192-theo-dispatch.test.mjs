@@ -14,6 +14,7 @@ import {
   THEO_ACTION_TYPE,
   THEO_AUTO_ACTION_TYPE,
   THEO_AUTO_ACTION_TYPES,
+  THEO_DISPATCH_AUTOMATION_ACTION_TYPES,
   THEO_UNSEEN_ALERT_ACTION_TYPE,
   THEO_DISPATCHER_WORKER_NAME,
   theoCanaryDedupeKey,
@@ -109,6 +110,7 @@ function dispatcher(overrides = {}) {
     createSmoke: async () => ({ id: OUTBOX_ID, status: "pending" }),
     claim: async () => claimed(),
     finish: async () => ({ id: OUTBOX_ID, status: "success" }),
+    processDueReminders: async () => ({ due_found: 0, skipped: 0, enqueued: 0, already_processing: 0, failed: 0 }),
     heartbeat: async () => undefined,
     fetchFn: async () => ({ status: 204, headers: { get: () => null } }),
     idFactory: () => "test-lock-id",
@@ -221,7 +223,7 @@ test("OV-P0-251 automatic dispatcher cannot claim legacy smoke, canary, or Theo 
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body, { claimed: false, status: "not_eligible" });
-  assert.deepEqual(claimOptions.actionType, THEO_AUTO_ACTION_TYPES);
+  assert.deepEqual(claimOptions.actionType, THEO_DISPATCH_AUTOMATION_ACTION_TYPES);
   assert.equal(claimOptions.allowAutomation, true);
   assert.equal(claimOptions.allowedDedupeKey, null);
 });
