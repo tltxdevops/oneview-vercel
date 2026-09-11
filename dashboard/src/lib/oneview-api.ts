@@ -1653,6 +1653,43 @@ export async function cancelOperatorReminder(link: ReminderLinkIdentity, reminde
   return item;
 }
 
+/** OV-P0-297 — feed de lembretes ativos entre circuitos, base da aba "Lembretes". */
+export type OperatorReminderFeedItem = Omit<OperatorReminder, "created_by"> & { mine: boolean };
+export type OperatorReminderFeed = {
+  items: OperatorReminderFeedItem[];
+  counts: { all: number; mine: number };
+  checked_at?: string;
+};
+const OPERATOR_REMINDER_FEED_PATH = "/oneview/reminders";
+
+/** O feed devolve a identidade do circuito; as mutações continuam na rota por circuito. */
+export function operatorReminderIdentity(item: Pick<OperatorReminderFeedItem, "circuit_key" | "data_source_id" | "source_host_id">) {
+  return {
+    id: item.circuit_key,
+    circuit_key: item.circuit_key,
+    data_source_id: item.data_source_id,
+    source_host_id: item.source_host_id || "",
+  };
+}
+
+export async function fetchOperatorReminderFeed(options: { signal?: AbortSignal; force?: boolean } = {}): Promise<OperatorReminderFeed> {
+  if (options.force) readCache.delete(oneViewReadCacheKey(OPERATOR_REMINDER_FEED_PATH));
+  const startedAt = performance.now();
+  try {
+    return await fetchApi<OperatorReminderFeed>(OPERATOR_REMINDER_FEED_PATH, { signal: options.signal });
+  } catch (cause) {
+    console.info(JSON.stringify({
+      event: "oneview_reminder_request",
+      route: OPERATOR_REMINDER_FEED_PATH,
+      method: "GET",
+      status: cause instanceof OneViewApiError ? cause.status : 0,
+      error_code: cause instanceof OneViewApiError ? cause.code : "request_failed",
+      duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+    }));
+    throw cause;
+  }
+}
+
 export async function fetchIncidentRelatedAlert(
   reference: string | { sysId?: string | null; number?: string | null; sourceEventId?: string | null },
   signal?: AbortSignal,

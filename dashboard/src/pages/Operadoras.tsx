@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -30,6 +30,8 @@ const OPTIONAL_COLUMNS = [
   ["severity", "Severidade"], ["classification", "Pendência de classificação"],
 ] as const;
 type QueueTab = "open" | "without_incident" | "with_incident" | "resolved" | "all";
+type PageView = "queue" | "reminders";
+type ReminderScope = "all" | "mine";
 type OptionalColumn = typeof OPTIONAL_COLUMNS[number][0];
 type VisibleColumns = Record<OptionalColumn, boolean>;
 
@@ -213,6 +215,7 @@ export default function OperadorasPage() {
   const [incident, setIncident] = useState(ALL);
   const [carrier, setCarrier] = useState(ALL);
   const [tab, setTab] = useState<QueueTab>("open");
+  const [view, setView] = useState<PageView>("queue");
   const [resolvedWindow, setResolvedWindow] = useState("today");
   const [sort, setSort] = useState("recent");
   const [divergence, setDivergence] = useState<"a" | "b" | "any" | "">("");
@@ -350,11 +353,11 @@ export default function OperadorasPage() {
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      if (document.hidden) return;
+      if (document.hidden || view !== "queue") return;
       void load("quiet");
     }, REFRESH_MS);
     const onVisibility = () => {
-      if (document.hidden) return;
+      if (document.hidden || view !== "queue") return;
       void load("quiet");
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -362,7 +365,7 @@ export default function OperadorasPage() {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [load]);
+  }, [load, view]);
 
   const items = payload?.items || [];
   const totals = payload?.totals;
@@ -409,17 +412,23 @@ export default function OperadorasPage() {
       checkedAt={payload?.checked_at}
     >
       <div className="min-w-0 space-y-3">
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
-          {kpis.map(({ tab: targetTab, divergence: targetDivergence, ...item }) => <KpiCard key={item.label} {...item} onClick={() => { setTab(targetTab); setDivergence(targetDivergence || ""); setPage(1); }} />)}
-        </div>
-
-        <nav aria-label="Fila operacional de links" className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-border/70 bg-card p-1">
+        <nav aria-label="Visões da página de links" className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-border/70 bg-card p-1">
           {([
             ["open", "Em aberto"], ["without_incident", "Sem chamado"], ["with_incident", "Com chamado"], ["resolved", "Resolvidos"], ["all", "Todos os links"],
           ] as Array<[QueueTab, string]>).map(([value, label]) => (
-            <Button key={value} type="button" size="sm" variant={tab === value ? "default" : "ghost"} className="shrink-0" onClick={() => { setTab(value); setDivergence(""); setPage(1); }}>{label}</Button>
+            <Button key={value} type="button" size="sm" variant={view === "queue" && tab === value ? "default" : "ghost"} className="shrink-0" onClick={() => { setView("queue"); setTab(value); setDivergence(""); setPage(1); }}>{label}</Button>
           ))}
+          <span aria-hidden className="mx-1 w-px shrink-0 self-stretch bg-border/70" />
+          <Button type="button" size="sm" variant={view === "reminders" ? "default" : "ghost"} className="shrink-0" onClick={() => setView("reminders")}>
+            <Bell className="mr-1.5 h-3.5 w-3.5" />
+            Lembretes
+          </Button>
         </nav>
+
+        {view === "reminders" ? <OperatorRemindersPanel /> : <>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
+          {kpis.map(({ tab: targetTab, divergence: targetDivergence, ...item }) => <KpiCard key={item.label} {...item} onClick={() => { setView("queue"); setTab(targetTab); setDivergence(targetDivergence || ""); setPage(1); }} />)}
+        </div>
 
         {tab === "all" ? (
           <div className="flex flex-wrap gap-x-4 gap-y-1 px-1 text-xs text-muted-foreground">
@@ -588,6 +597,7 @@ export default function OperadorasPage() {
             </div>
           </div>
         ) : null}
+        </>}
       </div>
 
       <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />
@@ -741,6 +751,226 @@ function reminderMutationError(cause: unknown, action: "criar" | "alterar" | "ca
     }
   }
   return cause instanceof Error ? cause.message : `Não foi possível ${action} o lembrete.`;
+}
+
+function snapshotText(snapshot: Record<string, unknown> | null | undefined, group: string, key: string) {
+  const node = snapshot?.[group];
+  if (!node || typeof node !== "object") return "";
+  const value = (node as Record<string, unknown>)[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function reminderFeedTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Horário indisponível";
+  const time = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(date);
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  if (date.toDateString() === today.toDateString()) return `Hoje · ${time}`;
+  if (date.toDateString() === tomorrow.toDateString()) return `Amanhã · ${time}`;
+  return `${new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" }).format(date)} · ${time}`;
+}
+
+function ReminderFeedCard({ item, saving, editing, date, time, onDate, onTime, onEdit, onCloseEdit, onSave, onCancel }: {
+  item: OperatorReminderFeedItem;
+  saving: boolean;
+  editing: boolean;
+  date: string;
+  time: string;
+  onDate: (value: string) => void;
+  onTime: (value: string) => void;
+  onEdit: () => void;
+  onCloseEdit: () => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const snapshot = item.context_snapshot as Record<string, unknown> | null;
+  const member = snapshotText(snapshot, "link", "member_key");
+  const uplink = snapshotText(snapshot, "link", "uplink_key");
+  const identityLine = [snapshotText(snapshot, "customer", "name"), snapshotText(snapshot, "circuit", "host_name")].filter(Boolean).join(" · ");
+  const circuitLine = [
+    snapshotText(snapshot, "link", "service_name") || snapshotText(snapshot, "alert", "problem_name") || item.circuit_key,
+    member ? `member ${member}` : uplink,
+  ].filter(Boolean).join(" · ");
+  const incidentNumber = item.initial_incident_number || snapshotText(snapshot, "incident", "number");
+  const incidentLine = incidentNumber
+    ? `${incidentNumber} · ${incidentStateLabel(snapshotText(snapshot, "incident", "state"))}`
+    : "Sem chamado vinculado";
+
+  return (
+    <article className="space-y-2 rounded-lg border border-border/60 bg-card p-3 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className="flex items-center gap-2 text-sm font-semibold">
+          <Bell className="h-4 w-4 text-muted-foreground" />
+          {reminderFeedTime(item.scheduled_for)}
+        </p>
+        {item.mine ? <Badge variant="secondary">Criado por você</Badge> : null}
+      </div>
+      <div className="space-y-0.5 text-sm">
+        <p className="break-words font-medium">{identityLine || item.circuit_key}</p>
+        <p className="break-words text-xs text-muted-foreground">{circuitLine}</p>
+        <p className="break-words text-xs text-muted-foreground">{incidentLine}</p>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
+        <p className="text-xs text-muted-foreground">Criado por {text(item.created_by_name, "Operador não identificado")}</p>
+        {item.mine ? (
+          <div className="flex gap-2">
+            <Popover open={editing} onOpenChange={(next) => { if (next) onEdit(); else onCloseEdit(); }}>
+              <PopoverTrigger asChild>
+                <Button size="sm" variant="outline" disabled={saving}>Alterar</Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80">
+                <ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={onDate} onTime={onTime} onCancel={onCloseEdit} onSubmit={onSave} />
+              </PopoverContent>
+            </Popover>
+            <Button size="sm" variant="ghost" disabled={saving} onClick={onCancel}>Cancelar</Button>
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function OperatorRemindersPanel() {
+  const [feed, setFeed] = useState<OperatorReminderFeed | null>(null);
+  const [scope, setScope] = useState<ReminderScope>("all");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [date, setDate] = useState(() => reminderDateTime().date);
+  const [time, setTime] = useState(() => reminderDateTime().time);
+  const requestVersion = useRef(0);
+
+  const load = useCallback(async (force = false) => {
+    const version = ++requestVersion.current;
+    setLoading(true);
+    try {
+      const result = await fetchOperatorReminderFeed({ force });
+      if (requestVersion.current !== version) return;
+      setFeed(result);
+      setError(null);
+    } catch (cause) {
+      if (requestVersion.current === version && !isAbortError(cause)) {
+        setError(cause instanceof Error ? cause.message : "Não foi possível carregar os lembretes.");
+      }
+    } finally {
+      if (requestVersion.current === version) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(true);
+    return () => { requestVersion.current += 1; };
+  }, [load]);
+
+  const items = (feed?.items || []).filter((item) => scope === "all" || item.mine);
+  const counts = feed?.counts || { all: 0, mine: 0 };
+
+  const startEdit = (item: OperatorReminderFeedItem) => {
+    const initial = reminderDateTime(item.scheduled_for);
+    setDate(initial.date);
+    setTime(initial.time);
+    setMutationError(null);
+    setEditingId(item.id);
+  };
+
+  const save = async (item: OperatorReminderFeedItem) => {
+    const scheduledFor = new Date(`${date}T${time}:00`);
+    if (!date || !time || Number.isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now()) {
+      setMutationError("Escolha uma data e horário futuros.");
+      return;
+    }
+    setSavingId(item.id);
+    setMutationError(null);
+    try {
+      const saved = await updateOperatorReminder(operatorReminderIdentity(item), item.id, scheduledFor.toISOString());
+      setFeed((current) => current && {
+        ...current,
+        items: current.items.map((row) => (row.id === item.id ? { ...row, scheduled_for: saved.scheduled_for, updated_at: saved.updated_at } : row)),
+      });
+      setEditingId(null);
+      void load(true);
+    } catch (cause) {
+      setMutationError(reminderMutationError(cause, "alterar"));
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const cancel = async (item: OperatorReminderFeedItem) => {
+    setSavingId(item.id);
+    setMutationError(null);
+    try {
+      await cancelOperatorReminder(operatorReminderIdentity(item), item.id);
+      setFeed((current) => {
+        if (!current) return current;
+        const remaining = current.items.filter((row) => row.id !== item.id);
+        return { ...current, items: remaining, counts: { all: remaining.length, mine: remaining.filter((row) => row.mine).length } };
+      });
+      void load(true);
+    } catch (cause) {
+      setMutationError(reminderMutationError(cause, "cancelar"));
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <SectionPanel
+      title="Lembretes"
+      description="Retornos agendados pelos operadores nos circuitos monitorados"
+      aside={<Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void load(true)}>Atualizar</Button>}
+      bodyClassName="space-y-3 p-3"
+    >
+      <nav aria-label="Filtro de lembretes" className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-border/70 p-1">
+        {([["all", `Todos (${counts.all})`], ["mine", `Criados por mim (${counts.mine})`]] as Array<[ReminderScope, string]>).map(([value, label]) => (
+          <Button key={value} type="button" size="sm" variant={scope === value ? "default" : "ghost"} className="shrink-0" onClick={() => setScope(value)}>{label}</Button>
+        ))}
+      </nav>
+
+      {mutationError ? <p role="alert" className="text-xs text-destructive">{mutationError}</p> : null}
+      {error && !feed ? <OperationalErrorBanner message={error} onRetry={() => void load(true)} /> : null}
+      {error && feed ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>Não foi possível atualizar os lembretes.</span>
+          <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void load(true)}>Tentar novamente</Button>
+        </div>
+      ) : null}
+
+      {loading && !feed ? (
+        <div className="space-y-2"><Skeleton className="h-28 w-full" /><Skeleton className="h-28 w-full" /></div>
+      ) : !items.length ? (
+        <OperationalEmptyState
+          compact
+          icon={<Bell className="h-5 w-5" />}
+          title={scope === "mine" ? "Você não possui lembretes agendados." : "Nenhum lembrete agendado."}
+          description="Agende um retorno pelo botão Lembrar no detalhe de um circuito com alerta ativo."
+        />
+      ) : (
+        <div className="grid gap-2 lg:grid-cols-2">
+          {items.map((item) => (
+            <ReminderFeedCard
+              key={item.id}
+              item={item}
+              saving={savingId === item.id}
+              editing={editingId === item.id}
+              date={date}
+              time={time}
+              onDate={setDate}
+              onTime={setTime}
+              onEdit={() => startEdit(item)}
+              onCloseEdit={() => setEditingId(null)}
+              onSave={() => void save(item)}
+              onCancel={() => void cancel(item)}
+            />
+          ))}
+        </div>
+      )}
+    </SectionPanel>
+  );
 }
 
 function CircuitReminderPanel({ link }: { link: CanonicalLink }) {

@@ -54,7 +54,7 @@ function snapshot(link) {
   return {
     circuit: { circuit_key: link.circuit_key, data_source_id: link.data_source_id, source_host_id: link.source_host_id, host_name: link.host_name || null },
     customer: { key: link.customer_key || null, name: link.customer_name || null },
-    link: { service_name: link.service_name || null, carrier_name: link.carrier_name || null, link_type: link.link_type || null },
+    link: { service_name: link.service_name || null, carrier_name: link.carrier_name || null, link_type: link.link_type || null, member_key: link.member_key || null, uplink_key: link.uplink_key || null },
     alert: alert ? { id: alert.id || null, problem_name: alert.problem_name || null, severity: alert.severity || null } : null,
     incident: incident ? { sys_id: incident.sys_id || null, number: incident.number || null, state: incident.state || null } : null,
   };
@@ -173,3 +173,77 @@ export function createOperatorReminderHandler({
 }
 
 export default createOperatorReminderHandler();
+
+const FEED_LIMIT = 200;
+const FEED_SCOPES = ["all", "mine"];
+
+/** The feed is cross-circuit, so created_by (Entra oid) never leaves the BFF; ownership travels as a boolean. */
+function feedRecord(row, actorId) {
+  const record = reminderRecord(row);
+  delete record.created_by;
+  return { ...record, mine: row.created_by === actorId };
+}
+
+export function createOperatorReminderFeedHandler({
+  authorize = (req, res) => requireOneViewAuth(req, res, "viewer"),
+  query = withOneViewActionsQuery,
+  now = () => new Date(),
+  logger = (entry) => console.info(JSON.stringify(entry)),
+} = {}) {
+  return async function operatorReminderFeedHandler(req, res) {
+    const startedAt = Date.now();
+    const method = String(req.method || "UNKNOWN").toUpperCase();
+    const reply = (status, payload, extra = {}) => {
+      logger({
+        event: "oneview_reminder_request",
+        route: "/api/oneview/reminders",
+        method,
+        operation: "feed",
+        status,
+        error_code: typeof payload?.error === "string" ? payload.error : null,
+        cause: extra.cause || null,
+        duration_ms: Math.max(0, Date.now() - startedAt),
+      });
+      return sendJson(res, status, payload);
+    };
+    res.setHeader("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (method !== "GET") return methodNotAllowed(res, ["GET"]);
+    const scope = (queryValue(req, "scope") || "all").toLowerCase();
+    if (!FEED_SCOPES.includes(scope)) return reply(400, { error: "invalid_query" });
+    const auth = await authorize(req, res);
+    if (!auth) {
+      logger({
+        event: "oneview_reminder_request",
+        route: "/api/oneview/reminders",
+        method,
+        operation: "feed",
+        status: res.statusCode || 401,
+        error_code: res.statusCode === 403 ? "authorization_denied" : "authentication_required",
+        duration_ms: Math.max(0, Date.now() - startedAt),
+      });
+      return;
+    }
+    const user = actor(auth);
+    if (!user.id) return reply(401, { error: "authentication_required" });
+
+    try {
+      const result = await query(async (client) => client.query(
+        `select ${SELECT_COLUMNS} from operator_reminders where status = any($1::text[]) order by scheduled_for asc limit $2`,
+        [ACTIVE_STATUSES, FEED_LIMIT],
+      ));
+      const items = result.rows.map((row) => feedRecord(row, user.id));
+      const mine = items.filter((item) => item.mine);
+      return reply(200, {
+        items: scope === "mine" ? mine : items,
+        counts: { all: items.length, mine: mine.length },
+        data_source: "postgresql",
+        checked_at: now().toISOString(),
+      });
+    } catch (error) {
+      return reply(503, { error: publicDatabaseError(error) }, { cause: classifyActionsFailure(error) });
+    }
+  };
+}
+
+export const operatorReminderFeed = createOperatorReminderFeedHandler();
