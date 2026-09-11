@@ -735,3 +735,36 @@ test("OV-P0-194 persists a server-side Theo dispatcher heartbeat", async () => {
   assert.equal(calls[0].values[3], null);
   assert.equal(calls[0].values[4], true);
 });
+
+test("OV-P0-194 heartbeat UPSERT keeps last_success_at as JSONB on both CASE branches", async () => {
+  const calls = [];
+  const client = {
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return { rows: [] };
+    },
+  };
+
+  await recordTheoDispatcherHeartbeat(client, { success: true, hostname: "vercel", version: "abc" });
+  assert.equal(calls[0].values[4], true);
+  assert.match(calls[0].sql, /case when \$5::boolean then to_jsonb\(now\(\)\) else null end/i);
+  assert.match(
+    calls[0].sql,
+    /case when \$5::boolean then to_jsonb\(now\(\)\) else worker_heartbeats\.metadata->'last_success_at' end/i,
+  );
+  assert.doesNotMatch(calls[0].sql, /metadata->>'last_success_at'/);
+  assert.doesNotMatch(calls[0].sql, /then now\(\) else worker_heartbeats\.metadata/);
+
+  await recordTheoDispatcherHeartbeat(client, { success: false, errorCode: "theo_http_502", hostname: "vercel", version: "abc" });
+  assert.equal(calls[1].values[4], false);
+  assert.equal(calls[1].values[3], "theo_http_502");
+  assert.match(
+    calls[1].sql,
+    /case when \$5::boolean then to_jsonb\(now\(\)\) else worker_heartbeats\.metadata->'last_success_at' end/i,
+  );
+
+  await recordTheoDispatcherHeartbeat(client, { success: false, hostname: "vercel", version: "abc" });
+  assert.equal(calls[2].values[4], false);
+  assert.match(calls[2].sql, /on conflict \(worker_id\) do update/i);
+  assert.equal(calls.length, 3);
+});
