@@ -5,6 +5,7 @@ import { getOneViewDbPool } from "./oneview-db.js";
 import { extractServiceNowRefsFromAlertTags } from "./oneview-inc-correlation.js";
 import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
 import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
+import { attachOperationalRecurrence } from "./oneview-operational-recurrence.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
@@ -72,7 +73,7 @@ export function parseLinkFilters(req) {
     ack: text(oneQuery(req, "ack")), severity: text(oneQuery(req, "severity")),
     incident: text(oneQuery(req, "incident")), carrier: text(oneQuery(req, "carrier")), search: text(oneQuery(req, "search")),
     tab: text(oneQuery(req, "tab")) || "all", resolved_window: text(oneQuery(req, "resolved_window")) || "today",
-    divergence: text(oneQuery(req, "divergence")), sort: text(oneQuery(req, "sort")) || "recent",
+    divergence: text(oneQuery(req, "divergence")), recurrence: text(oneQuery(req, "recurrence")), sort: text(oneQuery(req, "sort")) || "recent",
     page: pageInt(oneQuery(req, "page"), 1, 10_000), page_size: pageInt(oneQuery(req, "page_size"), 50, 100),
   };
   for (const value of Object.values(filters)) if (typeof value === "string" && !SAFE.test(value)) throw invalidQuery();
@@ -83,6 +84,7 @@ export function parseLinkFilters(req) {
   if (filters.carrier && !new Set(["all", "unknown"]).has(filters.carrier.toLowerCase())) throw invalidQuery();
   if (!QUEUE_TABS.has(filters.tab.toLowerCase()) || !RESOLVED_WINDOWS.has(filters.resolved_window.toLowerCase()) || !QUEUE_SORTS.has(filters.sort.toLowerCase())) throw invalidQuery();
   if (filters.divergence && !new Set(["a", "b", "any"]).has(filters.divergence.toLowerCase())) throw invalidQuery();
+  if (filters.recurrence && !new Set(["all", "recurrent"]).has(filters.recurrence.toLowerCase())) throw invalidQuery();
   return filters;
 }
 
@@ -519,6 +521,7 @@ function operationalRow(row, now, resolvedWindow) {
 
 function filteredOperational(rows, filters) {
   return rows.filter((row) => {
+    if (filters.recurrence === "recurrent" && !row.is_recurrent) return false;
     if (filters.divergence === "any" && !row.divergence_type) return false;
     if (filters.divergence && filters.divergence !== "any" && row.divergence_type !== filters.divergence) return false;
     if (filters.tab === "open") return row.has_active_alert;
@@ -622,6 +625,7 @@ async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId
   timings.circuit_discovery_ms = elapsedMs(discoveryStartedAt);
   const compositionStartedAt = Date.now();
   const rows = composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits });
+  attachOperationalRecurrence(rows, alerts, new Date(), { recentLimit: scoped ? 5 : 0 });
   timings.composition_ms = elapsedMs(compositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
   timings.total_ms = elapsedMs(startedAt);
@@ -648,6 +652,11 @@ function queueLink(row) {
     closed_incident_count: row.closed_incident_count, unknown_incident_count: row.unknown_incident_count,
     current_incident: row.current_incident, latest_incident: row.latest_incident,
     operational_subject: buildOperationalSubject(row),
+    occurrences_24h: Number(row.occurrences_24h || 0),
+    occurrences_7d: Number(row.occurrences_7d || 0),
+    last_failure_at: row.last_failure_at || null,
+    last_recovery_at: row.last_recovery_at || null,
+    is_recurrent: Boolean(row.is_recurrent),
   };
 }
 
@@ -672,6 +681,7 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
   model.timings.servicenow_correlation_ms = elapsedMs(serviceNowStartedAt);
   const detailCompositionStartedAt = Date.now();
   const rows = composeCircuitLevelLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, circuits: model.circuits });
+  attachOperationalRecurrence(rows, model.alerts, new Date(), { recentLimit: 5 });
   model.timings.composition_ms = elapsedMs(detailCompositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
   model.integration_status = { servicenow: servicenowStatus };
@@ -683,6 +693,7 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
     ...queueLink(row),
     current_alert: row.current_alert, latest_alert: row.latest_alert, active_alerts_detail: row.alerts || [],
     current_incident: row.current_incident, latest_incident: row.latest_incident, incident_history: incidentHistory,
+    recent_occurrences: row.recent_occurrences || [],
     technical: { circuit_key: row.circuit_key, resolution_status: row.resolution_status, source: row.datasource, host_name: row.host_name, source_host_id: row.source_host_id, trigger_ids: row.trigger_ids || [], member_key: row.member_key, uplink_key: row.uplink_key, healthcheck_key: row.healthcheck_key, endpoint_ip: row.endpoint_ip, confidence: row.confidence, strategy: row.strategy },
     integration_status: model.integration_status,
     checked_at: new Date().toISOString(),
@@ -719,6 +730,7 @@ export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, d
     incident_correlation_status: "available",
     ...incidentSummary(incidents),
   };
+  attachOperationalRecurrence([row], relatedAlerts, new Date(), { recentLimit: 5 });
   if (servicenowStatus === "degraded") markIncidentDegraded([row]);
   const incidentHistory = [...incidents]
     .sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)))
@@ -728,6 +740,7 @@ export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, d
     ...queueLink(row),
     active_alerts_detail: row.alerts || [],
     incident_history: incidentHistory,
+    recent_occurrences: row.recent_occurrences || [],
     technical: { circuit_key: row.circuit_key, resolution_status: row.resolution_status, source: row.datasource, host_name: row.host_name, source_host_id: row.source_host_id, trigger_ids: [String(sourceTriggerId)], member_key: row.member_key, uplink_key: row.uplink_key, healthcheck_key: row.healthcheck_key, endpoint_ip: row.endpoint_ip, confidence: row.confidence, strategy: row.strategy },
     integration_status: { servicenow: servicenowStatus },
     checked_at: new Date().toISOString(),

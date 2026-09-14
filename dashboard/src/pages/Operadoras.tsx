@@ -135,6 +135,35 @@ function CurrentIncident({ link }: { link: CanonicalLink }) {
 function FollowUp({ link }: { link: CanonicalLink }) {
   return link.resolution_status !== "resolved" ? <Badge variant="secondary">Classificação pendente</Badge> : <span className="text-muted-foreground">—</span>;
 }
+function RecurrenceHint({ link }: { link: CanonicalLink }) {
+  const count = Number(link.occurrences_24h || 0);
+  if (!link.is_recurrent || count < 2) return null;
+  return <Badge variant="outline">🔁 {count} ocorrências / 24h</Badge>;
+}
+function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }) {
+  const recent = "recent_occurrences" in link ? link.recent_occurrences || [] : [];
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-semibold">Recorrência</h3>
+      <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
+        <Field label="Últimas 24h" value={`${Number(link.occurrences_24h || 0)} ocorrências`} />
+        <Field label="Últimos 7d" value={`${Number(link.occurrences_7d || 0)} ocorrências`} />
+        <Field label="Última recuperação" value={timestampLabel(link.last_recovery_at)} />
+        <Field label="Última nova falha" value={timestampLabel(link.last_failure_at)} />
+      </div>
+      {recent.length ? (
+        <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+          {recent.map((item, index) => (
+            <p key={`${item.started_at || "start"}-${index}`}>
+              {timestampLabel(item.started_at)}
+              {item.recovered_at ? ` → ${timestampLabel(item.recovered_at)}` : " · em falha"}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
 
 function ColumnsChooser({ columns, onChange }: { columns: VisibleColumns; onChange: (column: OptionalColumn, checked: boolean) => void }) {
   return <Popover><PopoverTrigger asChild><Button type="button" size="sm" variant="outline">Colunas</Button></PopoverTrigger><PopoverContent align="end" className="w-64 space-y-3 p-3"><p className="text-sm font-medium">Colunas da fila</p><div className="space-y-2">{REQUIRED_COLUMNS.map((column) => <label key={column} className="flex items-center gap-2 text-sm"><Checkbox checked disabled aria-label={column} /><span>{({ link_local: "Link / Local", situation: "Situação", latest_alert: "Último alerta", current_incident: "Chamado atual", follow_up: "Acompanhamento" })[column]}</span></label>)}{OPTIONAL_COLUMNS.map(([column, label]) => <label key={column} className="flex cursor-pointer items-center gap-2 text-sm"><Checkbox checked={columns[column]} onCheckedChange={(checked) => onChange(column, checked === true)} /><span>{label}</span></label>)}</div></PopoverContent></Popover>;
@@ -197,6 +226,7 @@ function MobileLinkCard({ item, onOpen }: { item: CanonicalLink; onOpen: (item: 
       <div><p className="text-xs text-muted-foreground">Chamado atual</p><CurrentIncident link={item} /></div>
       <div className="flex items-center justify-between gap-2">
         <FollowUp link={item} />
+        <RecurrenceHint link={item} />
         {item.max_severity ? <SeverityBadge severity={item.max_severity} /> : null}
       </div>
     </button>
@@ -223,6 +253,7 @@ export default function OperadorasPage() {
   const [resolvedWindow, setResolvedWindow] = useState("today");
   const [sort, setSort] = useState("recent");
   const [divergence, setDivergence] = useState<"a" | "b" | "any" | "">("");
+  const [recurrence, setRecurrence] = useState<"all" | "recurrent">("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<CanonicalLink | null>(null);
@@ -269,6 +300,7 @@ export default function OperadorasPage() {
         resolved_window: resolvedWindow,
         sort,
         divergence: divergence || undefined,
+        recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
         search,
         page,
         page_size: 50,
@@ -296,7 +328,7 @@ export default function OperadorasPage() {
       }
       finishRequest?.();
     }
-  }, [ack, carrier, classification, customer, datasource, divergence, incident, page, resolvedWindow, search, severity, sort, state, tab]);
+  }, [ack, carrier, classification, customer, datasource, divergence, incident, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
 
   const loadDetail = useCallback(async (link: CanonicalLink) => {
     const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
@@ -378,7 +410,7 @@ export default function OperadorasPage() {
     setPage(1);
   };
   const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, carrier]
-    .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0);
+    .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0);
   const customerFacets = payload?.facets.customers || [];
   const quickCustomers = ["Havan", "Protege", "Sanepar", "Tuper", "Teletex"].flatMap((name) => customerFacets.filter((item) => item.label.localeCompare(name, "pt-BR", { sensitivity: "base" }) === 0));
   const moreCustomers = customerFacets.filter((item) => !quickCustomers.some((quick) => quick.value === item.value));
@@ -401,6 +433,7 @@ export default function OperadorasPage() {
     setIncident(ALL);
     setCarrier(ALL);
     setDivergence("");
+    setRecurrence("all");
     setSearch("");
     setPage(1);
   };
@@ -441,6 +474,12 @@ export default function OperadorasPage() {
             <span>{totals?.pending_classification ?? 0} pendentes de classificação</span>
           </div>
         ) : null}
+
+        <div aria-label="Filtro de recorrência" className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs text-muted-foreground">Recorrência:</span>
+          <Button type="button" size="sm" variant={recurrence === "all" ? "default" : "outline"} onClick={() => { setRecurrence("all"); setPage(1); }}>Todos</Button>
+          <Button type="button" size="sm" variant={recurrence === "recurrent" ? "default" : "outline"} onClick={() => { setRecurrence("recurrent"); setPage(1); }}>Recorrentes</Button>
+        </div>
 
         <div aria-label="Filtros rápidos de cliente" className="flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-xs text-muted-foreground">Cliente:</span>
@@ -577,7 +616,7 @@ export default function OperadorasPage() {
                           <p className="mt-1 max-w-[16rem] truncate text-xs text-muted-foreground">{text(item.latest_alert?.problem_name || item.latest_alert?.trigger_description, "Sem alerta registrado")}</p>
                         </TableCell>
                         <TableCell className="min-w-[12rem]"><CurrentIncident link={item} /></TableCell>
-                        <TableCell><FollowUp link={item} /></TableCell>
+                        <TableCell><div className="space-y-1"><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>
                         {columns.link_type ? <TableCell className="max-w-[11rem] text-xs">{linkTypeLabel(item)}</TableCell> : null}
                         {columns.carrier ? <TableCell className="max-w-[11rem] truncate text-xs">{text(item.carrier_name)}</TableCell> : null}
                         {columns.datasource ? <TableCell className="text-xs">{zabbixSourceDisplayName(item.datasource)}</TableCell> : null}
@@ -621,6 +660,7 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
       <CircuitReminderPanel link={view} />
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
       <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Estado" value={stateLabel(view.state)} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Em falha há" value={view.active_alerts ? failureDuration(view) : "Sem alerta ativo"} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /></div></section>
+      <RecurrencePanel link={view} />
       {loading && !detail ? <div className="space-y-2"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /></div> : <>
         <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>
         <section><h3 className="mb-2 text-sm font-semibold">Alerta atual</h3>{currentAlert ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p className="font-medium">{text(currentAlert.problem_name || currentAlert.trigger_description, "Alerta sem título")}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentAlert.severity)} · Início: {timestampLabel(currentAlert.started_at)} · Último alerta: {timestampLabel(currentAlert.last_seen_at || view.latest_alert_at)}</p></div> : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}</section>

@@ -21,7 +21,7 @@ test("OV-P0-289 open queue sorts by latest_alert_at descending", () => {
 
 test("OV-P0-289 Operadoras keeps the operational table and browser-only columns", async () => {
   const page = await readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8");
-  for (const label of ["Link / local", "Situação", "Último alerta", "Chamado atual", "Acompanhamento", "Colunas", "Filtros rápidos de cliente", "Resumo operacional", "Detalhes técnicos"]) assert.match(page, new RegExp(label));
+  for (const label of ["Link / local", "Situação", "Último alerta", "Chamado atual", "Acompanhamento", "Colunas", "Filtros rápidos de cliente", "Resumo operacional", "Detalhes técnicos", "Recorrentes", "Recorrência"]) assert.match(page, new RegExp(label));
   assert.match(page, /localStorage/);
   assert.match(page, /Accordion/);
   assert.match(page, /Atualizando/);
