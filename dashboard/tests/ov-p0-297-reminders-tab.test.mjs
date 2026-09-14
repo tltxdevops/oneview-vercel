@@ -87,7 +87,8 @@ test("OV-P0-297 page exposes history views, compact filters and the existing dra
   assert.match(page, /<OperatorRemindersPanel onOpenCircuit=\{openLink\}/);
   assert.match(page, /Agendados/); assert.match(page, /Lembrados/); assert.match(page, /Ignorados/); assert.match(page, /Falhas/); assert.match(page, /Cancelados/); assert.match(page, /Todos/);
   assert.match(page, /30m/); assert.match(page, /24h/); assert.match(page, /Personalizado/);
-  assert.match(page, /ACK: filtro adiado/);
+  assert.doesNotMatch(page, /ACK: filtro adiado/);
+  assert.doesNotMatch(page, /contrato atual de `operator_reminders`/);
   assert.match(page, /onOpenCircuit=\{\(\) => onOpenCircuit\(reminderHistoryCircuit\(item\)\)\}/);
   assert.match(page, /item\.mine && item\.status === "scheduled"/);
   assert.match(page, /Theo acionado/);
