@@ -6,6 +6,7 @@ import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyStat
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
+import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentStatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,12 +19,21 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
+import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
 import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 
 const ALL = "all";
 const REFRESH_MS = 10_000;
 const COLUMN_STORAGE_KEY = "oneview.operadoras.columns.v1";
 let drawerOpenedAt = 0;
+const OPERATOR_STATUS_TONE = Object.freeze({
+  monitoringDown: "text-error dark:text-red-300",
+  monitoringNormalized: "text-success",
+  monitoringNormalizedBadge: "border-success/40 bg-success/10 text-success",
+  divergence: "border-warning/40 bg-warning/10 text-amber-800 dark:text-amber-200",
+  recurrence: "border-violet-300 bg-violet-50 text-violet-800 dark:border-violet-400/40 dark:bg-violet-950/35 dark:text-violet-200",
+  classificationPending: "border-warning/35 bg-warning/10 text-amber-800 dark:text-amber-200",
+});
 const REQUIRED_COLUMNS = ["link_local", "situation", "latest_alert", "current_incident", "follow_up"] as const;
 const OPTIONAL_COLUMNS = [
   ["link_type", "Tipo do link"], ["carrier", "Operadora"], ["datasource", "Fonte Zabbix"],
@@ -65,7 +75,7 @@ function stateLabel(value: CanonicalLink["state"]) {
 
 function StateBadge({ state }: { state: CanonicalLink["state"] }) {
   return (
-    <Badge variant={state === "critical" ? "destructive" : state === "normal" ? "outline" : "secondary"}>
+    <Badge variant={state === "critical" ? "destructive" : state === "normal" ? "outline" : "secondary"} className={state === "normal" ? OPERATOR_STATUS_TONE.monitoringNormalizedBadge : undefined}>
       {stateLabel(state)}
     </Badge>
   );
@@ -73,7 +83,7 @@ function StateBadge({ state }: { state: CanonicalLink["state"] }) {
 
 function ResolutionBadge({ link }: { link: CanonicalLink }) {
   if (link.resolution_status === "resolved") return null;
-  return <Badge variant="secondary">Pendente de classificação</Badge>;
+  return <Badge variant="outline" className={OPERATOR_STATUS_TONE.classificationPending}>Pendente de classificação</Badge>;
 }
 
 function linkTypeLabel(link: CanonicalLink) {
@@ -125,29 +135,23 @@ function linkLabel(link: CanonicalLink) {
   if (link.uplink_key && !label.toLowerCase().includes(link.uplink_key.toLowerCase())) return `${label} · ${link.uplink_key}`;
   return label;
 }
-function incidentStateLabel(value: string | null | undefined) {
-  const state = String(value || "").trim();
-  return ({ "1": "Novo", "2": "Em andamento", "3": "Em espera", "6": "Resolvido", "7": "Fechado", "8": "Cancelado" })[state] || state || "Estado não informado";
-}
-
 function CurrentIncident({ link }: { link: CanonicalLink }) {
   if (link.incident_correlation_status === "degraded") return <p className="text-xs text-muted-foreground">Chamados não verificados</p>;
-  if (link.current_incident) return <div className="space-y-0.5 text-xs"><p className="font-medium">{link.current_incident.number || "INC"} · {text(link.current_incident.state_display, incidentStateLabel(link.current_incident.state))}</p><p className="text-muted-foreground">Aberto {timestampLabel(link.current_incident.opened_at)}</p></div>;
-  if (link.latest_incident) return <div className="space-y-0.5 text-xs"><p>{link.latest_incident.number || "INC"} · {text(link.latest_incident.state_display, incidentStateLabel(link.latest_incident.state))}</p><p className="text-muted-foreground">Sem chamado aberto</p></div>;
+  if (link.current_incident) return <div className="space-y-0.5 text-xs"><p className="flex flex-wrap items-center gap-1.5 font-medium"><span>{link.current_incident.number || "INC"}</span><OneViewIncidentStatusBadge state={link.current_incident.state} display={link.current_incident.state_display} /></p><p className="text-muted-foreground">Aberto {timestampLabel(link.current_incident.opened_at)}</p></div>;
+  if (link.latest_incident) return <div className="space-y-0.5 text-xs"><p className="flex flex-wrap items-center gap-1.5"><span>{link.latest_incident.number || "INC"}</span><OneViewIncidentStatusBadge state={link.latest_incident.state} display={link.latest_incident.state_display} /></p><p className="text-muted-foreground">Sem chamado aberto</p></div>;
   return <p className="text-xs text-muted-foreground">Sem chamado</p>;
 }
 
 function divergenceLabel(link: CanonicalLink) {
   const incident = link.current_incident || link.latest_incident;
-  const state = text(incident?.state_display, incidentStateLabel(incident?.state));
+  const state = oneViewIncidentStatusVisual(incident?.state, incident?.state_display).label;
   if (link.divergence_type === "a") return `Alerta ativo com chamado ${state}`;
   if (link.divergence_type === "b") return `Normalizado com chamado ${state}`;
   return "Não";
 }
 
 function DivergenceHint({ link }: { link: CanonicalLink }) {
-  if (link.divergence_type === "a") return <Badge variant="destructive">{divergenceLabel(link)}</Badge>;
-  if (link.divergence_type === "b") return <Badge variant="secondary">{divergenceLabel(link)}</Badge>;
+  if (link.divergence_type) return <Badge variant="outline" className={OPERATOR_STATUS_TONE.divergence}>● {divergenceLabel(link)}</Badge>;
   return null;
 }
 
@@ -155,7 +159,7 @@ function MonitoringStatus({ link }: { link: CanonicalLink }) {
   const failing = Boolean(link.active_alerts);
   return (
     <div className="space-y-1">
-      <p className={cn("text-sm font-medium", failing ? "text-red-700 dark:text-red-300" : "text-muted-foreground")}>
+      <p className={cn("text-sm font-medium", failing ? OPERATOR_STATUS_TONE.monitoringDown : OPERATOR_STATUS_TONE.monitoringNormalized)}>
         {failing ? `Em falha há ${failureDuration(link)}` : "Normalizado"}
       </p>
       <div className="flex flex-wrap items-center gap-1">
@@ -167,12 +171,12 @@ function MonitoringStatus({ link }: { link: CanonicalLink }) {
 }
 
 function FollowUp({ link }: { link: CanonicalLink }) {
-  return link.resolution_status !== "resolved" ? <Badge variant="secondary">Classificação pendente</Badge> : <span className="text-muted-foreground">—</span>;
+  return link.resolution_status !== "resolved" ? <Badge variant="outline" className={OPERATOR_STATUS_TONE.classificationPending}>Classificação pendente</Badge> : <span className="text-muted-foreground">—</span>;
 }
 function RecurrenceHint({ link }: { link: CanonicalLink }) {
   const count = Number(link.occurrences_24h || 0);
   if (!link.is_recurrent || count < 2) return null;
-  return <Badge variant="outline">🔁 {count} quedas / 24h</Badge>;
+  return <Badge variant="outline" className={OPERATOR_STATUS_TONE.recurrence}>🔁 {count} quedas / 24h</Badge>;
 }
 function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }) {
   const recent = "recent_episodes" in link ? link.recent_episodes || [] : [];
@@ -752,7 +756,7 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
       onClick={onToggle}
     >
       <div className="min-w-0">
-        <p><b>{incident.number || "INC"}</b> · {text(incident.state_display, incidentStateLabel(incident.state))}</p>
+        <p className="flex flex-wrap items-center gap-1.5"><b>{incident.number || "INC"}</b><OneViewIncidentStatusBadge state={incident.state} display={incident.state_display} /></p>
         <p className="mt-1 text-xs text-muted-foreground">Aberto {timestampLabel(incident.opened_at)} · Atualizado {timestampLabel(incident.updated_at)}</p>
         {incident.short_description ? <p className="mt-1 text-xs text-muted-foreground">{incident.short_description}</p> : null}
       </div>
@@ -797,7 +801,7 @@ function IncidentDetailPanel({ incident }: { incident: CanonicalLinkIncident }) 
       {detail.short_description ? <p className="mt-1 break-words">{detail.short_description}</p> : null}
     </div>
     <div className="grid gap-3 sm:grid-cols-2">
-      <Field label="Status" value={text(detail.state_display, incidentStateLabel(detail.state))} />
+      <div><p className="text-xs text-muted-foreground">Status</p><div className="mt-1"><OneViewIncidentStatusBadge state={detail.state} display={detail.state_display} /></div></div>
       {detail.priority || detail.priority_display ? <Field label="Prioridade" value={text(detail.priority_display || detail.priority)} /> : null}
       {group ? <Field label="Grupo" value={group} /> : null}
       {assignee ? <Field label="Responsável" value={assignee} /> : null}
@@ -893,9 +897,6 @@ function ReminderFeedCard({ item, saving, editing, date, time, onDate, onTime, o
     member ? `member ${member}` : uplink,
   ].filter(Boolean).join(" · ");
   const incidentNumber = item.initial_incident_number || snapshotText(snapshot, "incident", "number");
-  const incidentLine = incidentNumber
-    ? `${incidentNumber} · ${incidentStateLabel(snapshotText(snapshot, "incident", "state"))}`
-    : "Sem chamado vinculado";
 
   return (
     <article className="space-y-2 rounded-lg border border-border/60 bg-card p-3 shadow-sm">
@@ -909,7 +910,12 @@ function ReminderFeedCard({ item, saving, editing, date, time, onDate, onTime, o
       <div className="space-y-0.5 text-sm">
         <p className="break-words font-medium">{identityLine || item.circuit_key}</p>
         <p className="break-words text-xs text-muted-foreground">{circuitLine}</p>
-        <p className="break-words text-xs text-muted-foreground">{incidentLine}</p>
+        {incidentNumber ? (
+          <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{incidentNumber}</span>
+            <OneViewIncidentStatusBadge state={snapshotText(snapshot, "incident", "state")} />
+          </p>
+        ) : <p className="text-xs text-muted-foreground">Sem chamado vinculado</p>}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
         <p className="text-xs text-muted-foreground">Criado por {text(item.created_by_name, "Operador não identificado")}</p>
@@ -1158,7 +1164,7 @@ function ReminderHistoryCard({ item, saving, editing, date, time, onDate, onTime
   const canMutate = item.mine && item.status === "scheduled";
   return <article className="space-y-2 rounded-lg border border-border/60 bg-card p-3 shadow-sm">
     <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="flex items-center gap-2 text-sm font-semibold"><Bell className="h-4 w-4 text-muted-foreground" />{reminderHistoryStatus(item)}</p><p className="mt-1 text-xs text-muted-foreground">{reminderHistoryTime(item.activity_at || item.scheduled_for)}</p></div><div className="flex gap-1">{severity ? <Badge variant="outline">{severity}</Badge> : null}{item.mine ? <Badge variant="secondary">Criado por você</Badge> : null}</div></div>
-    <div className="space-y-0.5 text-sm"><p className="break-words font-medium">{identity || item.circuit_key}</p><p className="break-words text-xs text-muted-foreground">{circuit}</p><p className="break-words text-xs text-muted-foreground">{incident ? `${incident} · ${incidentStateLabel(snapshotText(snapshot, "incident", "state"))}` : "Sem chamado vinculado"}</p></div>
+    <div className="space-y-0.5 text-sm"><p className="break-words font-medium">{identity || item.circuit_key}</p><p className="break-words text-xs text-muted-foreground">{circuit}</p>{incident ? <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"><span>{incident}</span><OneViewIncidentStatusBadge state={snapshotText(snapshot, "incident", "state")} /></p> : <p className="text-xs text-muted-foreground">Sem chamado vinculado</p>}</div>
     <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2"><p className="text-xs text-muted-foreground">Criado por {text(item.created_by_name, "Operador não identificado")}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={onOpenCircuit}>Abrir acompanhamento</Button>{canMutate ? <><Popover open={editing} onOpenChange={(next) => { if (next) onEdit(); else onCloseEdit(); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={saving}>Alterar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={onDate} onTime={onTime} onCancel={onCloseEdit} onSubmit={onSave} /></PopoverContent></Popover><Button size="sm" variant="ghost" disabled={saving} onClick={onCancel}>Cancelar</Button></> : null}</div></div>
   </article>;
 }
