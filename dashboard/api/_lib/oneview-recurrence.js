@@ -73,19 +73,44 @@ export function parseRecurrenceKey(value) {
   }
 }
 
+function durationSeconds(startedAt, resolvedAt, now) {
+  const end = resolvedAt || toDate(now);
+  if (!startedAt || !end || end.getTime() < startedAt.getTime()) return null;
+  return Math.floor((end.getTime() - startedAt.getTime()) / 1000);
+}
+
+function mergeEpisode(episode, alert, now) {
+  episode.alert_ids.push(alert.id);
+  // A stale overlapping alias without recovery cannot erase an already-valid
+  // recovery from the same logical outage. Keep the furthest valid endpoint.
+  if (alert.resolved_at && (!episode.resolved_at || alert.resolved_at.getTime() > episode.resolved_at.getTime())) {
+    episode.resolved_at = alert.resolved_at;
+  }
+  episode.duration_seconds = durationSeconds(episode.first_seen_at, episode.resolved_at, now);
+  episode.temporal_integrity = episode.temporal_integrity || alert.temporal_integrity;
+  return episode;
+}
+
 /**
- * Seleciona episódios válidos (ordem cronológica).
- * O primeiro alerta da identidade conta; os seguintes só contam quando o
- * último episódio já tem resolved_at e o novo first_seen_at é posterior.
+ * Select logical episodes in chronological order.
+ * Rows are already scoped to one real identity (trigger or operational subject).
+ * Overlapping aliases/events are merged into one interval; a new episode starts
+ * only after a valid recovery and a later failure. Window counts must use this
+ * same returned collection, never raw alert rows.
  */
-export function selectRecurrenceEpisodes(alerts = []) {
+export function selectRecurrenceEpisodes(alerts = [], now = new Date()) {
   const sorted = [...alerts]
     .map((alert) => {
-      const temporal = deriveAlertTemporalIntegrity(alert);
+      const first_seen_at = toDate(alert?.first_seen_at);
+      const rawResolvedAt = toDate(alert?.resolved_at);
+      const temporal = deriveAlertTemporalIntegrity(alert, now);
       return {
         id: textValue(alert?.id),
-        first_seen_at: toDate(alert?.first_seen_at),
-        resolved_at: toDate(alert?.resolved_at),
+        first_seen_at,
+        // An inconsistent source clock is never a valid recovery boundary.
+        resolved_at: temporal.temporal_integrity || !rawResolvedAt || !first_seen_at || rawResolvedAt.getTime() < first_seen_at.getTime()
+          ? null
+          : rawResolvedAt,
         duration_seconds: temporal.duration_seconds,
         temporal_integrity: temporal.temporal_integrity,
         acknowledged_at: toDate(alert?.acknowledged_source_at ?? alert?.acknowledged_at),
@@ -102,15 +127,14 @@ export function selectRecurrenceEpisodes(alerts = []) {
   const episodes = [];
   for (const alert of sorted) {
     if (!episodes.length) {
-      episodes.push(alert);
+      episodes.push({ ...alert, alert_ids: [alert.id] });
       continue;
     }
     const predecessor = episodes[episodes.length - 1];
-    if (
-      predecessor.resolved_at
-      && alert.first_seen_at.getTime() > predecessor.resolved_at.getTime()
-    ) {
-      episodes.push(alert);
+    if (!predecessor.resolved_at || alert.first_seen_at.getTime() <= predecessor.resolved_at.getTime()) {
+      mergeEpisode(predecessor, alert, now);
+    } else {
+      episodes.push({ ...alert, alert_ids: [alert.id] });
     }
   }
   return episodes;
@@ -145,7 +169,7 @@ export function buildAlertRecurrenceReadModel({ current, siblings = [], now = ne
     pool.push(candidate);
   }
 
-  const episodes = selectRecurrenceEpisodes(pool);
+  const episodes = selectRecurrenceEpisodes(pool, now);
   if (!episodes.length) return { ...empty };
 
   const nowMs = toDate(now)?.getTime() ?? Date.now();
@@ -155,7 +179,7 @@ export function buildAlertRecurrenceReadModel({ current, siblings = [], now = ne
   const recurrence_count_24h = episodes.filter((episode) => episode.first_seen_at.getTime() >= window24h).length;
   const recurrence_count_7d = episodes.filter((episode) => episode.first_seen_at.getTime() >= window7d).length;
 
-  const currentIndex = episodes.findIndex((episode) => episode.id === currentId);
+  const currentIndex = episodes.findIndex((episode) => episode.alert_ids.includes(currentId));
   const previous = currentIndex > 0
     ? episodes[currentIndex - 1]
     : (currentIndex < 0

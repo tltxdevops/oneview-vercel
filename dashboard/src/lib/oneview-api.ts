@@ -426,6 +426,7 @@ export interface OneViewAlert {
   previous_occurrence_at?: string | null;
   previous_recovery_at?: string | null;
   is_recurrent?: boolean;
+  total_recent_episodes?: number;
   recurrence_key?: string | null;
   recurrence_previous?: {
     occurrence_at: string | null;
@@ -1544,7 +1545,7 @@ export type CanonicalLink = {
   last_recovery_at?: string | null;
   is_recurrent?: boolean;
 };
-export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; recent_occurrences?: Array<{ started_at: string | null; recovered_at: string | null }>; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
+export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; recent_episodes?: Array<{ started_at: string | null; resolved_at: string | null; active: boolean; duration_seconds: number | null }>; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
 export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; normalized?: number; without_incident?: number; without_open_incident: number; with_open_incident: number; recurrent?: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
 export async function fetchCanonicalLinks(params?: Record<string, string | number | undefined> & { signal?: AbortSignal }): Promise<CanonicalLinksResponse> {
   const search = new URLSearchParams();

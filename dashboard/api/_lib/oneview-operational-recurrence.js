@@ -28,7 +28,7 @@ export function emptyOperationalRecurrence(recentLimit = 0) {
     last_failure_at: null,
     last_recovery_at: null,
     is_recurrent: false,
-    ...(recentLimit > 0 ? { recent_occurrences: [] } : {}),
+    ...(recentLimit > 0 ? { recent_episodes: [], total_recent_episodes: 0 } : {}),
   };
 }
 
@@ -70,14 +70,18 @@ export function alertsForOperationalRow(row, alertIndex) {
 
 export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Date(), recentLimit = 0 } = {}) {
   const empty = emptyOperationalRecurrence(recentLimit);
-  const episodes = selectRecurrenceEpisodes(alerts);
+  const episodes = selectRecurrenceEpisodes(alerts, now);
   if (!episodes.length) return empty;
 
   const nowMs = (now instanceof Date ? now : new Date(now)).getTime();
   const window24h = nowMs - MS_24H;
   const window7d = nowMs - MS_7D;
-  const occurrences_24h = episodes.filter((episode) => episode.first_seen_at.getTime() >= window24h).length;
-  const occurrences_7d = episodes.filter((episode) => episode.first_seen_at.getTime() >= window7d).length;
+  // A count belongs to the window of its logical episode start. An older
+  // active episode does not become a new occurrence merely by crossing a window.
+  const episodes24h = episodes.filter((episode) => episode.first_seen_at.getTime() >= window24h);
+  const episodes7d = episodes.filter((episode) => episode.first_seen_at.getTime() >= window7d);
+  const occurrences_24h = episodes24h.length;
+  const occurrences_7d = episodes7d.length;
   const latest = episodes[episodes.length - 1];
   const lastRecovery = [...episodes].reverse().find((episode) => episode.resolved_at);
   const model = {
@@ -88,9 +92,13 @@ export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Dat
     is_recurrent: occurrences_24h >= OPERATIONAL_RECURRENT_MIN_24H,
   };
   if (recentLimit > 0) {
-    model.recent_occurrences = episodes.slice(-recentLimit).reverse().map((episode) => ({
+    // Counts and drawer timeline share this exact logical episode collection.
+    model.total_recent_episodes = episodes7d.length;
+    model.recent_episodes = episodes7d.slice(-recentLimit).reverse().map((episode) => ({
       started_at: toIso(episode.first_seen_at),
-      recovered_at: toIso(episode.resolved_at),
+      resolved_at: toIso(episode.resolved_at),
+      active: !episode.resolved_at,
+      duration_seconds: episode.duration_seconds,
     }));
   }
   return model;

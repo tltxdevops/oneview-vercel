@@ -72,6 +72,21 @@ test("C: updates of the same unresolved event stay one occurrence", () => {
   assert.equal(model.last_failure_at, "2026-09-14T08:00:00.000Z");
 });
 
+test("C: overlapping equivalent aliases merge their full interval and do not split a later row", () => {
+  const model = buildOperationalRecurrenceReadModel({
+    alerts: [
+      alert({ id: "a", first_seen_at: "2026-09-14T08:00:00.000Z", resolved_at: "2026-09-14T08:10:00.000Z" }),
+      alert({ id: "alias", first_seen_at: "2026-09-14T08:05:00.000Z", resolved_at: "2026-09-14T08:15:00.000Z" }),
+      alert({ id: "same-episode", first_seen_at: "2026-09-14T08:12:00.000Z", resolved_at: "2026-09-14T08:20:00.000Z" }),
+      alert({ id: "new-after-recovery", first_seen_at: "2026-09-14T08:21:00.000Z", resolved_at: null }),
+    ],
+    now: NOW,
+    recentLimit: 5,
+  });
+  assert.equal(model.occurrences_24h, 2);
+  assert.equal(model.recent_episodes[1].resolved_at, "2026-09-14T08:20:00.000Z");
+});
+
 test("D: same host with different triggers keeps separate counts", () => {
   const cpu = [alert({ id: "cpu-1", source_trigger_id: "cpu", first_seen_at: "2026-09-14T10:00:00.000Z", resolved_at: null })];
   const disk = [
@@ -160,8 +175,22 @@ test("I/J: last_recovery_at and last_failure_at follow the latest episode", () =
   });
   assert.equal(model.last_recovery_at, "2026-09-14T09:20:00.000Z");
   assert.equal(model.last_failure_at, "2026-09-14T10:15:00.000Z");
-  assert.equal(model.recent_occurrences.length, 3);
-  assert.equal(model.recent_occurrences[0].started_at, "2026-09-14T10:15:00.000Z");
+  assert.equal(model.recent_episodes.length, 3);
+  assert.equal(model.recent_episodes[0].started_at, "2026-09-14T10:15:00.000Z");
+  assert.equal(model.recent_episodes[0].active, true);
+  assert.equal(model.total_recent_episodes, model.occurrences_7d);
+});
+
+test("K: recent timeline and counts share the same 7d episode collection", () => {
+  const alerts = Array.from({ length: 36 }, (_, index) => alert({
+    id: `episode-${index}`,
+    first_seen_at: new Date(NOW.getTime() - (index * 2 + 1) * 60 * 60 * 1000).toISOString(),
+    resolved_at: new Date(NOW.getTime() - (index * 2 + 0.5) * 60 * 60 * 1000).toISOString(),
+  }));
+  const model = buildOperationalRecurrenceReadModel({ alerts, now: NOW, recentLimit: 5 });
+  assert.equal(model.occurrences_7d, 36);
+  assert.equal(model.total_recent_episodes, 36);
+  assert.equal(model.recent_episodes.length, 5);
 });
 
 test("recurrent filter keeps only 24h >= 2", () => {
@@ -177,11 +206,14 @@ test("Operadoras exposes compact recurrence badge, filter and drawer block", asy
   const page = await readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8");
   assert.match(page, /Recorrentes/);
   assert.match(page, /Recorrência/);
-  assert.match(page, /ocorrências \/ 24h/);
+  assert.match(page, /quedas \/ 24h/);
   assert.match(page, /Última recuperação/);
   assert.match(page, /Última nova falha/);
+  assert.match(page, /Mostrando \{recent\.length\} de \{total\}/);
+  assert.doesNotMatch(page, /Histórico recente/);
   const links = await readFile(new URL("../api/_lib/oneview-links.js", import.meta.url), "utf8");
   const recurrence = await readFile(new URL("../api/_lib/oneview-operational-recurrence.js", import.meta.url), "utf8");
   assert.match(links, /attachOperationalRecurrence/);
+  assert.match(recurrence, /total_recent_episodes = episodes7d\.length/);
   assert.doesNotMatch(recurrence, /getOneViewDbPool|pool\.query/);
 });

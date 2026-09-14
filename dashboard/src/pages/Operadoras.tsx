@@ -164,27 +164,30 @@ function FollowUp({ link }: { link: CanonicalLink }) {
 function RecurrenceHint({ link }: { link: CanonicalLink }) {
   const count = Number(link.occurrences_24h || 0);
   if (!link.is_recurrent || count < 2) return null;
-  return <Badge variant="outline">🔁 {count} ocorrências / 24h</Badge>;
+  return <Badge variant="outline">🔁 {count} quedas / 24h</Badge>;
 }
 function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }) {
-  const recent = "recent_occurrences" in link ? link.recent_occurrences || [] : [];
+  const recent = "recent_episodes" in link ? link.recent_episodes || [] : [];
+  const total = Number(link.total_recent_episodes || 0);
   return (
     <section>
       <h3 className="mb-2 text-sm font-semibold">Recorrência</h3>
       <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
-        <Field label="Últimas 24h" value={`${Number(link.occurrences_24h || 0)} ocorrências`} />
-        <Field label="Últimos 7d" value={`${Number(link.occurrences_7d || 0)} ocorrências`} />
+        <Field label="24h" value={`${Number(link.occurrences_24h || 0)} quedas`} />
+        <Field label="7d" value={`${Number(link.occurrences_7d || 0)} quedas`} />
         <Field label="Última recuperação" value={timestampLabel(link.last_recovery_at)} />
         <Field label="Última nova falha" value={timestampLabel(link.last_failure_at)} />
       </div>
       {recent.length ? (
         <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+          <p className="font-medium text-foreground">Ocorrências recentes</p>
           {recent.map((item, index) => (
             <p key={`${item.started_at || "start"}-${index}`}>
-              {timestampLabel(item.started_at)}
-              {item.recovered_at ? ` → ${timestampLabel(item.recovered_at)}` : " · em falha"}
+              {item.active ? "●" : "○"} {timestampLabel(item.started_at)}
+              {item.resolved_at ? ` → ${timestampLabel(item.resolved_at)}` : " → em falha"}
             </p>
           ))}
+          {total > recent.length ? <p>Mostrando {recent.length} de {total}</p> : null}
         </div>
       ) : null}
     </section>
@@ -708,7 +711,6 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
       <RecurrencePanel link={view} />
       <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>
       <section><h3 className="mb-2 text-sm font-semibold">Alerta atual</h3>{currentAlert ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p className="font-medium">{text(currentAlert.problem_name || currentAlert.trigger_description, "Alerta sem título")}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentAlert.severity)} · Início: {timestampLabel(currentAlert.started_at)} · Último alerta: {timestampLabel(currentAlert.last_seen_at || view.latest_alert_at)}</p></div> : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}</section>
-      {loading && !detail ? <div className="space-y-2"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /></div> : <section><h3 className="mb-2 text-sm font-semibold">Histórico recente</h3>{detail?.incident_history.length ? <div className="space-y-2">{detail.incident_history.map((incident) => { const key = `history:${incident.sys_id || incident.number}`; return <IncidentSummaryCard key={key} incident={incident} slotKey="history" expanded={expandedIncidentKey === key} onToggle={() => setExpandedIncidentKey((value) => value === key ? null : key)} />; })}</div> : <p className="text-sm text-muted-foreground">Sem histórico disponível</p>}</section>}
       <CircuitReminderPanel link={view} />
       {detail ? <Accordion type="single" collapsible className="rounded-lg border border-border/60 px-3"><AccordionItem value="technical" className="border-b-0"><AccordionTrigger className="py-3 text-sm">Detalhes técnicos</AccordionTrigger><AccordionContent><div className="grid gap-3 sm:grid-cols-2"><Field label="Circuit key" value={text(detail.technical.circuit_key || detail.service_name)} /><Field label="Host Zabbix" value={`${text(detail.technical.host_name)} · ID ${text(detail.technical.source_host_id)}`} /><Field label="Trigger(s)" value={detail.technical.trigger_ids.length ? detail.technical.trigger_ids.join(", ") : "Não informado"} /><Field label="Member / uplink" value={text(detail.technical.member_key || detail.technical.uplink_key)} /><Field label="Health-check" value={text(detail.technical.healthcheck_key)} /><Field label="IP" value={text(detail.technical.endpoint_ip)} /><Field label="Fonte" value={`${zabbixSourceDisplayName(detail.technical.source)} · ${text(detail.technical.strategy)}`} /><Field label="Confiança" value={text(detail.technical.confidence)} /></div></AccordionContent></AccordionItem></Accordion> : null}
     </div>

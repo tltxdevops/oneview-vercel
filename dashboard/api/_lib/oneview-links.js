@@ -677,6 +677,7 @@ function queueLink(row) {
     last_failure_at: row.last_failure_at || null,
     last_recovery_at: row.last_recovery_at || null,
     is_recurrent: Boolean(row.is_recurrent),
+    total_recent_episodes: Number(row.total_recent_episodes || 0),
   };
 }
 
@@ -713,7 +714,7 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
     ...queueLink(row),
     current_alert: row.current_alert, latest_alert: row.latest_alert, active_alerts_detail: row.alerts || [],
     current_incident: row.current_incident, latest_incident: row.latest_incident, incident_history: incidentHistory,
-    recent_occurrences: row.recent_occurrences || [],
+    recent_episodes: row.recent_episodes || [], total_recent_episodes: Number(row.total_recent_episodes || 0),
     technical: { circuit_key: row.circuit_key, resolution_status: row.resolution_status, source: row.datasource, host_name: row.host_name, source_host_id: row.source_host_id, trigger_ids: row.trigger_ids || [], member_key: row.member_key, uplink_key: row.uplink_key, healthcheck_key: row.healthcheck_key, endpoint_ip: row.endpoint_ip, confidence: row.confidence, strategy: row.strategy },
     integration_status: model.integration_status,
     checked_at: new Date().toISOString(),
@@ -760,7 +761,7 @@ export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, d
     ...queueLink(row),
     active_alerts_detail: row.alerts || [],
     incident_history: incidentHistory,
-    recent_occurrences: row.recent_occurrences || [],
+    recent_episodes: row.recent_episodes || [], total_recent_episodes: Number(row.total_recent_episodes || 0),
     technical: { circuit_key: row.circuit_key, resolution_status: row.resolution_status, source: row.datasource, host_name: row.host_name, source_host_id: row.source_host_id, trigger_ids: [String(sourceTriggerId)], member_key: row.member_key, uplink_key: row.uplink_key, healthcheck_key: row.healthcheck_key, endpoint_ip: row.endpoint_ip, confidence: row.confidence, strategy: row.strategy },
     integration_status: { servicenow: servicenowStatus },
     checked_at: new Date().toISOString(),
