@@ -424,7 +424,7 @@ function discoverGeneric(context) {
   const linkMatch = evidence.match(/\blink\s+(mpls|lte|4g|public[\s_-]*internet)\b/i);
   if (!linkMatch) {
     return candidate(context, {
-      circuit_key: unresolvedKey(context, "generic"),
+      circuit_key: unresolvedKey(context, "generic", [context.source_trigger_id]),
       resolution_status: "unresolved",
       service_name: "Circuito pendente de classificação",
       strategy: "generic",
@@ -443,7 +443,7 @@ function discoverGeneric(context) {
   const referenceKey = stableCircuitSlug(reference);
   if (!source || !host || !linkType || !referenceKey) {
     return candidate(context, {
-      circuit_key: unresolvedKey(context, "generic", [linkType]),
+      circuit_key: unresolvedKey(context, "generic", [linkType, context.source_trigger_id]),
       resolution_status: "unresolved",
       link_type: null,
       endpoint_ip: endpointIp,

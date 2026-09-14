@@ -207,6 +207,16 @@ function alertSummary(alerts) {
   };
 }
 
+function pendingClassificationLabel(value) {
+  return /pendente de classifica/i.test(String(value || ""));
+}
+
+function alertDisplayName(alerts, hostName) {
+  const summary = alertSummary(alerts);
+  const current = summary.current_alert || summary.latest_alert;
+  return text(current?.problem_name || current?.trigger_description || hostName) || "Link sem identificação";
+}
+
 function incidentsForAlerts(alerts, matches) {
   const found = new Map();
   for (const alert of uniqueAlerts(alerts)) {
@@ -309,7 +319,9 @@ function circuitLink(circuit, alerts, matches, alertIndex = null) {
     host_name: circuit.host_name,
     customer_key: circuit.customer_key || "unclassified",
     customer_name: circuit.customer_name || "Cliente não identificado",
-    service_name: circuit.service_name || "Circuito pendente de classificação",
+    service_name: pendingClassificationLabel(circuit.service_name)
+      ? alertDisplayName(related, circuit.host_name)
+      : (circuit.service_name || alertDisplayName(related, circuit.host_name)),
     classification: circuit.link_type || "pending_classification",
     classification_source: circuit.strategy,
     classification_confidence: circuit.confidence,
@@ -342,14 +354,88 @@ function circuitLink(circuit, alerts, matches, alertIndex = null) {
   };
 }
 
+function alertsForOperationalMerge(row) {
+  return uniqueAlerts([...(row.alerts || []), row.current_alert, row.latest_alert]);
+}
+
+function mergeLinkOperationalState(target, source) {
+  const combinedAlertIds = [...new Set([...(target.alert_ids || []), ...(source.alert_ids || [])])].sort();
+  const combinedTriggerIds = [...new Set([...(target.trigger_ids || []), ...(source.trigger_ids || [])])].map(String).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const combinedAlerts = uniqueAlerts([...alertsForOperationalMerge(target), ...alertsForOperationalMerge(source)]);
+  const combinedIncidents = [...new Map([...(target.incidents || []), ...(source.incidents || [])].map((incident) => [incident.sys_id || incident.number, incident])).values()];
+  if (combinedAlerts.length) Object.assign(target, alertSummary(combinedAlerts));
+  target.alert_ids = combinedAlertIds;
+  target.trigger_ids = combinedTriggerIds;
+  target.incidents = combinedIncidents;
+  target.incident_count = combinedIncidents.length;
+  Object.assign(target, incidentSummary(combinedIncidents));
+  return target;
+}
+
+function usableCircuitTriggerKeys(row) {
+  return [...new Set((row.trigger_ids || []).map((triggerId) => String(triggerId || "").trim()).filter(Boolean).map((triggerId) => circuitTriggerKey(row, triggerId)))];
+}
+
+function indexCircuitOwners(rows, ownerByTrigger) {
+  for (const row of rows) {
+    for (const key of usableCircuitTriggerKeys(row)) {
+      if (!ownerByTrigger.has(key)) ownerByTrigger.set(key, row);
+    }
+  }
+}
+
+function absorbOwnedRows(candidates, ownerByTrigger, kept) {
+  for (const row of candidates) {
+    const usableKeys = usableCircuitTriggerKeys(row);
+    if (!usableKeys.length) {
+      kept.push(row);
+      continue;
+    }
+    const owners = [];
+    const seen = new Set();
+    let fullyOwned = true;
+    for (const key of usableKeys) {
+      const owner = ownerByTrigger.get(key);
+      if (!owner) {
+        fullyOwned = false;
+        break;
+      }
+      if (!seen.has(owner.id)) {
+        seen.add(owner.id);
+        owners.push(owner);
+      }
+    }
+    if (fullyOwned && owners.length === 1 && owners[0] !== row) {
+      mergeLinkOperationalState(owners[0], row);
+      continue;
+    }
+    kept.push(row);
+  }
+}
+
+function collapseEquivalentOperationalRows(rows) {
+  const resolvedCircuits = [];
+  const pendingCircuits = [];
+  const inventoryRows = [];
+  for (const row of rows) {
+    if (row.circuit_key && row.resolution_status === "resolved") resolvedCircuits.push(row);
+    else if (row.circuit_key) pendingCircuits.push(row);
+    else inventoryRows.push(row);
+  }
+  const ownerByTrigger = new Map();
+  indexCircuitOwners(resolvedCircuits, ownerByTrigger);
+  const kept = [...resolvedCircuits];
+  absorbOwnedRows(pendingCircuits, ownerByTrigger, kept);
+  indexCircuitOwners(kept, ownerByTrigger);
+  absorbOwnedRows(inventoryRows, ownerByTrigger, kept);
+  return kept;
+}
+
 export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], incidents = [], circuits: providedCircuits = null } = {}) {
   const alerts = uniqueAlerts(alertRows);
   const matches = correlateLinkIncidents(alerts, incidents);
   const circuits = providedCircuits || discoverOperatorCircuits(alerts);
   const alertIndex = indexAlertsByCircuitTrigger(alerts);
-  const resolvedHosts = new Set(circuits
-    .filter((circuit) => circuit.resolution_status === "resolved")
-    .map(hostKey));
   const alertsByHost = new Map();
   for (const alert of alerts) {
     const key = hostKey(alert);
@@ -357,11 +443,20 @@ export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], i
     current.push(alert);
     alertsByHost.set(key, current);
   }
-  const legacy = inventoryRows
-    .filter((row) => !resolvedHosts.has(hostKey(row)))
-    .map((row) => inventoryLink(row, alertsByHost.get(hostKey(row)) || [], matches));
   const derived = circuits.map((circuit) => circuitLink(circuit, alerts, matches, alertIndex));
-  return [...legacy, ...derived].sort((a, b) => (
+  const ownedTriggers = new Set();
+  for (const row of derived) {
+    for (const triggerId of row.trigger_ids || []) ownedTriggers.add(circuitTriggerKey(row, triggerId));
+  }
+  const circuitHosts = new Set(derived.map(hostKey));
+  const legacy = [];
+  for (const row of inventoryRows) {
+    const hostAlerts = alertsByHost.get(hostKey(row)) || [];
+    const uncovered = hostAlerts.filter((alert) => !ownedTriggers.has(circuitTriggerKey(alert)));
+    if (uncovered.length === 0 && circuitHosts.has(hostKey(row))) continue;
+    legacy.push(inventoryLink(row, uncovered.length ? uncovered : hostAlerts, matches));
+  }
+  return collapseEquivalentOperationalRows([...legacy, ...derived]).sort((a, b) => (
     String(a.customer_name || "").localeCompare(String(b.customer_name || ""), "pt-BR")
     || String(a.service_name || "").localeCompare(String(b.service_name || ""), "pt-BR")
     || String(a.id).localeCompare(String(b.id), "pt-BR")

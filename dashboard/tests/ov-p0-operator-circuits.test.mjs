@@ -362,6 +362,215 @@ test("legacy inventory without operator circuit remains host-level", () => {
   assert.equal(links[0].active_alerts, 1);
 });
 
+function genericOperatorAlert(overrides = {}) {
+  return baseAlert({
+    problem_name: "Unavailable by ICMP ping",
+    trigger_description: "ICMP ping unavailable",
+    item_key: "icmpping",
+    ...overrides,
+  });
+}
+
+test("Castrolanda inventory host plus equivalent alert_subject collapses to one circuit-level row", () => {
+  const host = "CASTRO_CD_UBS_Mottanet";
+  const alert = genericOperatorAlert({
+    id: "castrolanda-icmp",
+    source_host_id: host,
+    source_trigger_id: "icmp-trigger",
+    host_name: host,
+    customer_key: "castrolanda",
+    customer_name: "Castrolanda",
+  });
+  const links = composeCircuitLevelLinks({
+    inventoryRows: [{
+      ...inventory(host),
+      customer_key: "castrolanda",
+      customer_name: "Castrolanda",
+      service_name: host,
+    }],
+    alertRows: [alert],
+  });
+  assert.equal(links.length, 1);
+  assert.notEqual(links[0].strategy, "inventory_host");
+  assert.equal(links[0].resolution_status, "unresolved");
+  assert.doesNotMatch(links[0].service_name, /Circuito pendente de classificação/i);
+  assert.match(links[0].service_name, /ICMP|Unavailable/i);
+  assert.deepEqual(links[0].alert_ids, ["castrolanda-icmp"]);
+  assert.deepEqual(links[0].trigger_ids, ["icmp-trigger"]);
+});
+
+test("Tuper inventory plus equivalent unresolved fallback collapses to one row", () => {
+  const host = "TUPER-MATRIZ-RTR";
+  const alert = genericOperatorAlert({
+    id: "tuper-icmp",
+    source_host_id: host,
+    source_trigger_id: "tuper-trigger",
+    host_name: host,
+    customer_key: "tuper",
+    customer_name: "Tuper",
+    problem_name: "Interface down",
+  });
+  const links = composeCircuitLevelLinks({
+    inventoryRows: [{ ...inventory(host), customer_key: "tuper", customer_name: "Tuper", service_name: host }],
+    alertRows: [alert],
+  });
+  assert.equal(links.length, 1);
+  assert.equal(links[0].customer_name, "Tuper");
+  assert.notEqual(links[0].strategy, "inventory_host");
+  assert.doesNotMatch(links[0].service_name, /Circuito pendente de classificação/i);
+});
+
+test("alert_subject without a resolved circuit remains one functional row", () => {
+  const alert = genericOperatorAlert({
+    id: "orphan-icmp",
+    source_trigger_id: "orphan-trigger",
+    problem_name: "ICMP ping unavailable",
+  });
+  const links = composeCircuitLevelLinks({ alertRows: [alert] });
+  assert.equal(links.length, 1);
+  assert.equal(links[0].resolution_status, "unresolved");
+  assert.equal(links[0].circuit_key != null, true);
+  assert.deepEqual(links[0].alert_ids, ["orphan-icmp"]);
+  assert.doesNotMatch(links[0].service_name, /Circuito pendente de classificação/i);
+});
+
+test("host with two really different triggers keeps two rows", () => {
+  const links = composeCircuitLevelLinks({
+    alertRows: [
+      genericOperatorAlert({ id: "cpu", source_trigger_id: "cpu-trigger", problem_name: "CPU high" }),
+      genericOperatorAlert({ id: "disk", source_trigger_id: "disk-trigger", problem_name: "Disk full" }),
+    ],
+  });
+  assert.equal(links.length, 2);
+  assert.deepEqual(new Set(links.map((link) => link.trigger_ids.join(","))), new Set(["cpu-trigger", "disk-trigger"]));
+});
+
+test("canonical circuit appearing after fallback absorbs the equivalent alert_subject", async () => {
+  const host = "CASTRO_CD_UBS_Mottanet";
+  const fallback = {
+    circuit_key: "operator:v1:generic-unresolved:ds-1:castro:icmp-trigger",
+    resolution_status: "unresolved",
+    data_source_id: "ds-1",
+    datasource: "castrolanda",
+    source_host_id: host,
+    host_name: host,
+    customer_name: "Castrolanda",
+    customer_key: "castrolanda",
+    service_name: "Circuito pendente de classificação",
+    trigger_ids: ["icmp-trigger"],
+    alert_ids: ["fallback-alert"],
+    strategy: "generic",
+  };
+  const canonical = {
+    ...fallback,
+    circuit_key: "operator:v1:generic:ds-1:castro:mpls:mottanet",
+    resolution_status: "resolved",
+    service_name: "Link MPLS · Mottanet",
+    strategy: "generic",
+    alert_ids: ["canonical-alert"],
+  };
+  const fallbackAlert = genericOperatorAlert({
+    id: "fallback-alert",
+    source_host_id: host,
+    source_trigger_id: "icmp-trigger",
+    host_name: host,
+    customer_name: "Castrolanda",
+    customer_key: "castrolanda",
+    last_seen_at: "2026-09-14T12:00:00.000Z",
+    first_seen_at: "2026-09-14T08:00:00.000Z",
+  });
+  const canonicalAlert = genericOperatorAlert({
+    id: "canonical-alert",
+    source_host_id: host,
+    source_trigger_id: "icmp-trigger",
+    host_name: host,
+    customer_name: "Castrolanda",
+    customer_key: "castrolanda",
+    item_key: "link mpls circuito: MOTTANET",
+    trigger_description: "Link MPLS circuito: MOTTANET",
+    last_seen_at: "2026-09-14T11:00:00.000Z",
+  });
+  const links = composeCircuitLevelLinks({
+    inventoryRows: [{ ...inventory(host), customer_name: "Castrolanda", service_name: host }],
+    alertRows: [fallbackAlert, canonicalAlert],
+    circuits: [canonical, fallback],
+  });
+  assert.equal(links.length, 1);
+  assert.equal(links[0].resolution_status, "resolved");
+  assert.equal(links[0].circuit_key, canonical.circuit_key);
+  assert.ok(links[0].alert_ids.includes("fallback-alert"));
+  assert.ok(links[0].alert_ids.includes("canonical-alert"));
+  assert.equal(links[0].latest_alert?.id, "fallback-alert");
+  assert.equal(links[0].latest_alert?.last_seen_at, "2026-09-14T12:00:00.000Z");
+  const { buildOperationalSubject, equivalentOperationalSubjects } = await import("../api/_lib/oneview-operational-subject.js");
+  const subject = buildOperationalSubject(links[0]);
+  assert.equal(subject.subject_type, "circuit");
+  assert.ok(equivalentOperationalSubjects(subject).some((item) => item.subject_key === `alert:${host}:icmp-trigger`));
+});
+
+test("equivalent fallback INC is kept on the canonical circuit", () => {
+  const host = "CASTRO_CD_UBS_Mottanet";
+  const sysId = "dddddddddddddddddddddddddddddddd";
+  const fallback = genericOperatorAlert({
+    id: "fallback-with-inc",
+    source_host_id: host,
+    source_trigger_id: "icmp-trigger",
+    host_name: host,
+    customer_name: "Castrolanda",
+    customer_key: "castrolanda",
+    last_seen_at: "2026-09-14T16:00:00.000Z",
+    event_tags: [...escalation, { tag: "__zbx_servicenow_sys_id", value: sysId }, { tag: "__zbx_servicenow_number", value: "INC0099991" }],
+  });
+  const canonical = genericOperatorAlert({
+    id: "canonical-older",
+    source_host_id: host,
+    source_trigger_id: "icmp-trigger",
+    host_name: host,
+    customer_name: "Castrolanda",
+    customer_key: "castrolanda",
+    item_key: "link mpls circuito: MOTTANET",
+    trigger_description: "Link MPLS circuito: MOTTANET",
+    last_seen_at: "2026-09-14T10:00:00.000Z",
+    severity: "high",
+  });
+  const links = composeCircuitLevelLinks({
+    inventoryRows: [{ ...inventory(host), customer_name: "Castrolanda", service_name: host }],
+    alertRows: [fallback, canonical],
+    incidents: [{ sys_id: sysId, number: "INC0099991", state: "2" }],
+  });
+  assert.equal(links.length, 1);
+  assert.equal(links[0].resolution_status, "resolved");
+  assert.equal(links[0].circuit_key && links[0].resolution_status === "resolved", true);
+  assert.deepEqual(links[0].incidents.map((item) => item.number), ["INC0099991"]);
+  assert.equal(links[0].latest_alert?.id, "fallback-with-inc");
+  assert.equal(links[0].max_severity, "high");
+});
+
+test("same host with two Meraki uplinks does not collapse into one row", () => {
+  const links = composeCircuitLevelLinks({
+    inventoryRows: [inventory("havan-aggregator")],
+    alertRows: [
+      meraki("wan1", "226 - Tramandaí", "wan1"),
+      meraki("wan2", "226 - Tramandaí", "wan2"),
+    ],
+  });
+  assert.equal(links.length, 2);
+  assert.deepEqual(new Set(links.map((link) => link.uplink_key)), new Set(["wan1", "wan2"]));
+  assert.equal(links.some((link) => link.strategy === "inventory_host"), false);
+});
+
+test("reminder fallback aliases survive on the resulting canonical circuit", async () => {
+  const { buildOperationalSubject, equivalentOperationalSubjects } = await import("../api/_lib/oneview-operational-subject.js");
+  const alert = meraki("wan2", "226 - Tramandaí", "wan2");
+  const [link] = composeCircuitLevelLinks({
+    inventoryRows: [inventory("havan-aggregator")],
+    alertRows: [alert],
+  });
+  const subject = buildOperationalSubject(link);
+  assert.equal(subject.subject_type, "circuit");
+  assert.ok(equivalentOperationalSubjects(subject).some((item) => item.subject_type === "alert_subject" && item.subject_key === "alert:havan-aggregator:wan2"));
+});
+
 test("BFF reads inventory plus PostgreSQL operator evidence without persistence", async () => {
   const queries = [];
   const operatorAlert = meraki("wan2", "226 - Tramandaí", "wan2");
