@@ -671,6 +671,7 @@ function queueLink(row) {
     open_incident_count: row.open_incident_count, resolved_incident_count: row.resolved_incident_count,
     closed_incident_count: row.closed_incident_count, cancelled_incident_count: row.cancelled_incident_count, unknown_incident_count: row.unknown_incident_count,
     current_incident: row.current_incident, latest_incident: row.latest_incident,
+    monitoring_state: row.monitoring_state, servicenow_state: row.servicenow_state, divergence_type: row.divergence_type,
     operational_subject: buildOperationalSubject(row),
     occurrences_24h: Number(row.occurrences_24h || 0),
     occurrences_7d: Number(row.occurrences_7d || 0),

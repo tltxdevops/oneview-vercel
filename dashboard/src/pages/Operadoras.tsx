@@ -137,9 +137,17 @@ function CurrentIncident({ link }: { link: CanonicalLink }) {
   return <p className="text-xs text-muted-foreground">Sem chamado</p>;
 }
 
+function divergenceLabel(link: CanonicalLink) {
+  const incident = link.current_incident || link.latest_incident;
+  const state = text(incident?.state_display, incidentStateLabel(incident?.state));
+  if (link.divergence_type === "a") return `Alerta ativo com chamado ${state}`;
+  if (link.divergence_type === "b") return `Normalizado com chamado ${state}`;
+  return "Não";
+}
+
 function DivergenceHint({ link }: { link: CanonicalLink }) {
-  if (link.divergence_type === "a") return <Badge variant="destructive">Alerta ativo com chamado encerrado</Badge>;
-  if (link.divergence_type === "b") return <Badge variant="secondary">Normalizado com chamado aberto</Badge>;
+  if (link.divergence_type === "a") return <Badge variant="destructive">{divergenceLabel(link)}</Badge>;
+  if (link.divergence_type === "b") return <Badge variant="secondary">{divergenceLabel(link)}</Badge>;
   return null;
 }
 
@@ -707,7 +715,7 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
     <SheetHeader className="border-b border-border/60 px-5 py-5 pr-12 text-left"><div className="flex flex-wrap items-center gap-2"><StateBadge state={view.state} />{view.max_severity ? <SeverityBadge severity={view.max_severity} /> : null}</div><SheetTitle className="break-words text-base">{linkLabel(view)}</SheetTitle><SheetDescription>{view.customer_name} · {localLabel(view)}</SheetDescription></SheetHeader>
     <div className="space-y-5 px-5 py-5">
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
-      <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Monitoramento" value={view.active_alerts ? `Em falha há ${failureDuration(view)}` : "Normalizado"} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /><Field label="Divergência" value={view.divergence_type === "a" ? "Alerta ativo com chamado encerrado" : view.divergence_type === "b" ? "Normalizado com chamado aberto" : "Não"} /></div></section>
+      <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Monitoramento" value={view.active_alerts ? `Em falha há ${failureDuration(view)}` : "Normalizado"} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /><Field label="Divergência" value={divergenceLabel(view)} /></div></section>
       <RecurrencePanel link={view} />
       <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>
       <section><h3 className="mb-2 text-sm font-semibold">Alerta atual</h3>{currentAlert ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p className="font-medium">{text(currentAlert.problem_name || currentAlert.trigger_description, "Alerta sem título")}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentAlert.severity)} · Início: {timestampLabel(currentAlert.started_at)} · Último alerta: {timestampLabel(currentAlert.last_seen_at || view.latest_alert_at)}</p></div> : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}</section>
