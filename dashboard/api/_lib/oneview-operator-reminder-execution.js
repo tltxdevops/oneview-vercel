@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { insertAuditLog } from "./audit.js";
 import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
-import { fetchCanonicalLinkDetail } from "./oneview-links.js";
+import { fetchCanonicalLinkDetail, fetchOperationalSubjectDetail } from "./oneview-links.js";
 
 export const THEO_OPERATOR_REMINDER_ACTION_TYPE = "theo_operator_reminder_v1";
 export const OPERATOR_REMINDER_AGGREGATE_TYPE = "operator_reminder";
@@ -36,8 +36,11 @@ function durationLabel(startedAt, now) {
   const remaining = minutes % 60;
   return remaining ? `${hours}h ${remaining}min` : `${hours}h`;
 }
-function linkLabel(link) {
-  const service = safe(link?.service_name || link?.link_name || link?.circuit_key, "Link de operadora");
+function linkLabel(link, reminder = null) {
+  const classifiedService = reminder?.subject_type === "alert_subject" && /pendente de classifica/i.test(String(link?.service_name || ""))
+    ? null
+    : link?.service_name;
+  const service = safe(classifiedService || link?.current_alert?.problem_name || link?.current_alert?.trigger_description || link?.host_name || link?.link_name || link?.circuit_key, "Alerta de operadora");
   const detail = safe(link?.member_key || link?.uplink_key || link?.site_key);
   return detail && !service.toLowerCase().includes(detail.toLowerCase()) ? `${service} · ${detail}` : service;
 }
@@ -68,7 +71,7 @@ export function buildOperatorReminderTheoPayload(reminder, link, now = new Date(
   const incident = link?.current_incident || null;
   const hasIncident = Boolean(text(incident?.number));
   const startedAt = alert?.started_at || link?.active_since_at || link?.alert_started_at;
-  const circuit = linkLabel(link);
+  const circuit = linkLabel(link, reminder);
   const createdByName = safe(reminder?.created_by_name, "Operador OneView");
   const incidentLine = hasIncident
     ? `INC: ${safe(incident.number)}${incident?.state_display ? ` · ${safe(incident.state_display)}` : ""}.`
@@ -92,7 +95,7 @@ export function buildOperatorReminderTheoPayload(reminder, link, now = new Date(
 export async function claimDueOperatorReminders(client, { batchSize = DEFAULT_BATCH_SIZE } = {}) {
   const result = await client.query(
     `
-      select id, circuit_key, data_source_id, source_host_id, scheduled_for, status,
+      select id, subject_type, subject_key, circuit_key, data_source_id, source_host_id, source_trigger_id, scheduled_for, status,
              created_by_name, initial_alert_id, initial_incident_number
         from operator_reminders
        where status = 'scheduled'
@@ -121,7 +124,7 @@ async function markSkipped(client, reminder, reason, now, audit, req) {
       action: "REMINDER_SKIPPED", entityType: "operator_reminder", entityId: reminder.id,
       dataSourceId: reminder.data_source_id, alertId: reminder.initial_alert_id || null,
       beforeData: { status: "scheduled" }, afterData: { status: "skipped", skip_reason: reason },
-      metadata: { circuit_key: reminder.circuit_key, source_host_id: reminder.source_host_id || null }, req,
+      metadata: { subject_type: reminder.subject_type, subject_key: reminder.subject_key, circuit_key: reminder.circuit_key, source_host_id: reminder.source_host_id || null, source_trigger_id: reminder.source_trigger_id || null }, req,
     });
   }
   return row;
@@ -170,7 +173,7 @@ async function enqueueReminder(client, reminder, link, { idFactory, now, audit, 
     action: "REMINDER_ENQUEUED", entityType: "operator_reminder", entityId: reminder.id,
     dataSourceId: reminder.data_source_id, alertId: link.current_alert?.id || null,
     beforeData: { status: "scheduled" }, afterData: { status: "processing" },
-    metadata: { circuit_key: reminder.circuit_key, outbox_id: outboxId }, req,
+    metadata: { subject_type: reminder.subject_type, subject_key: reminder.subject_key, circuit_key: reminder.circuit_key, source_trigger_id: reminder.source_trigger_id || null, outbox_id: outboxId }, req,
   });
   return { created: true, outboxId };
 }
@@ -182,6 +185,7 @@ async function enqueueReminder(client, reminder, link, { idFactory, now, audit, 
 export async function processDueOperatorReminders({
   transaction = withOneViewActionsTransaction,
   resolveLink = fetchCanonicalLinkDetail,
+  resolveSubject = fetchOperationalSubjectDetail,
   audit = insertAuditLog,
   idFactory = randomUUID,
   now = () => new Date(),
@@ -198,18 +202,27 @@ export async function processDueOperatorReminders({
       const startedAt = Date.now();
       let link;
       try {
-        link = await resolveLink({
-          id: reminder.circuit_key,
-          dataSourceId: reminder.data_source_id,
-          sourceHostId: reminder.source_host_id,
-        });
+        link = reminder.subject_type === "alert_subject"
+          ? await resolveSubject({
+            subjectType: "alert_subject",
+            subjectKey: reminder.subject_key,
+            dataSourceId: reminder.data_source_id,
+            sourceHostId: reminder.source_host_id,
+            sourceTriggerId: reminder.source_trigger_id,
+          })
+          : await resolveLink({
+            id: reminder.circuit_key,
+            dataSourceId: reminder.data_source_id,
+            sourceHostId: reminder.source_host_id,
+          });
       } catch (error) {
         summary.failed += 1;
         executionLog(logger, { reminder_id: reminder.id, phase: "revalidate", status_before: "scheduled", status_after: "scheduled", error_code: errorCode(error), duration_ms: Date.now() - startedAt });
         continue;
       }
       if (!link) {
-        const skipped = await markSkipped(client, reminder, "circuit_not_found", now(), audit, req);
+        const reason = reminder.subject_type === "alert_subject" ? "alert_resolved" : "circuit_not_found";
+        const skipped = await markSkipped(client, reminder, reason, now(), audit, req);
         summary.skipped += skipped ? 1 : 0;
         executionLog(logger, { reminder_id: reminder.id, phase: "revalidate", status_before: "scheduled", status_after: skipped?.status, error_code: skipped ? null : "claim_lost", duration_ms: Date.now() - startedAt });
         continue;

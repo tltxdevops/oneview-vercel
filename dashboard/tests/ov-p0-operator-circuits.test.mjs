@@ -377,6 +377,9 @@ test("BFF reads inventory plus PostgreSQL operator evidence without persistence"
   const links = await fetchCanonicalLinks({ pool });
   assert.equal(links.length, 1);
   assert.equal(links[0].strategy, "meraki");
+  assert.equal(links[0].operational_subject.subject_type, "circuit");
+  assert.equal(links[0].operational_subject.subject_key, `circuit:${links[0].circuit_key}`);
+  assert.equal(links[0].operational_subject.data_source_id, operatorAlert.data_source_id);
   assert.equal(queries.filter((sql) => /from alerts a join data_sources/.test(sql)).length, 2);
   assert.equal(queries.filter((sql) => /from zabbix_link_inventory l join data_sources/.test(sql)).length, 1);
   const alertsSql = queries.filter((sql) => /from alerts a join data_sources/.test(sql)).join("\n");

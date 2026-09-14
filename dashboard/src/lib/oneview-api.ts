@@ -1436,7 +1436,16 @@ export async function fetchServiceNowIncidentActionStatus(sysId: string, actionI
 }
 
 export type CanonicalLinkIncident = { sys_id: string | null; number: string | null; state: string | null; state_display?: string | null; priority?: string | null; priority_display?: string | null; assigned_to: string | null; assigned_to_display?: string | null; assignment_group: string | null; assignment_group_display?: string | null; opened_at?: string | null; updated_at?: string | null; short_description?: string | null; servicenow_url?: string | null; };
-export type CanonicalLinkAlert = { id: string; problem_name: string | null; trigger_description?: string | null; severity: OneViewSeverity | null; started_at?: string | null; last_seen_at?: string | null; };
+export type CanonicalLinkAlert = { id: string; data_source_id?: string | null; source_host_id?: string | null; source_trigger_id?: string | null; problem_name: string | null; trigger_description?: string | null; severity: OneViewSeverity | null; started_at?: string | null; last_seen_at?: string | null; };
+export type OperationalSubject = {
+  subject_type: "circuit" | "alert_subject";
+  subject_key: string;
+  circuit_key: string | null;
+  data_source_id: string;
+  source_host_id: string | null;
+  source_trigger_id: string | null;
+  fallback_subject_keys?: string[];
+};
 const incidentDetailCache = new Map<string, OneViewIncident>();
 const incidentDetailInFlight = new Map<string, Promise<OneViewIncident>>();
 
@@ -1525,6 +1534,7 @@ export type CanonicalLink = {
   latest_alert?: CanonicalLinkAlert | null;
   current_incident?: CanonicalLinkIncident | null;
   latest_incident?: CanonicalLinkIncident | null;
+  operational_subject?: OperationalSubject | null;
 };
 export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
 export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; without_open_incident: number; with_open_incident: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
@@ -1542,9 +1552,12 @@ export async function fetchCanonicalLinkDetail(link: Pick<CanonicalLink, "id" | 
 /** SN-P0-08 — lookup read-only alerta ↔ incidente via zabbix_event_id. */
 export type OperatorReminder = {
   id: string;
-  circuit_key: string;
+  subject_type: "circuit" | "alert_subject";
+  subject_key: string | null;
+  circuit_key: string | null;
   data_source_id: string;
   source_host_id: string | null;
+  source_trigger_id: string | null;
   scheduled_for: string;
   status: "scheduled" | "processing" | "sent" | "cancelled" | "skipped" | "failed";
   created_by: string;
@@ -1567,10 +1580,10 @@ const OPERATOR_REMINDER_CACHE_TTL_MS = 45_000;
 const operatorReminderCache = new Map<string, { items: OperatorReminder[]; expiresAt: number }>();
 const operatorReminderInFlight = new Map<string, Promise<OperatorReminder[]>>();
 const operatorReminderGeneration = new Map<string, number>();
-type ReminderLinkIdentity = Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id"> & { circuit_key?: string | null };
+type ReminderLinkIdentity = Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id"> & { circuit_key?: string | null; operational_subject?: OperationalSubject | null; subject_type?: OperatorReminder["subject_type"]; subject_key?: string | null; source_trigger_id?: string | null };
 
 export function operatorReminderCacheKey(link: ReminderLinkIdentity) {
-  return `${link.data_source_id}:${link.circuit_key || link.id}`;
+  return `${link.data_source_id}:${link.operational_subject?.subject_key || link.subject_key || link.circuit_key || link.id}`;
 }
 
 export function getCachedOperatorReminders(link: ReminderLinkIdentity): OperatorReminder[] | null {
@@ -1590,6 +1603,18 @@ export function clearOperatorReminderCache() {
 
 function operatorReminderPath(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, reminderId?: string) {
   const query = new URLSearchParams({ data_source_id: link.data_source_id, source_host_id: link.source_host_id });
+  const identity = link as ReminderLinkIdentity;
+  const subject = identity.operational_subject || (identity.subject_type && identity.subject_key ? {
+    subject_type: identity.subject_type, subject_key: identity.subject_key, circuit_key: identity.circuit_key || null,
+    data_source_id: identity.data_source_id, source_host_id: identity.source_host_id || null,
+    source_trigger_id: identity.source_trigger_id || null,
+  } : null);
+  if (subject) {
+    query.set("subject_type", subject.subject_type);
+    query.set("subject_key", subject.subject_key);
+    if (subject.circuit_key) query.set("circuit_key", subject.circuit_key);
+    if (subject.source_trigger_id) query.set("source_trigger_id", subject.source_trigger_id);
+  }
   if (reminderId) query.set("reminder_id", reminderId);
   return `/oneview/links/${encodeURIComponent(link.id)}/reminders?${query.toString()}`;
 }
@@ -1684,13 +1709,16 @@ export type OperatorReminderFeed = {
 };
 const OPERATOR_REMINDER_FEED_PATH = "/oneview/reminders";
 
-/** O feed devolve a identidade do circuito; as mutações continuam na rota por circuito. */
-export function operatorReminderIdentity(item: Pick<OperatorReminderFeedItem, "circuit_key" | "data_source_id" | "source_host_id">) {
+/** Feed mutations carry persisted subject identity; the path id is only a safe route locator. */
+export function operatorReminderIdentity(item: Pick<OperatorReminderFeedItem, "subject_type" | "subject_key" | "circuit_key" | "data_source_id" | "source_host_id" | "source_trigger_id">) {
   return {
-    id: item.circuit_key,
+    id: item.circuit_key || item.source_host_id || "operational-subject",
+    subject_type: item.subject_type,
+    subject_key: item.subject_key,
     circuit_key: item.circuit_key,
     data_source_id: item.data_source_id,
     source_host_id: item.source_host_id || "",
+    source_trigger_id: item.source_trigger_id,
   };
 }
 

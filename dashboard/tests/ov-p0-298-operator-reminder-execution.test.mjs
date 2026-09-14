@@ -17,9 +17,12 @@ const OUTBOX_ID = "22222222-2222-4222-8222-222222222222";
 function reminder(overrides = {}) {
   return {
     id: REMINDER_ID,
+    subject_type: "circuit",
+    subject_key: "circuit:ds-1:havan-host:meraki:143-marilia:wan1",
     circuit_key: "ds-1:havan-host:meraki:143-marilia:wan1",
     data_source_id: "ds-1",
     source_host_id: "havan-host",
+    source_trigger_id: null,
     scheduled_for: "2026-09-10T14:59:00.000Z",
     status: "scheduled",
     created_by_name: "Ana Analista",
@@ -183,6 +186,49 @@ test("OV-P0-298 normalized and missing circuits are skipped without outbox", asy
   const missing = memoryStore();
   await processor(missing, async () => null);
   assert.deepEqual([missing.rows[0].status, missing.rows[0].skip_reason, missing.outbox.length], ["skipped", "circuit_not_found", 0]);
+});
+
+test("OV-P0-299 alert_subject revalidates the stable trigger and uses current circuit/INC only as enrichment", async () => {
+  const subjectReminder = reminder({
+    subject_type: "alert_subject",
+    subject_key: "alert:castrolanda-host:trigger-77",
+    circuit_key: null,
+    source_host_id: "castrolanda-host",
+    source_trigger_id: "trigger-77",
+  });
+  const store = memoryStore([subjectReminder]);
+  const subjectCalls = [];
+  const summary = await processor(store, async () => { throw new Error("circuit resolver must not run"); }, {
+    resolveSubject: async (identity) => {
+      subjectCalls.push(identity);
+      return activeLink({
+        circuit_key: "canonical-circuit-77",
+        host_name: "CASTRO_CorpPG_UPInternet",
+        service_name: "Circuito pendente de classificação",
+        current_alert: { id: "new-alert-row", source_trigger_id: "trigger-77", problem_name: "ICMP Ping: Unavailable by ICMP ping", severity: "high", started_at: "2026-09-10T12:00:00.000Z" },
+        current_incident: { number: "INC0012345", state: "2", state_display: "Em andamento" },
+      });
+    },
+  });
+  assert.equal(summary.enqueued, 1);
+  assert.deepEqual(subjectCalls[0], {
+    subjectType: "alert_subject",
+    subjectKey: "alert:castrolanda-host:trigger-77",
+    dataSourceId: "ds-1",
+    sourceHostId: "castrolanda-host",
+    sourceTriggerId: "trigger-77",
+  });
+  assert.match(store.outbox[0].payload.acao, /ICMP Ping: Unavailable by ICMP ping/);
+  assert.match(store.outbox[0].payload.acao, /INC0012345/);
+  assert.doesNotMatch(store.outbox[0].payload.acao, /Circuito pendente de classificação/);
+
+  const normalized = memoryStore([subjectReminder]);
+  await processor(normalized, async () => null, { resolveSubject: async () => activeLink({ active_alerts: 0, has_active_alert: false, current_incident: null }) });
+  assert.deepEqual([normalized.rows[0].status, normalized.rows[0].skip_reason, normalized.outbox.length], ["skipped", "alert_resolved", 0]);
+
+  const disappeared = memoryStore([subjectReminder]);
+  await processor(disappeared, async () => null, { resolveSubject: async () => null });
+  assert.deepEqual([disappeared.rows[0].status, disappeared.rows[0].skip_reason, disappeared.outbox.length], ["skipped", "alert_resolved", 0]);
 });
 
 test("OV-P0-298 ServiceNow degradation or missing current alert remains scheduled for safe retry", async () => {

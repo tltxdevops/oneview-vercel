@@ -739,8 +739,9 @@ function reminderMutationError(cause: unknown, action: "criar" | "alterar" | "ca
   if (cause instanceof OneViewApiError) {
     if (cause.status === 401) return "Sua sessão expirou. Entre novamente.";
     if (cause.status === 403) return "Você não possui permissão para esta ação.";
-    if (cause.status === 409 && cause.code === "active_reminder_exists") return "Já existe um lembrete ativo para este circuito.";
-    if (cause.status === 409 && cause.code === "circuit_not_active") return "Lembrete disponível somente enquanto houver alerta ativo.";
+    if (cause.status === 409 && cause.code === "active_reminder_exists") return "Já existe um lembrete ativo para este acompanhamento.";
+    if (cause.status === 409 && cause.code === "operational_subject_not_active") return "Lembrete disponível somente enquanto houver alerta ativo.";
+    if (cause.status === 409 && cause.code === "unstable_operational_subject") return "Não foi possível identificar este alerta de forma estável.";
     if (cause.status === 400 || cause.status === 422) {
       return cause.code === "invalid_scheduled_for"
         ? "Escolha uma data e horário futuros."
@@ -1016,11 +1017,16 @@ function reminderHistoryStatus(item: OperatorReminderFeedItem) {
 function reminderHistoryCircuit(item: OperatorReminderFeedItem): CanonicalLink {
   const snapshot = item.context_snapshot as Record<string, unknown> | null;
   return {
-    id: item.circuit_key,
+    id: item.circuit_key || item.source_host_id || "operational-subject",
     circuit_key: item.circuit_key,
     data_source_id: item.data_source_id,
     datasource: item.data_source_id,
     source_host_id: item.source_host_id || "",
+    operational_subject: item.subject_key ? {
+      subject_type: item.subject_type, subject_key: item.subject_key, circuit_key: item.circuit_key,
+      data_source_id: item.data_source_id, source_host_id: item.source_host_id,
+      source_trigger_id: item.source_trigger_id,
+    } : null,
     customer_name: snapshotText(snapshot, "customer", "name"),
     customer_key: snapshotText(snapshot, "customer", "key"),
     host_name: snapshotText(snapshot, "circuit", "host_name"),
@@ -1059,7 +1065,7 @@ function ReminderHistoryCard({ item, saving, editing, date, time, onDate, onTime
   return <article className="space-y-2 rounded-lg border border-border/60 bg-card p-3 shadow-sm">
     <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="flex items-center gap-2 text-sm font-semibold"><Bell className="h-4 w-4 text-muted-foreground" />{reminderHistoryStatus(item)}</p><p className="mt-1 text-xs text-muted-foreground">{reminderHistoryTime(item.activity_at || item.scheduled_for)}</p></div><div className="flex gap-1">{severity ? <Badge variant="outline">{severity}</Badge> : null}{item.mine ? <Badge variant="secondary">Criado por você</Badge> : null}</div></div>
     <div className="space-y-0.5 text-sm"><p className="break-words font-medium">{identity || item.circuit_key}</p><p className="break-words text-xs text-muted-foreground">{circuit}</p><p className="break-words text-xs text-muted-foreground">{incident ? `${incident} · ${incidentStateLabel(snapshotText(snapshot, "incident", "state"))}` : "Sem chamado vinculado"}</p></div>
-    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2"><p className="text-xs text-muted-foreground">Criado por {text(item.created_by_name, "Operador não identificado")}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={onOpenCircuit}>Abrir circuito</Button>{canMutate ? <><Popover open={editing} onOpenChange={(next) => { if (next) onEdit(); else onCloseEdit(); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={saving}>Alterar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={onDate} onTime={onTime} onCancel={onCloseEdit} onSubmit={onSave} /></PopoverContent></Popover><Button size="sm" variant="ghost" disabled={saving} onClick={onCancel}>Cancelar</Button></> : null}</div></div>
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2"><p className="text-xs text-muted-foreground">Criado por {text(item.created_by_name, "Operador não identificado")}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={onOpenCircuit}>Abrir acompanhamento</Button>{canMutate ? <><Popover open={editing} onOpenChange={(next) => { if (next) onEdit(); else onCloseEdit(); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={saving}>Alterar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={onDate} onTime={onTime} onCancel={onCloseEdit} onSubmit={onSave} /></PopoverContent></Popover><Button size="sm" variant="ghost" disabled={saving} onClick={onCancel}>Cancelar</Button></> : null}</div></div>
   </article>;
 }
 
@@ -1130,8 +1136,9 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
     circuit_key: link.circuit_key,
     data_source_id: link.data_source_id,
     source_host_id: link.source_host_id,
-  }), [link.id, link.circuit_key, link.data_source_id, link.source_host_id]);
-  const identity = `${reminderLink.data_source_id}:${reminderLink.circuit_key || reminderLink.id}`;
+    operational_subject: link.operational_subject,
+  }), [link.id, link.circuit_key, link.data_source_id, link.operational_subject, link.source_host_id]);
+  const identity = `${reminderLink.data_source_id}:${reminderLink.operational_subject?.subject_key || reminderLink.id}`;
   const [reminders, setReminders] = useState<OperatorReminder[]>(() => getCachedOperatorReminders(reminderLink) || []);
   const [loading, setLoading] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -1144,16 +1151,16 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
   const clickStartedAt = useRef<number | null>(null);
   const drawerMetricSent = useRef(false);
   const reminder = reminders[0] || null;
-  const hasConfirmedCircuitIdentity = Boolean(link.circuit_key && link.resolution_status === "resolved");
-  const canSchedule = Boolean(hasConfirmedCircuitIdentity && Number(link.active_alerts) > 0);
-  const reminderUnavailableReason = !hasConfirmedCircuitIdentity
-    ? "Lembrete indisponível: identidade do circuito ainda não confirmada."
+  const hasOperationalSubject = Boolean(link.operational_subject?.subject_key);
+  const canSchedule = Boolean(hasOperationalSubject && Number(link.active_alerts) > 0);
+  const reminderUnavailableReason = !hasOperationalSubject
+    ? "Não foi possível identificar este alerta de forma estável."
     : !Number(link.active_alerts)
       ? "Lembrete disponível somente enquanto houver alerta ativo."
       : null;
 
   const loadReminderState = useCallback(async (force = false) => {
-    if (!hasConfirmedCircuitIdentity) {
+    if (!hasOperationalSubject) {
       setLoading(false);
       setLoadFailed(false);
       setReminders([]);
@@ -1183,7 +1190,7 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
         }));
       }
     }
-  }, [hasConfirmedCircuitIdentity, reminderLink]);
+  }, [hasOperationalSubject, reminderLink]);
 
   useEffect(() => {
     const initial = reminderDateTime();
@@ -1255,7 +1262,7 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
   };
 
   return <section><h3 className="mb-2 text-sm font-semibold">Acompanhamento</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
-    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />{reminderLabel(reminder.scheduled_for)}</p><p className="mt-1 text-xs text-muted-foreground">Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted-foreground">Agende um retorno se o circuito continuar pendente.</p>{reminderUnavailableReason ? <p className="mt-1 text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
+    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />{reminderLabel(reminder.scheduled_for)}</p><p className="mt-1 text-xs text-muted-foreground">Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted-foreground">Agende um retorno se o alerta continuar pendente.</p>{reminderUnavailableReason ? <p className="mt-1 text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
     {loading ? <p className="mt-2 text-xs text-muted-foreground">Carregando acompanhamento…</p> : null}
     {loadFailed ? <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Não foi possível carregar o acompanhamento.</span><Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void loadReminderState(true)}>Tentar novamente</Button></div> : null}
     {mutationError ? <p role="alert" className="mt-2 text-xs text-destructive">{mutationError}</p> : null}

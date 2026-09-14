@@ -7,13 +7,13 @@ const NOW = new Date("2026-09-04T12:00:00.000Z");
 const CIRCUIT = { id: "ds-1:havan-host:meraki:143-marilia:wan1", data_source_id: "ds-1", source_host_id: "havan-host" };
 const REMINDER_ID = "11111111-1111-4111-8111-111111111111";
 const actor = { id: "analyst-1", name: "Ana Analista", email: "ana@teletex.com" };
-const activeLink = (overrides = {}) => ({ ...CIRCUIT, circuit_key: CIRCUIT.id, active_alerts: 1, customer_key: "havan", customer_name: "Havan", host_name: "HAVAN", service_name: "wan1", link_type: "uplink", carrier_name: "Vivo", current_alert: { id: "alert-1", problem_name: "Uplink down", severity: "high" }, current_incident: { sys_id: "incident-1", number: "INC001", state: "2" }, ...overrides });
+const activeLink = (overrides = {}) => ({ ...CIRCUIT, circuit_key: CIRCUIT.id, resolution_status: "resolved", trigger_ids: ["trigger-1"], active_alerts: 1, customer_key: "havan", customer_name: "Havan", host_name: "HAVAN", service_name: "wan1", link_type: "uplink", carrier_name: "Vivo", current_alert: { id: "alert-1", source_trigger_id: "trigger-1", problem_name: "Uplink down", severity: "high" }, current_incident: { sys_id: "incident-1", number: "INC001", state: "2" }, ...overrides });
 const response = () => ({ statusCode: 0, body: null, setHeader() { return this; }, status(value) { this.statusCode = value; return this; }, end(value) { this.body = JSON.parse(value); } });
 const request = (method, body = {}, query = CIRCUIT) => ({ method, body, query, headers: {}, socket: {} });
 
 function row(overrides = {}) {
   return {
-    id: REMINDER_ID, circuit_key: CIRCUIT.id, data_source_id: CIRCUIT.data_source_id, source_host_id: CIRCUIT.source_host_id,
+    id: REMINDER_ID, subject_type: "circuit", subject_key: `circuit:${CIRCUIT.id}`, circuit_key: CIRCUIT.id, data_source_id: CIRCUIT.data_source_id, source_host_id: CIRCUIT.source_host_id, source_trigger_id: null,
     scheduled_for: "2026-09-04T15:00:00.000Z", status: "scheduled", created_by: actor.id, created_by_name: actor.name,
     initial_alert_id: "alert-1", initial_incident_sys_id: "incident-1", initial_incident_number: "INC001", context_snapshot: {},
     created_at: NOW, updated_at: NOW, cancelled_at: null, ...overrides,
@@ -22,14 +22,17 @@ function row(overrides = {}) {
 
 function database(initial = []) {
   const rows = [...initial]; const queries = [];
+  const matches = (item, types, keys, circuitKeys) => types.some((type, index) => item.subject_type === type && item.subject_key === keys[index]) || circuitKeys.includes(item.circuit_key);
   const client = { async query(sql, values = []) {
     queries.push({ sql, values });
+    if (/pg_advisory_xact_lock/i.test(sql)) return { rows: [] };
+    if (/select r\.id from operator_reminders/i.test(sql)) return { rows: rows.filter((item) => item.data_source_id === values[0] && values[1].includes(item.status) && matches(item, values[2], values[3], values[4])).slice(0, 1) };
     if (/insert into operator_reminders/i.test(sql)) {
-      const inserted = row({ id: values[0], circuit_key: values[1], data_source_id: values[2], source_host_id: values[3], scheduled_for: values[4], created_by: values[5], created_by_name: values[6], initial_alert_id: values[7], initial_incident_sys_id: values[8], initial_incident_number: values[9], context_snapshot: JSON.parse(values[10]), created_at: values[11], updated_at: values[11] });
+      const inserted = row({ id: values[0], subject_type: values[1], subject_key: values[2], circuit_key: values[3], data_source_id: values[4], source_host_id: values[5], source_trigger_id: values[6], scheduled_for: values[7], created_by: values[8], created_by_name: values[9], initial_alert_id: values[10], initial_incident_sys_id: values[11], initial_incident_number: values[12], context_snapshot: JSON.parse(values[13]), created_at: values[14], updated_at: values[14] });
       rows.push(inserted); return { rows: [inserted] };
     }
-    if (/from operator_reminders/i.test(sql) && /for update/i.test(sql)) return { rows: rows.filter((item) => item.id === values[0] && item.circuit_key === values[1] && item.data_source_id === values[2] && item.source_host_id === values[3] && item.created_by === values[4] && item.status === "scheduled") };
-    if (/from operator_reminders/i.test(sql)) return { rows: rows.filter((item) => item.circuit_key === values[0] && item.data_source_id === values[1] && item.source_host_id === values[2] && ["scheduled", "processing"].includes(item.status)) };
+    if (/from operator_reminders/i.test(sql) && /for update/i.test(sql)) return { rows: rows.filter((item) => item.id === values[0] && item.data_source_id === values[1] && item.created_by === values[2] && item.status === "scheduled" && matches(item, values[3], values[4], values[5])) };
+    if (/from operator_reminders/i.test(sql)) return { rows: rows.filter((item) => item.data_source_id === values[0] && values[1].includes(item.status) && matches(item, values[2], values[3], values[4])) };
     if (/update operator_reminders set scheduled_for/i.test(sql)) { const item = rows.find((candidate) => candidate.id === values[2]); item.scheduled_for = values[0]; item.updated_at = values[1]; return { rows: [item] }; }
     if (/update operator_reminders set status = 'cancelled'/i.test(sql)) { const item = rows.find((candidate) => candidate.id === values[1]); item.status = "cancelled"; item.cancelled_at = values[0]; item.updated_at = values[0]; return { rows: [item] }; }
     if (/insert into audit_logs/i.test(sql)) return { rows: [] };
@@ -47,7 +50,7 @@ test("OV-P0-290 creates future reminder from backend actor and snapshots a circu
   await route(request("POST", { scheduled_for: "2026-09-04T12:30:00-03:00", created_by: "forged" }), res);
   assert.equal(res.statusCode, 201); assert.equal(res.body.item.created_by, actor.id); assert.equal(res.body.item.created_by_name, actor.name);
   assert.equal(res.body.item.initial_incident_number, "INC001"); assert.equal(res.body.item.scheduled_for, "2026-09-04T15:30:00.000Z");
-  assert.equal(db.rows[0].context_snapshot.customer.name, "Havan");
+  assert.equal(db.rows[0].context_snapshot.customer.name, "Havan"); assert.equal(db.rows[0].subject_key, `circuit:${CIRCUIT.id}`);
   assert.ok(db.queries.some(({ sql }) => /REMINDER_CREATED/.test(sql) || /insert into audit_logs/i.test(sql)));
 });
 
@@ -57,13 +60,13 @@ test("OV-P0-290 permits no-INC snapshot, rejects past time and normal circuit", 
   assert.equal(success.statusCode, 201); assert.equal(success.body.item.initial_incident_number, null);
   const past = response(); await withoutIncident.handler(request("POST", { scheduled_for: "2026-09-04T11:59:00Z" }), past); assert.equal(past.statusCode, 400); assert.equal(past.body.error, "invalid_scheduled_for");
   const normal = handler({ link: activeLink({ active_alerts: 0, has_active_alert: false }) }); const refused = response();
-  await normal.handler(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }), refused); assert.equal(refused.statusCode, 409); assert.equal(refused.body.error, "circuit_not_active");
+  await normal.handler(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }), refused); assert.equal(refused.statusCode, 409); assert.equal(refused.body.error, "operational_subject_not_active");
 });
 
 test("OV-P0-290 authenticated API scopes GET and POST commands, updates and soft-cancels", async () => {
   const requiredRoles = [];
   const authorize = async (_req, _res, role) => { requiredRoles.push(role); return actor; };
-  const db = database([row(), row({ id: "22222222-2222-4222-8222-222222222222", circuit_key: "other-circuit" })]); const { handler: route } = handler({ db, authorize });
+  const db = database([row(), row({ id: "22222222-2222-4222-8222-222222222222", circuit_key: "other-circuit", subject_key: "circuit:other-circuit" })]); const { handler: route } = handler({ db, authorize });
   const get = response(); await route(request("GET"), get); assert.equal(get.statusCode, 200); assert.deepEqual(get.body.items.map((item) => item.id), [REMINDER_ID]);
   const patch = response(); await route(request("POST", { action: "update", reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }), patch); assert.equal(patch.statusCode, 200); assert.equal(patch.body.item.scheduled_for, "2026-09-04T14:00:00.000Z");
   const cancel = response(); await route(request("POST", { action: "cancel", reminder_id: REMINDER_ID }), cancel); assert.equal(cancel.statusCode, 200); assert.equal(cancel.body.item.status, "cancelled"); assert.equal(db.rows.find((item) => item.id === REMINDER_ID).status, "cancelled");
@@ -182,4 +185,87 @@ test("OV-P0-290 public mutation contract uses POST commands because corporate pr
   assert.match(clientSource, /cancelOperatorReminder[\s\S]{0,260}method: "POST"[\s\S]{0,160}action: "cancel"/);
   assert.doesNotMatch(clientSource.match(/export async function updateOperatorReminder[\s\S]*?^}/m)?.[0] || "", /method: "PATCH"/);
   assert.doesNotMatch(clientSource.match(/export async function cancelOperatorReminder[\s\S]*?^}/m)?.[0] || "", /method: "DELETE"/);
+});
+
+const ALERT_LOCATOR = { id: "operator:v1:generic-unresolved:ds-1:castrolanda-host", data_source_id: "ds-1", source_host_id: "castrolanda-host" };
+const ALERT_SUBJECT_QUERY = {
+  ...ALERT_LOCATOR,
+  subject_type: "alert_subject",
+  subject_key: "alert:castrolanda-host:trigger-77",
+  source_trigger_id: "trigger-77",
+};
+const alertSubjectLink = (overrides = {}) => ({
+  ...ALERT_LOCATOR,
+  circuit_key: ALERT_LOCATOR.id,
+  resolution_status: "unresolved",
+  trigger_ids: ["trigger-77"],
+  active_alerts: 1,
+  customer_key: "castrolanda",
+  customer_name: "Castrolanda",
+  host_name: "CASTRO_CorpPG_UPInternet",
+  service_name: "Circuito pendente de classificação",
+  current_alert: { id: "event-row-new", source_trigger_id: "trigger-77", problem_name: "ICMP Ping: Unavailable by ICMP ping", severity: "high" },
+  current_incident: null,
+  ...overrides,
+});
+
+test("OV-P0-299 alert_subject supports create, read, update and cancel without synthetic circuit_key", async () => {
+  const db = database();
+  const route = handler({ db, link: alertSubjectLink() }).handler;
+  const created = response();
+  await route(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }, ALERT_SUBJECT_QUERY), created);
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(
+    [created.body.item.subject_type, created.body.item.subject_key, created.body.item.circuit_key, created.body.item.source_trigger_id],
+    ["alert_subject", "alert:castrolanda-host:trigger-77", null, "trigger-77"],
+  );
+  assert.equal(db.rows[0].context_snapshot.circuit.locator_id, ALERT_LOCATOR.id);
+
+  const listed = response();
+  await route(request("GET", {}, ALERT_SUBJECT_QUERY), listed);
+  assert.deepEqual(listed.body.items.map((item) => item.id), [REMINDER_ID]);
+  const updated = response();
+  await route(request("POST", { action: "update", reminder_id: REMINDER_ID, scheduled_for: "2026-09-04T14:00:00Z" }, ALERT_SUBJECT_QUERY), updated);
+  assert.equal(updated.statusCode, 200);
+  const cancelled = response();
+  await route(request("POST", { action: "cancel", reminder_id: REMINDER_ID }, ALERT_SUBJECT_QUERY), cancelled);
+  assert.equal(cancelled.body.item.status, "cancelled");
+});
+
+test("OV-P0-299 same trigger across a new event keeps one subject; another trigger is distinct", async () => {
+  const existing = row({
+    subject_type: "alert_subject", subject_key: ALERT_SUBJECT_QUERY.subject_key, circuit_key: null,
+    data_source_id: "ds-1", source_host_id: "castrolanda-host", source_trigger_id: "trigger-77",
+  });
+  const sameDb = database([existing]);
+  const sameRoute = handler({ db: sameDb, link: alertSubjectLink({ current_alert: { id: "another-event-row", source_trigger_id: "trigger-77", problem_name: "ICMP Ping", severity: "high" } }) }).handler;
+  const duplicate = response();
+  await sameRoute(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }, ALERT_SUBJECT_QUERY), duplicate);
+  assert.equal(duplicate.statusCode, 409);
+  assert.equal(duplicate.body.error, "active_reminder_exists");
+
+  const differentDb = database();
+  const differentLink = alertSubjectLink({ trigger_ids: ["trigger-88"], current_alert: { id: "event-88", source_trigger_id: "trigger-88", problem_name: "Packet loss", severity: "average" } });
+  const differentRoute = handler({ db: differentDb, link: differentLink }).handler;
+  const created = response();
+  await differentRoute(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }, { ...ALERT_LOCATOR, subject_type: "alert_subject", subject_key: "alert:castrolanda-host:trigger-88", source_trigger_id: "trigger-88" }), created);
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.body.item.subject_key, "alert:castrolanda-host:trigger-88");
+});
+
+test("OV-P0-299 canonical circuit creation detects an active fallback alias", async () => {
+  const fallback = row({
+    subject_type: "alert_subject", subject_key: ALERT_SUBJECT_QUERY.subject_key, circuit_key: null,
+    data_source_id: "ds-1", source_host_id: "castrolanda-host", source_trigger_id: "trigger-77",
+  });
+  const db = database([fallback]);
+  const canonicalId = "operator:v1:generic:ds-1:castrolanda-host:public-internet:link-77";
+  const canonical = alertSubjectLink({ id: canonicalId, circuit_key: canonicalId, resolution_status: "resolved" });
+  const route = handler({ db, link: canonical }).handler;
+  const res = response();
+  await route(request("POST", { scheduled_for: "2026-09-04T13:00:00Z" }, { id: canonicalId, data_source_id: "ds-1", source_host_id: "castrolanda-host" }), res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, "active_reminder_exists");
+  assert.equal(db.rows.length, 1);
+  assert.ok(db.queries.some(({ sql }) => /pg_advisory_xact_lock/i.test(sql)));
 });

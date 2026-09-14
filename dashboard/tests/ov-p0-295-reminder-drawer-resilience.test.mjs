@@ -26,7 +26,7 @@ test("OV-P0-295 GET failure is isolated, retryable and never uses the global una
 test("OV-P0-295 reminder reads use short cache, in-flight deduplication and race protection", async () => {
   const [page, api] = await Promise.all([readFile(pageUrl, "utf8"), readFile(apiUrl, "utf8")]);
   assert.match(api, /OPERATOR_REMINDER_CACHE_TTL_MS = 45_000/);
-  assert.match(api, /operatorReminderCacheKey[\s\S]*data_source_id[\s\S]*circuit_key \|\| link\.id/);
+  assert.match(api, /operatorReminderCacheKey[\s\S]*data_source_id[\s\S]*operational_subject\?\.subject_key/);
   assert.match(api, /operatorReminderInFlight\.get\(cacheKey\)/);
   assert.match(api, /operatorReminderInFlight\.set\(cacheKey, request\)/);
   assert.match(api, /finally\(\(\) => operatorReminderInFlight\.delete\(cacheKey\)\)/);
@@ -39,12 +39,12 @@ test("OV-P0-295 reminder reads use short cache, in-flight deduplication and race
 
 test("OV-P0-295 handles missing identity, normal link and mutation status messages", async () => {
   const page = await readFile(pageUrl, "utf8");
-  assert.match(page, /Lembrete indisponível: identidade do circuito ainda não confirmada\./);
+  assert.match(page, /Não foi possível identificar este alerta de forma estável\./);
   assert.match(page, /Lembrete disponível somente enquanto houver alerta ativo\./);
-  assert.match(page, /if \(!hasConfirmedCircuitIdentity\)[\s\S]*return;/);
+  assert.match(page, /if \(!hasOperationalSubject\)[\s\S]*return;/);
   assert.match(page, /Sua sessão expirou\. Entre novamente\./);
   assert.match(page, /Você não possui permissão para esta ação\./);
-  assert.match(page, /Já existe um lembrete ativo para este circuito\./);
+  assert.match(page, /Já existe um lembrete ativo para este acompanhamento\./);
   assert.match(page, /Não foi possível agendar agora\. Tente novamente\./);
   assert.match(page, /active_reminder_exists[\s\S]*fetchOperatorReminders\(reminderLink, \{ force: true \}\)/);
 });

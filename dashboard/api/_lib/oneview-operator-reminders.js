@@ -5,8 +5,9 @@ import { getId, methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { classifyActionsFailure, withOneViewActionsQuery, withOneViewActionsTransaction } from "./oneview-actions-db.js";
 import { fetchCanonicalLinkDetail } from "./oneview-links.js";
+import { buildCircuitSubjectKey, buildOperationalSubject, equivalentOperationalSubjects, parseOperationalSubject } from "./oneview-operational-subject.js";
 
-const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,239}$/i;
+const SAFE_ID = /^[\p{L}\p{N}._:@/| -]{1,240}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACTIVE_STATUSES = ["scheduled", "processing"];
 
@@ -20,8 +21,11 @@ function requestBody(req) {
 function publicDatabaseError(error) { return error?.code === "actions_database_not_configured" ? "actions_database_not_configured" : "database_unavailable"; }
 function rowValue(value) { if (!value || typeof value !== "string") return value || null; try { return JSON.parse(value); } catch { return null; } }
 function reminderRecord(row) {
+  const subjectType = row.subject_type || "circuit";
+  const subjectKey = row.subject_key || (row.circuit_key ? buildCircuitSubjectKey(row.circuit_key) : null);
   return {
-    id: row.id, circuit_key: row.circuit_key, data_source_id: row.data_source_id, source_host_id: row.source_host_id || null,
+    id: row.id, subject_type: subjectType, subject_key: subjectKey, circuit_key: row.circuit_key || null,
+    data_source_id: row.data_source_id, source_host_id: row.source_host_id || null, source_trigger_id: row.source_trigger_id || null,
     scheduled_for: new Date(row.scheduled_for).toISOString(), status: row.status,
     created_by: row.created_by, created_by_name: row.created_by_name,
     initial_alert_id: row.initial_alert_id || null, initial_incident_sys_id: row.initial_incident_sys_id || null,
@@ -40,6 +44,13 @@ function identity(req) {
   const id = text(getId(req, "id")); const dataSourceId = queryValue(req, "data_source_id"); const sourceHostId = queryValue(req, "source_host_id");
   return id && dataSourceId && sourceHostId && [id, dataSourceId, sourceHostId].every((value) => SAFE_ID.test(value)) ? { id, dataSourceId, sourceHostId } : null;
 }
+function requestedSubject(req, requested) {
+  return parseOperationalSubject({
+    subject_type: queryValue(req, "subject_type"), subject_key: queryValue(req, "subject_key"),
+    circuit_key: queryValue(req, "circuit_key"), data_source_id: requested.dataSourceId,
+    source_host_id: requested.sourceHostId, source_trigger_id: queryValue(req, "source_trigger_id"),
+  });
+}
 function futureTimestamp(value, now) {
   const raw = text(value);
   if (!raw || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(raw)) return null;
@@ -48,25 +59,52 @@ function futureTimestamp(value, now) {
 }
 function reminderId(req, body) { const value = text(body.reminder_id || queryValue(req, "reminder_id")); return UUID.test(value) ? value : ""; }
 function actor(auth) { return { id: text(auth?.id).slice(0, 120), name: text(auth?.name || auth?.email || "UsuÃ¡rio SSO").slice(0, 120) }; }
-function currentCircuit(link, requested) {
-  const circuitKey = text(link?.circuit_key || link?.technical?.circuit_key);
-  if (!link || circuitKey !== requested.id || text(link.data_source_id) !== requested.dataSourceId || text(link.source_host_id) !== requested.sourceHostId) return null;
+function currentOperationalLink(link, requested) {
+  if (!link || text(link.id) !== requested.id || text(link.data_source_id) !== requested.dataSourceId || text(link.source_host_id) !== requested.sourceHostId) return null;
   if (!(Number(link.active_alerts) > 0 || link.has_active_alert === true)) return null;
   return link;
 }
-function snapshot(link) {
+function snapshot(link, subject, locatorId) {
   const alert = link.current_alert || null; const incident = link.current_incident || null;
   return {
-    circuit: { circuit_key: link.circuit_key, data_source_id: link.data_source_id, source_host_id: link.source_host_id, host_name: link.host_name || null },
+    operational_subject: { subject_type: subject.subject_type, subject_key: subject.subject_key, source_trigger_id: subject.source_trigger_id || null },
+    circuit: { locator_id: locatorId, circuit_key: subject.circuit_key, data_source_id: link.data_source_id, source_host_id: link.source_host_id, host_name: link.host_name || null },
     customer: { key: link.customer_key || null, name: link.customer_name || null },
     link: { service_name: link.service_name || null, carrier_name: link.carrier_name || null, link_type: link.link_type || null, member_key: link.member_key || null, uplink_key: link.uplink_key || null },
     alert: alert ? { id: alert.id || null, problem_name: alert.problem_name || null, severity: alert.severity || null } : null,
     incident: incident ? { sys_id: incident.sys_id || null, number: incident.number || null, state: incident.state || null } : null,
   };
 }
-const SELECT_COLUMNS = `id, circuit_key, data_source_id, source_host_id, scheduled_for, status, created_by, created_by_name,
+const SELECT_COLUMNS = `id, subject_type, subject_key, circuit_key, data_source_id, source_host_id, source_trigger_id, scheduled_for, status, created_by, created_by_name,
   initial_alert_id, initial_incident_sys_id, initial_incident_number, context_snapshot, created_at, updated_at,
   sent_at, cancelled_at, skipped_at, skip_reason, last_error`;
+
+function subjectLookup(subject) {
+  const equivalent = equivalentOperationalSubjects(subject);
+  return {
+    types: equivalent.map((item) => item.subject_type),
+    keys: equivalent.map((item) => item.subject_key),
+    circuitKeys: subject.circuit_key ? [subject.circuit_key] : [],
+  };
+}
+const SUBJECT_MATCH_SQL = `(
+  exists (
+    select 1 from unnest($SUBJECT_TYPES::text[], $SUBJECT_KEYS::text[]) as wanted(subject_type, subject_key)
+     where wanted.subject_type = r.subject_type and wanted.subject_key = r.subject_key
+  )
+  or r.circuit_key = any($CIRCUIT_KEYS::text[])
+)`;
+function subjectMatchSql({ subjectTypes, subjectKeys, circuitKeys }) {
+  return SUBJECT_MATCH_SQL
+    .replace("$SUBJECT_TYPES", `$${subjectTypes}`)
+    .replace("$SUBJECT_KEYS", `$${subjectKeys}`)
+    .replace("$CIRCUIT_KEYS", `$${circuitKeys}`);
+}
+function duplicateError() { const error = new Error("active_reminder_exists"); error.code = "23505"; return error; }
+async function lockOperationalSubject(client, subject) {
+  const keys = equivalentOperationalSubjects(subject).map((item) => `${subject.data_source_id}:${item.subject_type}:${item.subject_key}`).sort();
+  for (const key of keys) await client.query("select pg_advisory_xact_lock(hashtext($1))", [key]);
+}
 
 export function createOperatorReminderHandler({
   authorize = (req, res, role) => requireOneViewAuth(req, res, role),
@@ -115,10 +153,22 @@ export function createOperatorReminderHandler({
     if (!user.id) return reply(401, { error: "authentication_required" });
 
     try {
+      const hintedSubject = requestedSubject(req, requested);
       if (req.method === "GET") {
+        let subject = hintedSubject || {
+          subject_type: "circuit", subject_key: buildCircuitSubjectKey(requested.id), circuit_key: requested.id,
+          data_source_id: requested.dataSourceId, source_host_id: requested.sourceHostId, source_trigger_id: null,
+          fallback_subject_keys: [],
+        };
+        if (hintedSubject?.subject_type === "circuit") {
+          try { subject = buildOperationalSubject(await resolveLink(requested)) || subject; }
+          catch { /* Legacy/cached identity still supports the read during transient link-detail failure. */ }
+        }
+        if (!subject) return reply(200, { items: [] });
+        const lookup = subjectLookup(subject);
         const result = await query(async (client) => client.query(
-          `select ${SELECT_COLUMNS} from operator_reminders where circuit_key = $1 and data_source_id = $2 and source_host_id = $3 and status = any($4::text[]) order by scheduled_for asc`,
-          [requested.id, requested.dataSourceId, requested.sourceHostId, ACTIVE_STATUSES],
+          `select ${SELECT_COLUMNS} from operator_reminders r where r.data_source_id = $1 and r.status = any($2::text[]) and ${subjectMatchSql({ subjectTypes: 3, subjectKeys: 4, circuitKeys: 5 })} order by scheduled_for asc`,
+          [requested.dataSourceId, ACTIVE_STATUSES, lookup.types, lookup.keys, lookup.circuitKeys],
         ));
         return reply(200, { items: result.rows.map(reminderRecord) });
       }
@@ -129,20 +179,30 @@ export function createOperatorReminderHandler({
       const scheduledFor = futureTimestamp(body.scheduled_for, now());
       if (operation === "create") {
         if (!scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
-        const link = currentCircuit(await resolveLink(requested), requested);
-        if (!link) return reply(409, { error: "circuit_not_active" });
-        const context = snapshot(link); const id = idFactory(); const createdAt = now();
+        const link = currentOperationalLink(await resolveLink(requested), requested);
+        if (!link) return reply(409, { error: "operational_subject_not_active" });
+        const subject = buildOperationalSubject(link);
+        if (!subject) return reply(409, { error: "unstable_operational_subject" });
+        const context = snapshot(link, subject, requested.id); const id = idFactory(); const createdAt = now();
         const result = await transaction(async (client) => {
+          await lockOperationalSubject(client, subject);
+          const lookup = subjectLookup(subject);
+          const existing = await client.query(
+            `select r.id from operator_reminders r where r.data_source_id = $1 and r.status = any($2::text[]) and ${subjectMatchSql({ subjectTypes: 3, subjectKeys: 4, circuitKeys: 5 })} limit 1`,
+            [subject.data_source_id, ACTIVE_STATUSES, lookup.types, lookup.keys, lookup.circuitKeys],
+          );
+          if (existing.rows[0]) throw duplicateError();
           const inserted = await client.query(
             `insert into operator_reminders (
-              id, circuit_key, data_source_id, source_host_id, scheduled_for, status, created_by, created_by_name,
+              id, subject_type, subject_key, circuit_key, data_source_id, source_host_id, source_trigger_id, scheduled_for, status, created_by, created_by_name,
               initial_alert_id, initial_incident_sys_id, initial_incident_number, context_snapshot, created_at, updated_at
-            ) values ($1,$2,$3,$4,$5,'scheduled',$6,$7,$8,$9,$10,$11::jsonb,$12,$12) returning ${SELECT_COLUMNS}`,
-            [id, requested.id, requested.dataSourceId, requested.sourceHostId, scheduledFor, user.id, user.name,
-              context.alert?.id || null, context.incident?.sys_id || null, context.incident?.number || null, JSON.stringify(context), createdAt],
+            ) values ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14::jsonb,$15,$15) returning ${SELECT_COLUMNS}`,
+            [id, subject.subject_type, subject.subject_key, subject.circuit_key, subject.data_source_id, subject.source_host_id,
+              subject.source_trigger_id, scheduledFor, user.id, user.name, context.alert?.id || null,
+              context.incident?.sys_id || null, context.incident?.number || null, JSON.stringify(context), createdAt],
           );
           const row = inserted.rows[0];
-          await insertAuditLog(client, { actorName: user.name, actorId: user.id, actorType: "sso_user", action: "REMINDER_CREATED", entityType: "operator_reminder", entityId: id, dataSourceId: requested.dataSourceId, alertId: context.alert?.id || null, afterData: { status: "scheduled", scheduled_for: scheduledFor.toISOString() }, metadata: { circuit_key: requested.id, source_host_id: requested.sourceHostId }, req });
+          await insertAuditLog(client, { actorName: user.name, actorId: user.id, actorType: "sso_user", action: "REMINDER_CREATED", entityType: "operator_reminder", entityId: id, dataSourceId: requested.dataSourceId, alertId: context.alert?.id || null, afterData: { status: "scheduled", scheduled_for: scheduledFor.toISOString() }, metadata: { subject_type: subject.subject_type, subject_key: subject.subject_key, circuit_key: subject.circuit_key, source_host_id: subject.source_host_id, source_trigger_id: subject.source_trigger_id }, req });
           return row;
         });
         return reply(201, { item: reminderRecord(result) });
@@ -151,10 +211,17 @@ export function createOperatorReminderHandler({
       const id = reminderId(req, body);
       if (!id) return reply(400, { error: "invalid_reminder_id" });
       if (operation === "update" && !scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
+      let subject = hintedSubject;
+      if (!subject || subject.subject_type === "circuit") {
+        try { subject = buildOperationalSubject(await resolveLink(requested)) || subject; }
+        catch { /* Persisted subject identity remains sufficient for owned update/cancel. */ }
+      }
+      if (!subject) return reply(404, { error: "reminder_not_found" });
+      const lookup = subjectLookup(subject);
       const result = await transaction(async (client) => {
         const existingResult = await client.query(
-          `select ${SELECT_COLUMNS} from operator_reminders where id = $1 and circuit_key = $2 and data_source_id = $3 and source_host_id = $4 and created_by = $5 and status = 'scheduled' for update`,
-          [id, requested.id, requested.dataSourceId, requested.sourceHostId, user.id],
+          `select ${SELECT_COLUMNS} from operator_reminders r where r.id = $1 and r.data_source_id = $2 and r.created_by = $3 and r.status = 'scheduled' and ${subjectMatchSql({ subjectTypes: 4, subjectKeys: 5, circuitKeys: 6 })} for update`,
+          [id, requested.dataSourceId, user.id, lookup.types, lookup.keys, lookup.circuitKeys],
         );
         const existing = existingResult.rows[0];
         if (!existing) return null;
@@ -166,7 +233,7 @@ export function createOperatorReminderHandler({
           actorName: user.name, actorId: user.id, actorType: "sso_user", action: operation === "update" ? "REMINDER_UPDATED" : "REMINDER_CANCELLED",
           entityType: "operator_reminder", entityId: id, dataSourceId: requested.dataSourceId,
           alertId: existing.initial_alert_id || null, beforeData: { status: existing.status, scheduled_for: new Date(existing.scheduled_for).toISOString() },
-          afterData: { status: row.status, scheduled_for: new Date(row.scheduled_for).toISOString() }, metadata: { circuit_key: requested.id, source_host_id: requested.sourceHostId }, req,
+          afterData: { status: row.status, scheduled_for: new Date(row.scheduled_for).toISOString() }, metadata: { subject_type: existing.subject_type, subject_key: existing.subject_key, circuit_key: existing.circuit_key, source_host_id: existing.source_host_id, source_trigger_id: existing.source_trigger_id }, req,
         });
         return row;
       });

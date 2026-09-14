@@ -5,6 +5,7 @@ import { getOneViewDbPool } from "./oneview-db.js";
 import { extractServiceNowRefsFromAlertTags } from "./oneview-inc-correlation.js";
 import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
 import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
+import { buildOperationalSubject } from "./oneview-operational-subject.js";
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const SAFE = /^[\p{L}\p{N}._:@/| -]{1,240}$/u;
@@ -163,7 +164,7 @@ function incidentSortValue(incident) { return valueTimestamp(incident?.updatedAt
 function severityValue(value) { const rank = ["disaster", "critical", "high", "average", "warning", "information", "not_classified"].indexOf(String(value || "")); return rank < 0 ? 99 : rank; }
 function alertRecord(alert) {
   if (!alert) return null;
-  return { id: String(alert.id), problem_name: text(alert.problem_name), trigger_description: text(alert.trigger_description), severity: text(alert.severity), started_at: text(alert.first_seen_at), last_seen_at: text(alert.last_seen_at || alert.updated_at) };
+  return { id: String(alert.id), data_source_id: text(alert.data_source_id), source_host_id: text(alert.source_host_id), source_trigger_id: text(alert.source_trigger_id), problem_name: text(alert.problem_name), trigger_description: text(alert.trigger_description), severity: text(alert.severity), started_at: text(alert.first_seen_at), last_seen_at: text(alert.last_seen_at || alert.updated_at) };
 }
 function incidentRecord(incident) {
   if (!incident) return null;
@@ -551,6 +552,7 @@ function queueLink(row) {
     open_incident_count: row.open_incident_count, resolved_incident_count: row.resolved_incident_count,
     closed_incident_count: row.closed_incident_count, unknown_incident_count: row.unknown_incident_count,
     current_incident: row.current_incident, latest_incident: row.latest_incident,
+    operational_subject: buildOperationalSubject(row),
   };
 }
 
@@ -591,6 +593,51 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
     checked_at: new Date().toISOString(),
   };
   logLinksTiming({ route: "/api/oneview/links/:id", detail_request_total_ms: model.timings.total_ms, inventory_rows: model.inventory_rows, alert_rows: model.alert_rows, servicenow: model.integration_status.servicenow, status: 200 });
+  return detail;
+}
+
+/** Revalidate a stable alert subject; canonical circuit data remains presentation enrichment only. */
+export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, dataSourceId, sourceHostId, sourceTriggerId, pool = getOneViewDbPool() } = {}) {
+  if (subjectType === "circuit") return fetchCanonicalLinkDetail({ id: circuitKey, dataSourceId, sourceHostId, pool });
+  if (subjectType !== "alert_subject" || !dataSourceId || !sourceHostId || !sourceTriggerId) return null;
+
+  const model = await fetchCanonicalLinkModel({ pool, dataSourceId, sourceHostId, includeIncidents: false });
+  const relatedAlerts = uniqueAlerts(model.alerts).filter((alert) => (
+    String(alert.data_source_id || "") === String(dataSourceId)
+    && String(alert.source_host_id || "") === String(sourceHostId)
+    && String(alert.source_trigger_id || "") === String(sourceTriggerId)
+  ));
+  const candidate = model.rows.find((row) => (row.trigger_ids || []).map(String).includes(String(sourceTriggerId)));
+  if (!candidate || !relatedAlerts.length) return null;
+
+  let incidents = []; let servicenowStatus = "available";
+  const serviceNowStartedAt = Date.now();
+  try { incidents = await fetchLinkIncidents(relatedAlerts, { pool }); }
+  catch { servicenowStatus = "degraded"; }
+  model.timings.servicenow_correlation_ms = elapsedMs(serviceNowStartedAt);
+  const summary = alertSummary(relatedAlerts);
+  const row = {
+    ...candidate,
+    ...summary,
+    incidents,
+    incident_count: incidents.length,
+    incident_correlation_status: "available",
+    ...incidentSummary(incidents),
+  };
+  if (servicenowStatus === "degraded") markIncidentDegraded([row]);
+  const incidentHistory = [...incidents]
+    .sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)))
+    .slice(0, 20)
+    .map(incidentRecord);
+  const detail = {
+    ...queueLink(row),
+    active_alerts_detail: row.alerts || [],
+    incident_history: incidentHistory,
+    technical: { circuit_key: row.circuit_key, resolution_status: row.resolution_status, source: row.datasource, host_name: row.host_name, source_host_id: row.source_host_id, trigger_ids: [String(sourceTriggerId)], member_key: row.member_key, uplink_key: row.uplink_key, healthcheck_key: row.healthcheck_key, endpoint_ip: row.endpoint_ip, confidence: row.confidence, strategy: row.strategy },
+    integration_status: { servicenow: servicenowStatus },
+    checked_at: new Date().toISOString(),
+  };
+  logLinksTiming({ route: "/api/oneview/operational-subject", detail_request_total_ms: model.timings.total_ms, inventory_rows: model.inventory_rows, alert_rows: model.alert_rows, servicenow: servicenowStatus, status: 200 });
   return detail;
 }
 export function buildLinksPayload(rows, filters, now = Date.now(), integrationStatus = { servicenow: "available" }) {
