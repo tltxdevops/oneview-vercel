@@ -29,7 +29,7 @@ const OPTIONAL_COLUMNS = [
   ["link_type", "Tipo do link"], ["carrier", "Operadora"], ["datasource", "Fonte Zabbix"],
   ["severity", "Severidade"], ["classification", "Pendência de classificação"],
 ] as const;
-type QueueTab = "open" | "without_incident" | "with_incident" | "resolved" | "all";
+type QueueTab = "open" | "normalized" | "all";
 type PageView = "queue" | "reminders";
 type ReminderScope = "all" | "mine";
 type ReminderView = "scheduled" | "sent" | "skipped" | "failed" | "cancelled" | "all";
@@ -90,8 +90,10 @@ function failureDuration(link: CanonicalLink) {
   if (!Number.isFinite(startedAt)) return "Tempo indisponível";
   const elapsed = Math.max(0, Date.now() - startedAt);
   const hours = Math.floor(elapsed / 3_600_000);
+  const minutes = Math.floor((elapsed % 3_600_000) / 60_000);
   if (hours >= 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
-  return `${Math.max(0, hours)}h`;
+  if (hours > 0) return `${hours}h${String(minutes).padStart(2, "0")}`;
+  return `${minutes}min`;
 }
 
 function refreshTime(value: string | null) {
@@ -127,9 +129,30 @@ function incidentStateLabel(value: string | null | undefined) {
 
 function CurrentIncident({ link }: { link: CanonicalLink }) {
   if (link.incident_correlation_status === "degraded") return <p className="text-xs text-muted-foreground">Chamados não verificados</p>;
-  if (link.current_incident) return <div className="space-y-0.5 text-xs"><p className="font-medium">{link.current_incident.number || "INC"}</p><p>{text(link.current_incident.state_display, incidentStateLabel(link.current_incident.state))}</p><p className="text-muted-foreground">Aberto {timestampLabel(link.current_incident.opened_at)}</p></div>;
-  if (link.latest_incident) return <div className="space-y-0.5 text-xs"><p>Sem chamado aberto</p><p className="text-muted-foreground">Último: {link.latest_incident.number || "INC"} · {text(link.latest_incident.state_display, incidentStateLabel(link.latest_incident.state))}</p></div>;
+  if (link.current_incident) return <div className="space-y-0.5 text-xs"><p className="font-medium">{link.current_incident.number || "INC"} · {text(link.current_incident.state_display, incidentStateLabel(link.current_incident.state))}</p><p className="text-muted-foreground">Aberto {timestampLabel(link.current_incident.opened_at)}</p></div>;
+  if (link.latest_incident) return <div className="space-y-0.5 text-xs"><p>{link.latest_incident.number || "INC"} · {text(link.latest_incident.state_display, incidentStateLabel(link.latest_incident.state))}</p><p className="text-muted-foreground">Sem chamado aberto</p></div>;
   return <p className="text-xs text-muted-foreground">Sem chamado</p>;
+}
+
+function DivergenceHint({ link }: { link: CanonicalLink }) {
+  if (link.divergence_type === "a") return <Badge variant="destructive">Alerta ativo com chamado encerrado</Badge>;
+  if (link.divergence_type === "b") return <Badge variant="secondary">Normalizado com chamado aberto</Badge>;
+  return null;
+}
+
+function MonitoringStatus({ link }: { link: CanonicalLink }) {
+  const failing = Boolean(link.active_alerts);
+  return (
+    <div className="space-y-1">
+      <p className={cn("text-sm font-medium", failing ? "text-red-700 dark:text-red-300" : "text-muted-foreground")}>
+        {failing ? `Em falha há ${failureDuration(link)}` : "Normalizado"}
+      </p>
+      <div className="flex flex-wrap items-center gap-1">
+        {link.max_severity ? <SeverityBadge severity={link.max_severity} /> : null}
+        <DivergenceHint link={link} />
+      </div>
+    </div>
+  );
 }
 
 function FollowUp({ link }: { link: CanonicalLink }) {
@@ -220,14 +243,13 @@ function MobileLinkCard({ item, onOpen }: { item: CanonicalLink; onOpen: (item: 
           <p className="truncate text-sm font-semibold">{text(item.customer_name)} · {localLabel(item)}</p>
           <p className="truncate text-xs text-muted-foreground">{linkLabel(item)}</p>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1"><StateBadge state={item.state} /><ResolutionBadge link={item} /></div>
+        <div className="flex shrink-0 flex-col items-end gap-1"><ResolutionBadge link={item} /></div>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-xs"><div><p className="text-muted-foreground">Situação</p><p className="font-medium">{item.active_alerts ? `Em falha há ${failureDuration(item)}` : stateLabel(item.state)}</p></div><div><p className="text-muted-foreground">Último alerta</p><p className="font-medium">{latestAlertLabel(item.latest_alert_at)}</p></div></div>
-      <div><p className="text-xs text-muted-foreground">Chamado atual</p><CurrentIncident link={item} /></div>
+      <MonitoringStatus link={item} />
+      <div className="grid grid-cols-2 gap-2 text-xs"><div><p className="text-muted-foreground">Último alerta</p><p className="font-medium">{latestAlertLabel(item.latest_alert_at)}</p></div><div><p className="text-muted-foreground">Chamado</p><CurrentIncident link={item} /></div></div>
       <div className="flex items-center justify-between gap-2">
         <FollowUp link={item} />
         <RecurrenceHint link={item} />
-        {item.max_severity ? <SeverityBadge severity={item.max_severity} /> : null}
       </div>
     </button>
   );
@@ -415,11 +437,11 @@ export default function OperadorasPage() {
   const quickCustomers = ["Havan", "Protege", "Sanepar", "Tuper", "Teletex"].flatMap((name) => customerFacets.filter((item) => item.label.localeCompare(name, "pt-BR", { sensitivity: "base" }) === 0));
   const moreCustomers = customerFacets.filter((item) => !quickCustomers.some((quick) => quick.value === item.value));
   const kpis = useMemo(() => [
-    { label: "Em aberto", value: totals?.operational.open, tone: "danger" as const, tab: "open" as QueueTab },
-    { label: "Sem chamado", value: totals?.operational.without_open_incident, tone: "danger" as const, tab: "without_incident" as QueueTab },
-    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tab: "with_incident" as QueueTab },
-    { label: "Divergências", value: totals?.operational.divergences, tab: "all" as QueueTab, divergence: "any" as const },
-    { label: "Resolvidos hoje", value: totals?.operational.resolved_today, tab: "resolved" as QueueTab },
+    { label: "Em falha", value: totals?.operational.open, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const },
+    { label: "Sem chamado", value: totals?.operational.without_incident, tone: "danger" as const, tab: "open" as QueueTab, incident: "no", recurrence: "all" as const, divergence: "" as const },
+    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tab: "all" as QueueTab, incident: "open", recurrence: "all" as const, divergence: "" as const },
+    { label: "Recorrentes", value: totals?.operational.recurrent, tab: "all" as QueueTab, incident: ALL, recurrence: "recurrent" as const, divergence: "" as const },
+    { label: "Divergências", value: totals?.operational.divergences, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "any" as const },
   ], [totals]);
   const toggleColumn = (column: OptionalColumn, checked: boolean) => setColumns((current) => ({ ...current, [column]: checked }));
 
@@ -451,9 +473,9 @@ export default function OperadorasPage() {
       <div className="min-w-0 space-y-3">
         <nav aria-label="Visões da página de links" className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-border/70 bg-card p-1">
           {([
-            ["open", "Em aberto"], ["without_incident", "Sem chamado"], ["with_incident", "Com chamado"], ["resolved", "Resolvidos"], ["all", "Todos os links"],
+            ["open", "Em falha"], ["normalized", "Normalizados"], ["all", "Todos"],
           ] as Array<[QueueTab, string]>).map(([value, label]) => (
-            <Button key={value} type="button" size="sm" variant={view === "queue" && tab === value ? "default" : "ghost"} className="shrink-0" onClick={() => { setView("queue"); setTab(value); setDivergence(""); setPage(1); }}>{label}</Button>
+            <Button key={value} type="button" size="sm" variant={view === "queue" && tab === value ? "default" : "ghost"} className="shrink-0" onClick={() => { setView("queue"); setTab(value); setPage(1); }}>{label}</Button>
           ))}
           <span aria-hidden className="mx-1 w-px shrink-0 self-stretch bg-border/70" />
           <Button type="button" size="sm" variant={view === "reminders" ? "default" : "ghost"} className="shrink-0" onClick={() => setView("reminders")}>
@@ -464,7 +486,20 @@ export default function OperadorasPage() {
 
         {view === "reminders" ? <OperatorRemindersPanel onOpenCircuit={openLink} /> : <>
         <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
-          {kpis.map(({ tab: targetTab, divergence: targetDivergence, ...item }) => <KpiCard key={item.label} {...item} onClick={() => { setView("queue"); setTab(targetTab); setDivergence(targetDivergence || ""); setPage(1); }} />)}
+          {kpis.map(({ tab: targetTab, divergence: targetDivergence, incident: targetIncident, recurrence: targetRecurrence, ...item }) => (
+            <KpiCard
+              key={item.label}
+              {...item}
+              onClick={() => {
+                setView("queue");
+                setTab(targetTab);
+                setIncident(targetIncident);
+                setRecurrence(targetRecurrence);
+                setDivergence(targetDivergence || "");
+                setPage(1);
+              }}
+            />
+          ))}
         </div>
 
         {tab === "all" ? (
@@ -474,6 +509,19 @@ export default function OperadorasPage() {
             <span>{totals?.pending_classification ?? 0} pendentes de classificação</span>
           </div>
         ) : null}
+
+        <div aria-label="Filtro de chamado" className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs text-muted-foreground">Chamado:</span>
+          {([[ALL, "Todos"], ["no", "Sem chamado"], ["yes", "Com chamado"]] as Array<[string, string]>).map(([value, label]) => (
+            <Button
+              key={value}
+              type="button"
+              size="sm"
+              variant={(value === ALL && incident === ALL) || incident === value || (value === "yes" && ["yes", "open", "resolved", "closed", "cancelled"].includes(incident)) ? "default" : "outline"}
+              onClick={() => { setIncident(value); setPage(1); }}
+            >{label}</Button>
+          ))}
+        </div>
 
         <div aria-label="Filtro de recorrência" className="flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-xs text-muted-foreground">Recorrência:</span>
@@ -541,10 +589,9 @@ export default function OperadorasPage() {
               <Filter label="Classificação" value={classification} options={optionList(payload?.facets.classifications)} onChange={setFilter(setClassification)} />
               <Filter label="Severidade" value={severity} options={[{ value: ALL, label: "Todas" }, { value: "disaster", label: "Disaster" }, { value: "high", label: "High" }, { value: "average", label: "Average" }, { value: "warning", label: "Warning" }]} onChange={setFilter(setSeverity)} />
               <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
-              <Filter label="Chamado" value={incident} options={[{ value: ALL, label: "Todos" }, { value: "open", label: "Aberto" }, { value: "without_open", label: "Sem aberto" }, { value: "yes", label: "Com histórico" }, { value: "no", label: "Sem histórico" }]} onChange={setFilter(setIncident)} />
+              <Filter label="Chamado" value={incident} options={[{ value: ALL, label: "Todos" }, { value: "no", label: "Sem chamado" }, { value: "yes", label: "Com chamado" }, { value: "open", label: "Aberto" }, { value: "resolved", label: "Resolvido" }, { value: "closed", label: "Fechado" }, { value: "cancelled", label: "Cancelado" }]} onChange={setFilter(setIncident)} />
               <Filter label="Operadora" value={carrier} options={[{ value: ALL, label: "Todas" }, { value: "unknown", label: "Não informada na origem" }]} onChange={setFilter(setCarrier)} />
               <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
-              {tab === "resolved" ? <Filter label="Resolvidos em" value={resolvedWindow} options={[{ value: "today", label: "Hoje" }, { value: "24h", label: "24 horas" }, { value: "7d", label: "7 dias" }]} onChange={setFilter(setResolvedWindow)} /> : null}
             </div>
           </details>
         </section>
@@ -606,11 +653,7 @@ export default function OperadorasPage() {
                           <p className="truncate text-sm font-medium">{text(item.customer_name)} · {localLabel(item)}</p>
                           <p className="mt-1 truncate text-xs text-muted-foreground">{linkLabel(item)}</p>
                         </TableCell>
-                        <TableCell className="min-w-[12rem]">
-                          <div className="flex flex-wrap items-center gap-1"><StateBadge state={item.state} />{item.max_severity ? <SeverityBadge severity={item.max_severity} /> : null}</div>
-                          <p className="mt-1 text-xs text-muted-foreground">{item.active_alerts ? `Em falha há ${failureDuration(item)}` : "Sem alerta ativo"}</p>
-                          {item.alert_started_at ? <p className="text-xs text-muted-foreground">Caiu às {timestampLabel(item.alert_started_at)}</p> : null}
-                        </TableCell>
+                        <TableCell className="min-w-[14rem]"><MonitoringStatus link={item} /></TableCell>
                         <TableCell>
                           <p className="text-sm font-medium">{latestAlertLabel(item.latest_alert_at)}</p>
                           <p className="mt-1 max-w-[16rem] truncate text-xs text-muted-foreground">{text(item.latest_alert?.problem_name || item.latest_alert?.trigger_description, "Sem alerta registrado")}</p>
@@ -659,7 +702,7 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
     <div className="space-y-5 px-5 py-5">
       <CircuitReminderPanel link={view} />
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
-      <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Estado" value={stateLabel(view.state)} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Em falha há" value={view.active_alerts ? failureDuration(view) : "Sem alerta ativo"} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /></div></section>
+      <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Monitoramento" value={view.active_alerts ? `Em falha há ${failureDuration(view)}` : "Normalizado"} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /><Field label="Divergência" value={view.divergence_type === "a" ? "Alerta ativo com chamado encerrado" : view.divergence_type === "b" ? "Normalizado com chamado aberto" : "Não"} /></div></section>
       <RecurrencePanel link={view} />
       {loading && !detail ? <div className="space-y-2"><Skeleton className="h-24 w-full" /><Skeleton className="h-20 w-full" /></div> : <>
         <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>

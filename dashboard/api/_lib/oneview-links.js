@@ -11,12 +11,14 @@ import { buildOperationalSubject } from "./oneview-operational-subject.js";
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const SAFE = /^[\p{L}\p{N}._:@/| -]{1,240}$/u;
 const SEVERITIES = new Set(["information", "warning", "average", "high", "critical", "disaster", "not_classified"]);
-const QUEUE_TABS = new Set(["open", "without_incident", "with_incident", "resolved", "all"]);
+const QUEUE_TABS = new Set(["open", "normalized", "all", "without_incident", "with_incident", "resolved"]);
 const RESOLVED_WINDOWS = new Set(["today", "24h", "7d"]);
 const QUEUE_SORTS = new Set(["recent", "oldest", "duration", "severity"]);
 const OPEN_INCIDENT_STATES = new Set(["1", "2", "3"]);
 const RESOLVED_INCIDENT_STATES = new Set(["6"]);
-const CLOSED_INCIDENT_STATES = new Set(["7", "8"]);
+const CLOSED_INCIDENT_STATES = new Set(["7"]);
+const CANCELLED_INCIDENT_STATES = new Set(["8"]);
+const INCIDENT_FILTERS = new Set(["all", "yes", "no", "open", "without_open", "resolved", "closed", "cancelled"]);
 const activeSql = "a.resolved_at is null and lower(coalesce(a.status_source, 'active')) = 'active' and lower(coalesce(a.status_internal, '')) not in ('resolved', 'normalized')";
 const safeJsonArray = (expression) => `case when jsonb_typeof(coalesce(${expression}, '[]'::jsonb)) = 'array' then ${expression} else '[]'::jsonb end`;
 const templateTagsSql = `case
@@ -80,7 +82,7 @@ export function parseLinkFilters(req) {
   if (filters.severity && !SEVERITIES.has(filters.severity.toLowerCase())) throw invalidQuery();
   if (filters.state && !new Set(["critical", "alert", "attention", "normal"]).has(filters.state.toLowerCase())) throw invalidQuery();
   if (filters.ack && !new Set(["all", "pending", "none"]).has(filters.ack.toLowerCase())) throw invalidQuery();
-  if (filters.incident && !new Set(["all", "yes", "no", "open", "without_open"]).has(filters.incident.toLowerCase())) throw invalidQuery();
+  if (filters.incident && !INCIDENT_FILTERS.has(filters.incident.toLowerCase())) throw invalidQuery();
   if (filters.carrier && !new Set(["all", "unknown"]).has(filters.carrier.toLowerCase())) throw invalidQuery();
   if (!QUEUE_TABS.has(filters.tab.toLowerCase()) || !RESOLVED_WINDOWS.has(filters.resolved_window.toLowerCase()) || !QUEUE_SORTS.has(filters.sort.toLowerCase())) throw invalidQuery();
   if (filters.divergence && !new Set(["a", "b", "any"]).has(filters.divergence.toLowerCase())) throw invalidQuery();
@@ -178,8 +180,16 @@ export function classifyLinkIncidentState(incident) {
   const state = String(incident?.state || "").trim();
   if (OPEN_INCIDENT_STATES.has(state)) return "open";
   if (RESOLVED_INCIDENT_STATES.has(state)) return "resolved";
+  if (CANCELLED_INCIDENT_STATES.has(state)) return "cancelled";
   if (CLOSED_INCIDENT_STATES.has(state)) return "closed";
   return "unknown";
+}
+
+function servicenowState(row) {
+  if (row.incident_correlation_status === "degraded") return "degraded";
+  if (!row.incident_count) return "none";
+  if (Number(row.open_incident_count || 0) > 0) return "open";
+  return classifyLinkIncidentState(row.latest_incident || row.current_incident);
 }
 
 function alertSummary(alerts) {
@@ -230,7 +240,7 @@ function incidentsForAlerts(alerts, matches) {
 }
 
 function incidentSummary(incidents) {
-  const buckets = { open: [], resolved: [], closed: [], unknown: [] };
+  const buckets = { open: [], resolved: [], closed: [], cancelled: [], unknown: [] };
   for (const incident of incidents) buckets[classifyLinkIncidentState(incident)].push(incident);
   const orderedOpen = [...buckets.open].sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || valueTimestamp(b.openedAt || b.opened_at) - valueTimestamp(a.openedAt || a.opened_at) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)));
   const orderedAll = [...incidents].sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)));
@@ -238,6 +248,7 @@ function incidentSummary(incidents) {
     open_incident_count: buckets.open.length,
     resolved_incident_count: buckets.resolved.length,
     closed_incident_count: buckets.closed.length,
+    cancelled_incident_count: buckets.cancelled.length,
     unknown_incident_count: buckets.unknown.length,
     open_incidents: buckets.open,
     current_incident: incidentRecord(orderedOpen[0]),
@@ -479,6 +490,9 @@ function filteredBase(rows, filters) {
     if (filters.incident === "no" && row.incident_count) return false;
     if (filters.incident === "open" && !row.open_incident_count) return false;
     if (filters.incident === "without_open" && row.open_incident_count) return false;
+    if (filters.incident === "resolved" && servicenowState(row) !== "resolved") return false;
+    if (filters.incident === "closed" && servicenowState(row) !== "closed") return false;
+    if (filters.incident === "cancelled" && servicenowState(row) !== "cancelled") return false;
     if (filters.carrier === "unknown" && row.carrier_name) return false;
     if (filters.search) { const needle = filters.search.toLowerCase(); if (![row.service_name, row.customer_name, row.source_host_id, row.host_name, row.site_name, row.link_type, row.carrier_name, row.circuit_key].some((value) => String(value || "").toLowerCase().includes(needle))) return false; }
     return true;
@@ -501,6 +515,7 @@ function operationalRow(row, now, resolvedWindow) {
       open_incident_count: row.open_incident_count,
       resolved_incident_count: row.resolved_incident_count,
       closed_incident_count: row.closed_incident_count,
+      cancelled_incident_count: row.cancelled_incident_count,
       unknown_incident_count: row.unknown_incident_count,
     }
     : incidentSummary(incidents);
@@ -510,13 +525,16 @@ function operationalRow(row, now, resolvedWindow) {
   const divergence_type = incidentAvailable && active && row.incident_count > 0 && !counts.open_incident_count
     ? "a"
     : incidentAvailable && !active && counts.open_incident_count ? "b" : null;
-  return {
+  const next = {
     ...row,
-    ...(incidentAvailable ? counts : { open_incident_count: null, resolved_incident_count: null, closed_incident_count: null, unknown_incident_count: null }),
+    ...(incidentAvailable ? counts : { open_incident_count: null, resolved_incident_count: null, closed_incident_count: null, cancelled_incident_count: null, unknown_incident_count: null }),
     has_active_alert: active,
+    monitoring_state: active ? "down" : "normalized",
     resolved_recent: resolvedRecent,
     divergence_type,
   };
+  next.servicenow_state = servicenowState(next);
+  return next;
 }
 
 function filteredOperational(rows, filters) {
@@ -525,6 +543,7 @@ function filteredOperational(rows, filters) {
     if (filters.divergence === "any" && !row.divergence_type) return false;
     if (filters.divergence && filters.divergence !== "any" && row.divergence_type !== filters.divergence) return false;
     if (filters.tab === "open") return row.has_active_alert;
+    if (filters.tab === "normalized") return !row.has_active_alert;
     if (filters.tab === "without_incident") return row.has_active_alert && row.incident_correlation_status !== "degraded" && !row.open_incident_count;
     if (filters.tab === "with_incident") return row.has_active_alert && row.incident_correlation_status !== "degraded" && row.open_incident_count > 0;
     if (filters.tab === "resolved") return row.resolved_recent;
@@ -569,6 +588,7 @@ function markIncidentDegraded(rows) {
     row.open_incident_count = null;
     row.resolved_incident_count = null;
     row.closed_incident_count = null;
+    row.cancelled_incident_count = null;
     row.unknown_incident_count = null;
     row.current_incident = null;
     row.latest_incident = null;
@@ -649,7 +669,7 @@ function queueLink(row) {
     current_alert: row.current_alert, latest_alert: row.latest_alert,
     incident_count: row.incident_count, incident_correlation_status: row.incident_correlation_status,
     open_incident_count: row.open_incident_count, resolved_incident_count: row.resolved_incident_count,
-    closed_incident_count: row.closed_incident_count, unknown_incident_count: row.unknown_incident_count,
+    closed_incident_count: row.closed_incident_count, cancelled_incident_count: row.cancelled_incident_count, unknown_incident_count: row.unknown_incident_count,
     current_incident: row.current_incident, latest_incident: row.latest_incident,
     operational_subject: buildOperationalSubject(row),
     occurrences_24h: Number(row.occurrences_24h || 0),
@@ -756,8 +776,11 @@ export function buildLinksPayload(rows, filters, now = Date.now(), integrationSt
   const facets = (field) => [...new Map(all.map((row) => [String(row[field] || ""), row[field]]).filter(([value]) => value)).entries()].map(([value,label])=>({value,label})).sort((a,b)=>String(a.label).localeCompare(String(b.label),"pt-BR"));
   const operational = {
     open: base.filter((row) => row.has_active_alert).length,
+    normalized: base.filter((row) => !row.has_active_alert).length,
+    without_incident: base.filter((row) => row.has_active_alert && row.incident_correlation_status !== "degraded" && !row.incident_count).length,
     without_open_incident: base.filter((row) => row.has_active_alert && row.incident_correlation_status !== "degraded" && !row.open_incident_count).length,
-    with_open_incident: base.filter((row) => row.has_active_alert && row.incident_correlation_status !== "degraded" && row.open_incident_count > 0).length,
+    with_open_incident: base.filter((row) => row.incident_correlation_status !== "degraded" && row.open_incident_count > 0).length,
+    recurrent: base.filter((row) => row.is_recurrent).length,
     divergences: base.filter((row) => row.divergence_type).length,
     divergence_a: base.filter((row) => row.divergence_type === "a").length,
     divergence_b: base.filter((row) => row.divergence_type === "b").length,

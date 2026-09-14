@@ -23,22 +23,27 @@ test("OV-P0-286 explicit ServiceNow states are classified without incident_count
   assert.equal(classifyLinkIncidentState(incident("3")), "open");
   assert.equal(classifyLinkIncidentState(incident("6")), "resolved");
   assert.equal(classifyLinkIncidentState(incident("7")), "closed");
-  assert.equal(classifyLinkIncidentState(incident("8")), "closed");
+  assert.equal(classifyLinkIncidentState(incident("8")), "cancelled");
   assert.equal(classifyLinkIncidentState(incident("99")), "unknown");
 });
 
-test("OV-P0-286 queue tabs preserve active, current incident, historical and resolved semantics", () => {
+test("OV-P0-286 monitoring tabs stay independent from ServiceNow filters", () => {
   const rows = [
     row("active-no-inc", { active_alerts: 1, state: "alert", active_since_at: "2026-09-04T12:00:00Z" }),
     row("active-open-inc", { active_alerts: 1, state: "alert", incidents: [incident("2")], incident_count: 1 }),
     row("active-history-only", { active_alerts: 1, state: "alert", incidents: [incident("7")], incident_count: 1 }),
-    row("resolved", { resolved_at: "2026-09-04T13:00:00Z" }),
+    row("normalized", { resolved_at: "2026-09-04T13:00:00Z" }),
   ];
   assert.deepEqual(buildLinksPayload(rows, filters({ tab: "open" }), now).items.map((item) => item.id).sort(), ["active-history-only", "active-no-inc", "active-open-inc"]);
-  assert.deepEqual(buildLinksPayload(rows, filters({ tab: "without_incident" }), now).items.map((item) => item.id).sort(), ["active-history-only", "active-no-inc"]);
-  assert.deepEqual(buildLinksPayload(rows, filters({ tab: "with_incident" }), now).items.map((item) => item.id), ["active-open-inc"]);
-  assert.deepEqual(buildLinksPayload(rows, filters({ tab: "resolved" }), now).items.map((item) => item.id), ["resolved"]);
+  assert.deepEqual(buildLinksPayload(rows, filters({ tab: "normalized" }), now).items.map((item) => item.id), ["normalized"]);
   assert.equal(buildLinksPayload(rows, filters({ tab: "all" }), now).pagination.total_items, 4);
+  assert.deepEqual(buildLinksPayload(rows, filters({ tab: "open", incident: "no" }), now).items.map((item) => item.id), ["active-no-inc"]);
+  assert.deepEqual(buildLinksPayload(rows, filters({ tab: "open", incident: "yes" }), now).items.map((item) => item.id).sort(), ["active-history-only", "active-open-inc"]);
+  const openTab = buildLinksPayload(rows, filters({ tab: "open" }), now).items.find((item) => item.id === "active-open-inc");
+  const allTab = buildLinksPayload(rows, filters({ tab: "all" }), now).items.find((item) => item.id === "active-open-inc");
+  assert.equal(openTab.servicenow_state, "open");
+  assert.equal(allTab.servicenow_state, "open");
+  assert.equal(openTab.monitoring_state, "down");
 });
 
 test("OV-P0-286 divergences detect historical-only active alerts and inactive links with open incidents", () => {
@@ -54,8 +59,9 @@ test("OV-P0-286 divergences detect historical-only active alerts and inactive li
 });
 
 test("OV-P0-286 parser validates queue controls and normal filters still apply", () => {
-  const parsed = parseLinkFilters({ query: { tab: "with_incident", resolved_window: "7d", sort: "severity", divergence: "b", customer: "Cliente" } });
-  assert.equal(parsed.tab, "with_incident");
+  const parsed = parseLinkFilters({ query: { tab: "normalized", resolved_window: "7d", sort: "severity", divergence: "b", customer: "Cliente", incident: "cancelled" } });
+  assert.equal(parsed.tab, "normalized");
+  assert.equal(parsed.incident, "cancelled");
   assert.equal(parsed.resolved_window, "7d");
   assert.equal(parsed.sort, "severity");
   assert.equal(parsed.divergence, "b");
