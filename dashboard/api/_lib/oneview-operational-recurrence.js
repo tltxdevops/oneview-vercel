@@ -68,7 +68,27 @@ export function alertsForOperationalRow(row, alertIndex) {
   return collected;
 }
 
-export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Date(), recentLimit = 0 } = {}) {
+function episodeIncident(episode, incidentMatches) {
+  if (!(incidentMatches instanceof Map)) return null;
+  const incidents = new Map();
+  for (const alertId of episode.alert_ids || []) {
+    for (const incident of incidentMatches.get(String(alertId)) || []) {
+      const key = text(incident?.sys_id) || text(incident?.number);
+      if (key) incidents.set(key, incident);
+    }
+  }
+  // Multiple explicit references are ambiguous. Do not guess which INC belongs
+  // to the logical episode; the drawer will state that no INC was correlated.
+  if (incidents.size !== 1) return null;
+  const incident = [...incidents.values()][0];
+  return {
+    incident_number: text(incident?.number) || null,
+    incident_sys_id: text(incident?.sys_id) || null,
+    incident_state: text(incident?.state) || null,
+  };
+}
+
+export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Date(), recentLimit = 0, incidentMatches = null } = {}) {
   const empty = emptyOperationalRecurrence(recentLimit);
   const episodes = selectRecurrenceEpisodes(alerts, now);
   if (!episodes.length) return empty;
@@ -94,23 +114,30 @@ export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Dat
   if (recentLimit > 0) {
     // Counts and drawer timeline share this exact logical episode collection.
     model.total_recent_episodes = episodes7d.length;
-    model.recent_episodes = episodes7d.slice(-recentLimit).reverse().map((episode) => ({
-      started_at: toIso(episode.first_seen_at),
-      resolved_at: toIso(episode.resolved_at),
-      active: !episode.resolved_at,
-      duration_seconds: episode.duration_seconds,
-    }));
+    model.recent_episodes = episodes7d.slice(-recentLimit).reverse().map((episode) => {
+      const incident = episodeIncident(episode, incidentMatches);
+      return {
+        started_at: toIso(episode.first_seen_at),
+        resolved_at: toIso(episode.resolved_at),
+        active: !episode.resolved_at,
+        duration_seconds: episode.duration_seconds,
+        incident_number: incident?.incident_number || null,
+        incident_sys_id: incident?.incident_sys_id || null,
+        incident_state: incident?.incident_state || null,
+      };
+    });
   }
   return model;
 }
 
-export function attachOperationalRecurrence(rows = [], alerts = [], now = new Date(), { recentLimit = 0 } = {}) {
+export function attachOperationalRecurrence(rows = [], alerts = [], now = new Date(), { recentLimit = 0, incidentMatches = null } = {}) {
   const index = indexAlertsByTriggerIdentity(alerts);
   for (const row of rows) {
     Object.assign(row, buildOperationalRecurrenceReadModel({
       alerts: alertsForOperationalRow(row, index),
       now,
       recentLimit,
+      incidentMatches,
     }));
   }
   return rows;

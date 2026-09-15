@@ -98,10 +98,15 @@ test("Operadoras navigation separates monitoring tabs from INC and recurrence fi
   assert.match(page, /\["open", "Em falha"\]/);
   assert.match(page, /\["normalized", "Normalizados"\]/);
   assert.match(page, /Filtro de chamado/);
+  assert.match(page, /Filtro de recorrência/);
+  assert.match(page, /\{ value: "1", label: "Novo" \}/);
+  assert.match(page, /\{ value: "3", label: "Em espera" \}/);
+  assert.match(page, /\{ value: "6", label: "Resolvido" \}/);
+  assert.match(page, /\{ value: "8", label: "Cancelado" \}/);
   assert.match(page, /function divergenceLabel/);
   assert.match(page, /Alerta ativo com chamado \$\{state\}/);
   assert.match(page, /Normalizado com chamado \$\{state\}/);
-  assert.doesNotMatch(page, /chamado encerrado/);
+  assert.doesNotMatch(page, /return `[^`]*chamado encerrado/i);
   assert.match(links, /monitoring_state: row\.monitoring_state, servicenow_state: row\.servicenow_state, divergence_type: row\.divergence_type/);
   assert.doesNotMatch(page, /Resolvidos hoje/);
   assert.doesNotMatch(links, /pool\.query\(\s*\{[^}]*servicenow_incidents[^}]*\}\s*\)\s*;\s*\n\s*for \(const row/);

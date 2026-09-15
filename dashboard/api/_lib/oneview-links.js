@@ -19,6 +19,9 @@ const RESOLVED_INCIDENT_STATES = new Set(["6"]);
 const CLOSED_INCIDENT_STATES = new Set(["7"]);
 const CANCELLED_INCIDENT_STATES = new Set(["8"]);
 const INCIDENT_FILTERS = new Set(["all", "yes", "no", "open", "without_open", "resolved", "closed", "cancelled"]);
+const INCIDENT_STATES = new Set(["1", "2", "3", "6", "7", "8"]);
+const OPERATIONAL_SITUATIONS = new Set(["failure_without_incident", "failure_with_open_incident", "failure_with_closed_incident", "normalized_with_open_incident", "normalized_without_open_incident"]);
+const ACTIVITY_PERIODS = new Set(["all", "1h", "4h", "24h", "7d"]);
 const activeSql = "a.resolved_at is null and lower(coalesce(a.status_source, 'active')) = 'active' and lower(coalesce(a.status_internal, '')) not in ('resolved', 'normalized')";
 const safeJsonArray = (expression) => `case when jsonb_typeof(coalesce(${expression}, '[]'::jsonb)) = 'array' then ${expression} else '[]'::jsonb end`;
 const templateTagsSql = `case
@@ -75,7 +78,9 @@ export function parseLinkFilters(req) {
     ack: text(oneQuery(req, "ack")), severity: text(oneQuery(req, "severity")),
     incident: text(oneQuery(req, "incident")), carrier: text(oneQuery(req, "carrier")), search: text(oneQuery(req, "search")),
     tab: text(oneQuery(req, "tab")) || "all", resolved_window: text(oneQuery(req, "resolved_window")) || "today",
-    divergence: text(oneQuery(req, "divergence")), recurrence: text(oneQuery(req, "recurrence")), sort: text(oneQuery(req, "sort")) || "recent",
+    divergence: text(oneQuery(req, "divergence")), recurrence: text(oneQuery(req, "recurrence")),
+    incident_state: text(oneQuery(req, "incident_state")), operational_situation: text(oneQuery(req, "operational_situation")),
+    activity_period: text(oneQuery(req, "activity_period")), sort: text(oneQuery(req, "sort")) || "recent",
     page: pageInt(oneQuery(req, "page"), 1, 10_000), page_size: pageInt(oneQuery(req, "page_size"), 50, 100),
   };
   for (const value of Object.values(filters)) if (typeof value === "string" && !SAFE.test(value)) throw invalidQuery();
@@ -87,6 +92,9 @@ export function parseLinkFilters(req) {
   if (!QUEUE_TABS.has(filters.tab.toLowerCase()) || !RESOLVED_WINDOWS.has(filters.resolved_window.toLowerCase()) || !QUEUE_SORTS.has(filters.sort.toLowerCase())) throw invalidQuery();
   if (filters.divergence && !new Set(["a", "b", "any"]).has(filters.divergence.toLowerCase())) throw invalidQuery();
   if (filters.recurrence && !new Set(["all", "recurrent"]).has(filters.recurrence.toLowerCase())) throw invalidQuery();
+  if (filters.incident_state && !INCIDENT_STATES.has(filters.incident_state)) throw invalidQuery();
+  if (filters.operational_situation && !OPERATIONAL_SITUATIONS.has(filters.operational_situation.toLowerCase())) throw invalidQuery();
+  if (filters.activity_period && !ACTIVITY_PERIODS.has(filters.activity_period.toLowerCase())) throw invalidQuery();
   return filters;
 }
 
@@ -444,9 +452,9 @@ function collapseEquivalentOperationalRows(rows) {
   return kept;
 }
 
-export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], incidents = [], circuits: providedCircuits = null } = {}) {
+export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], incidents = [], circuits: providedCircuits = null, incidentMatches = null } = {}) {
   const alerts = uniqueAlerts(alertRows);
-  const matches = correlateLinkIncidents(alerts, incidents);
+  const matches = incidentMatches || correlateLinkIncidents(alerts, incidents);
   const circuits = providedCircuits || discoverOperatorCircuits(alerts);
   const alertIndex = indexAlertsByCircuitTrigger(alerts);
   const alertsByHost = new Map();
@@ -493,6 +501,7 @@ function filteredBase(rows, filters) {
     if (filters.incident === "resolved" && servicenowState(row) !== "resolved") return false;
     if (filters.incident === "closed" && servicenowState(row) !== "closed") return false;
     if (filters.incident === "cancelled" && servicenowState(row) !== "cancelled") return false;
+    if (filters.incident_state && String((row.current_incident || row.latest_incident)?.state || "") !== filters.incident_state) return false;
     if (filters.carrier === "unknown" && row.carrier_name) return false;
     if (filters.search) { const needle = filters.search.toLowerCase(); if (![row.service_name, row.customer_name, row.source_host_id, row.host_name, row.site_name, row.link_type, row.carrier_name, row.circuit_key].some((value) => String(value || "").toLowerCase().includes(needle))) return false; }
     return true;
@@ -522,7 +531,9 @@ function operationalRow(row, now, resolvedWindow) {
   const active = Number(row.active_alerts || 0) > 0;
   const lastActivity = timestamp(row.latest_activity_at || row.resolved_at || row.updated_at);
   const resolvedRecent = !active && lastActivity !== null && lastActivity >= resolvedWindow;
-  const divergence_type = incidentAvailable && active && row.incident_count > 0 && !counts.open_incident_count
+  const incidentState = incidentAvailable ? servicenowState({ ...row, ...counts }) : "degraded";
+  const terminalIncident = ["resolved", "closed", "cancelled"].includes(incidentState);
+  const divergence_type = incidentAvailable && active && terminalIncident
     ? "a"
     : incidentAvailable && !active && counts.open_incident_count ? "b" : null;
   const next = {
@@ -533,15 +544,42 @@ function operationalRow(row, now, resolvedWindow) {
     resolved_recent: resolvedRecent,
     divergence_type,
   };
-  next.servicenow_state = servicenowState(next);
+  next.servicenow_state = incidentState;
+  next.last_operational_activity_at = latestTimestamp([
+    row.latest_alert_at, row.latest_activity_at, row.last_failure_at, row.last_recovery_at, row.updated_at,
+    row.current_incident?.updated_at, row.current_incident?.opened_at,
+    row.latest_incident?.updated_at, row.latest_incident?.resolved_at, row.latest_incident?.closed_at, row.latest_incident?.opened_at,
+  ]);
+  next.operational_situation = !incidentAvailable
+    ? null
+    : active
+      ? !row.incident_count
+        ? "failure_without_incident"
+        : counts.open_incident_count > 0
+          ? "failure_with_open_incident"
+          : terminalIncident ? "failure_with_closed_incident" : null
+      : counts.open_incident_count > 0
+        ? "normalized_with_open_incident"
+        : !row.incident_count || terminalIncident ? "normalized_without_open_incident" : null;
   return next;
 }
 
-function filteredOperational(rows, filters) {
+function activityPeriodStart(period, now) {
+  if (period === "1h") return now - (60 * 60 * 1000);
+  if (period === "4h") return now - (4 * 60 * 60 * 1000);
+  if (period === "24h") return now - (24 * 60 * 60 * 1000);
+  if (period === "7d") return now - (7 * 24 * 60 * 60 * 1000);
+  return null;
+}
+
+function filteredOperational(rows, filters, now) {
   return rows.filter((row) => {
     if (filters.recurrence === "recurrent" && !row.is_recurrent) return false;
     if (filters.divergence === "any" && !row.divergence_type) return false;
     if (filters.divergence && filters.divergence !== "any" && row.divergence_type !== filters.divergence) return false;
+    if (filters.operational_situation && row.operational_situation !== filters.operational_situation) return false;
+    const activityStart = activityPeriodStart(filters.activity_period, now);
+    if (activityStart !== null && (timestamp(row.last_operational_activity_at) || 0) < activityStart) return false;
     if (filters.tab === "open") return row.has_active_alert;
     if (filters.tab === "normalized") return !row.has_active_alert;
     if (filters.tab === "without_incident") return row.has_active_alert && row.incident_correlation_status !== "degraded" && !row.open_incident_count;
@@ -644,8 +682,9 @@ async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId
   const circuits = discoverOperatorCircuits(alerts);
   timings.circuit_discovery_ms = elapsedMs(discoveryStartedAt);
   const compositionStartedAt = Date.now();
-  const rows = composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits });
-  attachOperationalRecurrence(rows, alerts, new Date(), { recentLimit: scoped ? 5 : 0 });
+  const incidentMatches = correlateLinkIncidents(alerts, incidents);
+  const rows = composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits, incidentMatches });
+  attachOperationalRecurrence(rows, alerts, new Date(), { recentLimit: scoped ? 5 : 0, incidentMatches });
   timings.composition_ms = elapsedMs(compositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
   timings.total_ms = elapsedMs(startedAt);
@@ -702,8 +741,9 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
   catch { servicenowStatus = "degraded"; }
   model.timings.servicenow_correlation_ms = elapsedMs(serviceNowStartedAt);
   const detailCompositionStartedAt = Date.now();
-  const rows = composeCircuitLevelLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, circuits: model.circuits });
-  attachOperationalRecurrence(rows, model.alerts, new Date(), { recentLimit: 5 });
+  const incidentMatches = correlateLinkIncidents(model.alerts, incidents);
+  const rows = composeCircuitLevelLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, circuits: model.circuits, incidentMatches });
+  attachOperationalRecurrence(rows, model.alerts, new Date(), { recentLimit: 5, incidentMatches });
   model.timings.composition_ms = elapsedMs(detailCompositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
   model.integration_status = { servicenow: servicenowStatus };
@@ -752,7 +792,8 @@ export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, d
     incident_correlation_status: "available",
     ...incidentSummary(incidents),
   };
-  attachOperationalRecurrence([row], relatedAlerts, new Date(), { recentLimit: 5 });
+  const incidentMatches = correlateLinkIncidents(relatedAlerts, incidents);
+  attachOperationalRecurrence([row], relatedAlerts, new Date(), { recentLimit: 5, incidentMatches });
   if (servicenowStatus === "degraded") markIncidentDegraded([row]);
   const incidentHistory = [...incidents]
     .sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)))
@@ -774,7 +815,7 @@ export function buildLinksPayload(rows, filters, now = Date.now(), integrationSt
   const resolvedWindow = resolvedWindowStart(filters.resolved_window, now);
   const all = rows.map((row) => operationalRow(row, now, resolvedWindow));
   const base = filteredBase(all, filters);
-  const scoped = ordered(filteredOperational(base, filters), filters); const start=(filters.page-1)*filters.page_size;
+  const scoped = ordered(filteredOperational(base, filters, now), filters); const start=(filters.page-1)*filters.page_size;
   const facets = (field) => [...new Map(all.map((row) => [String(row[field] || ""), row[field]]).filter(([value]) => value)).entries()].map(([value,label])=>({value,label})).sort((a,b)=>String(a.label).localeCompare(String(b.label),"pt-BR"));
   const operational = {
     open: base.filter((row) => row.has_active_alert).length,

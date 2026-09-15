@@ -40,6 +40,8 @@ const OPTIONAL_COLUMNS = [
   ["severity", "Severidade"], ["classification", "Pendência de classificação"],
 ] as const;
 type QueueTab = "open" | "normalized" | "all";
+type OperationalSituation = "all" | "failure_without_incident" | "failure_with_open_incident" | "failure_with_closed_incident" | "normalized_with_open_incident" | "normalized_without_open_incident";
+type ActivityPeriod = "all" | "1h" | "4h" | "24h" | "7d";
 type PageView = "queue" | "reminders";
 type ReminderScope = "all" | "mine";
 type ReminderView = "scheduled" | "sent" | "skipped" | "failed" | "cancelled" | "all";
@@ -194,10 +196,10 @@ function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }
         <div className="mt-3 space-y-1 text-xs text-muted-foreground">
           <p className="font-medium text-foreground">Ocorrências recentes</p>
           {recent.map((item, index) => (
-            <p key={`${item.started_at || "start"}-${index}`}>
-              {item.active ? "●" : "○"} {timestampLabel(item.started_at)}
-              {item.resolved_at ? ` → ${timestampLabel(item.resolved_at)}` : " → em falha"}
-            </p>
+            <div key={`${item.started_at || "start"}-${index}`} className="rounded-md border border-border/50 px-2 py-1.5">
+              <p>{item.active ? "●" : "○"} {timestampLabel(item.started_at)}{item.resolved_at ? ` → ${timestampLabel(item.resolved_at)}` : " → em falha"}</p>
+              {item.incident_number ? <p className="flex flex-wrap items-center gap-1.5"><span>{item.incident_number}</span><OneViewIncidentStatusBadge state={item.incident_state} /></p> : <p>Sem chamado correlacionado</p>}
+            </div>
           ))}
           {total > recent.length ? <p>Mostrando {recent.length} de {total}</p> : null}
         </div>
@@ -287,6 +289,7 @@ export default function OperadorasPage() {
   const [ack, setAck] = useState(ALL);
   const [severity, setSeverity] = useState(ALL);
   const [incident, setIncident] = useState(ALL);
+  const [incidentState, setIncidentState] = useState(ALL);
   const [carrier, setCarrier] = useState(ALL);
   const [tab, setTab] = useState<QueueTab>("open");
   const [view, setView] = useState<PageView>("queue");
@@ -294,6 +297,8 @@ export default function OperadorasPage() {
   const [sort, setSort] = useState("recent");
   const [divergence, setDivergence] = useState<"a" | "b" | "any" | "">("");
   const [recurrence, setRecurrence] = useState<"all" | "recurrent">("all");
+  const [operationalSituation, setOperationalSituation] = useState<OperationalSituation>("all");
+  const [activityPeriod, setActivityPeriod] = useState<ActivityPeriod>("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<CanonicalLink | null>(null);
@@ -335,12 +340,15 @@ export default function OperadorasPage() {
         ack,
         severity,
         incident,
+        incident_state: incidentState === ALL ? undefined : incidentState,
         carrier,
         tab,
         resolved_window: resolvedWindow,
         sort,
         divergence: divergence || undefined,
         recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
+        operational_situation: operationalSituation === ALL ? undefined : operationalSituation,
+        activity_period: activityPeriod === ALL ? undefined : activityPeriod,
         search,
         page,
         page_size: 50,
@@ -368,7 +376,7 @@ export default function OperadorasPage() {
       }
       finishRequest?.();
     }
-  }, [ack, carrier, classification, customer, datasource, divergence, incident, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
+  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
 
   const loadDetail = useCallback(async (link: CanonicalLink) => {
     const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
@@ -449,17 +457,17 @@ export default function OperadorasPage() {
     setter(value);
     setPage(1);
   };
-  const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, carrier]
-    .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0);
+  const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
+    .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
   const customerFacets = payload?.facets.customers || [];
   const quickCustomers = ["Havan", "Protege", "Sanepar", "Tuper", "Teletex"].flatMap((name) => customerFacets.filter((item) => item.label.localeCompare(name, "pt-BR", { sensitivity: "base" }) === 0));
   const moreCustomers = customerFacets.filter((item) => !quickCustomers.some((quick) => quick.value === item.value));
   const kpis = useMemo(() => [
-    { label: "Em falha", value: totals?.operational.open, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const },
-    { label: "Sem chamado", value: totals?.operational.without_incident, tone: "danger" as const, tab: "open" as QueueTab, incident: "no", recurrence: "all" as const, divergence: "" as const },
-    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tab: "all" as QueueTab, incident: "open", recurrence: "all" as const, divergence: "" as const },
-    { label: "Recorrentes", value: totals?.operational.recurrent, tab: "all" as QueueTab, incident: ALL, recurrence: "recurrent" as const, divergence: "" as const },
-    { label: "Divergências", value: totals?.operational.divergences, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "any" as const },
+    { label: "Em falha", value: totals?.operational.open, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "all" as OperationalSituation },
+    { label: "Sem chamado", value: totals?.operational.without_incident, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_without_incident" as OperationalSituation },
+    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_with_open_incident" as OperationalSituation },
+    { label: "Recorrentes", value: totals?.operational.recurrent, tab: "all" as QueueTab, incident: ALL, recurrence: "recurrent" as const, divergence: "" as const, situation: "all" as OperationalSituation },
+    { label: "Divergências", value: totals?.operational.divergences, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "any" as const, situation: "all" as OperationalSituation },
   ], [totals]);
   const toggleColumn = (column: OptionalColumn, checked: boolean) => setColumns((current) => ({ ...current, [column]: checked }));
 
@@ -471,9 +479,12 @@ export default function OperadorasPage() {
     setAck(ALL);
     setSeverity(ALL);
     setIncident(ALL);
+    setIncidentState(ALL);
     setCarrier(ALL);
     setDivergence("");
     setRecurrence("all");
+    setOperationalSituation("all");
+    setActivityPeriod("all");
     setSearch("");
     setPage(1);
   };
@@ -504,7 +515,7 @@ export default function OperadorasPage() {
 
         {view === "reminders" ? <OperatorRemindersPanel onOpenCircuit={openLink} /> : <>
         <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
-          {kpis.map(({ tab: targetTab, divergence: targetDivergence, incident: targetIncident, recurrence: targetRecurrence, ...item }) => (
+          {kpis.map(({ tab: targetTab, divergence: targetDivergence, incident: targetIncident, recurrence: targetRecurrence, situation: targetSituation, ...item }) => (
             <KpiCard
               key={item.label}
               {...item}
@@ -512,8 +523,10 @@ export default function OperadorasPage() {
                 setView("queue");
                 setTab(targetTab);
                 setIncident(targetIncident);
+                setIncidentState(ALL);
                 setRecurrence(targetRecurrence);
                 setDivergence(targetDivergence || "");
+                setOperationalSituation(targetSituation);
                 setPage(1);
               }}
             />
@@ -536,7 +549,7 @@ export default function OperadorasPage() {
               type="button"
               size="sm"
               variant={(value === ALL && incident === ALL) || incident === value || (value === "yes" && ["yes", "open", "resolved", "closed", "cancelled"].includes(incident)) ? "default" : "outline"}
-              onClick={() => { setIncident(value); setPage(1); }}
+              onClick={() => { setIncident(value); setIncidentState(ALL); setPage(1); }}
             >{label}</Button>
           ))}
         </div>
@@ -607,7 +620,10 @@ export default function OperadorasPage() {
               <Filter label="Classificação" value={classification} options={optionList(payload?.facets.classifications)} onChange={setFilter(setClassification)} />
               <Filter label="Severidade" value={severity} options={[{ value: ALL, label: "Todas" }, { value: "disaster", label: "Disaster" }, { value: "high", label: "High" }, { value: "average", label: "Average" }, { value: "warning", label: "Warning" }]} onChange={setFilter(setSeverity)} />
               <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
-              <Filter label="Chamado" value={incident} options={[{ value: ALL, label: "Todos" }, { value: "no", label: "Sem chamado" }, { value: "yes", label: "Com chamado" }, { value: "open", label: "Aberto" }, { value: "resolved", label: "Resolvido" }, { value: "closed", label: "Fechado" }, { value: "cancelled", label: "Cancelado" }]} onChange={setFilter(setIncident)} />
+              <Filter label="Status do chamado" value={incidentState} options={[{ value: ALL, label: "Todos" }, { value: "1", label: "Novo" }, { value: "2", label: "Em andamento" }, { value: "3", label: "Em espera" }, { value: "6", label: "Resolvido" }, { value: "7", label: "Fechado" }, { value: "8", label: "Cancelado" }]} onChange={(value) => { setIncidentState(value); setIncident(value === ALL ? ALL : "yes"); setPage(1); }} />
+              <Filter label="Situação operacional" value={operationalSituation} options={[{ value: ALL, label: "Todas" }, { value: "failure_without_incident", label: "Falha sem chamado" }, { value: "failure_with_open_incident", label: "Falha com chamado aberto" }, { value: "failure_with_closed_incident", label: "Falha com chamado encerrado" }, { value: "normalized_with_open_incident", label: "Normalizado com chamado aberto" }, { value: "normalized_without_open_incident", label: "Normalizado sem chamado" }]} onChange={(value) => { const next = value as OperationalSituation; setOperationalSituation(next); setTab(next.startsWith("failure_") ? "open" : next.startsWith("normalized_") ? "normalized" : "all"); setPage(1); }} />
+              <Filter label="Última atividade" value={activityPeriod} options={[{ value: ALL, label: "Qualquer período" }, { value: "1h", label: "1h" }, { value: "4h", label: "4h" }, { value: "24h", label: "24h" }, { value: "7d", label: "7d" }]} onChange={(value) => { setActivityPeriod(value as ActivityPeriod); setPage(1); }} />
+              <Filter label="Divergências" value={divergence || ALL} options={[{ value: ALL, label: "Todas" }, { value: "any", label: "Somente divergências" }]} onChange={(value) => { setDivergence(value === ALL ? "" : "any"); setPage(1); }} />
               <Filter label="Operadora" value={carrier} options={[{ value: ALL, label: "Todas" }, { value: "unknown", label: "Não informada na origem" }]} onChange={setFilter(setCarrier)} />
               <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
             </div>
