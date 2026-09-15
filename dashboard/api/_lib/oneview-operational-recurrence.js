@@ -9,7 +9,8 @@ import { selectRecurrenceEpisodes } from "./oneview-recurrence.js";
 const MS_24H = 24 * 60 * 60 * 1000;
 const MS_7D = 7 * MS_24H;
 export const OPERATIONAL_RECURRENT_MIN_24H = 2;
-const RECENT_OCCURRENCE_LIMIT = 5;
+export const OPERATIONAL_RECENT_PREVIEW_LIMIT = 5;
+export const OPERATIONAL_RECENT_DETAIL_LIMIT = Number.MAX_SAFE_INTEGER;
 
 function text(value) {
   return String(value || "").trim();
@@ -88,6 +89,28 @@ function episodeIncident(episode, incidentMatches) {
   };
 }
 
+/** Evidence stays on the episode's own alerts. Never infer it from hostname. */
+function episodeEvidence(episode, alertsById) {
+  const triggerIds = new Set();
+  const titles = new Set();
+  const severities = new Set();
+  for (const alertId of episode.alert_ids || []) {
+    const alert = alertsById.get(String(alertId));
+    if (!alert) continue;
+    const triggerId = text(alert.source_trigger_id);
+    const title = text(alert.problem_name || alert.trigger_description || alert.item_name);
+    const severity = text(alert.severity);
+    if (triggerId) triggerIds.add(triggerId);
+    if (title) titles.add(title);
+    if (severity) severities.add(severity);
+  }
+  return {
+    source_trigger_ids: [...triggerIds],
+    alert_titles: [...titles],
+    severities: [...severities],
+  };
+}
+
 export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Date(), recentLimit = 0, incidentMatches = null } = {}) {
   const empty = emptyOperationalRecurrence(recentLimit);
   const episodes = selectRecurrenceEpisodes(alerts, now);
@@ -114,8 +137,10 @@ export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Dat
   if (recentLimit > 0) {
     // Counts and drawer timeline share this exact logical episode collection.
     model.total_recent_episodes = episodes7d.length;
+    const alertsById = new Map(alerts.map((alert) => [String(alert.id), alert]));
     model.recent_episodes = episodes7d.slice(-recentLimit).reverse().map((episode) => {
       const incident = episodeIncident(episode, incidentMatches);
+      const evidence = episodeEvidence(episode, alertsById);
       return {
         started_at: toIso(episode.first_seen_at),
         resolved_at: toIso(episode.resolved_at),
@@ -124,6 +149,7 @@ export function buildOperationalRecurrenceReadModel({ alerts = [], now = new Dat
         incident_number: incident?.incident_number || null,
         incident_sys_id: incident?.incident_sys_id || null,
         incident_state: incident?.incident_state || null,
+        ...evidence,
       };
     });
   }

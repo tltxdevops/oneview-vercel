@@ -24,6 +24,7 @@ import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 
 const ALL = "all";
 const REFRESH_MS = 10_000;
+const RECENT_EPISODE_PREVIEW = 5;
 const COLUMN_STORAGE_KEY = "oneview.operadoras.columns.v1";
 let drawerOpenedAt = 0;
 const OPERATOR_STATUS_TONE = Object.freeze({
@@ -175,14 +176,32 @@ function MonitoringStatus({ link }: { link: CanonicalLink }) {
 function FollowUp({ link }: { link: CanonicalLink }) {
   return link.resolution_status !== "resolved" ? <Badge variant="outline" className={OPERATOR_STATUS_TONE.classificationPending}>Classificação pendente</Badge> : <span className="text-muted-foreground">—</span>;
 }
+function queueReminderKey(dataSourceId: string, subjectType: string | null | undefined, subjectKey: string | null | undefined) {
+  return subjectType && subjectKey ? `${dataSourceId}:${subjectType}:${subjectKey}` : null;
+}
+function queueReminderForLink(link: CanonicalLink, reminders: Map<string, OperatorReminderFeedItem>) {
+  const subject = link.operational_subject;
+  const keys = [queueReminderKey(link.data_source_id, subject?.subject_type, subject?.subject_key), ...(subject?.fallback_subject_keys || []).map((key) => queueReminderKey(link.data_source_id, "alert_subject", key))];
+  return keys.map((key) => key ? reminders.get(key) : null).find(Boolean) || getCachedOperatorReminders(link)?.[0] || null;
+}
+function ReminderQuickAction({ link, reminder, onOpen }: { link: CanonicalLink; reminder: OperatorReminderFeedItem | OperatorReminder | null; onOpen: (link: CanonicalLink) => void }) {
+  const stable = Boolean(link.operational_subject?.subject_key);
+  const enabled = stable && Number(link.active_alerts) > 0;
+  const label = reminder?.status === "processing" ? "⌛" : reminder?.status === "scheduled" ? `🔔 ${timestampLabel(reminder.scheduled_for)}` : "🔔 Lembrar";
+  return <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" title="Agendar ou administrar lembrete" disabled={!enabled} onClick={(event) => { event.stopPropagation(); onOpen(link); }}>{label}</Button>;
+}
 function RecurrenceHint({ link }: { link: CanonicalLink }) {
   const count = Number(link.occurrences_24h || 0);
   if (!link.is_recurrent || count < 2) return null;
   return <Badge variant="outline" className={OPERATOR_STATUS_TONE.recurrence}>🔁 {count} quedas / 24h</Badge>;
 }
 function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }) {
+  const [showAllRecent, setShowAllRecent] = useState(false);
+  const [expandedEpisode, setExpandedEpisode] = useState<string | null>(null);
   const recent = "recent_episodes" in link ? link.recent_episodes || [] : [];
-  const total = Number(link.total_recent_episodes || 0);
+  const total = Number(link.total_recent_episodes || recent.length || 0);
+  const visible = showAllRecent ? recent : recent.slice(0, RECENT_EPISODE_PREVIEW);
+  const canExpand = recent.length > RECENT_EPISODE_PREVIEW || total > recent.length;
   return (
     <section>
       <h3 className="mb-2 text-sm font-semibold">Recorrência</h3>
@@ -195,13 +214,23 @@ function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }
       {recent.length ? (
         <div className="mt-3 space-y-1 text-xs text-muted-foreground">
           <p className="font-medium text-foreground">Ocorrências recentes</p>
-          {recent.map((item, index) => (
-            <div key={`${item.started_at || "start"}-${index}`} className="rounded-md border border-border/50 px-2 py-1.5">
-              <p>{item.active ? "●" : "○"} {timestampLabel(item.started_at)}{item.resolved_at ? ` → ${timestampLabel(item.resolved_at)}` : " → em falha"}</p>
-              {item.incident_number ? <p className="flex flex-wrap items-center gap-1.5"><span>{item.incident_number}</span><OneViewIncidentStatusBadge state={item.incident_state} /></p> : <p>Sem chamado correlacionado</p>}
-            </div>
-          ))}
-          {total > recent.length ? <p>Mostrando {recent.length} de {total}</p> : null}
+          {visible.map((item, index) => {
+            const key = `${item.started_at || "start"}-${index}`;
+            const expanded = expandedEpisode === key;
+            return <div key={key} className="rounded-md border border-border/50 px-2 py-1.5">
+              <button type="button" className="w-full text-left" aria-expanded={expanded} onClick={() => setExpandedEpisode((value) => value === key ? null : key)}>
+                <p>{item.active ? "●" : "○"} {timestampLabel(item.started_at)}{item.resolved_at ? ` → ${timestampLabel(item.resolved_at)}` : " → em falha"}</p>
+                {item.incident_number ? <p className="flex flex-wrap items-center gap-1.5"><span>{item.incident_number}</span><OneViewIncidentStatusBadge state={item.incident_state} /></p> : <p>Sem chamado correlacionado</p>}
+                <span className="text-primary">{expanded ? "Recolher detalhes" : "Ver detalhes"}</span>
+              </button>
+              {expanded ? <div className="mt-2 grid gap-2 border-t border-border/50 pt-2 sm:grid-cols-2"><Field label="Início" value={timestampLabel(item.started_at)} /><Field label="Fim" value={item.resolved_at ? timestampLabel(item.resolved_at) : "Em falha"} /><Field label="Duração" value={item.duration_seconds == null ? "Não informado" : `${Math.floor(item.duration_seconds / 60)} min`} /><Field label="Estado" value={item.active ? "Em falha" : "Normalizado"} /><Field label="Alerta / trigger" value={item.alert_titles?.join(" · ") || item.source_trigger_ids?.join(", ") || "Não informado"} /><Field label="Severidade" value={item.severities?.join(", ") || "Não informada"} /><Field label="INC correlacionado" value={item.incident_number || "Sem chamado correlacionado"} /><Field label="Estado do INC" value={item.incident_state || "Não informado"} />{item.incident_sys_id ? <div className="sm:col-span-2"><IncidentDetailPanel incident={{ sys_id: item.incident_sys_id, number: item.incident_number || "INC" }} /></div> : null}</div> : null}
+            </div>;
+          })}
+          {canExpand ? (
+            <Button type="button" size="sm" variant="outline" className="mt-1 h-7" onClick={() => setShowAllRecent((value) => !value)}>
+              {showAllRecent ? "Mostrar menos" : `Ver mais (${total})`}
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </section>
@@ -302,6 +331,8 @@ export default function OperadorasPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<CanonicalLink | null>(null);
+  const [reminderRequest, setReminderRequest] = useState<string | null>(null);
+  const [queueReminders, setQueueReminders] = useState<Map<string, OperatorReminderFeedItem>>(() => new Map());
   const [detail, setDetail] = useState<CanonicalLinkDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -420,16 +451,37 @@ export default function OperadorasPage() {
 
   const closeLink = useCallback(() => {
     selectedId.current = null;
+    setReminderRequest(null);
     setSelected(null);
     setDetail(null);
     setDetailError(null);
     setDetailLoading(false);
   }, []);
 
+  const openReminder = useCallback((link: CanonicalLink) => {
+    setReminderRequest(`${link.id}:${link.data_source_id}:${link.source_host_id}:${Date.now()}`);
+    openLink(link);
+  }, [openLink]);
+
   useEffect(() => {
     void load();
     return () => { requestVersion.current += 1; request.current?.abort(); };
   }, [load]);
+
+  useEffect(() => {
+    if (view !== "queue" || !payload) return;
+    let active = true;
+    void fetchOperatorReminderFeed({ status: ["scheduled", "processing"], limit: 100 }).then((feed) => {
+      if (!active) return;
+      const next = new Map<string, OperatorReminderFeedItem>();
+      for (const item of feed.items) {
+        const key = queueReminderKey(item.data_source_id, item.subject_type, item.subject_key);
+        if (key) next.set(key, item);
+      }
+      setQueueReminders(next);
+    }).catch(() => { if (active) setQueueReminders(new Map()); });
+    return () => { active = false; };
+  }, [payload, view]);
 
   useEffect(() => {
     try { window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(columns)); } catch { /* browser preference is optional */ }
@@ -672,7 +724,7 @@ export default function OperadorasPage() {
                       <TableHead>Situação</TableHead>
                       <TableHead>Último alerta</TableHead>
                       <TableHead>Chamado atual</TableHead>
-                      <TableHead>Acompanhamento</TableHead>
+                      <TableHead>Lembrete</TableHead>
                       {columns.link_type ? <TableHead>Tipo do link</TableHead> : null}
                       {columns.carrier ? <TableHead>Operadora</TableHead> : null}
                       {columns.datasource ? <TableHead>Fonte Zabbix</TableHead> : null}
@@ -693,7 +745,7 @@ export default function OperadorasPage() {
                           <p className="mt-1 max-w-[16rem] truncate text-xs text-muted-foreground">{text(item.latest_alert?.problem_name || item.latest_alert?.trigger_description, "Sem alerta registrado")}</p>
                         </TableCell>
                         <TableCell className="min-w-[12rem]"><CurrentIncident link={item} /></TableCell>
-                        <TableCell><div className="space-y-1"><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>
+                        <TableCell><div className="space-y-1"><ReminderQuickAction link={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openReminder} /><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>
                         {columns.link_type ? <TableCell className="max-w-[11rem] text-xs">{linkTypeLabel(item)}</TableCell> : null}
                         {columns.carrier ? <TableCell className="max-w-[11rem] truncate text-xs">{text(item.carrier_name)}</TableCell> : null}
                         {columns.datasource ? <TableCell className="text-xs">{zabbixSourceDisplayName(item.datasource)}</TableCell> : null}
@@ -720,12 +772,12 @@ export default function OperadorasPage() {
         </>}
       </div>
 
-      <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />
+      <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} reminderRequest={reminderRequest} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />
     </AppLayout>
   );
 }
 
-function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { link: CanonicalLink | null; detail: CanonicalLinkDetail | null; loading: boolean; error: string | null; onClose: () => void; onRetry: () => void }) {
+function QueueLinkDrawer({ link, detail, loading, error, reminderRequest, onClose, onRetry }: { link: CanonicalLink | null; detail: CanonicalLinkDetail | null; loading: boolean; error: string | null; reminderRequest: string | null; onClose: () => void; onRetry: () => void }) {
   const [expandedIncidentKey, setExpandedIncidentKey] = useState<string | null>(null);
   const view = detail || link;
   const currentIncident = detail?.current_incident || link?.current_incident;
@@ -736,10 +788,10 @@ function QueueLinkDrawer({ link, detail, loading, error, onClose, onRetry }: { l
     <div className="space-y-5 px-5 py-5">
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
       <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Monitoramento" value={view.active_alerts ? `Em falha há ${failureDuration(view)}` : "Normalizado"} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /><Field label="Divergência" value={divergenceLabel(view)} /></div></section>
+      <CircuitReminderPanel link={view} requestOpen={reminderRequest} />
       <RecurrencePanel link={view} />
       <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>
       <section><h3 className="mb-2 text-sm font-semibold">Alerta atual</h3>{currentAlert ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p className="font-medium">{text(currentAlert.problem_name || currentAlert.trigger_description, "Alerta sem título")}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentAlert.severity)} · Início: {timestampLabel(currentAlert.started_at)} · Último alerta: {timestampLabel(currentAlert.last_seen_at || view.latest_alert_at)}</p></div> : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}</section>
-      <CircuitReminderPanel link={view} />
       {detail ? <Accordion type="single" collapsible className="rounded-lg border border-border/60 px-3"><AccordionItem value="technical" className="border-b-0"><AccordionTrigger className="py-3 text-sm">Detalhes técnicos</AccordionTrigger><AccordionContent><div className="grid gap-3 sm:grid-cols-2"><Field label="Circuit key" value={text(detail.technical.circuit_key || detail.service_name)} /><Field label="Host Zabbix" value={`${text(detail.technical.host_name)} · ID ${text(detail.technical.source_host_id)}`} /><Field label="Trigger(s)" value={detail.technical.trigger_ids.length ? detail.technical.trigger_ids.join(", ") : "Não informado"} /><Field label="Member / uplink" value={text(detail.technical.member_key || detail.technical.uplink_key)} /><Field label="Health-check" value={text(detail.technical.healthcheck_key)} /><Field label="IP" value={text(detail.technical.endpoint_ip)} /><Field label="Fonte" value={`${zabbixSourceDisplayName(detail.technical.source)} · ${text(detail.technical.strategy)}`} /><Field label="Confiança" value={text(detail.technical.confidence)} /></div></AccordionContent></AccordionItem></Accordion> : null}
     </div>
   </> : null}</SheetContent></Sheet>;
@@ -782,7 +834,7 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
   </div>;
 }
 
-function IncidentDetailPanel({ incident }: { incident: CanonicalLinkIncident }) {
+function IncidentDetailPanel({ incident }: { incident: Pick<CanonicalLinkIncident, "sys_id" | "number"> }) {
   const [detail, setDetail] = useState<OneViewIncident | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1245,7 +1297,7 @@ function OperatorRemindersPanel({ onOpenCircuit }: { onOpenCircuit: (link: Canon
   </SectionPanel>;
 }
 
-function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
+function CircuitReminderPanel({ link, requestOpen }: { link: CanonicalLink; requestOpen?: string | null }) {
   const reminderLink = useMemo(() => ({
     id: link.id,
     circuit_key: link.circuit_key,
@@ -1265,6 +1317,7 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
   const requestVersion = useRef(0);
   const clickStartedAt = useRef<number | null>(null);
   const drawerMetricSent = useRef(false);
+  const openedRequest = useRef<string | null>(null);
   const reminder = reminders[0] || null;
   const hasOperationalSubject = Boolean(link.operational_subject?.subject_key);
   const canSchedule = Boolean(hasOperationalSubject && Number(link.active_alerts) > 0);
@@ -1376,10 +1429,21 @@ function CircuitReminderPanel({ link }: { link: CanonicalLink }) {
     setOpen(true);
   };
 
-  return <section><h3 className="mb-2 text-sm font-semibold">Acompanhamento</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
-    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />{reminderLabel(reminder.scheduled_for)}</p><p className="mt-1 text-xs text-muted-foreground">Criado por {reminder.created_by_name}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted-foreground">Agende um retorno se o alerta continuar pendente.</p>{reminderUnavailableReason ? <p className="mt-1 text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
-    {loading ? <p className="mt-2 text-xs text-muted-foreground">Carregando acompanhamento…</p> : null}
-    {loadFailed ? <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Não foi possível carregar o acompanhamento.</span><Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void loadReminderState(true)}>Tentar novamente</Button></div> : null}
+  useEffect(() => {
+    if (!requestOpen || requestOpen === openedRequest.current || !canSchedule) return;
+    openedRequest.current = requestOpen;
+    const initial = reminderDateTime();
+    setDate(initial.date);
+    setTime(initial.time);
+    setMutationError(null);
+    clickStartedAt.current = performance.now();
+    setOpen(true);
+  }, [canSchedule, requestOpen]);
+
+  return <section><h3 className="mb-2 text-sm font-semibold">Lembrete</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
+    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />{reminderLabel(reminder.scheduled_for)}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div>{reminderUnavailableReason ? <p className="text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
+    {loading ? <p className="mt-2 text-xs text-muted-foreground">Carregando lembrete…</p> : null}
+    {loadFailed ? <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Não foi possível carregar o lembrete.</span><Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void loadReminderState(true)}>Tentar novamente</Button></div> : null}
     {mutationError ? <p role="alert" className="mt-2 text-xs text-destructive">{mutationError}</p> : null}
     {reminder ? <Popover open={open} onOpenChange={setOpen}><PopoverContent className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover> : null}
   </div></section>;

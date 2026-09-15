@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   attachOperationalRecurrence,
   buildOperationalRecurrenceReadModel,
+  OPERATIONAL_RECENT_DETAIL_LIMIT,
 } from "../api/_lib/oneview-operational-recurrence.js";
 import { composeCircuitLevelLinks, parseLinkFilters, buildLinksPayload } from "../api/_lib/oneview-links.js";
 
@@ -193,6 +194,31 @@ test("K: recent timeline and counts share the same 7d episode collection", () =>
   assert.equal(model.recent_episodes.length, 5);
 });
 
+test("K2: detail recentLimit returns the full 7d timeline", () => {
+  const alerts = Array.from({ length: 36 }, (_, index) => alert({
+    id: `episode-${index}`,
+    first_seen_at: new Date(NOW.getTime() - (index * 2 + 1) * 60 * 60 * 1000).toISOString(),
+    resolved_at: new Date(NOW.getTime() - (index * 2 + 0.5) * 60 * 60 * 1000).toISOString(),
+  }));
+  const model = buildOperationalRecurrenceReadModel({ alerts, now: NOW, recentLimit: OPERATIONAL_RECENT_DETAIL_LIMIT });
+  assert.equal(model.total_recent_episodes, 36);
+  assert.equal(model.recent_episodes.length, 36);
+});
+
+test("episode evidence remains scoped to its own alerts and explicit INC match", () => {
+  const first = alert({ id: "first", source_trigger_id: "trigger-1", problem_name: "Link down", severity: "high", first_seen_at: "2026-09-14T08:00:00.000Z", resolved_at: "2026-09-14T08:10:00.000Z" });
+  const second = alert({ id: "second", source_trigger_id: "trigger-2", problem_name: "Packet loss", severity: "warning", first_seen_at: "2026-09-14T09:00:00.000Z", resolved_at: null });
+  const model = buildOperationalRecurrenceReadModel({
+    alerts: [first, second], now: NOW, recentLimit: 5,
+    incidentMatches: new Map([["first", [{ sys_id: "inc-1", number: "INC001", state: "6" }]]]),
+  });
+  assert.deepEqual(model.recent_episodes[0].alert_titles, ["Packet loss"]);
+  assert.deepEqual(model.recent_episodes[0].source_trigger_ids, ["trigger-2"]);
+  assert.equal(model.recent_episodes[0].incident_number, null);
+  assert.deepEqual(model.recent_episodes[1].alert_titles, ["Link down"]);
+  assert.equal(model.recent_episodes[1].incident_number, "INC001");
+});
+
 test("recurrent filter keeps only 24h >= 2", () => {
   const filters = parseLinkFilters({ query: { tab: "all", recurrence: "recurrent", page_size: "100" } });
   const payload = buildLinksPayload([
@@ -209,7 +235,12 @@ test("Operadoras exposes compact recurrence badge, filter and drawer block", asy
   assert.match(page, /quedas \/ 24h/);
   assert.match(page, /Última recuperação/);
   assert.match(page, /Última nova falha/);
-  assert.match(page, /Mostrando \{recent\.length\} de \{total\}/);
+  assert.match(page, /Ver mais/);
+  assert.match(page, /Mostrar menos/);
+  assert.match(page, /Ver detalhes/);
+  assert.match(page, /Alerta \/ trigger/);
+  assert.match(page, /ReminderQuickAction/);
+  assert.match(page, />Lembrete</);
   assert.doesNotMatch(page, /Histórico recente/);
   const links = await readFile(new URL("../api/_lib/oneview-links.js", import.meta.url), "utf8");
   const recurrence = await readFile(new URL("../api/_lib/oneview-operational-recurrence.js", import.meta.url), "utf8");

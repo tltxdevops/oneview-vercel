@@ -20,9 +20,12 @@ const row = (id, overrides = {}) => ({
 
 const rows = [
   row("A-active-no-inc", { active_alerts: 1, state: "alert", active_since_at: "2026-09-04T12:00:00Z" }),
+  row("B1-active-new-inc", { active_alerts: 1, state: "alert", incidents: [incident("1", "INC0001")], incident_count: 1 }),
+  row("B2-active-progress-inc", { active_alerts: 1, state: "alert", incidents: [incident("2", "INC0002")], incident_count: 1 }),
   row("B-active-open-inc", { active_alerts: 1, state: "alert", incidents: [incident("3", "INC0082499")], incident_count: 1 }),
   row("C-normalized-open-inc", { incidents: [incident("2", "INC0002")], incident_count: 1 }),
   row("D-active-resolved-inc", { active_alerts: 1, state: "alert", incidents: [incident("6", "INC0006")], incident_count: 1 }),
+  row("D1-active-closed-inc", { active_alerts: 1, state: "alert", incidents: [incident("7", "INC0007")], incident_count: 1 }),
   row("D2-active-cancelled-inc", { active_alerts: 1, state: "alert", incidents: [incident("8", "INC0008")], incident_count: 1 }),
   row("E-recurrent", { active_alerts: 1, state: "alert", is_recurrent: true, occurrences_24h: 6 }),
   row("F-not-recurrent", { active_alerts: 1, state: "alert", is_recurrent: false, occurrences_24h: 1 }),
@@ -48,6 +51,18 @@ test("B active alert with open INC is down + open", () => {
   assert.equal(entry.monitoring_state, "down");
   assert.equal(entry.servicenow_state, "open");
   assert.ok(ids(buildLinksPayload(rows, filters({ tab: "open", incident: "yes" }), now)).includes("B-active-open-inc"));
+});
+
+test("ServiceNow 1/2/3 remain open while 6/7/8 remain terminal", () => {
+  for (const id of ["B1-active-new-inc", "B2-active-progress-inc", "B-active-open-inc"]) {
+    assert.equal(item(id).monitoring_state, "down");
+    assert.equal(item(id).servicenow_state, "open");
+    assert.equal(item(id).divergence_type, null);
+  }
+  for (const id of ["D-active-resolved-inc", "D1-active-closed-inc", "D2-active-cancelled-inc"]) {
+    assert.equal(item(id).monitoring_state, "down");
+    assert.equal(item(id).divergence_type, "a");
+  }
 });
 
 test("C normalized alert with open INC is normalized + open and stays visible", () => {
@@ -88,7 +103,7 @@ test("G monitoring tabs do not rewrite ServiceNow state", () => {
   assert.equal(open.servicenow_state, "open");
   assert.equal(all.servicenow_state, "open");
   assert.equal(normalizedMissing, undefined);
-  assert.equal(buildLinksPayload(rows, filters({ tab: "all" }), now).totals.operational.with_open_incident, 2);
+  assert.equal(buildLinksPayload(rows, filters({ tab: "all" }), now).totals.operational.with_open_incident, 4);
   assert.equal(buildLinksPayload(rows, filters({ tab: "all" }), now).totals.operational.without_incident, 3);
 });
 
