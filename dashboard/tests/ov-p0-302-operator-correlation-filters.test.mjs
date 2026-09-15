@@ -135,8 +135,11 @@ test("parser and UI expose card filters; recurrence correlation remains query-fr
     readFile(new URL("../api/_lib/oneview-links.js", import.meta.url), "utf8"),
     readFile(new URL("../api/_lib/oneview-operational-recurrence.js", import.meta.url), "utf8"),
   ]);
-  for (const label of ["Status do chamado", "Situação operacional", "Última atividade", "Somente divergências", "Sem chamado correlacionado"]) assert.match(page, new RegExp(label));
-  assert.doesNotMatch(recurrence, /pool\.query|getOneViewDbPool|host_name|hostname/i);
+  for (const label of ["Status INC", "Situação", "Período", "Somente divergências", "Sem chamado correlacionado"]) assert.match(page, new RegExp(label));
+  assert.match(page, /Filtros operacionais principais/);
+  assert.match(page, /Filtros complementares/);
+  assert.doesNotMatch(recurrence, /pool\.query|getOneViewDbPool/i);
+  assert.doesNotMatch(recurrence, /(?:row|alert)\??\.host_name/i);
   assert.equal((links.match(/from servicenow_incidents/g) || []).length, 1);
   assert.match(links, /const incidentMatches = correlateLinkIncidents\(alerts, incidents\)/);
 });

@@ -1,5 +1,5 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
+import { Bell, ChevronDown, Link as LinkIcon, Repeat2, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
@@ -139,10 +139,15 @@ function linkLabel(link: CanonicalLink) {
   if (link.uplink_key && !label.toLowerCase().includes(link.uplink_key.toLowerCase())) return `${label} · ${link.uplink_key}`;
   return label;
 }
+
+function incidentAssignee(incident: CanonicalLinkIncident) {
+  return text(incident.assigned_to_display || incident.assigned_to, "Responsável não informado");
+}
+
 function CurrentIncident({ link }: { link: CanonicalLink }) {
   if (link.incident_correlation_status === "degraded") return <p className="text-xs text-muted-foreground">Chamados não verificados</p>;
-  if (link.current_incident) return <div className="space-y-0.5 text-xs"><p className="flex flex-wrap items-center gap-1.5 font-medium"><span>{link.current_incident.number || "INC"}</span><OneViewIncidentStatusBadge state={link.current_incident.state} display={link.current_incident.state_display} /></p><p className="text-muted-foreground">Aberto {timestampLabel(link.current_incident.opened_at)}</p></div>;
-  if (link.latest_incident) return <div className="space-y-0.5 text-xs"><p className="flex flex-wrap items-center gap-1.5"><span>{link.latest_incident.number || "INC"}</span><OneViewIncidentStatusBadge state={link.latest_incident.state} display={link.latest_incident.state_display} /></p><p className="text-muted-foreground">Sem chamado aberto</p></div>;
+  if (link.current_incident) return <div className="space-y-0.5 text-xs"><p className="flex flex-wrap items-center gap-1.5 font-medium"><span>{link.current_incident.number || "INC"}</span><OneViewIncidentStatusBadge state={link.current_incident.state} display={link.current_incident.state_display} /></p><p className="truncate text-muted-foreground">Responsável: {incidentAssignee(link.current_incident)}</p><p className="text-muted-foreground">Aberto {timestampLabel(link.current_incident.opened_at)}</p></div>;
+  if (link.latest_incident) return <div className="space-y-0.5 text-xs"><p className="flex flex-wrap items-center gap-1.5"><span>{link.latest_incident.number || "INC"}</span><OneViewIncidentStatusBadge state={link.latest_incident.state} display={link.latest_incident.state_display} /></p><p className="truncate text-muted-foreground">Último responsável: {incidentAssignee(link.latest_incident)}</p><p className="text-muted-foreground">Sem chamado aberto</p></div>;
   return <p className="text-xs text-muted-foreground">Sem chamado</p>;
 }
 
@@ -188,13 +193,13 @@ function queueReminderForLink(link: CanonicalLink, reminders: Map<string, Operat
 function ReminderQuickAction({ link, reminder, onOpen }: { link: CanonicalLink; reminder: OperatorReminderFeedItem | OperatorReminder | null; onOpen: (link: CanonicalLink) => void }) {
   const stable = Boolean(link.operational_subject?.subject_key);
   const enabled = stable && Number(link.active_alerts) > 0;
-  const label = reminder?.status === "processing" ? "⌛" : reminder?.status === "scheduled" ? `🔔 ${timestampLabel(reminder.scheduled_for)}` : "🔔 Lembrar";
-  return <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" title="Agendar ou administrar lembrete" disabled={!enabled} onClick={(event) => { event.stopPropagation(); onOpen(link); }}>{label}</Button>;
+  const label = reminder?.status === "processing" ? "Processando" : reminder?.status === "scheduled" ? `Agendado ${timestampLabel(reminder.scheduled_for)}` : "Lembrar";
+  return <div className="min-w-0 space-y-1"><Button type="button" size="sm" variant="outline" className="h-7 max-w-full px-2 text-xs" title="Agendar ou administrar lembrete" disabled={!enabled} onClick={(event) => { event.stopPropagation(); onOpen(link); }}>{label}</Button>{reminder ? <p className="truncate text-[11px] text-muted-foreground" title={text(reminder.created_by_name, "Operador não identificado")}>Lembrete de {text(reminder.created_by_name, "Operador não identificado")}</p> : null}</div>;
 }
 function RecurrenceHint({ link }: { link: CanonicalLink }) {
   const count = Number(link.occurrences_24h || 0);
   if (!link.is_recurrent || count < 2) return null;
-  return <Badge variant="outline" className={OPERATOR_STATUS_TONE.recurrence}>🔁 {count} quedas / 24h</Badge>;
+  return <Badge variant="outline" className={cn(OPERATOR_STATUS_TONE.recurrence, "gap-1 font-semibold")}><Repeat2 className="h-3 w-3" aria-hidden />{count} quedas / 24h</Badge>;
 }
 function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }) {
   const [showAllRecent, setShowAllRecent] = useState(false);
@@ -313,7 +318,7 @@ function KpiCard({ label, value, tone = "default", onClick }: { label: string; v
   );
 }
 
-function MobileLinkCard({ item, onOpen }: { item: CanonicalLink; onOpen: (item: CanonicalLink) => void }) {
+function MobileLinkCard({ item, reminder, onOpen }: { item: CanonicalLink; reminder: OperatorReminderFeedItem | OperatorReminder | null; onOpen: (item: CanonicalLink) => void }) {
   return (
     <button
       type="button"
@@ -331,7 +336,7 @@ function MobileLinkCard({ item, onOpen }: { item: CanonicalLink; onOpen: (item: 
       <div className="grid grid-cols-2 gap-2 text-xs"><div><p className="text-muted-foreground">Último alerta</p><p className="font-medium">{latestAlertLabel(item.latest_alert_at)}</p></div><div><p className="text-muted-foreground">Chamado</p><CurrentIncident link={item} /></div></div>
       <div className="flex items-center justify-between gap-2">
         <FollowUp link={item} />
-        <RecurrenceHint link={item} />
+        <div className="flex min-w-0 flex-col items-end gap-1"><RecurrenceHint link={item} />{reminder ? <p className="max-w-48 truncate text-[11px] text-muted-foreground">Lembrete de {text(reminder.created_by_name, "Operador não identificado")}</p> : null}</div>
       </div>
     </button>
   );
@@ -546,8 +551,8 @@ export default function OperadorasPage() {
   };
   const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
     .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
-  const panelFilterCount = [datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
-    .filter((value) => value !== ALL).length + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
+  const panelFilterCount = [datasource, classification, state, ack, severity, carrier]
+    .filter((value) => value !== ALL).length + (divergence ? 1 : 0);
   const optionalColumnCount = OPTIONAL_COLUMNS.filter(([column]) => columns[column]).length;
   const chamadoChip = incident === ALL && incidentState === ALL ? ALL : incident;
   const customerOptions = useMemo(() => [
@@ -591,8 +596,7 @@ export default function OperadorasPage() {
 
   return (
     <AppLayout
-      title="Links"
-      description="Visão operacional dos circuitos monitorados, seus alertas e chamados relacionados."
+      clientSelect={<div className="flex min-w-0 items-center gap-2"><LinkIcon className="h-4 w-4 shrink-0 text-primary" aria-hidden /><div className="min-w-0"><h1 className="truncate text-sm font-semibold">Links</h1><p className="hidden truncate text-xs text-muted-foreground lg:block">Circuitos, alertas e chamados relacionados</p></div></div>}
       onRefresh={() => void load("manual")}
       enableAutoRefresh={false}
       showRefreshMeta={false}
@@ -641,7 +645,7 @@ export default function OperadorasPage() {
           </div>
         ) : null}
 
-        <section aria-label="Filtros de links" className="space-y-2">
+        <section aria-label="Filtros de links" className="space-y-3 rounded-lg border border-border/70 bg-card p-3 shadow-sm">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <ClientFilterCombobox
               open={customerFilterOpen}
@@ -669,7 +673,7 @@ export default function OperadorasPage() {
             </div>
             <Button type="button" variant={filtersOpen ? "default" : "outline"} size="sm" className="h-8" onClick={() => setFiltersOpen((open) => !open)}>
               <ChevronDown className={cn("mr-1.5 h-3.5 w-3.5 transition-transform", filtersOpen && "rotate-180")} />
-              Filtros
+              Mais filtros
               {panelFilterCount > 0 ? <Badge variant="secondary" className="ml-1.5 h-5 px-1.5 text-[10px]">{panelFilterCount}</Badge> : null}
             </Button>
             {activeFilterCount > 0 ? (
@@ -680,15 +684,19 @@ export default function OperadorasPage() {
             ) : null}
           </div>
 
-          {filtersOpen ? (
-            <div className="space-y-3 rounded-md border border-border/60 bg-card/50 p-3">
+          <div aria-label="Filtros operacionais principais" className="grid gap-3 border-t border-border/60 pt-3 md:grid-cols-2 xl:grid-cols-3">
+            <div className="flex min-h-8 items-center">
               <ChipGroup
                 label="Chamado"
                 ariaLabel="Filtro de chamado"
                 value={chamadoChip}
-                options={[[ALL, "Todos"], ["no", "Sem chamado"], ["yes", "Com chamado"], ["open", "Aberto"], ["resolved", "Resolvido"], ["closed", "Fechado"], ["cancelled", "Cancelado"]]}
+                options={[[ALL, "Todos"], ["no", "Sem chamado"], ["yes", "Com chamado"]]}
                 onChange={(value) => { setIncident(value); setIncidentState(ALL); setPage(1); }}
               />
+            </div>
+            <Filter label="Situação" value={operationalSituation} options={[{ value: ALL, label: "Todas" }, { value: "failure_without_incident", label: "Falha sem chamado" }, { value: "failure_with_open_incident", label: "Falha com chamado aberto" }, { value: "failure_with_closed_incident", label: "Falha com chamado encerrado" }, { value: "normalized_with_open_incident", label: "Normalizado com chamado aberto" }, { value: "normalized_without_open_incident", label: "Normalizado sem chamado" }]} onChange={(value) => { setOperationalSituation(value as OperationalSituation); setPage(1); }} />
+            <Filter label="Status INC" value={incidentState} options={[{ value: ALL, label: "Todos" }, { value: "1", label: "Novo" }, { value: "2", label: "Em andamento" }, { value: "3", label: "Em espera" }, { value: "6", label: "Resolvido" }, { value: "7", label: "Fechado" }, { value: "8", label: "Cancelado" }]} onChange={(value) => { setIncidentState(value); if (value !== ALL) setIncident("yes"); setPage(1); }} />
+            <div className="flex min-h-8 items-center">
               <ChipGroup
                 label="Recorrência"
                 ariaLabel="Filtro de recorrência"
@@ -696,9 +704,22 @@ export default function OperadorasPage() {
                 options={[["all", "Todos"], ["recurrent", "Recorrentes"]]}
                 onChange={(value) => { setRecurrence(value === "recurrent" ? "recurrent" : "all"); setPage(1); }}
               />
-              <div>
-                <p className="mb-2 text-xs font-medium text-muted-foreground">Mais filtros</p>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            </div>
+            <div className="flex min-h-8 items-center md:col-span-2">
+              <ChipGroup
+                label="Período"
+                ariaLabel="Filtro de período"
+                value={activityPeriod}
+                options={[[ALL, "Todos"], ["1h", "1h"], ["4h", "4h"], ["24h", "24h"], ["7d", "7d"]]}
+                onChange={(value) => { setActivityPeriod(value as ActivityPeriod); setPage(1); }}
+              />
+            </div>
+          </div>
+
+          {filtersOpen ? (
+            <div aria-label="Mais filtros" className="border-t border-border/60 pt-3">
+              <p className="mb-2 text-xs font-medium text-muted-foreground">Filtros complementares</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   <Filter
                     label="Fonte Zabbix"
                     value={datasource}
@@ -723,13 +744,9 @@ export default function OperadorasPage() {
                   <Filter label="Classificação" value={classification} options={optionList(payload?.facets.classifications)} onChange={setFilter(setClassification)} />
                   <Filter label="Severidade" value={severity} options={[{ value: ALL, label: "Todas" }, { value: "disaster", label: "Disaster" }, { value: "high", label: "High" }, { value: "average", label: "Average" }, { value: "warning", label: "Warning" }]} onChange={setFilter(setSeverity)} />
                   <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
-                  <Filter label="Status do chamado" value={incidentState} options={[{ value: ALL, label: "Todos" }, { value: "1", label: "Novo" }, { value: "2", label: "Em andamento" }, { value: "3", label: "Em espera" }, { value: "6", label: "Resolvido" }, { value: "7", label: "Fechado" }, { value: "8", label: "Cancelado" }]} onChange={(value) => { setIncidentState(value); if (value !== ALL) setIncident("yes"); setPage(1); }} />
-                  <Filter label="Situação operacional" value={operationalSituation} options={[{ value: ALL, label: "Todas" }, { value: "failure_without_incident", label: "Falha sem chamado" }, { value: "failure_with_open_incident", label: "Falha com chamado aberto" }, { value: "failure_with_closed_incident", label: "Falha com chamado encerrado" }, { value: "normalized_with_open_incident", label: "Normalizado com chamado aberto" }, { value: "normalized_without_open_incident", label: "Normalizado sem chamado" }]} onChange={(value) => { setOperationalSituation(value as OperationalSituation); setPage(1); }} />
-                  <Filter label="Última atividade" value={activityPeriod} options={[{ value: ALL, label: "Qualquer período" }, { value: "1h", label: "1h" }, { value: "4h", label: "4h" }, { value: "24h", label: "24h" }, { value: "7d", label: "7d" }]} onChange={(value) => { setActivityPeriod(value as ActivityPeriod); setPage(1); }} />
                   <Filter label="Divergências" value={divergence || ALL} options={[{ value: ALL, label: "Todas" }, { value: "any", label: "Somente divergências" }]} onChange={(value) => { setDivergence(value === ALL ? "" : "any"); setPage(1); }} />
                   <Filter label="Operadora" value={carrier} options={[{ value: ALL, label: "Todas" }, { value: "unknown", label: "Não informada na origem" }]} onChange={setFilter(setCarrier)} />
                   <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
-                </div>
               </div>
             </div>
           ) : null}
@@ -767,7 +784,7 @@ export default function OperadorasPage() {
           ) : (
             <>
               <div className="divide-y divide-border/60 md:hidden">
-                {items.map((item) => <MobileLinkCard key={item.id} item={item} onOpen={openLink} />)}
+                {items.map((item) => <MobileLinkCard key={item.id} item={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openLink} />)}
               </div>
               <div className={cn("hidden md:block", optionalColumnCount > 0 && "overflow-x-auto")}>
                 <Table className={cn("w-full table-fixed", optionalColumnCount > 0 && "min-w-[70rem]")}>
@@ -879,6 +896,8 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
 }) {
   const detailId = `incident-detail-${slotKey}-${incident.sys_id || incident.number || "unknown"}`;
   const canExpand = Boolean(incident.sys_id);
+  const terminal = ["6", "7", "8"].includes(String(incident.state || "").trim());
+  const assigneeLabel = terminal ? "Último responsável" : "Responsável";
   return <div className="rounded-lg border border-border/60 p-3 text-sm">
     <button
       type="button"
@@ -891,6 +910,7 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
       <div className="min-w-0">
         <p className="flex flex-wrap items-center gap-1.5"><b>{incident.number || "INC"}</b><OneViewIncidentStatusBadge state={incident.state} display={incident.state_display} /></p>
         <p className="mt-1 text-xs text-muted-foreground">Aberto {timestampLabel(incident.opened_at)} · Atualizado {timestampLabel(incident.updated_at)}</p>
+        <p className="mt-1 text-xs font-medium text-foreground/80">{assigneeLabel}: {incidentAssignee(incident)}</p>
         {incident.short_description ? <p className="mt-1 text-xs text-muted-foreground">{incident.short_description}</p> : null}
       </div>
       <span className="shrink-0 text-xs font-medium text-primary">{expanded ? "Recolher" : "Ver detalhes"}</span>
@@ -1239,7 +1259,7 @@ function reminderHistoryRange(period: ReminderPeriod, customFrom: string, custom
 }
 
 function reminderHistoryStatus(item: OperatorReminderFeedItem) {
-  if (item.status === "sent") return `✅ Theo acionado às ${timestampLabel(item.sent_at)}`;
+  if (item.status === "sent") return `Theo acionado às ${timestampLabel(item.sent_at)}`;
   if (item.status === "skipped") return item.skip_reason === "alert_resolved" ? "Alerta normalizou antes do horário" : "Lembrete ignorado por alteração no circuito";
   if (item.status === "failed") return "Falha no envio";
   if (item.status === "cancelled") return `Cancelado às ${timestampLabel(item.cancelled_at)}`;
@@ -1506,7 +1526,7 @@ function CircuitReminderPanel({ link, requestOpen }: { link: CanonicalLink; requ
   }, [canSchedule, requestOpen]);
 
   return <section><h3 className="mb-2 text-sm font-semibold">Lembrete</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
-    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><p className="flex items-center gap-2 font-medium"><Bell className="h-4 w-4" />{reminderLabel(reminder.scheduled_for)}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div>{reminderUnavailableReason ? <p className="text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}><Bell className="h-4 w-4" />Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
+    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-medium">{reminderLabel(reminder.scheduled_for)}</p><p className="mt-1 text-xs text-muted-foreground">Agendado por {text(reminder.created_by_name, "Operador não identificado")}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div>{reminderUnavailableReason ? <p className="text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}>Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
     {loading ? <p className="mt-2 text-xs text-muted-foreground">Carregando lembrete…</p> : null}
     {loadFailed ? <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Não foi possível carregar o lembrete.</span><Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void loadReminderState(true)}>Tentar novamente</Button></div> : null}
     {mutationError ? <p role="alert" className="mt-2 text-xs text-destructive">{mutationError}</p> : null}

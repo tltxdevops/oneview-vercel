@@ -115,10 +115,14 @@ test("Operadoras navigation separates monitoring tabs from INC and recurrence fi
   assert.match(page, /ClientFilterCombobox/);
   assert.match(page, /Filtro de chamado/);
   assert.match(page, /Filtro de recorrência/);
-  assert.match(page, /\["open", "Aberto"\]/);
-  assert.match(page, /\["resolved", "Resolvido"\]/);
-  assert.match(page, /\["closed", "Fechado"\]/);
-  assert.match(page, /\["cancelled", "Cancelado"\]/);
+  assert.match(page, /Filtro de período/);
+  assert.match(page, /label="Status INC"/);
+  assert.match(page, /value: "1", label: "Novo"/);
+  assert.match(page, /value: "2", label: "Em andamento"/);
+  assert.match(page, /value: "3", label: "Em espera"/);
+  assert.match(page, /value: "6", label: "Resolvido"/);
+  assert.match(page, /value: "7", label: "Fechado"/);
+  assert.match(page, /value: "8", label: "Cancelado"/);
   assert.match(page, /function divergenceLabel/);
   assert.match(page, /Alerta ativo com chamado \$\{state\}/);
   assert.match(page, /Normalizado com chamado \$\{state\}/);

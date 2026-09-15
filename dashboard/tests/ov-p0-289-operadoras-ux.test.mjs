@@ -21,11 +21,15 @@ test("OV-P0-289 open queue sorts by latest_alert_at descending", () => {
 
 test("OV-P0-289 Operadoras keeps the operational table and browser-only columns", async () => {
   const page = await readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8");
-  for (const label of ["Link / local", "Situação", "Último alerta", "Chamado atual", "Acompanhamento", "Colunas", "Resumo operacional", "Detalhes técnicos", "Em falha", "Normalizados", "Recorrentes", "Recorrência", "Sem chamado", "Com chamado", "Mais filtros", "Ver mais"]) assert.match(page, new RegExp(label));
+  for (const label of ["Link / local", "Situação", "Status INC", "Período", "Último alerta", "Chamado atual", "Acompanhamento", "Colunas", "Resumo operacional", "Detalhes técnicos", "Em falha", "Normalizados", "Recorrentes", "Recorrência", "Sem chamado", "Com chamado", "Mais filtros", "Filtros complementares", "Ver mais", "Lembrete de", "Último responsável"]) assert.match(page, new RegExp(label));
   assert.match(page, /ClientFilterCombobox/);
+  assert.match(page, /clientSelect=/);
+  assert.match(page, /Filtros operacionais principais/);
+  assert.ok(page.indexOf("Filtros operacionais principais") < page.indexOf('aria-label="Mais filtros"'));
   assert.match(page, /table-fixed/);
-  assert.match(page, /\["open", "Aberto"\]/);
-  assert.match(page, /\["resolved", "Resolvido"\]/);
+  assert.match(page, /value: "1", label: "Novo"/);
+  assert.match(page, /value: "6", label: "Resolvido"/);
+  assert.doesNotMatch(page, /🔔|⌛|✅|🔁/);
   assert.doesNotMatch(page, /Filtros rápidos de cliente/);
   assert.doesNotMatch(page, /Resolvidos hoje/);
   assert.doesNotMatch(page, /\["open", "Em aberto"\]/);
