@@ -1,0 +1,275 @@
+:root {
+    /* OneView semantic color tokens. HSL channels keep alpha composition theme-safe. */
+    --ov-color-background: var(--background);
+    --ov-color-surface: var(--card);
+    --ov-color-surface-muted: var(--muted);
+    --ov-color-border: var(--border);
+    --ov-color-text-primary: var(--foreground);
+    --ov-color-text-secondary: 220 9% 28%;
+    --ov-color-text-muted: var(--muted-foreground);
+
+    --ov-color-primary: var(--primary);
+    --ov-color-primary-hover: 0 0% 18%;
+    --ov-color-primary-active: 0 0% 28%;
+    --ov-color-success: var(--success);
+    --ov-color-warning: var(--warning);
+    --ov-color-danger: var(--error);
+    --ov-color-info: 199 89% 48%;
+    --ov-color-neutral: 215 16% 47%;
+    --ov-color-recurrence: 263 70% 50%;
+
+    /* Status tokens: foreground, soft surface and border. */
+    --ov-status-monitoring-down: 0 72% 42%;
+    --ov-status-monitoring-down-surface: 0 86% 97%;
+    --ov-status-monitoring-down-border: 0 94% 82%;
+    --ov-status-monitoring-normalized: 142 72% 29%;
+    --ov-status-monitoring-normalized-surface: 138 76% 97%;
+    --ov-status-monitoring-normalized-border: 141 79% 85%;
+    --ov-status-incident-new: 201 90% 27%;
+    --ov-status-incident-new-surface: 204 100% 97%;
+    --ov-status-incident-new-border: 199 95% 74%;
+    --ov-status-incident-progress: 192 91% 36%;
+    --ov-status-incident-progress-surface: 183 100% 96%;
+    --ov-status-incident-progress-border: 187 92% 69%;
+    --ov-status-incident-waiting: 32 81% 29%;
+    --ov-status-incident-waiting-surface: 48 100% 96%;
+    --ov-status-incident-waiting-border: 48 96% 53%;
+    --ov-status-incident-resolved: 142 72% 29%;
+    --ov-status-incident-resolved-surface: 138 76% 97%;
+    --ov-status-incident-resolved-border: 141 79% 85%;
+    --ov-status-incident-closed: 215 25% 27%;
+    --ov-status-incident-closed-surface: 210 40% 96%;
+    --ov-status-incident-closed-border: 214 32% 80%;
+    --ov-status-incident-cancelled: 240 6% 25%;
+    --ov-status-incident-cancelled-surface: 240 5% 96%;
+    --ov-status-incident-cancelled-border: 240 5% 65%;
+    --ov-status-divergence: 32 81% 29%;
+    --ov-status-divergence-surface: 48 100% 96%;
+    --ov-status-divergence-border: 48 96% 53%;
+    --ov-status-recurrence: 263 69% 42%;
+    --ov-status-recurrence-surface: 250 100% 98%;
+    --ov-status-recurrence-border: 252 95% 85%;
+    --ov-status-classification-pending: 32 81% 29%;
+    --ov-status-classification-pending-surface: 48 100% 96%;
+    --ov-status-classification-pending-border: 48 96% 53%;
+    --ov-severity-information: var(--ov-color-info);
+    --ov-severity-information-surface: 204 100% 97%;
+    --ov-severity-information-border: 199 95% 74%;
+    --ov-severity-warning: var(--ov-color-warning);
+    --ov-severity-warning-surface: 48 100% 96%;
+    --ov-severity-warning-border: 48 96% 53%;
+    --ov-severity-average: 32 81% 29%;
+    --ov-severity-average-surface: 32 100% 96%;
+    --ov-severity-average-border: 32 92% 68%;
+    --ov-severity-high: var(--ov-color-danger);
+    --ov-severity-high-surface: 0 86% 97%;
+    --ov-severity-high-border: 0 94% 82%;
+    --ov-severity-disaster: 0 72% 28%;
+    --ov-severity-disaster-surface: 0 58% 93%;
+    --ov-severity-disaster-border: 0 72% 42%;
+
+    /* OneView Operational UI: three official radius decisions. */
+    --ov-radius-control: 0.5rem;
+    --ov-radius-surface: 0.75rem;
+    --ov-radius-pill: 999px;
+
+    /* Legacy compatibility aliases. Do not use in new code. */
+    --ov-radius-sm: 0.375rem;
+    --ov-radius-md: var(--ov-radius-control);
+    --ov-radius-lg: var(--ov-radius-surface);
+    --ov-radius-xl: 1rem;
+    --ov-radius-full: var(--ov-radius-pill);
+
+    /* Spacing scale named by rendered pixels at the default browser root. */
+    --ov-space-4: 0.25rem;
+    --ov-space-8: 0.5rem;
+    --ov-space-12: 0.75rem;
+    --ov-space-16: 1rem;
+    --ov-space-20: 1.25rem;
+    --ov-space-24: 1.5rem;
+    --ov-space-32: 2rem;
+
+    --ov-control-height-compact: 2rem;
+    --ov-control-height-default: 2.25rem;
+    --ov-table-header-height: 2.5rem;
+    --ov-table-row-height: 3rem;
+
+    /* Legacy compatibility aliases. Do not use in new code. */
+    --ov-control-height-sm: var(--ov-control-height-compact);
+    --ov-control-height-md: 2.5rem;
+    --ov-control-height-lg: 2.75rem;
+    --ov-shadow-surface: 0 1px 2px hsl(0 0% 0% / 0.06);
+    --ov-shadow-overlay: 0 20px 40px hsl(0 0% 0% / 0.18);
+}
+
+.dark {
+    --ov-color-text-secondary: 220 8% 78%;
+    --ov-color-primary-hover: 0 0% 88%;
+    --ov-color-primary-active: 0 0% 78%;
+    --ov-color-info: 199 89% 68%;
+    --ov-color-neutral: 215 16% 68%;
+    --ov-color-recurrence: 263 85% 76%;
+
+    --ov-status-monitoring-down: 0 91% 82%;
+    --ov-status-monitoring-down-surface: 0 63% 16%;
+    --ov-status-monitoring-down-border: 0 91% 71%;
+    --ov-status-monitoring-normalized: 142 69% 58%;
+    --ov-status-monitoring-normalized-surface: 144 61% 12%;
+    --ov-status-monitoring-normalized-border: 142 69% 58%;
+    --ov-status-incident-new: 199 95% 74%;
+    --ov-status-incident-new-surface: 202 80% 16%;
+    --ov-status-incident-new-border: 198 93% 60%;
+    --ov-status-incident-progress: 187 85% 67%;
+    --ov-status-incident-progress-surface: 192 80% 15%;
+    --ov-status-incident-progress-border: 188 86% 53%;
+    --ov-status-incident-waiting: 48 96% 76%;
+    --ov-status-incident-waiting-surface: 32 81% 14%;
+    --ov-status-incident-waiting-border: 48 96% 53%;
+    --ov-status-incident-resolved: 142 69% 58%;
+    --ov-status-incident-resolved-surface: 144 61% 12%;
+    --ov-status-incident-resolved-border: 142 69% 58%;
+    --ov-status-incident-closed: 214 32% 91%;
+    --ov-status-incident-closed-surface: 222 47% 11%;
+    --ov-status-incident-closed-border: 215 16% 47%;
+    --ov-status-incident-cancelled: 240 5% 84%;
+    --ov-status-incident-cancelled-surface: 240 10% 10%;
+    --ov-status-incident-cancelled-border: 240 4% 46%;
+    --ov-status-divergence: 48 96% 76%;
+    --ov-status-divergence-surface: 32 81% 14%;
+    --ov-status-divergence-border: 48 96% 53%;
+    --ov-status-recurrence: 252 95% 85%;
+    --ov-status-recurrence-surface: 263 70% 16%;
+    --ov-status-recurrence-border: 263 70% 50%;
+    --ov-status-classification-pending: 48 96% 76%;
+    --ov-status-classification-pending-surface: 32 81% 14%;
+    --ov-status-classification-pending-border: 48 96% 53%;
+    --ov-severity-information: 199 95% 74%;
+    --ov-severity-information-surface: 202 80% 16%;
+    --ov-severity-information-border: 198 93% 60%;
+    --ov-severity-warning: 48 96% 76%;
+    --ov-severity-warning-surface: 32 81% 14%;
+    --ov-severity-warning-border: 48 96% 53%;
+    --ov-severity-average: 32 92% 76%;
+    --ov-severity-average-surface: 32 81% 14%;
+    --ov-severity-average-border: 32 92% 60%;
+    --ov-severity-high: 0 91% 82%;
+    --ov-severity-high-surface: 0 63% 16%;
+    --ov-severity-high-border: 0 91% 71%;
+    --ov-severity-disaster: 0 91% 90%;
+    --ov-severity-disaster-surface: 0 61% 12%;
+    --ov-severity-disaster-border: 0 91% 71%;
+
+    --ov-shadow-surface: none;
+    --ov-shadow-overlay: 0 20px 40px hsl(0 0% 0% / 0.45);
+}
+
+  .ov-type-page-title { font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; letter-spacing: -0.015em; }
+  .ov-type-section-title { font-size: 1rem; line-height: 1.5rem; font-weight: 600; }
+  .ov-type-body { font-size: 0.875rem; line-height: 1.5rem; font-weight: 400; }
+  .ov-type-secondary { font-size: 0.8125rem; line-height: 1.25rem; font-weight: 400; }
+  .ov-type-caption { font-size: 0.75rem; line-height: 1rem; font-weight: 400; }
+  .ov-type-metric { font-size: 1.5rem; line-height: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  /* Legacy typography aliases. Do not use in new code. */
+  .ov-typography-page-title { font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; letter-spacing: -0.015em; }
+  .ov-typography-section-title { font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; }
+  .ov-typography-card-title { font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; }
+  .ov-typography-body { font-size: 0.875rem; line-height: 1.5rem; font-weight: 400; }
+  .ov-typography-small { font-size: 0.75rem; line-height: 1rem; font-weight: 400; }
+  .ov-typography-caption { font-size: 0.6875rem; line-height: 1rem; font-weight: 500; }
+  .ov-typography-metric { font-size: 1.5rem; line-height: 2rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ov-typography-table-header { font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
+  .ov-typography-table-row { font-size: 0.875rem; line-height: 1.25rem; font-weight: 400; }
+
+  .ov-radius-sm { border-radius: var(--ov-radius-sm); }
+  .ov-radius-md { border-radius: var(--ov-radius-md); }
+  .ov-radius-lg { border-radius: var(--ov-radius-lg); }
+  .ov-radius-xl { border-radius: var(--ov-radius-xl); }
+  .ov-radius-full { border-radius: var(--ov-radius-full); }
+
+  .ov-control-official {
+    min-height: var(--ov-control-height-default);
+    border-radius: var(--ov-radius-control);
+  }
+
+  .ov-control-official-compact { min-height: var(--ov-control-height-compact); }
+
+  .ov-surface-official {
+    border: 1px solid hsl(var(--ov-color-border));
+    border-radius: var(--ov-radius-surface);
+    background: hsl(var(--ov-color-surface));
+    color: hsl(var(--ov-color-text-primary));
+    box-shadow: none;
+  }
+
+  .ov-surface.ov-kpi-official {
+    border-radius: var(--ov-radius-surface);
+    box-shadow: none;
+  }
+
+  .ov-pill-official { border-radius: var(--ov-radius-pill); }
+
+  .ov-operational-table thead tr { height: var(--ov-table-header-height); }
+  .ov-operational-table tbody tr { height: var(--ov-table-row-height); border-bottom: 1px solid hsl(var(--ov-color-border)); }
+  .ov-operational-table th, .ov-operational-table td { padding-inline: var(--ov-space-16); vertical-align: middle; }
+  .ov-operational-table tbody tr:hover { background: hsl(var(--ov-color-surface-muted) / 0.45); }
+
+  .ov-surface {
+    border: 1px solid hsl(var(--ov-color-border));
+    border-radius: var(--ov-radius-lg);
+    background: hsl(var(--ov-color-surface));
+    color: hsl(var(--ov-color-text-primary));
+    box-shadow: var(--ov-shadow-surface);
+  }
+
+  .ov-status-badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    border: 1px solid hsl(var(--ov-status-border));
+    border-radius: var(--ov-radius-full);
+    background: hsl(var(--ov-status-surface));
+    color: hsl(var(--ov-status-foreground));
+    padding: 0.125rem 0.5rem;
+    font-size: 0.6875rem;
+    line-height: 1rem;
+    font-weight: 600;
+  }
+
+  .ov-status-monitoring-down { --ov-status-foreground: var(--ov-status-monitoring-down); --ov-status-surface: var(--ov-status-monitoring-down-surface); --ov-status-border: var(--ov-status-monitoring-down-border); }
+  .ov-status-monitoring-normalized { --ov-status-foreground: var(--ov-status-monitoring-normalized); --ov-status-surface: var(--ov-status-monitoring-normalized-surface); --ov-status-border: var(--ov-status-monitoring-normalized-border); }
+  .ov-status-incident-new { --ov-status-foreground: var(--ov-status-incident-new); --ov-status-surface: var(--ov-status-incident-new-surface); --ov-status-border: var(--ov-status-incident-new-border); }
+  .ov-status-incident-progress { --ov-status-foreground: var(--ov-status-incident-progress); --ov-status-surface: var(--ov-status-incident-progress-surface); --ov-status-border: var(--ov-status-incident-progress-border); }
+  .ov-status-incident-waiting { --ov-status-foreground: var(--ov-status-incident-waiting); --ov-status-surface: var(--ov-status-incident-waiting-surface); --ov-status-border: var(--ov-status-incident-waiting-border); }
+  .ov-status-incident-resolved { --ov-status-foreground: var(--ov-status-incident-resolved); --ov-status-surface: var(--ov-status-incident-resolved-surface); --ov-status-border: var(--ov-status-incident-resolved-border); }
+  .ov-status-incident-closed { --ov-status-foreground: var(--ov-status-incident-closed); --ov-status-surface: var(--ov-status-incident-closed-surface); --ov-status-border: var(--ov-status-incident-closed-border); }
+  .ov-status-incident-cancelled { --ov-status-foreground: var(--ov-status-incident-cancelled); --ov-status-surface: var(--ov-status-incident-cancelled-surface); --ov-status-border: var(--ov-status-incident-cancelled-border); }
+  .ov-status-divergence { --ov-status-foreground: var(--ov-status-divergence); --ov-status-surface: var(--ov-status-divergence-surface); --ov-status-border: var(--ov-status-divergence-border); }
+  .ov-status-recurrence { --ov-status-foreground: var(--ov-status-recurrence); --ov-status-surface: var(--ov-status-recurrence-surface); --ov-status-border: var(--ov-status-recurrence-border); }
+  .ov-status-classification-pending { --ov-status-foreground: var(--ov-status-classification-pending); --ov-status-surface: var(--ov-status-classification-pending-surface); --ov-status-border: var(--ov-status-classification-pending-border); }
+
+  .ov-severity-badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    border: 1px solid hsl(var(--ov-severity-border));
+    border-radius: var(--ov-radius-full);
+    background: hsl(var(--ov-severity-surface));
+    color: hsl(var(--ov-severity-foreground));
+    padding: 0.125rem 0.5rem;
+    font-size: 0.6875rem;
+    line-height: 1rem;
+    font-weight: 600;
+  }
+  .ov-severity-information { --ov-severity-foreground: var(--ov-severity-information); --ov-severity-surface: var(--ov-severity-information-surface); --ov-severity-border: var(--ov-severity-information-border); }
+  .ov-severity-warning { --ov-severity-foreground: var(--ov-severity-warning); --ov-severity-surface: var(--ov-severity-warning-surface); --ov-severity-border: var(--ov-severity-warning-border); }
+  .ov-severity-average { --ov-severity-foreground: var(--ov-severity-average); --ov-severity-surface: var(--ov-severity-average-surface); --ov-severity-border: var(--ov-severity-average-border); }
+  .ov-severity-high { --ov-severity-foreground: var(--ov-severity-high); --ov-severity-surface: var(--ov-severity-high-surface); --ov-severity-border: var(--ov-severity-high-border); }
+  .ov-severity-disaster { --ov-severity-foreground: var(--ov-severity-disaster); --ov-severity-surface: var(--ov-severity-disaster-surface); --ov-severity-border: var(--ov-severity-disaster-border); }
+
+  .ov-health-indicator { display: inline-flex; align-items: center; gap: var(--ov-space-8); color: hsl(var(--ov-color-text-secondary)); }
+  .ov-health-indicator::before { width: 0.5rem; height: 0.5rem; flex: none; border-radius: var(--ov-radius-full); background: hsl(var(--ov-health-color)); content: ""; }
+  .ov-health-healthy { --ov-health-color: var(--ov-color-success); }
+  .ov-health-degraded { --ov-health-color: var(--ov-color-warning); }
+  .ov-health-down { --ov-health-color: var(--ov-color-danger); }
+  .ov-health-unknown { --ov-health-color: var(--ov-color-neutral); }

@@ -1,4 +1,5 @@
 import "./index.css";
+import "./styles/oneview-design-tokens.css";
 
 declare global {
   interface Window {

@@ -13,6 +13,7 @@ import { getBrowserRouterBase } from "@/lib/basePath";
 
 const queryClient = new QueryClient();
 const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const HistoricoPage = lazy(() => import("@/pages/Historico")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras"));
+const UiKitPage = lazy(() => import("@/pages/UiKit"));
 const route = (node: ReactNode) => <Suspense fallback={null}>{node}</Suspense>;
 
 /**
@@ -43,6 +44,7 @@ const App = () => (
             {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={null}><CertificadosPage /></Suspense>} />}
             <Route path="/chamados" element={route(<ChamadosPage />)} />
             <Route path="/operadoras" element={route(<OperadorasPage />)} />
+            <Route path="/ui-kit" element={route(<UiKitPage />)} />
             {WorkspacesPage && <Route path="/workspaces" element={<Suspense fallback={null}><WorkspacesPage /></Suspense>} />}
             <Route path="/config" element={<SettingsPage />} />
           </Route>
