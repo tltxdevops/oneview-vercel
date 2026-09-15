@@ -2,6 +2,7 @@ import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useR
 import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
@@ -20,7 +21,7 @@ import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetai
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
-import { OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
+import { OV_FILTER_CHIP, OV_FILTER_CONTROL, OV_TABLE_HEAD } from "@/lib/oneview-operational-ui";
 
 const ALL = "all";
 const REFRESH_MS = 10_000;
@@ -161,8 +162,8 @@ function DivergenceHint({ link }: { link: CanonicalLink }) {
 function MonitoringStatus({ link }: { link: CanonicalLink }) {
   const failing = Boolean(link.active_alerts);
   return (
-    <div className="space-y-1">
-      <p className={cn("text-sm font-medium", failing ? OPERATOR_STATUS_TONE.monitoringDown : OPERATOR_STATUS_TONE.monitoringNormalized)}>
+    <div className="min-w-0 space-y-1">
+      <p className={cn("truncate text-sm font-medium", failing ? OPERATOR_STATUS_TONE.monitoringDown : OPERATOR_STATUS_TONE.monitoringNormalized)}>
         {failing ? `Em falha há ${failureDuration(link)}` : "Normalizado"}
       </p>
       <div className="flex flex-wrap items-center gap-1">
@@ -269,6 +270,38 @@ function Filter({
   );
 }
 
+function ChipGroup({
+  label,
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: string;
+  options: Array<[string, string]>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div aria-label={ariaLabel} className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <span className="mr-1 text-xs font-medium text-muted-foreground">{label}</span>
+      {options.map(([option, optionLabel]) => (
+        <Button
+          key={option}
+          type="button"
+          size="sm"
+          variant={value === option ? "default" : "outline"}
+          className={OV_FILTER_CHIP}
+          onClick={() => onChange(option)}
+        >
+          {optionLabel}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 function KpiCard({ label, value, tone = "default", onClick }: { label: string; value?: number; tone?: "default" | "danger"; onClick?: () => void }) {
   return (
     <button type="button" onClick={onClick} className="rounded-lg border border-border/70 bg-card px-3 py-3 text-left shadow-sm transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -329,6 +362,8 @@ export default function OperadorasPage() {
   const [operationalSituation, setOperationalSituation] = useState<OperationalSituation>("all");
   const [activityPeriod, setActivityPeriod] = useState<ActivityPeriod>("all");
   const [search, setSearch] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<CanonicalLink | null>(null);
   const [reminderRequest, setReminderRequest] = useState<string | null>(null);
@@ -511,13 +546,22 @@ export default function OperadorasPage() {
   };
   const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
     .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
-  const customerFacets = payload?.facets.customers || [];
-  const quickCustomers = ["Havan", "Protege", "Sanepar", "Tuper", "Teletex"].flatMap((name) => customerFacets.filter((item) => item.label.localeCompare(name, "pt-BR", { sensitivity: "base" }) === 0));
-  const moreCustomers = customerFacets.filter((item) => !quickCustomers.some((quick) => quick.value === item.value));
+  const panelFilterCount = [datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
+    .filter((value) => value !== ALL).length + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
+  const optionalColumnCount = OPTIONAL_COLUMNS.filter(([column]) => columns[column]).length;
+  const chamadoChip = incident === ALL && incidentState === ALL ? ALL : incident;
+  const customerOptions = useMemo(() => [
+    { key: ALL, name: "Todos" },
+    ...(payload?.facets.customers || []).map((item) => ({ key: item.value, name: item.label })),
+  ], [payload?.facets.customers]);
+  const selectedCustomerKeys = customer === ALL ? [] : [customer];
+  const selectedCustomerLabel = customer === ALL
+    ? "TODOS"
+    : (customerOptions.find((item) => item.key === customer)?.name || customer).toUpperCase();
   const kpis = useMemo(() => [
     { label: "Em falha", value: totals?.operational.open, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "all" as OperationalSituation },
     { label: "Sem chamado", value: totals?.operational.without_incident, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_without_incident" as OperationalSituation },
-    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_with_open_incident" as OperationalSituation },
+    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_with_open_incident" as OperationalSituation },
     { label: "Recorrentes", value: totals?.operational.recurrent, tab: "all" as QueueTab, incident: ALL, recurrence: "recurrent" as const, divergence: "" as const, situation: "all" as OperationalSituation },
     { label: "Divergências", value: totals?.operational.divergences, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "any" as const, situation: "all" as OperationalSituation },
   ], [totals]);
@@ -540,6 +584,10 @@ export default function OperadorasPage() {
     setSearch("");
     setPage(1);
   };
+
+  useEffect(() => {
+    if (panelFilterCount > 0) setFiltersOpen(true);
+  }, [panelFilterCount]);
 
   return (
     <AppLayout
@@ -593,93 +641,98 @@ export default function OperadorasPage() {
           </div>
         ) : null}
 
-        <div aria-label="Filtro de chamado" className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-xs text-muted-foreground">Chamado:</span>
-          {([[ALL, "Todos"], ["no", "Sem chamado"], ["yes", "Com chamado"]] as Array<[string, string]>).map(([value, label]) => (
-            <Button
-              key={value}
-              type="button"
-              size="sm"
-              variant={(value === ALL && incident === ALL) || incident === value || (value === "yes" && ["yes", "open", "resolved", "closed", "cancelled"].includes(incident)) ? "default" : "outline"}
-              onClick={() => { setIncident(value); setIncidentState(ALL); setPage(1); }}
-            >{label}</Button>
-          ))}
-        </div>
-
-        <div aria-label="Filtro de recorrência" className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-xs text-muted-foreground">Recorrência:</span>
-          <Button type="button" size="sm" variant={recurrence === "all" ? "default" : "outline"} onClick={() => { setRecurrence("all"); setPage(1); }}>Todos</Button>
-          <Button type="button" size="sm" variant={recurrence === "recurrent" ? "default" : "outline"} onClick={() => { setRecurrence("recurrent"); setPage(1); }}>Recorrentes</Button>
-        </div>
-
-        <div aria-label="Filtros rápidos de cliente" className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-xs text-muted-foreground">Cliente:</span>
-          <Button type="button" size="sm" variant={customer === ALL ? "default" : "outline"} onClick={() => setFilter(setCustomer)(ALL)}>Todos</Button>
-          {quickCustomers.map((item) => <Button key={item.value} type="button" size="sm" variant={customer === item.value ? "default" : "outline"} onClick={() => setFilter(setCustomer)(item.value)}>{item.label}</Button>)}
-          {moreCustomers.length ? <details className="relative"><summary className="cursor-pointer list-none rounded-md border border-input px-3 py-1.5 text-sm hover:bg-accent">Mais</summary><div className="absolute right-0 z-20 mt-1 flex w-56 flex-col gap-1 rounded-md border bg-popover p-2 shadow-md">{moreCustomers.map((item) => <Button key={item.value} type="button" size="sm" variant={customer === item.value ? "default" : "ghost"} className="justify-start" onClick={() => setFilter(setCustomer)(item.value)}>{item.label}</Button>)}</div></details> : null}
-        </div>
-
-        <section aria-label="Filtros de links" className="rounded-lg border border-border/70 bg-card p-3 shadow-sm">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(16rem,1.35fr)_auto] xl:items-end">
-            <Filter label="Cliente" value={customer} options={optionList(payload?.facets.customers)} onChange={setFilter(setCustomer)} />
-            <Filter
-              label="Fonte Zabbix"
-              value={datasource}
-              options={optionList(payload?.facets.datasources).map((item) => ({
-                ...item,
-                label: item.value === ALL ? item.label : zabbixSourceDisplayName(item.label),
-              }))}
-              onChange={setFilter(setDatasource)}
+        <section aria-label="Filtros de links" className="space-y-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <ClientFilterCombobox
+              open={customerFilterOpen}
+              onOpenChange={setCustomerFilterOpen}
+              options={customerOptions}
+              selectedKeys={selectedCustomerKeys}
+              selectedLabel={selectedCustomerLabel}
+              onToggle={(key) => {
+                setCustomer(key === ALL || key === customer ? ALL : key);
+                setCustomerFilterOpen(false);
+                setPage(1);
+              }}
+              countNoun="neste filtro"
             />
-            <Filter
-              label="Estado"
-              value={state}
-              options={[
-                { value: ALL, label: "Todos" },
-                { value: "critical", label: "Crítico" },
-                { value: "alert", label: "Alerta" },
-                { value: "attention", label: "Atenção" },
-                { value: "normal", label: "Normal" },
-              ]}
-              onChange={setFilter(setState)}
-            />
-            <div className="min-w-0 space-y-1.5">
-              <label htmlFor="links-search" className="text-xs font-medium text-muted-foreground">Busca</label>
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  id="links-search"
-                  className="h-8 pl-8"
-                  value={search}
-                  onChange={(event) => { setSearch(event.target.value); setPage(1); }}
-                  placeholder="Link, cliente ou Host ID"
-                />
-              </div>
+            <div className="relative min-w-[12rem] flex-1">
+              <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
+              <Input
+                id="links-search"
+                className={cn(OV_FILTER_CONTROL, "h-8 w-full pl-8")}
+                value={search}
+                onChange={(event) => { setSearch(event.target.value); setPage(1); }}
+                placeholder="Buscar link ou host"
+                aria-label="Busca"
+              />
             </div>
-            <Button type="button" variant="outline" size="sm" className="h-8" onClick={clearFilters} disabled={!activeFilterCount}>
-              <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-              Limpar
+            <Button type="button" variant={filtersOpen ? "default" : "outline"} size="sm" className="h-8" onClick={() => setFiltersOpen((open) => !open)}>
+              <ChevronDown className={cn("mr-1.5 h-3.5 w-3.5 transition-transform", filtersOpen && "rotate-180")} />
+              Filtros
+              {panelFilterCount > 0 ? <Badge variant="secondary" className="ml-1.5 h-5 px-1.5 text-[10px]">{panelFilterCount}</Badge> : null}
             </Button>
+            {activeFilterCount > 0 ? (
+              <Button type="button" variant="outline" size="sm" className="h-8" onClick={clearFilters}>
+                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                Limpar
+              </Button>
+            ) : null}
           </div>
 
-          <details className="group mt-3 border-t border-border/60 pt-2">
-            <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground">
-              <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
-              Mais filtros
-              {activeFilterCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge> : null}
-            </summary>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              <Filter label="Classificação" value={classification} options={optionList(payload?.facets.classifications)} onChange={setFilter(setClassification)} />
-              <Filter label="Severidade" value={severity} options={[{ value: ALL, label: "Todas" }, { value: "disaster", label: "Disaster" }, { value: "high", label: "High" }, { value: "average", label: "Average" }, { value: "warning", label: "Warning" }]} onChange={setFilter(setSeverity)} />
-              <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
-              <Filter label="Status do chamado" value={incidentState} options={[{ value: ALL, label: "Todos" }, { value: "1", label: "Novo" }, { value: "2", label: "Em andamento" }, { value: "3", label: "Em espera" }, { value: "6", label: "Resolvido" }, { value: "7", label: "Fechado" }, { value: "8", label: "Cancelado" }]} onChange={(value) => { setIncidentState(value); setIncident(value === ALL ? ALL : "yes"); setPage(1); }} />
-              <Filter label="Situação operacional" value={operationalSituation} options={[{ value: ALL, label: "Todas" }, { value: "failure_without_incident", label: "Falha sem chamado" }, { value: "failure_with_open_incident", label: "Falha com chamado aberto" }, { value: "failure_with_closed_incident", label: "Falha com chamado encerrado" }, { value: "normalized_with_open_incident", label: "Normalizado com chamado aberto" }, { value: "normalized_without_open_incident", label: "Normalizado sem chamado" }]} onChange={(value) => { const next = value as OperationalSituation; setOperationalSituation(next); setTab(next.startsWith("failure_") ? "open" : next.startsWith("normalized_") ? "normalized" : "all"); setPage(1); }} />
-              <Filter label="Última atividade" value={activityPeriod} options={[{ value: ALL, label: "Qualquer período" }, { value: "1h", label: "1h" }, { value: "4h", label: "4h" }, { value: "24h", label: "24h" }, { value: "7d", label: "7d" }]} onChange={(value) => { setActivityPeriod(value as ActivityPeriod); setPage(1); }} />
-              <Filter label="Divergências" value={divergence || ALL} options={[{ value: ALL, label: "Todas" }, { value: "any", label: "Somente divergências" }]} onChange={(value) => { setDivergence(value === ALL ? "" : "any"); setPage(1); }} />
-              <Filter label="Operadora" value={carrier} options={[{ value: ALL, label: "Todas" }, { value: "unknown", label: "Não informada na origem" }]} onChange={setFilter(setCarrier)} />
-              <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
+          {filtersOpen ? (
+            <div className="space-y-3 rounded-md border border-border/60 bg-card/50 p-3">
+              <ChipGroup
+                label="Chamado"
+                ariaLabel="Filtro de chamado"
+                value={chamadoChip}
+                options={[[ALL, "Todos"], ["no", "Sem chamado"], ["yes", "Com chamado"], ["open", "Aberto"], ["resolved", "Resolvido"], ["closed", "Fechado"], ["cancelled", "Cancelado"]]}
+                onChange={(value) => { setIncident(value); setIncidentState(ALL); setPage(1); }}
+              />
+              <ChipGroup
+                label="Recorrência"
+                ariaLabel="Filtro de recorrência"
+                value={recurrence}
+                options={[["all", "Todos"], ["recurrent", "Recorrentes"]]}
+                onChange={(value) => { setRecurrence(value === "recurrent" ? "recurrent" : "all"); setPage(1); }}
+              />
+              <div>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Mais filtros</p>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  <Filter
+                    label="Fonte Zabbix"
+                    value={datasource}
+                    options={optionList(payload?.facets.datasources).map((item) => ({
+                      ...item,
+                      label: item.value === ALL ? item.label : zabbixSourceDisplayName(item.label),
+                    }))}
+                    onChange={setFilter(setDatasource)}
+                  />
+                  <Filter
+                    label="Estado"
+                    value={state}
+                    options={[
+                      { value: ALL, label: "Todos" },
+                      { value: "critical", label: "Crítico" },
+                      { value: "alert", label: "Alerta" },
+                      { value: "attention", label: "Atenção" },
+                      { value: "normal", label: "Normal" },
+                    ]}
+                    onChange={setFilter(setState)}
+                  />
+                  <Filter label="Classificação" value={classification} options={optionList(payload?.facets.classifications)} onChange={setFilter(setClassification)} />
+                  <Filter label="Severidade" value={severity} options={[{ value: ALL, label: "Todas" }, { value: "disaster", label: "Disaster" }, { value: "high", label: "High" }, { value: "average", label: "Average" }, { value: "warning", label: "Warning" }]} onChange={setFilter(setSeverity)} />
+                  <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
+                  <Filter label="Status do chamado" value={incidentState} options={[{ value: ALL, label: "Todos" }, { value: "1", label: "Novo" }, { value: "2", label: "Em andamento" }, { value: "3", label: "Em espera" }, { value: "6", label: "Resolvido" }, { value: "7", label: "Fechado" }, { value: "8", label: "Cancelado" }]} onChange={(value) => { setIncidentState(value); if (value !== ALL) setIncident("yes"); setPage(1); }} />
+                  <Filter label="Situação operacional" value={operationalSituation} options={[{ value: ALL, label: "Todas" }, { value: "failure_without_incident", label: "Falha sem chamado" }, { value: "failure_with_open_incident", label: "Falha com chamado aberto" }, { value: "failure_with_closed_incident", label: "Falha com chamado encerrado" }, { value: "normalized_with_open_incident", label: "Normalizado com chamado aberto" }, { value: "normalized_without_open_incident", label: "Normalizado sem chamado" }]} onChange={(value) => { setOperationalSituation(value as OperationalSituation); setPage(1); }} />
+                  <Filter label="Última atividade" value={activityPeriod} options={[{ value: ALL, label: "Qualquer período" }, { value: "1h", label: "1h" }, { value: "4h", label: "4h" }, { value: "24h", label: "24h" }, { value: "7d", label: "7d" }]} onChange={(value) => { setActivityPeriod(value as ActivityPeriod); setPage(1); }} />
+                  <Filter label="Divergências" value={divergence || ALL} options={[{ value: ALL, label: "Todas" }, { value: "any", label: "Somente divergências" }]} onChange={(value) => { setDivergence(value === ALL ? "" : "any"); setPage(1); }} />
+                  <Filter label="Operadora" value={carrier} options={[{ value: ALL, label: "Todas" }, { value: "unknown", label: "Não informada na origem" }]} onChange={setFilter(setCarrier)} />
+                  <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
+                </div>
+              </div>
             </div>
-          </details>
+          ) : null}
         </section>
 
         {initialError && !payload ? <OperationalErrorBanner message={initialError} onRetry={() => void load("manual")} /> : null}
@@ -716,41 +769,53 @@ export default function OperadorasPage() {
               <div className="divide-y divide-border/60 md:hidden">
                 {items.map((item) => <MobileLinkCard key={item.id} item={item} onOpen={openLink} />)}
               </div>
-              <div className="hidden overflow-x-auto md:block">
-                <Table className="min-w-[70rem]">
+              <div className={cn("hidden md:block", optionalColumnCount > 0 && "overflow-x-auto")}>
+                <Table className={cn("w-full table-fixed", optionalColumnCount > 0 && "min-w-[70rem]")}>
+                  <colgroup>
+                    <col className="w-[32%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[14%]" />
+                    {columns.link_type ? <col className="w-36" /> : null}
+                    {columns.carrier ? <col className="w-36" /> : null}
+                    {columns.datasource ? <col className="w-36" /> : null}
+                    {columns.severity ? <col className="w-32" /> : null}
+                    {columns.classification ? <col className="w-40" /> : null}
+                  </colgroup>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Link / local</TableHead>
-                      <TableHead>Situação</TableHead>
-                      <TableHead>Último alerta</TableHead>
-                      <TableHead>Chamado atual</TableHead>
-                      <TableHead>Lembrete</TableHead>
-                      {columns.link_type ? <TableHead>Tipo do link</TableHead> : null}
-                      {columns.carrier ? <TableHead>Operadora</TableHead> : null}
-                      {columns.datasource ? <TableHead>Fonte Zabbix</TableHead> : null}
-                      {columns.severity ? <TableHead>Severidade</TableHead> : null}
-                      {columns.classification ? <TableHead>Classificação</TableHead> : null}
+                      <TableHead className={OV_TABLE_HEAD}>Link / local</TableHead>
+                      <TableHead className={OV_TABLE_HEAD}>Situação</TableHead>
+                      <TableHead className={OV_TABLE_HEAD}>Último alerta</TableHead>
+                      <TableHead className={OV_TABLE_HEAD}>Chamado atual</TableHead>
+                      <TableHead className={OV_TABLE_HEAD}>Lembrete</TableHead>
+                      {columns.link_type ? <TableHead className={OV_TABLE_HEAD}>Tipo do link</TableHead> : null}
+                      {columns.carrier ? <TableHead className={OV_TABLE_HEAD}>Operadora</TableHead> : null}
+                      {columns.datasource ? <TableHead className={OV_TABLE_HEAD}>Fonte Zabbix</TableHead> : null}
+                      {columns.severity ? <TableHead className={OV_TABLE_HEAD}>Severidade</TableHead> : null}
+                      {columns.classification ? <TableHead className={OV_TABLE_HEAD}>Classificação</TableHead> : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {items.map((item) => (
                       <TableRow key={item.id} className="cursor-pointer" onClick={() => openLink(item)}>
-                        <TableCell className="max-w-[21rem]">
+                        <TableCell className="min-w-0">
                           <p className="truncate text-sm font-medium">{text(item.customer_name)} · {localLabel(item)}</p>
                           <p className="mt-1 truncate text-xs text-muted-foreground">{linkLabel(item)}</p>
                         </TableCell>
-                        <TableCell className="min-w-[14rem]"><MonitoringStatus link={item} /></TableCell>
-                        <TableCell>
-                          <p className="text-sm font-medium">{latestAlertLabel(item.latest_alert_at)}</p>
-                          <p className="mt-1 max-w-[16rem] truncate text-xs text-muted-foreground">{text(item.latest_alert?.problem_name || item.latest_alert?.trigger_description, "Sem alerta registrado")}</p>
+                        <TableCell className="min-w-0"><MonitoringStatus link={item} /></TableCell>
+                        <TableCell className="min-w-0">
+                          <p className="truncate text-sm font-medium">{latestAlertLabel(item.latest_alert_at)}</p>
+                          <p className="mt-1 truncate text-xs text-muted-foreground">{text(item.latest_alert?.problem_name || item.latest_alert?.trigger_description, "Sem alerta registrado")}</p>
                         </TableCell>
-                        <TableCell className="min-w-[12rem]"><CurrentIncident link={item} /></TableCell>
-                        <TableCell><div className="space-y-1"><ReminderQuickAction link={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openReminder} /><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>
-                        {columns.link_type ? <TableCell className="max-w-[11rem] text-xs">{linkTypeLabel(item)}</TableCell> : null}
-                        {columns.carrier ? <TableCell className="max-w-[11rem] truncate text-xs">{text(item.carrier_name)}</TableCell> : null}
-                        {columns.datasource ? <TableCell className="text-xs">{zabbixSourceDisplayName(item.datasource)}</TableCell> : null}
-                        {columns.severity ? <TableCell>{item.max_severity ? <SeverityBadge severity={item.max_severity} /> : "—"}</TableCell> : null}
-                        {columns.classification ? <TableCell><ResolutionBadge link={item} /></TableCell> : null}
+                        <TableCell className="min-w-0"><CurrentIncident link={item} /></TableCell>
+                        <TableCell className="min-w-0"><div className="space-y-1"><ReminderQuickAction link={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openReminder} /><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>
+                        {columns.link_type ? <TableCell className="min-w-0 truncate text-xs">{linkTypeLabel(item)}</TableCell> : null}
+                        {columns.carrier ? <TableCell className="min-w-0 truncate text-xs">{text(item.carrier_name)}</TableCell> : null}
+                        {columns.datasource ? <TableCell className="min-w-0 truncate text-xs">{zabbixSourceDisplayName(item.datasource)}</TableCell> : null}
+                        {columns.severity ? <TableCell className="min-w-0">{item.max_severity ? <SeverityBadge severity={item.max_severity} /> : "—"}</TableCell> : null}
+                        {columns.classification ? <TableCell className="min-w-0"><ResolutionBadge link={item} /></TableCell> : null}
                       </TableRow>
                     ))}
                   </TableBody>

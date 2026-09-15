@@ -112,12 +112,13 @@ test("Operadoras navigation separates monitoring tabs from INC and recurrence fi
   const links = await readFile(new URL("../api/_lib/oneview-links.js", import.meta.url), "utf8");
   assert.match(page, /\["open", "Em falha"\]/);
   assert.match(page, /\["normalized", "Normalizados"\]/);
+  assert.match(page, /ClientFilterCombobox/);
   assert.match(page, /Filtro de chamado/);
   assert.match(page, /Filtro de recorrência/);
-  assert.match(page, /\{ value: "1", label: "Novo" \}/);
-  assert.match(page, /\{ value: "3", label: "Em espera" \}/);
-  assert.match(page, /\{ value: "6", label: "Resolvido" \}/);
-  assert.match(page, /\{ value: "8", label: "Cancelado" \}/);
+  assert.match(page, /\["open", "Aberto"\]/);
+  assert.match(page, /\["resolved", "Resolvido"\]/);
+  assert.match(page, /\["closed", "Fechado"\]/);
+  assert.match(page, /\["cancelled", "Cancelado"\]/);
   assert.match(page, /function divergenceLabel/);
   assert.match(page, /Alerta ativo com chamado \$\{state\}/);
   assert.match(page, /Normalizado com chamado \$\{state\}/);

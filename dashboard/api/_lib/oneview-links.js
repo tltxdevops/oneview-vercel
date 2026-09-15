@@ -5,7 +5,7 @@ import { getOneViewDbPool } from "./oneview-db.js";
 import { extractServiceNowRefsFromAlertTags } from "./oneview-inc-correlation.js";
 import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
 import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
-import { attachOperationalRecurrence } from "./oneview-operational-recurrence.js";
+import { attachOperationalRecurrence, OPERATIONAL_RECENT_DETAIL_LIMIT, OPERATIONAL_RECENT_PREVIEW_LIMIT } from "./oneview-operational-recurrence.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
@@ -684,7 +684,7 @@ async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId
   const compositionStartedAt = Date.now();
   const incidentMatches = correlateLinkIncidents(alerts, incidents);
   const rows = composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits, incidentMatches });
-  attachOperationalRecurrence(rows, alerts, new Date(), { recentLimit: scoped ? 5 : 0, incidentMatches });
+  attachOperationalRecurrence(rows, alerts, new Date(), { recentLimit: scoped ? OPERATIONAL_RECENT_PREVIEW_LIMIT : 0, incidentMatches });
   timings.composition_ms = elapsedMs(compositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
   timings.total_ms = elapsedMs(startedAt);
@@ -743,7 +743,7 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
   const detailCompositionStartedAt = Date.now();
   const incidentMatches = correlateLinkIncidents(model.alerts, incidents);
   const rows = composeCircuitLevelLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, circuits: model.circuits, incidentMatches });
-  attachOperationalRecurrence(rows, model.alerts, new Date(), { recentLimit: 5, incidentMatches });
+  attachOperationalRecurrence(rows, model.alerts, new Date(), { recentLimit: OPERATIONAL_RECENT_DETAIL_LIMIT, incidentMatches });
   model.timings.composition_ms = elapsedMs(detailCompositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
   model.integration_status = { servicenow: servicenowStatus };
@@ -793,7 +793,7 @@ export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, d
     ...incidentSummary(incidents),
   };
   const incidentMatches = correlateLinkIncidents(relatedAlerts, incidents);
-  attachOperationalRecurrence([row], relatedAlerts, new Date(), { recentLimit: 5, incidentMatches });
+  attachOperationalRecurrence([row], relatedAlerts, new Date(), { recentLimit: OPERATIONAL_RECENT_DETAIL_LIMIT, incidentMatches });
   if (servicenowStatus === "degraded") markIncidentDegraded([row]);
   const incidentHistory = [...incidents]
     .sort((a, b) => incidentSortValue(b) - incidentSortValue(a) || String(a.sys_id || a.number).localeCompare(String(b.sys_id || b.number)))

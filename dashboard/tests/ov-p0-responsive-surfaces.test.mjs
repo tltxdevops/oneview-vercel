@@ -37,12 +37,13 @@ test("Monitoring, History and platform health have narrow viewport escape paths"
 
 test("Links uses progressive filters, mobile cards and a compact desktop table", async () => {
   const links = await read("src/pages/Operadoras.tsx");
+  assert.match(links, /ClientFilterCombobox/);
   assert.match(links, /Mais filtros/);
   assert.match(links, /md:hidden/);
-  assert.match(links, /hidden overflow-x-auto md:block/);
-  assert.match(links, /md:grid-cols-3 xl:grid-cols-6/);
-  assert.match(links, /Circuitos e links monitorados/);
+  assert.match(links, /table-fixed/);
+  assert.match(links, /md:grid-cols-3 xl:grid-cols-5/);
+  assert.match(links, /Fila operacional de links/);
   assert.match(links, /fetchCanonicalLinks/);
   assert.match(links, /mode === "quiet"/);
-  assert.match(links, /if \(document\.hidden\) return/);
+  assert.match(links, /document\.hidden/);
 });
