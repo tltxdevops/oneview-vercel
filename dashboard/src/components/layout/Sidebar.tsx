@@ -6,20 +6,17 @@ import { useAuth } from "@/hooks/useAuth";
 import { getStoredTheme, setStoredTheme, type Theme } from "@/lib/settings";
 import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
 import { ONEVIEW_ICON_MAP, type OneViewIconName } from "@/lib/oneview-icons";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-
 const MONITOR_SIDEBAR_STORAGE_KEY = "oneview-monitor-sidebar-open";
 
 const SIDEBAR_ICON_SLOT = "flex h-10 w-14 shrink-0 items-center justify-center";
 const SIDEBAR_LABEL = "pointer-events-none flex min-w-0 flex-1 items-center pr-3 opacity-0 transition-[opacity,transform] duration-150 -translate-x-1 group-hover/sidebar:pointer-events-auto group-hover/sidebar:translate-x-0 group-hover/sidebar:opacity-100 group-focus-within/sidebar:pointer-events-auto group-focus-within/sidebar:translate-x-0 group-focus-within/sidebar:opacity-100";
 const SIDEBAR_LABEL_TEXT = "truncate text-sm leading-none";
+const SIDEBAR_FOCUS_RING =
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-border focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar";
+const SIDEBAR_ACTIVE_BAR =
+  "before:absolute before:inset-y-2 before:left-0 before:w-[3px] before:rounded-r-full before:bg-sidebar-foreground/80 before:opacity-0 before:transition-opacity";
+const SIDEBAR_PROFILE_LABEL =
+  "pointer-events-none flex min-w-0 max-h-0 flex-1 flex-col items-start gap-1 overflow-hidden pr-3 opacity-0 transition-[opacity,transform,max-height] duration-150 -translate-x-1 group-hover/sidebar:pointer-events-auto group-hover/sidebar:max-h-14 group-hover/sidebar:translate-x-0 group-hover/sidebar:opacity-100 group-focus-within/sidebar:pointer-events-auto group-focus-within/sidebar:max-h-14 group-focus-within/sidebar:translate-x-0 group-focus-within/sidebar:opacity-100";
 
 type SidebarProps = {
   /**
@@ -112,6 +109,7 @@ function SidebarNavItem({
           to={to}
           onMouseEnter={() => prefetchOneViewRoute(to)}
           onFocus={() => prefetchOneViewRoute(to)}
+          onPointerDown={() => prefetchOneViewRoute(to, { dataImmediate: true })}
           end={end}
           title={name}
           aria-label={secondary ? `${name}. ${secondary}` : name}
@@ -119,8 +117,8 @@ function SidebarNavItem({
             const tones = navToneClasses(isActive);
             return cn(
               "group/link relative flex min-h-10 w-full items-center overflow-hidden rounded-lg py-1 text-left transition-colors",
-              "before:absolute before:inset-y-2 before:left-0 before:w-[3px] before:rounded-r-full before:bg-sidebar-foreground before:opacity-0 before:transition-opacity",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+              SIDEBAR_ACTIVE_BAR,
+              SIDEBAR_FOCUS_RING,
               isActive && "before:opacity-100",
               tones.item,
             );
@@ -223,14 +221,16 @@ export function Sidebar({
   const ThemeIcon = theme === "light" ? ONEVIEW_ICON_MAP.themeDark : ONEVIEW_ICON_MAP.themeLight;
   const CollapseIcon = ONEVIEW_ICON_MAP.sidebarCollapse;
   const ExpandIcon = ONEVIEW_ICON_MAP.sidebarExpand;
-  const LogoutIcon = ONEVIEW_ICON_MAP.logout;
 
   if (monitoringCollapse && !navOpen) {
     return (
       <button
         type="button"
         onClick={() => setNavOpen(true)}
-        className="fixed left-0 top-1/2 z-50 flex h-12 w-4 -translate-y-1/2 items-center justify-center rounded-r-md border border-l-0 border-border/70 bg-background/95 text-muted-foreground shadow-sm transition-colors hover:w-5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          "fixed left-0 top-1/2 z-50 flex h-12 w-4 -translate-y-1/2 items-center justify-center rounded-r-md border border-l-0 border-border/70 bg-background/95 text-muted-foreground shadow-sm transition-colors hover:w-5 hover:text-foreground",
+          SIDEBAR_FOCUS_RING,
+        )}
         aria-label="Abrir navegação do monitoramento"
         title="Abrir navegação"
         data-monitor-sidebar="collapsed"
@@ -292,7 +292,7 @@ export function Sidebar({
               className={cn(
                 "group/link flex min-h-10 w-full items-center rounded-lg py-1 text-left text-sidebar-foreground/65 transition-colors",
                 "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+                SIDEBAR_FOCUS_RING,
               )}
             >
               <span className={SIDEBAR_ICON_SLOT}>
@@ -313,76 +313,58 @@ export function Sidebar({
         <SidebarNavItem name="Configurações" to="/config" icon="settings" />
       </div>
 
-      <div className="shrink-0 border-t border-sidebar-border py-3">
-        <DropdownMenu>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <DropdownMenuTrigger asChild>
+      <div className="shrink-0 border-t border-sidebar-border px-0 pb-2 pt-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex w-full items-start">
+              <div className={cn(SIDEBAR_ICON_SLOT, "h-8")}>
+                <span className="relative flex h-8 w-8 aspect-square items-center justify-center overflow-hidden rounded-full border border-sidebar-border bg-sidebar-accent text-[10px] font-semibold uppercase text-sidebar-accent-foreground">
+                  {displayUser?.photo && !profilePhotoFailed ? (
+                    <img
+                      src={displayUser.photo}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      onError={() => setProfilePhotoFailed(true)}
+                    />
+                  ) : <span>{initials}</span>}
+                </span>
+              </div>
+              <div className={SIDEBAR_PROFILE_LABEL}>
+                <span className={cn(SIDEBAR_LABEL_TEXT, "block h-8 leading-8 font-semibold text-sidebar-foreground")}>
+                  {displayUser?.name ?? "Usuário"}
+                </span>
                 <button
                   type="button"
+                  onClick={() => void logout()}
                   disabled={!displayUser}
-                  aria-label={displayUser ? `Abrir menu de ${displayUser.name}` : "Menu do usuário"}
-                  title="Menu do usuário"
+                  aria-label="Sair"
                   className={cn(
-                    "flex min-h-12 w-full items-center overflow-hidden rounded-lg py-1 text-left text-sidebar-foreground/70 transition-colors",
-                    "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
-                    "disabled:cursor-not-allowed disabled:opacity-40",
+                    "block text-left text-[10px] font-medium leading-none text-sidebar-foreground/50 transition-colors",
+                    "hover:text-sidebar-foreground disabled:cursor-not-allowed disabled:opacity-40",
+                    SIDEBAR_FOCUS_RING,
                   )}
                 >
-                  <span className={cn(SIDEBAR_ICON_SLOT, "relative")}>
-                    <span className="relative flex h-8 w-8 aspect-square items-center justify-center overflow-hidden rounded-full border border-sidebar-border bg-sidebar-accent text-[11px] font-semibold uppercase text-sidebar-accent-foreground">
-                      {displayUser?.photo && !profilePhotoFailed ? (
-                        <img
-                          src={displayUser.photo}
-                          alt=""
-                          className="h-full w-full object-cover"
-                          onError={() => setProfilePhotoFailed(true)}
-                        />
-                      ) : <span>{initials}</span>}
-                    </span>
-                  </span>
-                  <span className={cn(SIDEBAR_LABEL, "flex-col items-start justify-center gap-1")}>
-                    <span className={cn(SIDEBAR_LABEL_TEXT, "w-full font-semibold text-sidebar-accent-foreground")}>
-                      {displayUser?.name ?? "Usuário"}
-                    </span>
-                    <span className="w-full truncate text-xs leading-none text-sidebar-foreground/55">
-                      {displayUser?.email ?? "sso@teletex.com"}
-                    </span>
-                  </span>
+                  Sair
                 </button>
-              </DropdownMenuTrigger>
-            </TooltipTrigger>
-            <TooltipContent side="right" className="group-hover/sidebar:hidden group-focus-within/sidebar:hidden">
-              {displayUser ? (
-                <div className="space-y-0.5">
-                  <p className="text-sm font-semibold">{displayUser.name}</p>
-                  <p className="text-xs text-muted-foreground/80">Conta</p>
-                </div>
-              ) : <p>Não autenticado</p>}
-            </TooltipContent>
-          </Tooltip>
-          <DropdownMenuContent side="right" align="end" sideOffset={8} className="w-64 ov-radius-lg">
-            <DropdownMenuLabel className="py-3">
-              <p className="truncate text-sm font-semibold">{displayUser?.name ?? "Usuário"}</p>
-              <p className="mt-1 truncate text-xs font-normal text-muted-foreground">{displayUser?.email ?? ""}</p>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled>Conta — em breve</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => void logout()} className="text-destructive focus:text-destructive">
-              <LogoutIcon className="mr-2 h-4 w-4" />
-              Sair
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              </div>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="group-hover/sidebar:hidden group-focus-within/sidebar:hidden">
+            {displayUser ? (
+              <p className="text-sm font-semibold">{displayUser.name}</p>
+            ) : <p>Não autenticado</p>}
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       {monitoringCollapse ? (
         <button
           type="button"
           onClick={() => setNavOpen(false)}
-          className="absolute right-0 top-1/2 z-50 flex h-10 w-4 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-sidebar-foreground/70 shadow-sm transition-colors hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          className={cn(
+            "absolute right-0 top-1/2 z-50 flex h-10 w-4 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-sidebar-foreground/70 shadow-sm transition-colors hover:text-sidebar-foreground",
+            SIDEBAR_FOCUS_RING,
+          )}
           aria-label="Recolher navegação do monitoramento"
           title="Recolher navegação"
         >

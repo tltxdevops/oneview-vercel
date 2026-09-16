@@ -23,8 +23,8 @@ import { OperationalIncidentsToolbar } from "@/components/oneview/OperationalInc
 import { OperationalIncidentsQueueList, operationalIncidentKey } from "@/components/oneview/OperationalIncidentsQueueList";
 import { OperationalSegmentedControl } from "@/components/oneview/OperationalSegmentedControl";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { OneViewSeverityBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { TruncatedText } from "@/components/oneview/TruncatedText";
-import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -43,23 +43,28 @@ import {
   AlertDetailResponse,
   AlertHistoryItem,
   AlertHistoryResponse,
+  AlertListResponse,
   GlobalHistoryItem,
   IncidentAssigneeFacet,
   OneViewAlert,
   OneViewDataSourceKind,
+  OneViewFacetsResponse,
   OneViewIncident,
   OneViewSeverity,
   fetchAlert,
   fetchAlertHistory,
-  fetchOneViewFacets,
   fetchOperatorQueue,
   formatNullableCount,
   formatOneViewSeverityLabel,
+  ONEVIEW_FACETS_PATH,
+  bucketOneViewReadNow,
+  oneViewAlertsPath,
   type OperatorQueueItem,
   type OperatorQueueResponse,
 } from "@/lib/oneview-api";
 import {
   DEFAULT_HOME_ALERT_MODE,
+  DEFAULT_HOME_OPERATIONAL_WINDOW,
   HOME_ALERT_MODE,
   HOME_ALERTS_PAGE_SIZE,
   HOME_ALERT_STATUS_OPTIONS,
@@ -67,7 +72,9 @@ import {
   HOME_OPERATIONAL_WINDOW_OPTIONS,
   HOME_SEVERITY_FILTER_OPTIONS,
   buildHomeAlertsHref,
+  defaultHomeAlertsFetchParams,
   fetchHomeAlerts,
+  homeAlertsResultFromResponse,
   homeOperationalWindowActiveLabel,
   homeOperationalWindowMs,
   parseHomeAlertMode,
@@ -78,6 +85,8 @@ import {
   type HomeAlertSeverity,
   type HomeOperationalWindowPreset,
 } from "@/lib/oneview-home";
+import { getOneViewFacets } from "@/lib/oneview-facets-store";
+import { useOneViewWarmRead } from "@/hooks/useOneViewWarmRead";
 import {
   INCIDENTS_QUEUE_MODE,
   analystFacetOptions,
@@ -300,21 +309,21 @@ function HomeAlertRow({
             operational_scope_label: alert.operational_scope_label,
           })}
         </TruncatedText>
-        <TruncatedText className="text-[11px] leading-tight text-foreground/80">{canonicalHostName(alert)}</TruncatedText>
+        <TruncatedText className="text-xs leading-tight text-foreground/80">{canonicalHostName(alert)}</TruncatedText>
         {normalizeOperationalScope(alert.operational_scope) === "unknown" ? (
           <TruncatedText className="text-[10px] leading-tight text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</TruncatedText>
         ) : null}
-        <TruncatedText className="text-[11px] leading-tight text-muted-foreground">{alert.problem_name}</TruncatedText>
+        <TruncatedText className="text-xs leading-tight text-muted-foreground">{alert.problem_name}</TruncatedText>
         <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-          <SeverityBadge severity={alert.severity} className="h-5 px-1.5" />
+          <OneViewSeverityBadge severity={alert.severity} showDot={false} />
           <span
-            className="text-[10px] font-medium tabular-nums text-foreground/80"
+            className="text-xs font-medium tabular-nums text-foreground/80"
             title={startedAt ? `Início: ${formatDateTime(startedAt)}` : "Horário de início indisponível"}
           >
             {formatClock(startedAt)}
           </span>
           <span
-            className="text-[10px] text-muted-foreground"
+            className="text-xs text-muted-foreground"
             title="Duração: há quanto tempo o alerta está ativo"
           >
             · {formatDurationSeconds(alert.duration_seconds)}
@@ -357,6 +366,15 @@ export default function Index() {
   const requestedAlertId = searchParams.get("alert");
   const homeWindow = parseHomeOperationalWindow(searchParams.get("window"));
   const windowMs = homeOperationalWindowMs(homeWindow);
+  const warmedHomeAlerts = useOneViewWarmRead<AlertListResponse>({
+    cachePath: (!searchParams.get("window") || searchParams.get("window") === DEFAULT_HOME_OPERATIONAL_WINDOW)
+      ? oneViewAlertsPath(defaultHomeAlertsFetchParams())
+      : "",
+  });
+  const warmedFacets = useOneViewWarmRead<OneViewFacetsResponse>({ cachePath: ONEVIEW_FACETS_PATH });
+  const warmedHome = warmedHomeAlerts.data
+    ? homeAlertsResultFromResponse(warmedHomeAlerts.data, HOME_ALERTS_PAGE_SIZE)
+    : null;
 
   const [alertMode, setAlertMode] = useState<HomeAlertMode>(DEFAULT_HOME_ALERT_MODE);
   const [severityFilter, setSeverityFilter] = useState<string>("all");
@@ -368,8 +386,8 @@ export default function Index() {
   ]);
 
   const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(null);
-  const [homeAlerts, setHomeAlerts] = useState<OneViewAlert[]>([]);
-  const [alertsTotal, setAlertsTotal] = useState(0);
+  const [homeAlerts, setHomeAlerts] = useState<OneViewAlert[]>(() => warmedHome?.items ?? []);
+  const [alertsTotal, setAlertsTotal] = useState(warmedHome?.total ?? 0);
   const [incidentsMode, setIncidentsMode] = useState<IncidentsQueueMode>(INCIDENTS_QUEUE_MODE.unassigned);
   const [incidentsAssignedTo, setIncidentsAssignedTo] = useState<string[]>([]);
   const [homeIncidents, setHomeIncidents] = useState<OneViewIncident[]>([]);
@@ -380,8 +398,9 @@ export default function Index() {
   const [recentEvents, setRecentEvents] = useState<GlobalHistoryItem[]>([]);
   const [eventsTotal, setEventsTotal] = useState(0);
 
-  const [isSummaryLoading, setIsSummaryLoading] = useState(true);
-  const [isListsLoading, setIsListsLoading] = useState(true);
+  const [isSummaryLoading, setIsSummaryLoading] = useState(!warmedFacets.peekHit);
+  const [isListsLoading, setIsListsLoading] = useState(!warmedHomeAlerts.peekHit);
+  const [criticalHomeReady, setCriticalHomeReady] = useState(() => warmedHomeAlerts.peekHit);
   const [isBackgroundUpdating, setIsBackgroundUpdating] = useState(false);
   const [metas, setMetas] = useState<ResourceMeta[]>([]);
   const [listsMeta, setListsMeta] = useState<ResourceMeta>({});
@@ -396,9 +415,10 @@ export default function Index() {
 
   const summaryInFlight = useRef<Promise<void> | null>(null);
   const listsRequest = useRef<AbortController | null>(null);
+  const criticalAlertsRequest = useRef<AbortController | null>(null);
   const listsRequestIdRef = useRef(0);
-  const hasSummaryRef = useRef(false);
-  const hasListsRef = useRef(false);
+  const hasSummaryRef = useRef(Boolean(warmedFacets.peekHit));
+  const hasListsRef = useRef(Boolean(warmedHomeAlerts.peekHit));
   const quietUpdatesRef = useRef(0);
   const detailRequest = useRef<AbortController | null>(null);
 
@@ -485,10 +505,10 @@ export default function Index() {
     else if (mode === "quiet") beginQuietUpdate();
 
     const request = (async () => {
-      const now = Date.now();
+      const now = bucketOneViewReadNow();
       const results = await Promise.allSettled([
         fetchRecentOperationalMetrics({ now, windowMs }),
-        fetchOneViewFacets(),
+        getOneViewFacets(),
       ]);
 
       const [metricsResult, facetsResult] = results;
@@ -545,6 +565,48 @@ export default function Index() {
     return request;
   }, [beginQuietUpdate, endQuietUpdate, setSectionError, windowMs]);
 
+  const loadCriticalHomeAlerts = useCallback(async () => {
+    if (hasListsRef.current) {
+      setCriticalHomeReady(true);
+      return;
+    }
+    criticalAlertsRequest.current?.abort();
+    const controller = new AbortController();
+    criticalAlertsRequest.current = controller;
+    setIsListsLoading(true);
+    try {
+      const payload = await fetchHomeAlerts({
+        mode: alertMode,
+        severity: severityFilter,
+        customers: selectedCustomerKeys,
+        status: alertStatus,
+        limit: HOME_ALERTS_PAGE_SIZE,
+        windowMs,
+        signal: controller.signal,
+        now: bucketOneViewReadNow(),
+      });
+      if (controller.signal.aborted || criticalAlertsRequest.current !== controller) return;
+      setHomeAlerts(payload.items);
+      setAlertsTotal(payload.total);
+      setListsMeta({
+        source: payload.data_source as OneViewDataSourceKind | undefined,
+        checkedAt: payload.checked_at,
+      });
+      setSectionError("alerts", null);
+      hasListsRef.current = true;
+    } catch {
+      if (!controller.signal.aborted && criticalAlertsRequest.current === controller) {
+        setSectionError("alerts", "Falha ao carregar alertas.");
+      }
+    } finally {
+      if (criticalAlertsRequest.current === controller) {
+        criticalAlertsRequest.current = null;
+        setIsListsLoading(false);
+        setCriticalHomeReady(true);
+      }
+    }
+  }, [alertMode, alertStatus, selectedCustomerKeys, setSectionError, severityFilter, windowMs]);
+
   const loadLists = useCallback(async (mode: "initial" | "quiet" | "manual" = "quiet") => {
     if (mode === "quiet" && listsRequest.current && !listsRequest.current.signal.aborted) return;
     listsRequest.current?.abort();
@@ -557,7 +619,7 @@ export default function Index() {
     else if (beganQuiet) beginQuietUpdate();
 
     try {
-      const now = Date.now();
+      const now = bucketOneViewReadNow();
       const tasks: Array<Promise<unknown>> = [
         fetchHomeAlerts({
           mode: alertMode,
@@ -777,11 +839,19 @@ export default function Index() {
     void loadSelectedAlert(requestedAlertId);
   }, [loadSelectedAlert, requestedAlertId, selectedAlertId]);
 
-  useEffect(() => { void loadSummary(hasSummaryRef.current ? "quiet" : "initial"); }, [loadSummary]);
   useEffect(() => {
+    void loadCriticalHomeAlerts();
+    return () => criticalAlertsRequest.current?.abort();
+  }, [loadCriticalHomeAlerts]);
+  useEffect(() => {
+    if (!criticalHomeReady) return;
+    void loadSummary(hasSummaryRef.current ? "quiet" : "initial");
+  }, [criticalHomeReady, loadSummary]);
+  useEffect(() => {
+    if (!criticalHomeReady) return;
     void loadLists(hasListsRef.current ? "quiet" : "initial");
     return () => listsRequest.current?.abort();
-  }, [loadLists]);
+  }, [criticalHomeReady, loadLists]);
   useEffect(() => {
     const summaryTimer = window.setInterval(() => {
       if (!document.hidden) void loadSummary("quiet");
@@ -869,12 +939,26 @@ export default function Index() {
     </OperationalFilterGroup>
   );
 
+  const contextBar = dashboard.isWallboard ? null : (
+    <section aria-label="Contexto operacional" className="ov-panel flex flex-wrap items-center justify-between gap-2 p-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="ov-type-caption font-semibold uppercase tracking-wide text-muted-foreground">Período</span>
+        {windowSelector}
+      </div>
+      <span className="ov-type-caption text-muted-foreground">
+        Atualizado: <span className="font-semibold text-foreground">{formatClock(lastCheckedAt)}</span>
+      </span>
+    </section>
+  );
+
   return (
     <AppLayout
       clientSelect={(
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="shrink-0 ov-typography-page-title text-foreground">Início</h1>
-          {!dashboard.isWallboard ? windowSelector : null}
+          <div className="min-w-0">
+            <SectionAccentTitle level={1}>Início</SectionAccentTitle>
+            <p className="ov-type-secondary text-muted-foreground">Visão geral da operação Teletex</p>
+          </div>
           {showInitialLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
         </div>
       )}
@@ -884,14 +968,15 @@ export default function Index() {
       wallboard={dashboard.isWallboard}
       contentClassName="gap-3 p-3 lg:px-4"
     >
+      {contextBar}
       <ConfigurableDashboard controller={dashboard}>
         <ConfigurableDashboardWidget id="operational-summary">
         <SectionPanel
           aria-label="Resumo operacional"
-          title="Resumo operacional"
-          description="Resumo geral da operação Teletex."
+          title={<SectionAccentTitle>Resumo operacional</SectionAccentTitle>}
           className="px-0"
-          bodyClassName="px-2.5 py-2"
+          headerClassName="px-4 py-3"
+          bodyClassName="p-4"
           aside={sectionErrors.summary ? (
             <Button type="button" size="sm" variant="outline" className="ov-error-action h-7 px-2 text-xs" onClick={() => void loadSummary("manual")}>
               Tentar novamente
@@ -901,6 +986,7 @@ export default function Index() {
           <CompactMetricStrip
             aria-label="Severidades ativas na janela"
             items={severityStripItems}
+            surface={false}
           />
           {sectionErrors.summary ? (
             <OperationalErrorBanner className="mt-1.5 rounded-none border-x-0 border-b-0" message={sectionErrors.summary} />
@@ -912,14 +998,16 @@ export default function Index() {
         <ConfigurableDashboardWidget id="recent-alerts">
           <SectionPanel
             className="flex min-h-0 flex-col overflow-hidden"
-            title="Alertas Recentes"
+            aria-label="Alertas recentes"
+            title={<SectionAccentTitle>Alertas recentes</SectionAccentTitle>}
+            headerClassName="px-4 py-3"
             aside={dashboard.isWallboard ? null : (
               <div className={HOME_PANEL_HEADER_ASIDE}>
                 <HomePanelCount value={alertsTotal} />
                 <OperationalCta to={homeAlertsHref}>Ver todos</OperationalCta>
               </div>
             )}
-            bodyClassName="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-0"
+            bodyClassName="flex min-h-0 flex-1 flex-col px-4 pb-3 pt-0"
           >
             {!dashboard.isWallboard ? <div className={HOME_FILTER_ROW}>
               <OperationalFilterGroup label="Modo de alertas">
@@ -993,8 +1081,10 @@ export default function Index() {
         <ConfigurableDashboardWidget id="incidents">
           <SectionPanel
             className="flex min-h-0 flex-col overflow-hidden"
-            title={incidentsPanelTitle}
-            description={queueOverflowLabel(incidentsTotal, homeIncidents.length)}
+            aria-label="Chamados"
+            title={<SectionAccentTitle>Chamados</SectionAccentTitle>}
+            description={incidentsPanelTitle}
+            headerClassName="px-4 py-3"
             aside={dashboard.isWallboard ? null : (
               <div className={HOME_PANEL_HEADER_ASIDE}>
                 <OperationalCta to={chamadosHref}>Ver todos em Chamados</OperationalCta>
@@ -1009,7 +1099,8 @@ export default function Index() {
                 analysts={incidentAssignees}
               />
             )}
-            bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-2 pt-1.5"
+            toolbarClassName="px-4 py-2"
+            bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-3 pt-2"
           >
             {sectionErrors.incidents ? (
               <OperationalErrorBanner
@@ -1040,7 +1131,7 @@ export default function Index() {
         <ConfigurableDashboardWidget id="failed-links">
         <SectionPanel
           className="overflow-hidden"
-          title="Links"
+          title="Links de operadoras"
           aside={dashboard.isWallboard ? null : <OperationalCta to="/operadoras">Ver conectividade</OperationalCta>}
           bodyClassName="px-3 pb-2 pt-0"
         >
@@ -1137,7 +1228,7 @@ export default function Index() {
                       </td>
                       <td className="px-3 py-1.5">
                         {item.severity ? (
-                          <SeverityBadge severity={item.severity} className="h-5 px-1.5" />
+                          <OneViewSeverityBadge severity={item.severity} showDot={false} className="h-5 px-1.5" />
                         ) : "—"}
                       </td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-[11px] text-muted-foreground">

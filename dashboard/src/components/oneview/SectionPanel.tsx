@@ -8,6 +8,8 @@ type SectionPanelProps = {
   toolbar?: ReactNode;
   children: ReactNode;
   className?: string;
+  headerClassName?: string;
+  toolbarClassName?: string;
   bodyClassName?: string;
   "aria-label"?: string;
 };
@@ -19,6 +21,8 @@ export function SectionPanel({
   toolbar,
   children,
   className,
+  headerClassName,
+  toolbarClassName,
   bodyClassName,
   "aria-label": ariaLabel,
 }: SectionPanelProps) {
@@ -30,16 +34,16 @@ export function SectionPanel({
       className={cn("ov-panel", className)}
     >
       {hasHeader ? (
-        <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
+        <div className={cn("flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5", headerClassName)}>
           <div className="min-w-0">
-            {title ? <h2 className="ov-typography-section-title">{title}</h2> : null}
+            {title ? (typeof title === "string" ? <h2 className="ov-typography-section-title">{title}</h2> : title) : null}
             {description ? <p className="ov-typography-small text-muted-foreground">{description}</p> : null}
           </div>
           {aside ? <div className="shrink-0">{aside}</div> : null}
         </div>
       ) : null}
       {toolbar ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-3 py-1.5">
+        <div className={cn("flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-3 py-1.5", toolbarClassName)}>
           {toolbar}
         </div>
       ) : null}

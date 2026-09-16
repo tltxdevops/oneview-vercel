@@ -2,11 +2,30 @@ import type { ButtonHTMLAttributes, ComponentProps, HTMLAttributes, ReactNode } 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
+  ONEVIEW_FEEDBACK_CATALOG,
   ONEVIEW_SEVERITY_CATALOG,
   ONEVIEW_STATUS_CATALOG,
+  type OneViewFeedbackTone,
   type OneViewSemanticStatus,
   type OneViewSeverity,
 } from "@/lib/oneview-design-system";
+import { ONEVIEW_ICON_MAP } from "@/lib/oneview-icons";
+
+export function SectionAccentTitle({ children, level = 2, className }: {
+  children: ReactNode;
+  level?: 1 | 2;
+  className?: string;
+}) {
+  const Tag = level === 1 ? "h1" : "h2";
+  return (
+    <Tag className={cn(
+      level === 1 ? "shrink-0 ov-type-page-title text-foreground" : "ov-type-section-title",
+      className,
+    )}>
+      {children}<span aria-hidden="true" className="ov-title-signature-accent">_</span>
+    </Tag>
+  );
+}
 
 export function OneViewPanel({ title, description, action, className, children }: {
   title?: string;
@@ -43,11 +62,11 @@ export function OneViewButton({ variant = "primary", className, ...props }: Omit
     danger: "destructive",
   } as const;
 
-  return <Button variant={implementation[variant]} className={cn("ov-control-official", className)} {...props} />;
+  return <Button variant={implementation[variant]} className={cn("ov-control-official ov-focus-accent", variant === "primary" && "ov-button-primary", className)} {...props} />;
 }
 
 export function OneViewTextAction({ className, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
-  return <button type="button" className={cn("text-sm font-semibold text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className)} {...props} />;
+  return <button type="button" className={cn("ov-link-accent ov-focus-accent text-sm font-semibold focus-visible:outline-none", className)} {...props} />;
 }
 
 /** @deprecated Compatibility wrapper. New code uses OneViewPanel. */
@@ -68,20 +87,34 @@ export function OneViewSurface({ title, description, className, children }: {
   );
 }
 
-export function OneViewSemanticStatusBadge({ status, label, className, ...props }: HTMLAttributes<HTMLSpanElement> & {
-  status: OneViewSemanticStatus;
-  label?: string;
+export function SemanticBadge({ label, showDot = true, className, children, ...props }: HTMLAttributes<HTMLSpanElement> & {
+  label: string;
+  showDot?: boolean;
 }) {
-  const definition = ONEVIEW_STATUS_CATALOG[status];
-  return <span className={cn("ov-status-badge", definition.className, className)} data-oneview-status={status} {...props}>{label || definition.label}</span>;
+  return (
+    <span className={cn("ov-semantic-badge", className)} {...props}>
+      {showDot ? <span className="ov-semantic-badge-dot" aria-hidden="true" /> : null}
+      <span>{children || label}</span>
+    </span>
+  );
 }
 
-export function OneViewSeverityBadge({ severity, label, className, ...props }: HTMLAttributes<HTMLSpanElement> & {
+export function OneViewSemanticStatusBadge({ status, label, showDot, className, ...props }: HTMLAttributes<HTMLSpanElement> & {
+  status: OneViewSemanticStatus;
+  label?: string;
+  showDot?: boolean;
+}) {
+  const definition = ONEVIEW_STATUS_CATALOG[status];
+  return <SemanticBadge label={label || definition.label} showDot={showDot} className={cn("ov-status-badge", definition.className, className)} data-oneview-status={status} {...props} />;
+}
+
+export function OneViewSeverityBadge({ severity, label, showDot, className, ...props }: HTMLAttributes<HTMLSpanElement> & {
   severity: OneViewSeverity;
   label?: string;
+  showDot?: boolean;
 }) {
   const definition = ONEVIEW_SEVERITY_CATALOG[severity];
-  return <span className={cn("ov-severity-badge", definition.className, className)} data-oneview-severity={severity} {...props}>{label || definition.label}</span>;
+  return <SemanticBadge label={label || definition.label} showDot={showDot} className={cn("ov-severity-badge", definition.className, className)} data-oneview-severity={severity} {...props} />;
 }
 
 export function OneViewPill({ selected = false, className, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { selected?: boolean }) {
@@ -90,8 +123,8 @@ export function OneViewPill({ selected = false, className, children, ...props }:
       type="button"
       aria-pressed={selected}
       className={cn(
-        "ov-pill-official ov-type-caption inline-flex h-8 items-center justify-center border px-3 font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-        selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-muted",
+        "ov-pill-official ov-type-caption ov-focus-accent inline-flex h-8 items-center justify-center border px-3 font-semibold transition-colors focus-visible:outline-none",
+        selected ? "border-[hsl(var(--ov-color-accent-blue)/0.55)] bg-[hsl(var(--ov-color-accent-blue)/0.1)] text-[hsl(var(--ov-color-accent-blue))]" : "border-border bg-background text-foreground hover:bg-muted",
         className,
       )}
       {...props}
@@ -120,7 +153,7 @@ export function OneViewKpiCard({ label, value, hint, tone = "neutral", selected 
     <button
       type="button"
       aria-pressed={selected}
-      className={cn("ov-surface min-w-0 px-4 py-3 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected && "ring-2 ring-ring", className)}
+      className={cn("ov-surface ov-focus-accent min-w-0 px-4 py-3 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none", selected && "border-[hsl(var(--ov-color-accent-blue))] ring-1 ring-[hsl(var(--ov-color-accent-blue))]", className)}
       {...props}
     >
       <span className="block ov-typography-caption text-muted-foreground">{label}</span>
@@ -135,4 +168,27 @@ export function OneViewHealthIndicator({ status, label, className, ...props }: H
   label: string;
 }) {
   return <span className={cn("ov-health-indicator ov-typography-small", `ov-health-${status}`, className)} {...props}>{label}</span>;
+}
+
+export function OneViewFeedback({ tone, title, description, className }: {
+  tone: OneViewFeedbackTone;
+  title: string;
+  description?: string;
+  className?: string;
+}) {
+  const definition = ONEVIEW_FEEDBACK_CATALOG[tone];
+  const Icon = ONEVIEW_ICON_MAP[definition.icon];
+  return (
+    <div
+      className={cn("ov-feedback", definition.className, className)}
+      role={tone === "error" || tone === "warning" ? "alert" : "status"}
+      data-oneview-feedback={tone}
+    >
+      <Icon className="mt-0.5 h-[18px] w-[18px]" aria-hidden="true" />
+      <div className="min-w-0">
+        <p className="ov-type-body font-bold">{title}</p>
+        {description ? <p className="mt-1 ov-type-secondary">{description}</p> : null}
+      </div>
+    </div>
+  );
 }

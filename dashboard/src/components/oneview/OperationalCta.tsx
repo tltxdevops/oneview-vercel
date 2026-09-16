@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { OV_CTA } from "@/lib/oneview-operational-ui";
+import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
 
 type OperationalCtaProps = Omit<ButtonProps, "size" | "asChild"> & {
   to?: string;
@@ -23,7 +24,14 @@ export function OperationalCta({
   if (to) {
     return (
       <Button type={type} size="sm" variant={variant} className={classes} asChild>
-        <Link to={to}>{children}</Link>
+        <Link
+          to={to}
+          onMouseEnter={() => prefetchOneViewRoute(to)}
+          onFocus={() => prefetchOneViewRoute(to)}
+          onPointerDown={() => prefetchOneViewRoute(to, { dataImmediate: true })}
+        >
+          {children}
+        </Link>
       </Button>
     );
   }

@@ -10,7 +10,7 @@ import {
 } from "@/components/oneview/UiKitSections";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ONEVIEW_OPERATIONAL_UI_V1 } from "@/lib/oneview-design-system";
+import { ONEVIEW_OPERATIONAL_UI_V1_1 } from "@/lib/oneview-design-system";
 
 const UI_KIT_CATEGORIES = [
   { value: "foundations", label: "FOUNDATIONS", icon: Palette, description: "Tokens, densidade, tipografia e iconografia." },
@@ -27,7 +27,7 @@ function UiKit() {
 
   return (
     <AppLayout
-      title="OneView UI Kit"
+      title="OneView UI Kit v1.1"
       description="Fonte de verdade visual para novas telas. Links / Operadoras é a referência operacional de maturidade."
       enableAutoRefresh={false}
       showRefreshMeta={false}
@@ -36,11 +36,11 @@ function UiKit() {
     >
       <Alert className="border-[hsl(var(--ov-color-info)/0.35)] bg-[hsl(var(--ov-color-info)/0.08)] text-foreground">
         <CircleAlert className="h-4 w-4 text-[hsl(var(--ov-color-info))]" />
-        <AlertTitle>{ONEVIEW_OPERATIONAL_UI_V1.statement}</AlertTitle>
+        <AlertTitle>{ONEVIEW_OPERATIONAL_UI_V1_1.statement}</AlertTitle>
         <AlertDescription>
           <span className="block">Código novo deve reutilizar token, componente e Pattern oficiais.</span>
-          <span className="mt-1 block">{ONEVIEW_OPERATIONAL_UI_V1.extensionPolicy}</span>
-          <span className="mt-1 block">{ONEVIEW_OPERATIONAL_UI_V1.legacyPolicy}</span>
+          <span className="mt-1 block">{ONEVIEW_OPERATIONAL_UI_V1_1.extensionPolicy}</span>
+          <span className="mt-1 block">{ONEVIEW_OPERATIONAL_UI_V1_1.legacyPolicy}</span>
         </AlertDescription>
       </Alert>
 

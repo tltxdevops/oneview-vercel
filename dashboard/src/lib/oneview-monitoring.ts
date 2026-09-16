@@ -4,8 +4,10 @@
  */
 import {
   OneViewAlert,
+  bucketOneViewReadNow,
   fetchAlerts,
   normalizeOneViewSeverity,
+  type FetchAlertsParams,
   type IncidentListResponse,
 } from "@/lib/oneview-api";
 import {
@@ -202,6 +204,43 @@ export type MonitorAlertsResult = {
   checked_at?: string;
 };
 
+export function monitoringAlertsFetchParams(params: {
+  mode: MonitorAlertMode;
+  severity?: string | string[] | null;
+  customers?: string[];
+  datasources?: string[];
+  limit?: number;
+  windowMs: number;
+  sort?: MonitorQueueSort | string | null;
+  now?: number;
+}): FetchAlertsParams {
+  const now = params.now ?? bucketOneViewReadNow();
+  const limit = Math.min(Math.max(params.limit ?? MONITOR_QUEUE_LIMIT, 1), 50);
+  const severities = resolveMonitorAlertSeverities(params.mode, params.severity);
+  const sortParams = resolveMonitorQueueSortParams(parseMonitorQueueSort(params.sort));
+  return {
+    page: 1,
+    pageSize: limit,
+    status: "active",
+    severities: [...severities],
+    customers: params.customers?.length ? params.customers : undefined,
+    datasources: params.datasources?.length ? params.datasources : undefined,
+    acknowledgedSource: params.mode === MONITOR_ALERT_MODE.prioritary ? false : undefined,
+    firstSeenFrom: isoAgo(params.windowMs, now),
+    sort: sortParams.sort,
+    order: sortParams.order,
+  };
+}
+
+export function defaultMonitoringAlertsFetchParams(now = bucketOneViewReadNow()): FetchAlertsParams {
+  return monitoringAlertsFetchParams({
+    mode: MONITOR_ALERT_MODE.prioritary,
+    limit: MONITOR_QUEUE_LIMIT,
+    windowMs: monitorWindowMs(DEFAULT_MONITOR_WINDOW),
+    now,
+  });
+}
+
 /**
  * Fila principal do Monitoramento (OV-P0-70 / OV-P0-72 / OV-P0-83).
  * Prioritários: Avg+High+Disaster (default), ativos, sem ACK.
@@ -221,21 +260,9 @@ export async function fetchMonitoringAlerts(params: {
   signal?: AbortSignal;
   now?: number;
 }): Promise<MonitorAlertsResult> {
-  const now = params.now ?? Date.now();
   const limit = Math.min(Math.max(params.limit ?? MONITOR_QUEUE_LIMIT, 1), 50);
-  const severities = resolveMonitorAlertSeverities(params.mode, params.severity);
-  const sortParams = resolveMonitorQueueSortParams(parseMonitorQueueSort(params.sort));
   const response = await fetchAlerts({
-    page: 1,
-    pageSize: limit,
-    status: "active",
-    severities: [...severities],
-    customers: params.customers?.length ? params.customers : undefined,
-    datasources: params.datasources?.length ? params.datasources : undefined,
-    acknowledgedSource: params.mode === MONITOR_ALERT_MODE.prioritary ? false : undefined,
-    firstSeenFrom: isoAgo(params.windowMs, now),
-    sort: sortParams.sort,
-    order: sortParams.order,
+    ...monitoringAlertsFetchParams(params),
     signal: params.signal,
   });
   const items = (response.items ?? []).slice(0, limit);

@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { authReturnToFromLocation } from "@/lib/auth/return-url";
-import { prefetchOneViewOperationalRoutes } from "@/lib/oneview-route-prefetch";
+import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
 
 interface ProtectedRouteProps {
   children?: ReactNode;
@@ -13,8 +13,9 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
   const location = useLocation();
   useEffect(() => {
-    if (user) prefetchOneViewOperationalRoutes();
-  }, [user]);
+    if (!user) return;
+    prefetchOneViewRoute(location.pathname, { dataImmediate: true });
+  }, [user, location.pathname]);
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-foreground">

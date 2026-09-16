@@ -21,24 +21,26 @@ test("OV-SIDEBAR: usa exclusivamente o mapa Lucide central", () => {
 test("OV-SIDEBAR: ativo, hover e expansão são distinguíveis e acessíveis", () => {
   const sidebar = read("src/components/layout/Sidebar.tsx");
 
-  assert.match(sidebar, /before:bg-sidebar-foreground/);
+  assert.match(sidebar, /before:bg-sidebar-foreground\/80/);
   assert.match(sidebar, /before:opacity-100/);
-  assert.match(sidebar, /bg-sidebar-accent/);
+  assert.match(sidebar, /bg-sidebar-accent text-sidebar-accent-foreground/);
+  assert.match(sidebar, /icon: "text-sidebar-accent-foreground"/);
   assert.match(sidebar, /hover:bg-sidebar-accent/);
   assert.match(sidebar, /hover:w-60/);
   assert.match(sidebar, /focus-within:w-60/);
   assert.match(sidebar, /group-hover\/sidebar:opacity-100/);
   assert.match(sidebar, /title=\{name\}/);
   assert.match(sidebar, /aria-label=/);
-  assert.match(sidebar, /focus-visible:ring-2/);
+  assert.match(sidebar, /SIDEBAR_FOCUS_RING/);
+  assert.doesNotMatch(sidebar, /ov-color-accent-blue/);
 });
 
-test("OV-SIDEBAR: logout fica somente no menu do usuário", () => {
+test("OV-SIDEBAR: logout aparece abaixo do nome ao expandir", () => {
   const sidebar = read("src/components/layout/Sidebar.tsx");
 
-  assert.match(sidebar, /DropdownMenuContent side="right"/);
-  assert.match(sidebar, /Abrir menu de/);
-  assert.match(sidebar, /Conta — em breve/);
-  assert.match(sidebar, /DropdownMenuItem onSelect=\{\(\) => void logout\(\)\}/);
-  assert.doesNotMatch(sidebar, /onClick=\{logout\}/);
+  assert.match(sidebar, /aria-label="Sair"/);
+  assert.match(sidebar, />\s*Sair\s*</);
+  assert.match(sidebar, /onClick=\{\(\) => void logout\(\)\}/);
+  assert.doesNotMatch(sidebar, /DropdownMenuContent/);
+  assert.doesNotMatch(sidebar, /Abrir menu de/);
 });

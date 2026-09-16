@@ -21,8 +21,8 @@ import { OperationalIncidentsToolbar } from "@/components/oneview/OperationalInc
 import { OperationalSegmentedControl } from "@/components/oneview/OperationalSegmentedControl";
 import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
+import { OneViewSemanticStatusBadge, OneViewSeverityBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { TruncatedText } from "@/components/oneview/TruncatedText";
-import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -51,9 +51,9 @@ import {
   fetchAlertHistory,
   fetchIncidentRelatedAlert,
   fetchIncidents,
-  fetchOneViewFacets,
   formatNullableCount,
   formatOneViewSeverityLabel,
+  bucketOneViewReadNow,
 } from "@/lib/oneview-api";
 import {
   activeFreshAttentionIds,
@@ -62,6 +62,7 @@ import {
   sameStringSet,
   type FreshAttentionTone,
 } from "@/lib/oneview-fresh-attention";
+import { getOneViewFacets, peekOneViewFacets } from "@/lib/oneview-facets-store";
 import {
   LIVE_TRANSITION_DURATION_MS,
   detectLiveTransitions,
@@ -242,17 +243,9 @@ function incidentKey(item: OneViewIncident) {
   return String(item.sys_id || item.number || "").trim();
 }
 
-/** OV-P0-79 — rótulo compacto do filtro de severidade (sem chips permanentes). */
-function monitorSeverityTriggerLabel(severities: MonitorAlertSeverity[]) {
-  if (!severities.length) return "Severidade";
-  if (severities.length <= 3) {
-    return severities.map((severity) => formatOneViewSeverityLabel(severity)).join(", ");
-  }
-  return `Severidade · ${severities.length}`;
-}
-
 function Panel({
   title,
+  description,
   error,
   onRetry,
   overflow,
@@ -262,7 +255,8 @@ function Panel({
   children,
   className,
 }: {
-  title: string;
+  title: ReactNode;
+  description?: ReactNode;
   error?: string | null;
   onRetry?: () => void;
   overflow?: string | null;
@@ -281,9 +275,10 @@ function Panel({
         className,
       )}
     >
-      <div className="flex shrink-0 flex-col items-stretch gap-2 border-b border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:py-1.5">
+      <div className="flex shrink-0 flex-col items-stretch gap-2 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h2 className="ov-typography-section-title break-words text-foreground">{title}</h2>
+          {typeof title === "string" ? <h2 className="ov-type-section-title break-words text-foreground">{title}</h2> : title}
+          {description ? <p className="ov-type-secondary text-muted-foreground">{description}</p> : null}
           {overflow ? <p className="text-[11px] font-medium text-muted-foreground">{overflow}</p> : null}
         </div>
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5 sm:shrink-0 sm:justify-end">
@@ -303,12 +298,12 @@ function Panel({
         </div>
       </div>
       {toolbar ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-3 py-1.5">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-4 py-2">
           {toolbar}
         </div>
       ) : null}
-      {error ? <p className="shrink-0 px-3 py-1.5 ov-typography-small text-[hsl(var(--ov-color-warning))]">{error}</p> : null}
-      <div className={cn("overflow-hidden px-3", empty ? "py-1.5" : "min-h-0 flex-1 py-1.5")}>{children}</div>
+      {error ? <p className="shrink-0 px-4 py-1.5 ov-typography-small text-[hsl(var(--ov-color-warning))]">{error}</p> : null}
+      <div className={cn("overflow-hidden px-4", empty ? "py-1.5" : "min-h-0 flex-1 py-2")}>{children}</div>
     </section>
   );
 }
@@ -395,7 +390,7 @@ function MonitorAlertRow({
       aria-current={selected ? "true" : undefined}
       className={cn(
         QUEUE_GRID,
-        "w-full rounded-md px-1 py-2 text-left transition-colors hover:bg-muted/50",
+        "min-h-12 w-full px-1 py-2 text-left transition-colors hover:bg-muted/50",
         selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
         freshTone === "disaster" && "ov-fresh-attention-disaster",
         freshTone === "high" && "ov-fresh-attention-high",
@@ -436,7 +431,7 @@ function MonitorAlertRow({
       <TruncatedText className="min-w-0 text-left text-xs text-muted-foreground">{alert.problem_name}</TruncatedText>
 
       <span className="flex min-w-0 flex-wrap items-center gap-1 justify-self-start">
-        <SeverityBadge severity={alert.severity} className="h-fit w-fit px-1.5 py-0.5 text-[11px] leading-none" />
+        <OneViewSeverityBadge severity={alert.severity} showDot={false} />
         {liveTransition ? (
           <span className="ov-live-transition-badge" aria-live="polite">{liveTransition.label}</span>
         ) : null}
@@ -456,17 +451,11 @@ function MonitorAlertRow({
       </span>
 
       <span className="hidden justify-self-start xl:block min-[1440px]:hidden min-[1800px]:block">
-        <Badge
-          variant="outline"
-          className={cn(
-            "ov-status-badge",
-            acked
-              ? "ov-status-monitoring-normalized"
-              : "ov-status-classification-pending",
-          )}
-        >
-          {acked ? "Com ACK" : "Sem ACK"}
-        </Badge>
+        <OneViewSemanticStatusBadge
+          status={acked ? "monitoring-normalized" : "classification-pending"}
+          label={acked ? "Com ACK" : "Sem ACK"}
+          showDot={false}
+        />
       </span>
 
       <span className="hidden justify-self-end text-right text-xs tabular-nums text-muted-foreground xl:block min-[1440px]:hidden min-[1800px]:block">
@@ -513,7 +502,7 @@ export default function MonitoringPage() {
   );
 
   const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(null);
-  const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
+  const [facets, setFacets] = useState<OneViewFacetsResponse | null>(() => peekOneViewFacets());
   const [queueAlerts, setQueueAlerts] = useState<OneViewAlert[]>([]);
   const [queueTotal, setQueueTotal] = useState(0);
   const [unassignedIncidents, setUnassignedIncidents] = useState<OneViewIncident[]>([]);
@@ -522,6 +511,7 @@ export default function MonitoringPage() {
   const [sectionErrors, setSectionErrors] = useState<SectionErrors>({});
   const [isUpdating, setIsUpdating] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
 
   const requestedAlertId = searchParams.get("alert");
   const requestedIncidentId = searchParams.get("incident");
@@ -754,6 +744,10 @@ export default function MonitoringPage() {
     : incidentsMode === INCIDENTS_QUEUE_MODE.all
       ? `${unassignedTitleCount.toLocaleString("pt-BR")} chamados`
       : `${unassignedTitleCount.toLocaleString("pt-BR")} sem responsável`;
+  const queuePanelDescription = `${modeLabel} · últimas ${windowLabel}`;
+  const lastUpdatedLabel = lastUpdatedAt
+    ? new Date(lastUpdatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", hour12: false })
+    : "—";
   const selectedIncidentKey = selectedIncident ? incidentKey(selectedIncident) : null;
 
   const toggleCustomer = (key: string) => {
@@ -779,11 +773,11 @@ export default function MonitoringPage() {
       listsAbort.current = controller;
       const customers = selectedCustomerKeys.length ? selectedCustomerKeys : undefined;
       const datasources = selectedDatasources.length ? selectedDatasources : undefined;
-      const now = Date.now();
+      const now = bucketOneViewReadNow();
 
       const tasks: Array<Promise<unknown>> = [
         fetchRecentOperationalMetrics({ customers, datasources, signal: controller.signal, now, windowMs }),
-        fetchOneViewFacets(controller.signal),
+        getOneViewFacets(),
         fetchMonitoringAlerts({
           mode: alertMode,
           severity: severitySelection,
@@ -977,6 +971,7 @@ export default function MonitoringPage() {
       if (anySuccess) {
         hasDataRef.current = true;
         setHasLoaded(true);
+        setLastUpdatedAt(Date.now());
       }
     })().finally(() => {
       setIsUpdating(false);
@@ -1335,16 +1330,19 @@ export default function MonitoringPage() {
           navOpen ? "ml-14" : "ml-0",
         )}
       >
-      <header className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
+      <header className="flex shrink-0 items-center gap-3 border-b border-border/60 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         {/* OV-P0-104 — topo: título · ações · health à direita */}
-        <h1 className="shrink-0 ov-typography-page-title text-foreground">Monitoramento</h1>
+        <div className="min-w-0">
+          <SectionAccentTitle level={1}>Monitoramento</SectionAccentTitle>
+          <p className="ov-type-secondary text-muted-foreground">Visão operacional em tempo real</p>
+        </div>
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
           {isUpdating ? (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+            <span className="inline-flex shrink-0 items-center gap-1 ov-type-caption text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
               Atualizando
             </span>
-          ) : null}
+          ) : <span className="hidden shrink-0 ov-type-caption text-muted-foreground sm:inline">Atualizado: {lastUpdatedLabel}</span>}
           <Button
             type="button"
             variant="outline"
@@ -1365,137 +1363,109 @@ export default function MonitoringPage() {
 
       <div className="mx-auto flex h-0 w-full max-w-[1920px] min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2 sm:p-3 min-[1440px]:overflow-hidden">
         {/* OV-P0-75: >=1440 fila ~60% | chamados ~40%; em 1366 empilha abaixo */}
+        <section aria-label="Filtros operacionais" className="ov-panel shrink-0 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <OperationalFilterGroup label="Cliente">
+              <ClientFilterCombobox
+                open={customerFilterOpen}
+                onOpenChange={setCustomerFilterOpen}
+                options={customerCards}
+                selectedKeys={selectedCustomerKeys}
+                selectedLabel={selectedCustomerLabel}
+                onToggle={toggleCustomer}
+                triggerClassName="h-9"
+                countNoun={customerFilterCountNoun(alertMode === MONITOR_ALERT_MODE.prioritary ? "prioritary" : "filter")}
+              />
+            </OperationalFilterGroup>
+            <OperationalFilterGroup label="Fonte" showDivider>
+              <ZabbixSourceFilter
+                value={selectedDatasources[0] || "all"}
+                options={facets?.datasources ?? []}
+                onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])}
+                triggerClassName="h-9"
+              />
+            </OperationalFilterGroup>
+            <OperationalFilterGroup label="Período" showDivider>
+              {MONITOR_WINDOW_OPTIONS.map((preset) => (
+                <Button
+                  key={preset}
+                  type="button"
+                  size="sm"
+                  variant={homeWindow === preset ? "default" : "outline"}
+                  className={cn(OV_FILTER_CHIP, "h-9")}
+                  aria-pressed={homeWindow === preset}
+                  onClick={() => setMonitorWindow(preset)}
+                >
+                  {preset}
+                </Button>
+              ))}
+            </OperationalFilterGroup>
+            <Popover open={severityFilterOpen} onOpenChange={setSeverityFilterOpen}>
+              <PopoverTrigger asChild>
+                <Button type="button" variant="outline" size="sm" className={cn(OV_FILTER_CONTROL, "h-9 gap-2 px-2.5")} aria-expanded={severityFilterOpen}>
+                  Mais filtros
+                  <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-72 space-y-3 p-3">
+                <div className="space-y-1">
+                  <p className="ov-type-caption font-semibold uppercase tracking-wide text-muted-foreground">Severidades</p>
+                  {MONITOR_SEVERITY_CHIP_OPTIONS.map((option) => {
+                    const pressed = activeSeverities.includes(option.value);
+                    return (
+                      <Button key={option.value} type="button" variant="ghost" size="sm" className={cn("h-8 w-full justify-start border px-2 text-xs", pressed && "border-foreground/20 bg-muted/40", pressed && (option.value === "disaster" || option.value === "high") && "font-semibold")} aria-pressed={pressed} onClick={() => toggleSeverityChip(option.value)}>
+                        {option.label}
+                        {pressed ? <Check className="ml-auto h-3.5 w-3.5" aria-hidden="true" /> : null}
+                      </Button>
+                    );
+                  })}
+                </div>
+                <div className="space-y-1 border-t border-border/60 pt-3">
+                  <p className="ov-type-caption font-semibold uppercase tracking-wide text-muted-foreground">Ordenação</p>
+                  <Select value={queueSort} onValueChange={(value) => setQueueSort(parseMonitorQueueSort(value))}>
+                    <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-full px-2.5 text-xs")} aria-label="Ordenação da fila"><SelectValue placeholder="Mais recentes" /></SelectTrigger>
+                    <SelectContent align="start">{MONITOR_QUEUE_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border/60 pt-2">
+            <span className="ov-type-caption font-semibold uppercase tracking-wide text-muted-foreground">Fila</span>
+            <OperationalSegmentedControl
+              aria-label="Filtro rápido da fila"
+              value={alertMode}
+              onChange={setAlertMode}
+              options={[
+                { value: MONITOR_ALERT_MODE.prioritary, label: "Prioritários" },
+                { value: MONITOR_ALERT_MODE.all, label: "Todos" },
+              ]}
+            />
+          </div>
+        </section>
+
+        <div className="shrink-0 space-y-1">
+          <CompactMetricStrip aria-label="Severidades ativas na janela" items={severityStripItems} />
+          {sectionErrors.summary ? <p className="ov-typography-small text-[hsl(var(--ov-color-warning))]">{sectionErrors.summary}</p> : null}
+        </div>
+
         <div className={COMMAND_CENTER_GRID}>
           <Panel
-            title={`Fila · ${modeLabel} · ${windowLabel}`}
+            title={<SectionAccentTitle>Fila operacional</SectionAccentTitle>}
+            description={queuePanelDescription}
             error={sectionErrors.queue}
             onRetry={() => void refreshAll()}
             overflow={queueOverflowLabel(queueTotal, queueAlerts.length)}
             empty={queueEmpty}
             className="min-h-[24rem] min-[1440px]:min-h-0 min-[1440px]:flex-1"
             aside={(
-              <OperationalCta to={alertsHref}>Ver todos em Alertas</OperationalCta>
-            )}
-            toolbar={(
-              <>
-                <ClientFilterCombobox
-                  open={customerFilterOpen}
-                  onOpenChange={setCustomerFilterOpen}
-                  options={customerCards}
-                  selectedKeys={selectedCustomerKeys}
-                  selectedLabel={selectedCustomerLabel}
-                  onToggle={toggleCustomer}
-                  countNoun={customerFilterCountNoun(alertMode === MONITOR_ALERT_MODE.prioritary ? "prioritary" : "filter")}
-                />
-                <ZabbixSourceFilter
-                  value={selectedDatasources[0] || "all"}
-                  options={facets?.datasources ?? []}
-                  onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])}
-                />
-                <OperationalSegmentedControl
-                  aria-label="Modo da fila"
-                  value={alertMode}
-                  onChange={setAlertMode}
-                  options={[
-                    { value: MONITOR_ALERT_MODE.prioritary, label: "Prioritários" },
-                    { value: MONITOR_ALERT_MODE.all, label: "Todos" },
-                  ]}
-                />
-                <Popover open={severityFilterOpen} onOpenChange={setSeverityFilterOpen}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className={cn(OV_FILTER_CONTROL, "min-w-[9.5rem] max-w-[16rem] justify-between gap-2 px-2.5")}
-                      aria-label="Severidades"
-                      aria-expanded={severityFilterOpen}
-                      title={activeSeverities.map((s) => formatOneViewSeverityLabel(s)).join(", ")}
-                    >
-                      <span className="truncate text-left font-medium">
-                        {monitorSeverityTriggerLabel(activeSeverities)}
-                      </span>
-                      <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-56 space-y-1 p-2">
-                    <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Severidade
-                    </p>
-                    {MONITOR_SEVERITY_CHIP_OPTIONS.map((option) => {
-                      const pressed = activeSeverities.includes(option.value);
-                      return (
-                        <Button
-                          key={option.value}
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className={cn(
-                            "h-8 w-full justify-start border px-2 text-xs",
-                            pressed && "border-foreground/20 bg-muted/40",
-                            pressed && (option.value === "disaster" || option.value === "high") && "font-semibold",
-                          )}
-                          aria-pressed={pressed}
-                          onClick={() => toggleSeverityChip(option.value)}
-                        >
-                          {option.label}
-                          {pressed ? <Check className="ml-auto h-3.5 w-3.5" aria-hidden="true" /> : null}
-                        </Button>
-                      );
-                    })}
-                  </PopoverContent>
-                </Popover>
-                <div className="flex items-center gap-1.5">
-                  <span className="hidden text-[10px] font-semibold uppercase tracking-wide text-muted-foreground lg:inline">
-                    Ordenação
-                  </span>
-                  <Select
-                    value={queueSort}
-                    onValueChange={(value) => setQueueSort(parseMonitorQueueSort(value))}
-                  >
-                    <SelectTrigger
-                      className={cn(OV_FILTER_CONTROL, "h-8 min-w-[10.5rem] max-w-[14rem] px-2.5 text-xs")}
-                      aria-label="Ordenação da fila"
-                    >
-                      <SelectValue placeholder="Mais recentes" />
-                    </SelectTrigger>
-                    <SelectContent align="start">
-                      {MONITOR_QUEUE_SORT_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <OperationalFilterGroup label="Janela temporal">
-                  {MONITOR_WINDOW_OPTIONS.map((preset) => (
-                    <Button
-                      key={preset}
-                      type="button"
-                      size="sm"
-                      variant={homeWindow === preset ? "default" : "outline"}
-                      className={OV_FILTER_CHIP}
-                      aria-pressed={homeWindow === preset}
-                      onClick={() => setMonitorWindow(preset)}
-                    >
-                      {preset}
-                    </Button>
-                  ))}
-                </OperationalFilterGroup>
-              </>
+              <div className="inline-flex items-center gap-2">
+                <span className="ov-type-caption font-semibold tabular-nums text-muted-foreground">{formatNullableCount(queueTotal)} na fila</span>
+                <OperationalCta to={alertsHref}>Ver todos em Alertas</OperationalCta>
+              </div>
             )}
           >
-            <div className="flex h-full min-h-0 flex-col gap-1.5">
-              <div className="shrink-0 space-y-1">
-                <CompactMetricStrip
-                  aria-label="Severidades ativas na janela"
-                  items={severityStripItems}
-                />
-                {sectionErrors.summary ? (
-                  <p className="ov-typography-small text-[hsl(var(--ov-color-warning))]">{sectionErrors.summary}</p>
-                ) : null}
-              </div>
+            <div className="flex h-full min-h-0 flex-col">
               {!hasLoaded && !queueAlerts.length ? (
                 <p className="py-2 text-center text-sm text-muted-foreground">Carregando…</p>
               ) : !queueAlerts.length ? (
@@ -1541,7 +1511,8 @@ export default function MonitoringPage() {
           </Panel>
 
           <Panel
-            title={unassignedPanelTitle}
+            title={<SectionAccentTitle>Chamados</SectionAccentTitle>}
+            description={unassignedPanelTitle}
             error={sectionErrors.incidents}
             onRetry={() => void refreshAll()}
             overflow={queueOverflowLabel(unassignedTotal, unassignedIncidents.length)}

@@ -165,6 +165,57 @@ export function parseSortOptionKey(value: string | null): { sort: AlertsSortKey;
   return { sort: sort as AlertsSortKey, order };
 }
 
+export const DEFAULT_ALERTS_FETCH = {
+  view: "recent",
+  status: "active" as const,
+  dateField: "first_seen" as const,
+  datePreset: "24h" as const,
+  sort: "first_seen_at" as const,
+  order: "desc" as const,
+  page: 1,
+  pageSize: 50,
+};
+
+export function defaultAlertsFetchParams(now = Date.now()): FetchAlertsParams {
+  return applyDateFieldToFetchParams({
+    page: DEFAULT_ALERTS_FETCH.page,
+    pageSize: DEFAULT_ALERTS_FETCH.pageSize,
+    status: DEFAULT_ALERTS_FETCH.status,
+    sort: DEFAULT_ALERTS_FETCH.sort,
+    order: DEFAULT_ALERTS_FETCH.order,
+  }, DEFAULT_ALERTS_FETCH.dateField, alertsDateBounds(DEFAULT_ALERTS_FETCH.datePreset, undefined, now));
+}
+
+export function isDefaultAlertsWarmQuery(state: {
+  view?: string;
+  status: string;
+  dateField: string;
+  datePreset: string;
+  sort: string;
+  order: string;
+  page: number;
+  pageSize: number;
+  customers: string[];
+  datasources?: string[];
+  severities: string[];
+  acknowledgedSource: string;
+  search: string;
+}) {
+  return (state.view ?? DEFAULT_ALERTS_FETCH.view) === DEFAULT_ALERTS_FETCH.view
+    && state.status === DEFAULT_ALERTS_FETCH.status
+    && state.dateField === DEFAULT_ALERTS_FETCH.dateField
+    && state.datePreset === DEFAULT_ALERTS_FETCH.datePreset
+    && state.sort === DEFAULT_ALERTS_FETCH.sort
+    && state.order === DEFAULT_ALERTS_FETCH.order
+    && state.page === DEFAULT_ALERTS_FETCH.page
+    && state.pageSize === DEFAULT_ALERTS_FETCH.pageSize
+    && state.customers.length === 0
+    && !(state.datasources?.length)
+    && state.severities.length === 0
+    && state.acknowledgedSource === "all"
+    && !state.search.trim();
+}
+
 export type AlertsUrlState = {
   view?: string;
   customers: string[];

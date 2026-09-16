@@ -6,8 +6,10 @@ import {
   IncidentListResponse,
   OneViewAlert,
   OneViewIncident,
+  bucketOneViewReadNow,
   fetchAlerts,
   fetchIncidents,
+  type FetchAlertsParams,
 } from "@/lib/oneview-api";
 import { isoAgo } from "@/lib/oneview-recent";
 
@@ -149,10 +151,62 @@ export type HomeAlertsResult = {
   checked_at?: string;
 };
 
+export function homeAlertsFetchParams(params: {
+  mode: HomeAlertMode;
+  severity?: string | null;
+  customers?: string[];
+  datasources?: string[];
+  status?: HomeAlertStatus;
+  limit?: number;
+  windowMs: number;
+  now?: number;
+}): FetchAlertsParams {
+  const now = params.now ?? bucketOneViewReadNow();
+  const limit = Math.min(Math.max(params.limit ?? HOME_ALERTS_PAGE_SIZE, 1), 50);
+  const severities = resolveHomeAlertSeverities(params.mode, params.severity);
+  return {
+    page: 1,
+    pageSize: limit,
+    severities: [...severities],
+    customers: params.customers?.length ? params.customers : undefined,
+    datasources: params.datasources?.length ? params.datasources : undefined,
+    status: params.status ?? "active",
+    firstSeenFrom: isoAgo(params.windowMs, now),
+    sort: "first_seen_at",
+    order: "desc",
+    excludeOperator: true,
+  };
+}
+
+export function defaultHomeAlertsFetchParams(now = bucketOneViewReadNow()): FetchAlertsParams {
+  return homeAlertsFetchParams({
+    mode: DEFAULT_HOME_ALERT_MODE,
+    status: "active",
+    limit: HOME_ALERTS_PAGE_SIZE,
+    windowMs: homeOperationalWindowMs(DEFAULT_HOME_OPERATIONAL_WINDOW),
+    now,
+  });
+}
+
 /**
  * Alertas ativos na janela da Home (OV-P0-69).
  * Distinto de fetchRecentPriorityAlerts (Monitoramento = disaster/high sem ACK).
  */
+export function homeAlertsResultFromResponse(response: {
+  items?: OneViewAlert[] | null;
+  pagination?: { total_items?: number } | null;
+  data_source?: string;
+  checked_at?: string;
+}, limit = HOME_ALERTS_PAGE_SIZE): HomeAlertsResult {
+  const items = [...(response.items ?? [])].sort(compareHomeAlerts).slice(0, limit);
+  return {
+    items,
+    total: Number(response.pagination?.total_items) || items.length,
+    data_source: response.data_source,
+    checked_at: response.checked_at,
+  };
+}
+
 export async function fetchHomeAlerts(params: {
   mode: HomeAlertMode;
   severity?: string | null;
@@ -164,31 +218,12 @@ export async function fetchHomeAlerts(params: {
   signal?: AbortSignal;
   now?: number;
 }): Promise<HomeAlertsResult> {
-  const now = params.now ?? Date.now();
-  const limit = Math.min(Math.max(params.limit ?? HOME_ALERTS_PAGE_SIZE, 1), 50);
-  const severities = resolveHomeAlertSeverities(params.mode, params.severity);
+  const request = homeAlertsFetchParams(params);
   const response = await fetchAlerts({
-    page: 1,
-    pageSize: limit,
-    severities: [...severities],
-    customers: params.customers?.length ? params.customers : undefined,
-    datasources: params.datasources?.length ? params.datasources : undefined,
-    status: params.status ?? "active",
-    firstSeenFrom: isoAgo(params.windowMs, now),
-    sort: "first_seen_at",
-    order: "desc",
-    excludeOperator: true,
+    ...request,
     signal: params.signal,
   });
-  const items = [...(response.items ?? [])]
-    .sort(compareHomeAlerts)
-    .slice(0, limit);
-  return {
-    items,
-    total: Number(response.pagination?.total_items) || items.length,
-    data_source: response.data_source,
-    checked_at: response.checked_at,
-  };
+  return homeAlertsResultFromResponse(response, request.pageSize ?? HOME_ALERTS_PAGE_SIZE);
 }
 
 /**

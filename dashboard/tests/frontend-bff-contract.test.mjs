@@ -73,7 +73,8 @@ test("um único controle coordena refresh e timers sem Pausar", async () => {
   assert.match(alerts, /if \(document\.hidden\) return/);
   assert.doesNotMatch(alerts, /topbarRightSection=\{<PlatformHealthStrip/);
   assert.doesNotMatch(alerts, /showHealthStrip=\{false\}/);
-  assert.match(alerts, /<PageHeader title="Alertas" aside=\{clientSelector\}/);
+  assert.match(alerts, /<PageHeader title="Alertas" \/>/);
+  assert.match(alerts, /<ClientFilterCombobox[\s\S]*triggerClassName="ov-control-official h-9 w-full"/);
   assert.match(alerts, /enableAutoRefresh=\{false\}/);
   assert.doesNotMatch(alerts, /aria-label="Atualizar dados"/);
   assert.doesNotMatch(alerts, /Atualizar dados em segundo plano|Atualizar agora/);
@@ -83,11 +84,10 @@ test("um único controle coordena refresh e timers sem Pausar", async () => {
   assert.doesNotMatch(appLayout, /Pausar|Retomar|setIsPaused|isPaused|initiallyPaused/);
   assert.match(appLayout, /PlatformHealthStrip/);
   assert.doesNotMatch(alerts, /PlatformHealthStrip/);
-  assert.match(alerts, /sortableHeader\("Severidade", "severity"\)/);
-  assert.match(alerts, /sortableHeader\("Host", "host"\)/);
-  assert.match(alerts, /sortableHeader\("Início", "first_seen_at"\)/);
-  assert.match(alerts, /sortableHeader\("ACK", "acknowledged_source"\)/);
-  assert.match(alerts, /sortableHeader\("Estado", "status"\)/);
+  assert.match(alerts, /ALERTS_COLUMN_SORT_FIELD/);
+  assert.match(alerts, /severity: "severity"/);
+  assert.match(alerts, /host: "host"/);
+  assert.match(alerts, /sortableHeader\(meta\.label, sortFieldForColumn\)/);
   assert.doesNotMatch(alerts, /sortableHeader\("Cliente", "client"\)/);
   assert.doesNotMatch(alerts, /sortableHeader\("Fonte", "datasource"\)/);
   assert.match(alerts, /ALERTS_SORT_OPTIONS/);
@@ -131,9 +131,9 @@ test("filtros ficam na barra e continuam server-side", async () => {
   assert.match(query, /"15m"/);
   assert.match(alerts, /Personalizado/);
   assert.match(alerts, /toggleColumnSort/);
-  assert.match(alerts, /sortableHeader\("Host", "host"\)/);
-  assert.match(alerts, /sortableHeader\("Severidade", "severity"\)/);
-  assert.match(alerts, /sortableHeader\("Problema", "problem"\)/);
+  assert.match(alerts, /renderTableHeader/);
+  assert.match(alerts, /ALERTS_COLUMN_SORT_FIELD/);
+  assert.match(alerts, /problem: "problem"/);
   assert.match(alerts, /aria-label="Campo de busca"/);
   assert.match(alerts, /aria-label="Busca server-side"/);
   assert.match(alerts, /aria-label="ACK da origem"/);
@@ -156,7 +156,7 @@ test("filtros temporais usam um campo, persistem na URL e atualizam os cards", a
   assert.match(alerts, /applySearchToFetchParams/);
   assert.match(alerts, /alertsDateBounds\(datePreset, dateRange, requestTime\)/);
   assert.match(alerts, /request\.firstSeenTo = dateBounds\.to/);
-  assert.match(alerts, /const requestTime = Date\.now\(\)/);
+  assert.match(alerts, /const requestTime = bucketOneViewReadNow\(\)/);
   assert.match(alerts, /writeAlertsUrlParams/);
   assert.match(alerts, /setSearchParams\(next, \{ replace: true \}\)/);
   assert.match(alerts, /setDatePreset\("all"\)/);
@@ -282,7 +282,7 @@ test("OV-P0-26 saúde Teletex-only e shell denso sem zoom/scale", async () => {
   assert.match(sidebar, /w-14/);
   assert.doesNotMatch(sidebar, /w-20 hover:w-64/);
   assert.match(topbar, /min-h-10/);
-  assert.match(pageHeader, /text-xl font-semibold/);
+  assert.match(pageHeader, /SectionAccentTitle level=\{1\}>\{title\}<\/SectionAccentTitle>/);
   assert.match(metricStrip, /min-w-\[5\.5rem\]/);
   assert.match(filterBar, /ov-panel p-2\.5/);
   assert.match(index, /gap-3 p-3 lg:px-4/);
@@ -305,8 +305,8 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
     read("src/components/layout/Sidebar.tsx"),
     read("src/pages/Historico.tsx"),
   ]);
-  assert.match(index, /Início|Visão operacional|Resumo geral da operação Teletex/);
-  assert.match(index, /Dados da fonte Teletex|Resumo geral da operação Teletex/);
+  assert.match(index, /SectionAccentTitle level=\{1\}>Início/);
+  assert.match(index, /Visão geral da operação Teletex/);
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);
   assert.match(index, /homeOperationalWindowActiveLabel/);
   assert.doesNotMatch(index, /Total persistido|Em acompanhamento no OneView|active_total/);
@@ -315,7 +315,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /Disaster sem ACK · \$\{windowLabel\}/);
   assert.doesNotMatch(index, /ACK realizados · \$\{windowLabel\}/);
   assert.doesNotMatch(index, /title: "Última sincronização"/);
-  assert.match(index, /title="Alertas Recentes"|Prioritários/);
+  assert.match(index, /SectionAccentTitle>Alertas recentes|Prioritários/);
   assert.match(index, /Eventos recentes/);
   assert.doesNotMatch(index, /Atenção necessária/);
   assert.doesNotMatch(index, /Clientes mais impactados/);
@@ -347,7 +347,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /OneView:|Nunca tratado|Reconhecimentos OneView hoje|Críticos \/ Altos|Críticos sem ACK|>Esquecidos<|>Fora do radar<|>Desastres recentes</);
   assert.doesNotMatch(index, /disponibilidade\s*100%|disponibilidade 100|uptime\s*100%/i);
   assert.doesNotMatch(index, /PgBouncer|mock-data|demo-oneview-data|RITM\d+|INC\d+/i);
-  assert.ok(index.indexOf('title="Alertas Recentes"') < index.indexOf("Eventos recentes"));
+  assert.ok(index.indexOf("Alertas recentes") < index.indexOf("Eventos recentes"));
   assert.ok(index.indexOf("incidentsPanelTitle") < index.indexOf("Eventos recentes"));
   assert.doesNotMatch(index, /A integração com o ServiceNow está em preparação\.|Abrir área de chamados/);
   assert.doesNotMatch(index, /SyncsStatusPanel|PlatformHealthStrip/);
@@ -358,8 +358,10 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /dataSource=\{currentDataSource\}|checkedAt=\{lastCheckedAt\}/);
   assert.match(index, /Abrir resumo de \$\{/);
   assert.match(index, /fetchHomeAlerts|status: "active"/);
-  assert.match(index, /title=\{incidentsPanelTitle\}/);
-  assert.match(index, /title="Links"/);
+  assert.match(index, /description=\{incidentsPanelTitle\}/);
+  assert.match(index, /Contexto operacional[\s\S]*Atualizado:/);
+  assert.match(index, /CompactMetricStrip[\s\S]*surface=\{false\}/);
+  assert.match(index, /title="Links de operadoras"/);
   assert.match(app, /path="\/historico"/);
   assert.match(app, /HistoricoPage/);
   assert.match(sidebar, /name: "Histórico"/);
@@ -367,7 +369,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.match(sidebar, /icon: "history"/);
   assert.ok(sidebar.indexOf('href: "/alertas"') < sidebar.indexOf('href: "/historico"'));
   assert.doesNotMatch(sidebar, /name: "Histórico", href: "\/alertas"/);
-  assert.match(historico, /ov-type-page-title text-foreground">Histórico</);
+  assert.match(historico, /SectionAccentTitle level=\{1\}>Histórico<\/SectionAccentTitle>/);
   assert.match(historico, /TabsTrigger value="alertas"/);
   assert.match(historico, /TabsTrigger value="eventos"/);
   assert.match(historico, /fetchAlerts/);
@@ -562,7 +564,7 @@ test("OV-P0-20 navegação operacional diferencia Monitoramento, Alertas e Hist�
   assert.doesNotMatch(sidebar, /bg-sky-500\/15|text-sky-200|bg-sky-400/);
   assert.doesNotMatch(sidebar, /h-7 w-1/);
   assert.match(sidebar, /hover:bg-sidebar-accent/);
-  assert.match(sidebar, /focus-visible:ring-2/);
+  assert.match(sidebar, /focus-visible:ring-1|focus-visible:ring-2/);
   assert.match(sidebar, /aria-label=\{secondary \? `\$\{name\}\. \$\{secondary\}` : name\}/);
   assert.doesNotMatch(sidebar, /alerts_count|badgeCount|total_items|contagem/i);
   assert.doesNotMatch(sidebar, /href: "\/monitoramento"[\s\S]*href: "\/alertas"[\s\S]*className=\{\(\{ isActive \}\) =>\s*cn\(\s*"group\/link relative flex items-center justify-center h-12 w-12 rounded-full/);
@@ -639,7 +641,7 @@ test("OV-P0-19/38 Monitoramento NOC com Sidebar real, sem scroll e com janela re
 
   assert.doesNotMatch(monitoring, /Fonte Teletex|Banco em tempo real|Contingência/);
   assert.match(monitoring, /selectedCustomerKeys/);
-  assert.match(monitoring, /fetchOneViewFacets/);
+  assert.match(monitoring, /getOneViewFacets|fetchOneViewFacets/);
   assert.match(monitoring, /ClientIdentity|canonicalClientName|facetCustomerDisplayName|Cliente/);
   assert.match(monitoring, /formatOneViewSeverityLabel/);
   assert.match(monitoring, /buildMonitoringAlertHref|\/alertas\?alert=/);
@@ -779,8 +781,8 @@ test("alertas preserva a normalização canônica de severidade Zabbix", async (
   assert.match(alerts, /const severityOrder: OneViewSeverity\[\] = \[\.\.\.ONEVIEW_V1_FILTER_SEVERITIES\]/);
   assert.match(alerts, /writeAlertsUrlParams|selectedSeverities/);
   assert.doesNotMatch(alerts, /rawSeverities|next\.append\("priority"/);
-  assert.match(alerts, /sortableHeader\("Severidade", "severity"\)/);
-  assert.match(alerts, />Ações<\/TableHead>/);
+  assert.match(alerts, /renderTableHeader/);
+  assert.match(alerts, /ALERTS_TABLE_COLUMN_META/);
   assert.doesNotMatch(alerts, /<UserCheck className="h-3\.5 w-3\.5" \/> ACK<\/Button>/);
   assert.doesNotMatch(alerts, /Informativo \(baixa prioridade\)|>Severidade<\/TableHead>/);
   assert.doesNotMatch(alerts, /acknowledged_internal_comment \? <p className="mt-1 line-clamp-2/);
@@ -896,14 +898,15 @@ test("coluna IP sanitizada permanece no drawer e fora da tabela operacional", as
 });
 
 test("tabela reserva espaço para ACK e ações; sidebar com toggle de tema", async () => {
-  const [alerts, sidebar] = await Promise.all([
+  const [alerts, columns, sidebar] = await Promise.all([
     read("src/pages/Alerts.tsx"),
+    read("src/lib/alerts-table-columns.ts"),
     read("src/components/layout/Sidebar.tsx"),
   ]);
-  assert.match(alerts, /sortableHeader\("Severidade", "severity"\)/);
-  assert.match(alerts, /sortableHeader\("Início", "first_seen_at"\)/);
-  assert.match(alerts, />Cliente</);
-  assert.match(alerts, />Chamado</);
+  assert.match(alerts, /renderTableHeader/);
+  assert.match(alerts, /first_seen_at: "first_seen_at"/);
+  assert.match(columns, /client: \{ label: "Cliente"/);
+  assert.match(columns, /incident: \{ label: "Chamado"/);
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(alerts, /Reconhecido por \$\{ack\.actorLabel\}/);
   assert.doesNotMatch(alerts, /Integração ServiceNow em preparação/);
@@ -1113,7 +1116,7 @@ test("fila operacional /alertas cobre contrato OV-P0-07", async () => {
   assert.doesNotMatch(alerts, /RITM\d+|SLA vencido|Sem chamado/);
   assert.doesNotMatch(alerts, /Integração ServiceNow em preparação/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
-  assert.match(alerts, />Chamado</);
+  assert.match(await read("src/lib/alerts-table-columns.ts"), /incident: \{ label: "Chamado"/);
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
 
@@ -1942,9 +1945,9 @@ test("OV-P0-42A Home: faixa de 5 severidades via filtered_summary (1 consulta)",
   assert.match(index, /AlertDetailDrawer/);
   assert.match(index, /open=\{selectedAlertId !== null\}/);
   assert.match(index, /HOME_ALERTS_PAGE_SIZE|fetchHomeAlerts/);
-  assert.match(index, /fetchOneViewFacets/);
+  assert.match(index, /getOneViewFacets|fetchOneViewFacets/);
   assert.doesNotMatch(index, /pageSize:\s*100|while\s*\(.*page|fetchAlerts\(\{[\s\S]*pageSize:\s*total/i);
-  assert.match(index, /fetchOneViewFacets|clients-summary/);
+  assert.match(index, /getOneViewFacets|fetchOneViewFacets|clients-summary/);
   assert.doesNotMatch(index, /for \(const alert of homeAlerts\)|for \(const alert of priorityAlerts\)/);
 
   assert.match(recent, /params\?\.windowMs != null/);
@@ -2025,7 +2028,7 @@ test("OV-P0-42B clients-summary windowed permanece no BFF/API (Home V2 remove ra
   // OV-P0-69: Home não renderiza mais "Clientes mais impactados"; filtro usa facets.
   assert.doesNotMatch(index, /Clientes mais impactados/);
   assert.doesNotMatch(index, /fetchClientsTopSummary/);
-  assert.match(index, /fetchOneViewFacets/);
+  assert.match(index, /getOneViewFacets|fetchOneViewFacets/);
   assert.match(index, /ClientFilterCombobox/);
   assert.doesNotMatch(index, /for \(const alert of priorityAlerts\)/);
   assert.doesNotMatch(index, /Prioridade · janela/);
@@ -2051,17 +2054,20 @@ test("OV-P0-42B-VALIDATION: contrato windowed inválido permanece no client API"
 });
 
 test("OV-P0-41 Alertas: faixa de 5 severidades, Cliente na tabela, Chamado via referência SN", async () => {
-  const alerts = await read("src/pages/Alerts.tsx");
+  const [alerts, columns] = await Promise.all([
+    read("src/pages/Alerts.tsx"),
+    read("src/lib/alerts-table-columns.ts"),
+  ]);
   assert.match(alerts, /VISUAL_SEVERITY_STRIP/);
   assert.match(alerts, /"information",\s*"warning",\s*"average",\s*"high",\s*"disaster"/);
   assert.doesNotMatch(alerts, /Severidade fora da faixa visual/);
   assert.match(alerts, /notClassifiedCard/);
   assert.match(alerts, /setSelectedSeverities\(\(current\) => \(/);
   assert.match(alerts, /severities: selectedSeverities/);
-  assert.match(alerts, />Cliente</);
+  assert.match(columns, /client: \{ label: "Cliente"/);
   assert.match(alerts, /ClientIdentity/);
   assert.match(alerts, /TooltipContent/);
-  assert.match(alerts, />Chamado</);
+  assert.match(columns, /incident: \{ label: "Chamado"/);
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(alerts, /title: "Em acompanhamento"/);
   assert.match(alerts, /title: "Reconhecidos"/);
@@ -2124,7 +2130,10 @@ test("OV-P0-43 Monitoramento alinha faixa de severidades, janela e fila única",
   assert.doesNotMatch(monitoring, /formatOneViewSeverityLabel\("not_classified"\)/);
   assert.match(monitoring, /formatNullableCount/);
   assert.match(monitoring, /parseMonitorWindow\(searchParams\.get\("window"\)\)/);
-  assert.match(monitoring, /label="Janela temporal"|Janela temporal/);
+  assert.match(monitoring, /label="Período"|Período/);
+  assert.match(monitoring, /aria-label="Filtros operacionais"[\s\S]*Mais filtros[\s\S]*Filtro rápido da fila/);
+  assert.match(monitoring, /SectionAccentTitle>Fila operacional<\/SectionAccentTitle>[\s\S]*description=\{queuePanelDescription\}/);
+  assert.match(monitoring, /SectionAccentTitle>Chamados<\/SectionAccentTitle>[\s\S]*description=\{unassignedPanelTitle\}/);
   assert.match(monitoring, /MONITOR_WINDOW_OPTIONS\.map/);
   assert.match(monitoring, /fetchRecentOperationalMetrics\(\{ customers, datasources, signal: controller\.signal, now, windowMs \}\)/);
   assert.match(monitoring, /fetchMonitoringAlerts/);
@@ -2190,11 +2199,12 @@ test("OV-P0-45 cabeçalhos padronizados na Topbar", async () => {
     read("src/components/layout/Topbar.tsx"),
   ]);
 
-  assert.match(index, /ov-typography-page-title text-foreground">Início</);
-  assert.match(alerts, /<PageHeader title="Alertas" aside=\{clientSelector\}/);
-  assert.match(historico, /ov-type-page-title text-foreground">Histórico</);
-  assert.match(monitoring, /ov-typography-page-title text-foreground">Monitoramento</);
-  assert.match(chamados, /ov-typography-page-title text-foreground">Chamados</);
+  assert.match(index, /SectionAccentTitle level=\{1\}>Início/);
+  assert.match(alerts, /<PageHeader title="Alertas" \/>/);
+  assert.match(alerts, /<ClientFilterCombobox[\s\S]*triggerClassName="ov-control-official h-9 w-full"/);
+  assert.match(historico, /SectionAccentTitle level=\{1\}>Histórico<\/SectionAccentTitle>/);
+  assert.match(monitoring, /SectionAccentTitle level=\{1\}>Monitoramento<\/SectionAccentTitle>/);
+  assert.match(chamados, /SectionAccentTitle level=\{1\}>Chamados<\/SectionAccentTitle>/);
   assert.doesNotMatch(index, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.doesNotMatch(historico, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.match(alerts, /from "@\/components\/oneview\/PageHeader"/);

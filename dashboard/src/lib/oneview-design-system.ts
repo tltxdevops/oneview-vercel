@@ -1,7 +1,7 @@
-export const ONEVIEW_OPERATIONAL_UI_V1 = {
-  name: "OneView Operational UI",
+export const ONEVIEW_OPERATIONAL_UI_V1_1 = {
+  name: "OneView Operational UI v1.1",
   status: "frozen",
-  statement: "ONEVIEW OPERATIONAL UI IS FROZEN FOR V1",
+  statement: "ONEVIEW OPERATIONAL UI v1.1 IS FROZEN",
   adoption: [
     "Reutilizar token oficial.",
     "Reutilizar componente oficial.",
@@ -10,6 +10,9 @@ export const ONEVIEW_OPERATIONAL_UI_V1 = {
   extensionPolicy: "Se não existir solução, atualizar primeiro /ui-kit e depois consumir na página.",
   legacyPolicy: "Legacy permanece somente por compatibilidade e não deve ser usado em código novo.",
 } as const;
+
+/** @deprecated Use ONEVIEW_OPERATIONAL_UI_V1_1. */
+export const ONEVIEW_OPERATIONAL_UI_V1 = ONEVIEW_OPERATIONAL_UI_V1_1;
 
 export const ONEVIEW_COLOR_TOKENS = [
   ["background", "--ov-color-background"],
@@ -20,6 +23,7 @@ export const ONEVIEW_COLOR_TOKENS = [
   ["text-secondary", "--ov-color-text-secondary"],
   ["text-muted", "--ov-color-text-muted"],
   ["primary", "--ov-color-primary"],
+  ["accent-blue", "--ov-color-accent-blue"],
   ["success", "--ov-color-success"],
   ["warning", "--ov-color-warning"],
   ["danger", "--ov-color-danger"],
@@ -56,15 +60,22 @@ export const ONEVIEW_ICON_RULES = [
 ] as const;
 
 export const ONEVIEW_TYPOGRAPHY_TOKENS = [
-  { name: "PAGE TITLE", className: "ov-type-page-title", specification: "20px / 600" },
-  { name: "SECTION TITLE", className: "ov-type-section-title", specification: "16px / 600" },
-  { name: "BODY", className: "ov-type-body", specification: "14px / 400" },
-  { name: "SECONDARY", className: "ov-type-secondary", specification: "13px / 400" },
-  { name: "CAPTION", className: "ov-type-caption", specification: "12px / 400" },
-  { name: "METRIC", className: "ov-type-metric", specification: "24px / 700" },
+  { name: "PAGE TITLE", className: "ov-type-page-title", specification: "JetBrains Mono · 20px / 600" },
+  { name: "SECTION TITLE", className: "ov-type-section-title", specification: "JetBrains Mono · 16px / 600" },
+  { name: "BODY", className: "ov-type-body", specification: "Lato · 14px / 400" },
+  { name: "SECONDARY", className: "ov-type-secondary", specification: "Lato · 13px / 400" },
+  { name: "CAPTION", className: "ov-type-caption", specification: "Lato · 12px / 400" },
+  { name: "METRIC", className: "ov-type-metric", specification: "JetBrains Mono · 24px / 700" },
 ] as const;
 
 export const ONEVIEW_BUTTON_VARIANTS = ["Primary", "Secondary", "Ghost", "Danger"] as const;
+
+export const ONEVIEW_ACTION_COLORS = {
+  Primary: "black",
+  Secondary: "neutral surface",
+  Ghost: "transparent",
+  Danger: "red",
+} as const;
 
 export const ONEVIEW_TABLE_RULE = {
   headerHeight: "40px",
@@ -84,6 +95,7 @@ export const ONEVIEW_LAYOUT_RULES = {
 export const ONEVIEW_DESIGN_RULES = [
   "Neutral surface first.",
   "Black is primary action.",
+  "Accent blue is brand, navigation and selection — never a fifth action color.",
   "Color communicates state, not decoration.",
   "Controls use 8px radius.",
   "Surfaces use 12px radius.",
@@ -159,7 +171,21 @@ export const ONEVIEW_COMPONENT_RULES = {
   controls: "8px radius · 32px ou 36px · mesma altura no mesmo contexto",
   panel: "12px radius · 1px border · 16px padding · sem shadow",
   overlays: "Shadow somente em modal, drawer overlay, popover, dropdown e floating menu",
-  badges: "Pill radius · uso exclusivo para metadado, status, severity ou filter chip",
+  badges: "Pill radius · foreground forte · soft background · border · dot opcional de 6px",
+  feedback: "Soft background · indicador/ícone à esquerda · border · título · descrição opcional",
   tables: "Header 40px · row 48px · padding horizontal 16px · border-bottom neutra",
   filters: "Context filter · Search · Mais filtros; quick filters abaixo quando necessários",
 } as const;
+
+export type OneViewFeedbackTone = "success" | "warning" | "error" | "info";
+
+export const ONEVIEW_FEEDBACK_CATALOG: Record<OneViewFeedbackTone, {
+  label: string;
+  className: string;
+  icon: "feedbackSuccess" | "feedbackWarning" | "feedbackError" | "feedbackInfo";
+}> = {
+  success: { label: "Success message", className: "ov-feedback-success", icon: "feedbackSuccess" },
+  warning: { label: "Warning message", className: "ov-feedback-warning", icon: "feedbackWarning" },
+  error: { label: "Error message", className: "ov-feedback-error", icon: "feedbackError" },
+  info: { label: "Info message", className: "ov-feedback-info", icon: "feedbackInfo" },
+};

@@ -6,7 +6,8 @@ import { canonicalClientName, canonicalHostName } from "@/components/oneview/Cli
 
 const API_BASE_URL = "/api";
 /** OV-P0-279: same BFF read shares an in-flight promise and a brief route cache. */
-const READ_CACHE_TTL_MS = 8_000;
+export const ONEVIEW_READ_CACHE_TTL_MS = 8_000;
+const READ_CACHE_TTL_MS = ONEVIEW_READ_CACHE_TTL_MS;
 const READ_CACHE_STALE_TTL_MS = 5 * 60_000;
 const INCIDENT_DETAIL_TTL_MS = 60_000;
 type CachedRead<T = unknown> = { value: T; freshUntil: number; expiresAt: number };
@@ -33,6 +34,17 @@ export function invalidateOneViewReadCache(pathPrefix?: string) {
 }
 export function canShareOneViewRead(init?: RequestInit) {
   return (!init?.method || init.method.toUpperCase() === "GET") && !init?.signal;
+}
+
+export function bucketOneViewReadNow(now = Date.now()) {
+  return Math.floor(now / READ_CACHE_TTL_MS) * READ_CACHE_TTL_MS;
+}
+
+export function peekOneViewReadCache<T>(path: string, init?: RequestInit): T | null {
+  if (!path) return null;
+  const cached = readCache.get(oneViewReadCacheKey(path, init));
+  if (!cached || cached.freshUntil <= Date.now()) return null;
+  return cached.value as T;
 }
 
 function cacheReadValue<T>(key: string, value: T) {
@@ -84,14 +96,14 @@ export class OneViewApiError extends Error {
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   const method = String(init?.method || "GET").toUpperCase();
   const isRead = method === "GET";
-  // A Promise bound to one component's AbortSignal cannot be shared safely:
-  // unmounting that component would reject the next screen's identical GET.
+  // Only signal-free reads enter `inFlightReads`; a screen can safely reuse
+  // that prefetch without inheriting its own AbortSignal.
   const canShare = canShareOneViewRead(init);
   const key = oneViewReadCacheKey(path, init);
   const cached = isRead ? readCache.get(key) : undefined;
   const now = Date.now();
   if (cached && cached.freshUntil > now) return cached.value as T;
-  const shared = canShare ? inFlightReads.get(key) : undefined;
+  const shared = inFlightReads.get(key);
   if (shared) {
     if (cached && cached.expiresAt > now) {
       void shared.catch(() => undefined);
@@ -1020,7 +1032,7 @@ export interface FetchAlertsParams {
   signal?: AbortSignal;
 }
 
-export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
+export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   const search = new URLSearchParams();
   search.set("page", String(params?.page ?? 1));
   search.set("page_size", String(params?.pageSize ?? 50));
@@ -1052,9 +1064,12 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   if (params?.sortSecondary) search.set("sort_secondary", params.sortSecondary);
   if (params?.recurrenceKey) search.set("recurrence_key", params.recurrenceKey);
   if (params?.excludeOperator) search.set("exclude_operator", "true");
-
   const query = search.toString();
-  return fetchApi<AlertListResponse>(`/oneview/alerts${query ? `?${query}` : ""}`, { signal: params?.signal });
+  return `/oneview/alerts${query ? `?${query}` : ""}`;
+}
+
+export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
+  return fetchApi<AlertListResponse>(oneViewAlertsPath(params), { signal: params?.signal });
 }
 
 export async function fetchAlert(id: string, signal?: AbortSignal): Promise<AlertDetailResponse> {
@@ -1252,7 +1267,7 @@ export type IncidentListResponse = {
   };
 };
 
-export async function fetchIncidents(params?: {
+export type FetchIncidentsParams = {
   page?: number;
   pageSize?: number;
   callerId?: string;
@@ -1274,8 +1289,9 @@ export async function fetchIncidents(params?: {
   hasAssignee?: boolean;
   includeUnassigned?: boolean;
   signal?: AbortSignal;
-}): Promise<IncidentListResponse> {
-  // OV-P0-265: filtros allowlisted apenas; canal é enviado somente quando explícito na UI.
+};
+
+export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   const search = new URLSearchParams();
   search.set("page", String(Math.max(1, params?.page ?? 1)));
   search.set("page_size", String(Math.min(Math.max(params?.pageSize ?? 25, 1), 100)));
@@ -1298,9 +1314,13 @@ export async function fetchIncidents(params?: {
   if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.search) search.set("search", params.search);
   const query = search.toString();
-  return fetchApi<IncidentListResponse>(`/oneview/incidents${query ? `?${query}` : ""}`, {
-    signal: params?.signal,
-  });
+  return `/oneview/incidents${query ? `?${query}` : ""}`;
+}
+
+export const DEFAULT_INCIDENTS_FETCH_PARAMS: FetchIncidentsParams = { page: 1, pageSize: 25 };
+
+export async function fetchIncidents(params?: FetchIncidentsParams): Promise<IncidentListResponse> {
+  return fetchApi<IncidentListResponse>(oneViewIncidentsPath(params), { signal: params?.signal });
 }
 
 /** OV-P0-262A — possible duplicate groups (Snow Notifier-compatible, read-only). */
@@ -1669,11 +1689,24 @@ export type CanonicalLink = {
 };
 export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; recent_episodes?: Array<{ started_at: string | null; resolved_at: string | null; active: boolean; duration_seconds: number | null; incident_number: string | null; incident_sys_id: string | null; incident_state: string | null; source_trigger_ids: string[]; alert_titles: string[]; severities: string[] }>; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
 export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; normalized?: number; without_incident?: number; without_open_incident: number; with_open_incident: number; recurrent?: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
-export async function fetchCanonicalLinks(params?: Record<string, string | number | undefined> & { signal?: AbortSignal }): Promise<CanonicalLinksResponse> {
+export type CanonicalLinksQuery = Record<string, string | number | undefined> & { signal?: AbortSignal };
+export const DEFAULT_CANONICAL_LINKS_QUERY = {
+  tab: "open",
+  resolved_window: "today",
+  sort: "recent",
+  page: 1,
+  page_size: 50,
+} as const;
+
+export function oneViewLinksPath(params?: CanonicalLinksQuery): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params || {})) if (key !== "signal" && value !== undefined && value !== "" && value !== "all") search.set(key, String(value));
   if (!search.has("page")) search.set("page", "1"); if (!search.has("page_size")) search.set("page_size", "50");
-  return fetchApi<CanonicalLinksResponse>(`/oneview/links?${search}`, { signal: params?.signal });
+  return `/oneview/links?${search}`;
+}
+
+export async function fetchCanonicalLinks(params?: CanonicalLinksQuery): Promise<CanonicalLinksResponse> {
+  return fetchApi<CanonicalLinksResponse>(oneViewLinksPath(params), { signal: params?.signal });
 }
 export async function fetchCanonicalLinkDetail(link: Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id">, signal?: AbortSignal): Promise<CanonicalLinkDetail> {
   const query = new URLSearchParams({ data_source_id: link.data_source_id, source_host_id: link.source_host_id });
@@ -1999,8 +2032,10 @@ export async function fetchRuntimeHealth(signal?: AbortSignal): Promise<RuntimeH
   return fetchApi<RuntimeHealthResponse>("/oneview/runtime-health", { signal });
 }
 
+export const ONEVIEW_FACETS_PATH = "/oneview/clients-summary";
+
 export async function fetchOneViewFacets(signal?: AbortSignal): Promise<OneViewFacetsResponse> {
-  return fetchApi<OneViewFacetsResponse>("/oneview/clients-summary", { signal });
+  return fetchApi<OneViewFacetsResponse>(ONEVIEW_FACETS_PATH, { signal });
 }
 
 /** OV-P0-42B: top clientes ativos na janela (first_seen_at), server-side. */

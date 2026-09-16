@@ -72,7 +72,7 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     title: "Alertas recentes",
     minWidth: 5,
     minHeight: 4,
-    defaultSize: { width: 7, height: 5 },
+    defaultSize: { width: 7, height: 4 },
     allowedPages: ["home"],
   },
   {
@@ -80,7 +80,7 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     title: "Chamados",
     minWidth: 4,
     minHeight: 4,
-    defaultSize: { width: 5, height: 5 },
+    defaultSize: { width: 5, height: 4 },
     allowedPages: ["home", "monitoring"],
   },
   {
@@ -122,8 +122,8 @@ const TEMPLATE_WIDTHS: Record<OneViewDashboardTemplate, Record<string, Dashboard
   operational: {
     "operational-summary": { width: 12, height: 2 },
     health: { width: 4, height: 2 },
-    "recent-alerts": { width: 7, height: 5 },
-    incidents: { width: 5, height: 5 },
+    "recent-alerts": { width: 7, height: 4 },
+    incidents: { width: 5, height: 4 },
     "failed-links": { width: 4, height: 4 },
     "recent-events": { width: 8, height: 4 },
     "monitoring-queue": { width: 8, height: 6 },

@@ -15,7 +15,10 @@ test("OV-UI-KIT: centraliza tokens, tema e catálogo semântico", () => {
     "--ov-color-surface-muted",
     "--ov-color-border",
     "--ov-color-text-primary",
+    "--ov-color-accent-blue",
     "--ov-color-recurrence",
+    "--ov-font-body",
+    "--ov-font-technical",
     "--ov-radius-control",
     "--ov-radius-surface",
     "--ov-radius-pill",
@@ -61,7 +64,13 @@ test("OV-UI-KIT: prioriza decisões e patterns antes de primitives", () => {
     "SEMANTIC STATES",
     "ONEVIEW DESIGN RULES",
     "DESIGN DECISIONS",
+    "Typography",
+    "Accent",
+    "Title Signature",
+    "Navigation",
     "Buttons",
+    "Forms",
+    "Cards",
     "Inputs",
     "Select",
     "Search",
@@ -76,7 +85,8 @@ test("OV-UI-KIT: prioriza decisões e patterns antes de primitives", () => {
     "Dropdown",
     "Empty State",
     "Skeleton",
-    "Alert",
+    "Feedback",
+    "OLD / V1.1",
     "Health",
   ]) {
     assert.match(`${page}\n${sections}`, new RegExp(section.replace("/", "\\/")), `seção ausente: ${section}`);
@@ -90,14 +100,16 @@ test("OV-UI-KIT: prioriza decisões e patterns antes de primitives", () => {
     ["05", "Drawer"],
     ["06", "Dashboard"],
     ["07", "Form"],
+    ["09", "NOC Monitoring"],
   ]) assert.match(sections, new RegExp(`number="${number}" title="${title}"`), `pattern ausente: ${number} ${title}`);
 
-  for (const template of ["Operational List", "Dashboard", "History/Search", "Incident Queue", "Monitoring", "Settings/Form"]) {
+  for (const template of ["Operational List", "Dashboard", "History/Search", "Incident Queue", "NOC Monitoring", "Settings/Form"]) {
     assert.match(sections, new RegExp(template.replace("/", "\\/")), `template ausente: ${template}`);
   }
 
   assert.match(sections, /OneViewKpiCard/);
   assert.match(sections, /Control states[\s\S]*Default[\s\S]*Focus[\s\S]*Disabled/);
+  assert.match(sections, /NOC Monitoring[\s\S]*OperationalFilterBar, QuickFilters, SeverityStrip, NocGrid 60\/40, OperationalQueue e IncidentQueue/);
   assert.ok(page.indexOf('value: "patterns"') < page.indexOf('value: "components"'), "Patterns deve preceder Components");
   assert.doesNotMatch(`${page}\n${sections}`, /fetch\s*\(/, "UI Kit deve ser independente de dados e APIs");
   assert.doesNotMatch(`${page}\n${sections}`, /#[\da-fA-F]{3,8}\b/, "UI Kit não deve criar cores hex locais");
@@ -122,11 +134,14 @@ test("OV-UI-KIT: reduz decisões oficiais e isola compatibilidade legacy", () =>
   assert.equal((typographyBlock.match(/specification:/g) || []).length, 6);
   assert.doesNotMatch(typographyBlock, /card-title|table-row|table-header|small/);
   assert.match(catalog, /ONEVIEW_BUTTON_VARIANTS = \["Primary", "Secondary", "Ghost", "Danger"\]/);
+  assert.match(catalog, /ONEVIEW_ACTION_COLORS/);
   assert.doesNotMatch(sections, />Outline</);
   assert.doesNotMatch(sections, />Link</);
   assert.match(sections, /Legacy \/ compatibility[\s\S]*<details>/);
   assert.match(catalog, /ONEVIEW_SEVERITY_CATALOG/);
+  assert.match(catalog, /ONEVIEW_FEEDBACK_CATALOG/);
   assert.match(css, /\.ov-severity-badge/);
+  assert.match(css, /\.ov-feedback-success/);
   assert.match(css, /\.ov-surface-official[\s\S]*box-shadow:\s*none/);
 });
 
@@ -134,12 +149,36 @@ test("OV-UI-KIT: congela o contrato V1 e exige adoção na ordem oficial", () =>
   const catalog = read("src/lib/oneview-design-system.ts");
   const page = read("src/pages/UiKit.tsx");
 
-  assert.match(catalog, /ONEVIEW OPERATIONAL UI IS FROZEN FOR V1/);
+  assert.match(catalog, /ONEVIEW OPERATIONAL UI v1\.1 IS FROZEN/);
   assert.match(catalog, /status:\s*"frozen"/);
   assert.match(catalog, /Reutilizar token oficial\.[\s\S]*Reutilizar componente oficial\.[\s\S]*Reutilizar Pattern oficial\./);
   assert.match(catalog, /atualizar primeiro \/ui-kit e depois consumir na página/);
   assert.match(catalog, /Legacy permanece somente por compatibilidade/);
-  assert.match(page, /ONEVIEW_OPERATIONAL_UI_V1\.statement/);
+  assert.match(page, /ONEVIEW_OPERATIONAL_UI_V1_1\.statement/);
+});
+
+test("OV-UI-KIT v1.1: oficializa fontes, assinatura, accent e feedback sem novas escalas", () => {
+  const html = read("index.html");
+  const tailwind = read("tailwind.config.ts");
+  const css = read("src/styles/oneview-design-tokens.css");
+  const components = read("src/components/oneview/OneViewDesignSystem.tsx");
+  const sections = read("src/components/oneview/UiKitSections.tsx");
+
+  assert.match(html, /family=JetBrains\+Mono/);
+  assert.match(html, /family=Lato/);
+  assert.doesNotMatch(html, /Poppins/);
+  assert.match(tailwind, /sans:\s*\["Lato"/);
+  assert.match(tailwind, /mono:\s*\["JetBrains Mono"/);
+  assert.match(css, /\.ov-type-page-title\s*\{[^}]*var\(--ov-font-technical\)/);
+  assert.match(css, /\.ov-type-body\s*\{[^}]*var\(--ov-font-body\)/);
+  assert.match(css, /\.ov-semantic-badge-dot[\s\S]*0\.375rem/);
+  assert.match(components, /export function SectionAccentTitle/);
+  assert.match(components, /ov-title-signature-accent/);
+  assert.match(components, /export function SemanticBadge/);
+  assert.match(components, /export function OneViewFeedback/);
+  assert.match(sections, /Success message[\s\S]*Warning message[\s\S]*Error message[\s\S]*Info message/);
+  assert.match(sections, /Operational Overview[\s\S]*PageHeader, ContextBar, OperationalSummary, ActionGrid 60\/40/);
+  assert.match(sections, /Links de operadoras[\s\S]*Eventos recentes/);
 });
 
 test("OV-UI-KIT: rota é lazy, autenticada e prefetchable sem item na sidebar", () => {

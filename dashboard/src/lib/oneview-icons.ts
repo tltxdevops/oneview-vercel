@@ -2,8 +2,11 @@ import {
   Bell,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
+  CircleX,
   History,
   Home,
+  Info,
   LogOut,
   Monitor,
   Moon,
@@ -11,6 +14,7 @@ import {
   Settings,
   Sun,
   Ticket,
+  TriangleAlert,
   UserRound,
   type LucideIcon,
 } from "lucide-react";
@@ -31,6 +35,10 @@ export const ONEVIEW_ICON_MAP = {
   themeLight: Sun,
   sidebarExpand: ChevronRight,
   sidebarCollapse: ChevronLeft,
+  feedbackSuccess: CircleCheck,
+  feedbackWarning: TriangleAlert,
+  feedbackError: CircleX,
+  feedbackInfo: Info,
 } as const satisfies Record<string, LucideIcon>;
 
 export type OneViewIconName = keyof typeof ONEVIEW_ICON_MAP;

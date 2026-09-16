@@ -20,6 +20,8 @@ type CompactMetricStripProps = {
   items: CompactMetricItem[];
   footer?: ReactNode;
   className?: string;
+  /** Evita uma segunda surface quando o strip já está dentro de um painel. */
+  surface?: boolean;
   "aria-label"?: string;
 };
 
@@ -27,19 +29,20 @@ export function CompactMetricStrip({
   items,
   footer,
   className,
+  surface = true,
   "aria-label": ariaLabel = "Indicadores",
 }: CompactMetricStripProps) {
   return (
-    <section aria-label={ariaLabel} className={cn("ov-panel px-1 py-0.5", className)}>
+    <section aria-label={ariaLabel} className={cn(surface && "ov-panel", "px-1 py-0.5", className)}>
       <div className="flex flex-wrap items-stretch divide-x divide-border/60 md:flex-nowrap">
         {items.map((item) => {
           const content = (
             <>
-              <span className="max-w-full truncate text-center text-[11px] font-medium text-muted-foreground">{item.label}</span>
+              <span className="max-w-full truncate text-center ov-type-caption font-medium text-muted-foreground">{item.label}</span>
               {item.loading ? (
                 <Skeleton className="h-4 w-8" />
               ) : (
-                <span className="shrink-0 text-center text-sm font-semibold tabular-nums text-foreground">
+                <span className="shrink-0 text-center font-mono text-sm font-semibold tabular-nums text-foreground">
                   {item.value}
                 </span>
               )}
