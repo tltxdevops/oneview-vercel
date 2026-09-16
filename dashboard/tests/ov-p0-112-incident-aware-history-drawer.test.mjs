@@ -15,14 +15,14 @@ async function read(relativePath) {
 
 test("OV-P0-112 Histórico: colunas operacionais, ACK com ator/hora, linha abre drawer, sem Abrir", async () => {
   const historico = await read("src/pages/Historico.tsx");
-  assert.match(historico, /<TableHead>Cliente<\/TableHead>/);
-  assert.match(historico, /<TableHead>Severidade<\/TableHead>/);
-  assert.match(historico, /<TableHead>Host<\/TableHead>/);
-  assert.match(historico, /<TableHead>Problema<\/TableHead>/);
-  assert.match(historico, /<TableHead>Início<\/TableHead>/);
-  assert.match(historico, /<TableHead>ACK<\/TableHead>/);
-  assert.match(historico, /<TableHead>Chamado<\/TableHead>/);
-  assert.match(historico, /<TableHead>Estado<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Cliente<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Severidade<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Host<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Problema<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Início<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>ACK<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Chamado<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Estado<\/TableHead>/);
   assert.match(historico, /Pendente/);
   assert.match(historico, /text-muted-foreground.*formatWhen\(ackAt\)|formatWhen\(ackAt\)/);
   assert.match(historico, /AlertServiceNowReferenceCell/);

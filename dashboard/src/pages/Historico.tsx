@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { DateRange } from "react-day-picker";
 import { format, isSameDay, startOfDay, endOfDay, subDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { CalendarRange, History, Siren } from "lucide-react";
+import { CalendarRange, ChevronDown, History, ListFilter, Search, Siren, X } from "lucide-react";
 import {
   ClientIdentity,
   canonicalClientName,
@@ -16,13 +16,16 @@ import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceN
 import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { FilterBar } from "@/components/oneview/FilterBar";
-import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
-import { SectionPanel } from "@/components/oneview/SectionPanel";
+import {
+  OneViewButton,
+  OneViewPill,
+  OneViewSemanticStatusBadge,
+  OneViewTextAction,
+} from "@/components/oneview/OneViewDesignSystem";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -45,14 +48,17 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { OV_CTA, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   applyHistoryRiskPreset,
   HISTORY_RISK_PRESETS,
   isRiskSummaryPreset,
   type HistoryRiskPreset,
 } from "@/lib/historico-query";
-import { isDatasourceOnlyFilterValue, zabbixSourceKey } from "@/lib/oneview-zabbix-source";
+import {
+  isDatasourceOnlyFilterValue,
+  zabbixSourceDisplayName,
+  zabbixSourceKey,
+} from "@/lib/oneview-zabbix-source";
 import {
   AlertHistoryItem,
   fetchAlert,
@@ -373,6 +379,7 @@ export default function HistoricoPage() {
   const [searchDraft, setSearchDraft] = useState(() => searchParams.get("search") || "");
   const [actorDraft, setActorDraft] = useState(() => searchParams.get("actor") || "");
   const [customRange, setCustomRange] = useState<DateRange | undefined>(() => rangeFromUrl(searchParams));
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const eventsRequestRef = useRef<AbortController | null>(null);
   const alertsRequestRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef<AbortController | null>(null);
@@ -820,6 +827,130 @@ export default function HistoricoPage() {
 
   const showRiskSummary = tab === "alertas" && isRiskSummaryPreset(risk) && !alertsError;
 
+  const activeFilterChips: Array<{ key: string; label: string; onClear: () => void }> = [];
+  if (cliente !== "all") {
+    const customerLabel = customerOptions.find((customer) => customer.key === cliente)?.name || cliente;
+    activeFilterChips.push({
+      key: "customer",
+      label: customerLabel,
+      onClear: () => changeFilter("customer", "all"),
+    });
+  }
+  if (fonte !== "all") {
+    const sourceLabel = facets?.datasources.find((source) => zabbixSourceKey(source.name) === fonte)?.name || fonte;
+    activeFilterChips.push({
+      key: "datasource",
+      label: zabbixSourceDisplayName(sourceLabel),
+      onClear: () => changeFilter("datasource", "all"),
+    });
+  }
+  if (search) {
+    activeFilterChips.push({
+      key: "search",
+      label: `Busca: ${search}`,
+      onClear: () => {
+        setSearchDraft("");
+        patchParams({ search: null }, { resetPage: true });
+      },
+    });
+  }
+  const defaultPeriod = tab === "eventos" ? "7d" : "all";
+  if (period !== defaultPeriod) {
+    const periodOption = PERIOD_PRESETS.find((item) => item.value === period);
+    const customPeriodLabel = period === "custom" && customRange?.from
+      ? `${format(customRange.from, "dd/MM/yyyy")} – ${format(customRange.to ?? customRange.from, "dd/MM/yyyy")}`
+      : null;
+    activeFilterChips.push({
+      key: "period",
+      label: customPeriodLabel || periodOption?.label || period,
+      onClear: () => {
+        setCustomRange(undefined);
+        patchParams({ period: null, from: null, to: null }, { resetPage: true });
+      },
+    });
+  }
+  if (tab === "alertas") {
+    if (risk !== "all") {
+      activeFilterChips.push({
+        key: "risk",
+        label: HISTORY_RISK_PRESETS.find((preset) => preset.value === risk)?.label || risk,
+        onClear: () => applyRiskPreset("all"),
+      });
+    } else {
+      const severityValue = severitySelectValue(severities);
+      if (severityValue !== "all") {
+        activeFilterChips.push({
+          key: "severity",
+          label: SEVERITY_FILTERS.find((item) => item.value === severityValue)?.label || severityValue,
+          onClear: () => changeFilter("severity", "all"),
+        });
+      }
+      if (alertStatus !== "all") {
+        activeFilterChips.push({
+          key: "status",
+          label: ALERT_STATUS_FILTERS.find((item) => item.value === alertStatus)?.label || alertStatus,
+          onClear: () => changeFilter("status", "all"),
+        });
+      }
+      if (ackFilter !== "all") {
+        activeFilterChips.push({
+          key: "ack",
+          label: ACK_FILTERS.find((item) => item.value === ackFilter)?.label || ackFilter,
+          onClear: () => changeFilter("acknowledged_source", "all"),
+        });
+      }
+    }
+  } else {
+    if (eventType !== "actions") {
+      activeFilterChips.push({
+        key: "event_type",
+        label: EVENT_TYPE_FILTERS.find((item) => item.value === eventType)?.label || eventType,
+        onClear: () => changeFilter("event_type", "actions"),
+      });
+    }
+    if (actor) {
+      activeFilterChips.push({
+        key: "actor",
+        label: `Ator: ${actor}`,
+        onClear: () => {
+          setActorDraft("");
+          patchParams({ actor: null }, { resetPage: true });
+        },
+      });
+    }
+  }
+  if (recurrenceKey) {
+    activeFilterChips.push({
+      key: "recurrence",
+      label: "Recorrência selecionada",
+      onClear: () => patchParams({ recurrence: null }, { resetPage: true }),
+    });
+  }
+
+  const moreFiltersCount = tab === "alertas"
+    ? Number(fonte !== "all") + (risk === "all"
+      ? Number(severities.length > 0) + Number(alertStatus !== "all") + Number(ackFilter !== "all")
+      : 0)
+    : Number(fonte !== "all") + Number(eventType !== "actions") + Number(Boolean(actor));
+
+  const activeFiltersContent = activeFilterChips.length ? (
+    <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3" aria-label="Filtros ativos">
+      <span className="ov-type-caption font-semibold text-muted-foreground">Filtros ativos:</span>
+      {activeFilterChips.map((filter) => (
+        <OneViewPill
+          key={filter.key}
+          className="gap-1.5"
+          aria-label={`Remover filtro ${filter.label}`}
+          onClick={filter.onClear}
+        >
+          {filter.label}
+          <X aria-hidden="true" className="h-3.5 w-3.5" />
+        </OneViewPill>
+      ))}
+      <OneViewTextAction onClick={clearFilters}>Limpar todos</OneViewTextAction>
+    </div>
+  ) : null;
+
   return (
     <AppLayout
       enableAutoRefresh={false}
@@ -827,8 +958,8 @@ export default function HistoricoPage() {
       contentClassName="gap-3 p-3 lg:px-4"
       clientSelect={(
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Histórico</h1>
-          <Badge variant="outline" className="text-[10px]">
+          <h1 className="shrink-0 ov-type-page-title text-foreground">Histórico</h1>
+          <Badge variant="outline" className="ov-pill-official ov-type-caption">
             {countLabel}
           </Badge>
         </div>
@@ -842,36 +973,30 @@ export default function HistoricoPage() {
           </TabsList>
 
           <TabsContent value="alertas" className="mt-4 min-w-0 space-y-4">
-            {recurrenceKey ? <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">Histórico completo da reincidência deste ativo (mesma fonte, host e trigger).</div> : null}
+            {recurrenceKey ? <div className="ov-surface-official px-4 py-3 ov-type-secondary text-muted-foreground">Histórico completo da reincidência deste ativo (mesma fonte, host e trigger).</div> : null}
             <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1 sm:flex-wrap" role="group" aria-label="Presets de risco">
               {HISTORY_RISK_PRESETS.map((preset) => (
-                <Button
+                <OneViewPill
                   key={preset.value}
-                  type="button"
-                  size="sm"
-                  variant={risk === preset.value ? "default" : "outline"}
                   className="shrink-0"
+                  selected={risk === preset.value}
                   onClick={() => applyRiskPreset(preset.value)}
                 >
                   {preset.label}
-                </Button>
+                </OneViewPill>
               ))}
             </div>
 
             <FilterBar
               aria-label="Filtros de alertas do histórico"
-              footer={(
-                <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
-                  Limpar filtros
-                </Button>
-              )}
+              className="ov-surface-official space-y-3 p-4"
             >
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-alertas-cliente">Cliente</Label>
+              <div className="grid gap-2 lg:grid-cols-[minmax(11rem,14rem)_minmax(16rem,1fr)_minmax(11rem,14rem)_auto]">
+                <div>
+                  <Label className="sr-only" htmlFor="historico-alertas-cliente">Cliente</Label>
                   <Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}>
-                    <SelectTrigger id="historico-alertas-cliente" aria-label="Filtrar por cliente" className={OV_FILTER_CONTROL}>
-                      <SelectValue placeholder="Cliente" />
+                    <SelectTrigger id="historico-alertas-cliente" aria-label="Filtrar por cliente" className="ov-control-official h-9">
+                      <SelectValue placeholder="Cliente: Todos" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">
@@ -891,61 +1016,23 @@ export default function HistoricoPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-alertas-fonte">Fonte Zabbix</Label>
-                  <ZabbixSourceFilter
-                    id="historico-alertas-fonte"
-                    value={fonte}
-                    options={facets?.datasources ?? []}
-                    onValueChange={(value) => changeFilter("datasource", value)}
-                    triggerClassName="w-full"
+                <label className="relative block min-w-0">
+                  <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="historico-alertas-busca"
+                    className="ov-control-official h-9 pl-9"
+                    aria-label="Buscar alertas no histórico"
+                    placeholder="Buscar host, problema ou cliente"
+                    value={searchDraft}
+                    onChange={(event) => setSearchDraft(event.target.value)}
                   />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-alertas-severidade">Severidade</Label>
-                  <Select value={severitySelectValue(severities)} onValueChange={(value) => changeFilter("severity", value)}>
-                    <SelectTrigger id="historico-alertas-severidade" aria-label="Filtrar por severidade" className={OV_FILTER_CONTROL}>
-                      <SelectValue placeholder="Severidade" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SEVERITY_FILTERS.map((item) => (
-                        <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-alertas-status">Estado</Label>
-                  <Select value={alertStatus} onValueChange={(value) => changeFilter("status", value)}>
-                    <SelectTrigger id="historico-alertas-status" aria-label="Filtrar por estado" className={OV_FILTER_CONTROL}>
-                      <SelectValue placeholder="Estado" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ALERT_STATUS_FILTERS.map((item) => (
-                        <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-alertas-ack">ACK</Label>
-                  <Select value={ackFilter} onValueChange={(value) => changeFilter("acknowledged_source", value)}>
-                    <SelectTrigger id="historico-alertas-ack" aria-label="Filtrar por ACK" className={OV_FILTER_CONTROL}>
-                      <SelectValue placeholder="ACK" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ACK_FILTERS.map((item) => (
-                        <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-alertas-periodo">Período</Label>
+                </label>
+                <div>
+                  <Label className="sr-only" htmlFor="historico-alertas-periodo">Período</Label>
                   <div className="flex gap-2">
                     <Select value={period} onValueChange={(value) => changeFilter("period", value)}>
-                      <SelectTrigger id="historico-alertas-periodo" aria-label="Filtrar por período" className={cn(OV_FILTER_CONTROL, "flex-1")}>
-                        <SelectValue placeholder="Período" />
+                      <SelectTrigger id="historico-alertas-periodo" aria-label="Filtrar por período" className="ov-control-official h-9 flex-1">
+                        <SelectValue placeholder="Todo período" />
                       </SelectTrigger>
                       <SelectContent>
                         {PERIOD_PRESETS.map((item) => (
@@ -956,9 +1043,9 @@ export default function HistoricoPage() {
                     {period === "custom" ? (
                       <Popover>
                         <PopoverTrigger asChild>
-                          <Button type="button" variant="outline" size="icon" aria-label="Selecionar intervalo personalizado">
+                          <OneViewButton type="button" variant="secondary" size="icon" className="h-9 w-9 px-0" aria-label="Selecionar intervalo personalizado">
                             <CalendarRange className="h-4 w-4" />
-                          </Button>
+                          </OneViewButton>
                         </PopoverTrigger>
                         <PopoverContent align="end" className="w-auto p-3">
                           <Calendar
@@ -973,17 +1060,77 @@ export default function HistoricoPage() {
                     ) : null}
                   </div>
                 </div>
-                <div className="space-y-1.5 xl:col-span-3">
-                  <Label htmlFor="historico-alertas-busca">Host / problema</Label>
-                  <Input
-                    id="historico-alertas-busca"
-                    aria-label="Buscar alertas no histórico"
-                    placeholder="Buscar host, problema ou cliente"
-                    value={searchDraft}
-                    onChange={(event) => setSearchDraft(event.target.value)}
-                  />
-                </div>
+                <OneViewButton
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="h-9 justify-between lg:justify-center"
+                  aria-expanded={filtersOpen}
+                  aria-controls="historico-alertas-mais-filtros"
+                  onClick={() => setFiltersOpen((open) => !open)}
+                >
+                  <ListFilter aria-hidden="true" className="h-4 w-4" />
+                  Mais filtros
+                  {moreFiltersCount > 0 ? <Badge variant="secondary">{moreFiltersCount}</Badge> : null}
+                  <ChevronDown aria-hidden="true" className={cn("h-4 w-4 transition-transform", filtersOpen && "rotate-180")} />
+                </OneViewButton>
               </div>
+
+              {filtersOpen ? (
+                <div id="historico-alertas-mais-filtros" aria-label="Mais filtros" className="grid gap-3 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="historico-alertas-fonte">Fonte Zabbix</Label>
+                    <ZabbixSourceFilter
+                      id="historico-alertas-fonte"
+                      value={fonte}
+                      options={facets?.datasources ?? []}
+                      onValueChange={(value) => changeFilter("datasource", value)}
+                      triggerClassName="ov-control-official w-full"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="historico-alertas-severidade">Severidade</Label>
+                    <Select value={severitySelectValue(severities)} onValueChange={(value) => changeFilter("severity", value)}>
+                      <SelectTrigger id="historico-alertas-severidade" aria-label="Filtrar por severidade" className="ov-control-official h-9">
+                        <SelectValue placeholder="Severidade" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SEVERITY_FILTERS.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="historico-alertas-status">Estado</Label>
+                    <Select value={alertStatus} onValueChange={(value) => changeFilter("status", value)}>
+                      <SelectTrigger id="historico-alertas-status" aria-label="Filtrar por estado" className="ov-control-official h-9">
+                        <SelectValue placeholder="Estado" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ALERT_STATUS_FILTERS.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="historico-alertas-ack">ACK</Label>
+                    <Select value={ackFilter} onValueChange={(value) => changeFilter("acknowledged_source", value)}>
+                      <SelectTrigger id="historico-alertas-ack" aria-label="Filtrar por ACK" className="ov-control-official h-9">
+                        <SelectValue placeholder="ACK" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ACK_FILTERS.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : null}
+
+              {activeFiltersContent}
             </FilterBar>
 
             {alertsError ? (
@@ -996,37 +1143,37 @@ export default function HistoricoPage() {
 
             {showRiskSummary ? (
               <div
-                className="grid gap-2 rounded-[10px] border border-border/60 bg-background/40 px-3 py-2 text-xs sm:grid-cols-4"
+                className="ov-surface-official grid gap-2 p-4 ov-type-secondary sm:grid-cols-4"
                 aria-label="Resumo da consulta de riscos"
               >
                 <div>
                   <p className="text-muted-foreground">Disaster</p>
-                  <p className="text-sm font-semibold tabular-nums">
+                  <p className="ov-type-body font-semibold tabular-nums">
                     {filteredSummary ? filteredSummary.by_severity.disaster.toLocaleString("pt-BR") : "—"}
                   </p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">High</p>
-                  <p className="text-sm font-semibold tabular-nums">
+                  <p className="ov-type-body font-semibold tabular-nums">
                     {filteredSummary ? filteredSummary.by_severity.high.toLocaleString("pt-BR") : "—"}
                   </p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Com ACK</p>
-                  <p className="text-sm font-semibold tabular-nums">
+                  <p className="ov-type-body font-semibold tabular-nums">
                     {filteredSummary ? filteredSummary.acknowledged_source.toLocaleString("pt-BR") : "—"}
                   </p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Sem ACK</p>
-                  <p className="text-sm font-semibold tabular-nums">
+                  <p className="ov-type-body font-semibold tabular-nums">
                     {filteredSummary ? filteredSummary.unacknowledged_source.toLocaleString("pt-BR") : "—"}
                   </p>
                 </div>
               </div>
             ) : null}
 
-            <SectionPanel className="overflow-hidden">
+            <section className="ov-surface-official overflow-hidden" aria-label="Alertas do histórico">
               {alertsLoading && !alertsLoaded ? (
                 <div className="space-y-3 p-4" aria-label="Carregando alertas do histórico">
                   <Skeleton className="h-10 w-full" />
@@ -1035,17 +1182,17 @@ export default function HistoricoPage() {
                 </div>
               ) : alertItems.length ? (
                 <div className="overflow-x-auto">
-                  <Table>
+                  <Table className="ov-operational-table table-fixed">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Cliente</TableHead>
-                        <TableHead>Severidade</TableHead>
-                        <TableHead>Host</TableHead>
-                        <TableHead>Problema</TableHead>
-                        <TableHead>Início</TableHead>
-                        <TableHead>ACK</TableHead>
-                        <TableHead>Chamado</TableHead>
-                        <TableHead>Estado</TableHead>
+                        <TableHead className="w-[28%] ov-type-caption font-semibold">Cliente</TableHead>
+                        <TableHead className="hidden w-[10%] ov-type-caption font-semibold lg:table-cell">Severidade</TableHead>
+                        <TableHead className="hidden w-[14%] ov-type-caption font-semibold xl:table-cell">Host</TableHead>
+                        <TableHead className="w-[44%] ov-type-caption font-semibold sm:w-[42%] xl:w-[20%]">Problema</TableHead>
+                        <TableHead className="hidden w-[12%] ov-type-caption font-semibold xl:table-cell">Início</TableHead>
+                        <TableHead className="hidden w-[12%] ov-type-caption font-semibold xl:table-cell">ACK</TableHead>
+                        <TableHead className="hidden w-[10%] ov-type-caption font-semibold xl:table-cell">Chamado</TableHead>
+                        <TableHead className="w-[28%] ov-type-caption font-semibold sm:w-[20%] xl:w-[10%]">Estado</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1086,43 +1233,42 @@ export default function HistoricoPage() {
                                   operational_scope_label: alert.operational_scope_label,
                                 })}
                                 showName
-                                nameClassName="truncate text-sm"
+                                nameClassName="truncate ov-type-body"
                               />
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="hidden lg:table-cell">
                               <SeverityBadge severity={alert.severity} />
                             </TableCell>
-                            <TableCell className="max-w-[12rem] truncate font-medium">
+                            <TableCell className="hidden max-w-[12rem] truncate ov-type-body font-semibold xl:table-cell">
                               {canonicalHostName(alert)}
                             </TableCell>
                             <TableCell className="max-w-[18rem] truncate">
                               {alert.problem_name || "Problema não informado"}
                             </TableCell>
-                            <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            <TableCell className="hidden whitespace-nowrap ov-type-caption text-muted-foreground xl:table-cell">
                               {formatWhen(alert.first_seen_at)}
                             </TableCell>
-                            <TableCell className="max-w-[10rem]">
+                            <TableCell className="hidden max-w-[10rem] xl:table-cell">
                               {ackActor ? (
                                 <div className="min-w-0">
-                                  <p className="truncate text-sm font-medium leading-tight">{ackActor}</p>
+                                  <OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" />
+                                  {ackActor !== "Reconhecido" ? <p className="mt-1 truncate ov-type-caption font-semibold">{ackActor}</p> : null}
                                   {ackAt ? (
-                                    <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{formatWhen(ackAt)}</p>
+                                    <p className="mt-0.5 truncate ov-type-caption text-muted-foreground">{formatWhen(ackAt)}</p>
                                   ) : null}
                                 </div>
                               ) : (
-                                <span className="text-sm font-medium text-amber-800">Pendente</span>
+                                <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />
                               )}
                             </TableCell>
-                            <TableCell className="max-w-[9rem]">
+                            <TableCell className="hidden max-w-[9rem] xl:table-cell">
                               <AlertServiceNowReferenceCell reference={alert.servicenow_reference} />
                             </TableCell>
                             <TableCell>
-                              <p className={cn(
-                                "font-medium",
-                                alertStatusLabel(alert) === "Ativo" ? "text-red-700" : "text-emerald-700",
-                              )}>
-                                {alertStatusLabel(alert)}
-                              </p>
+                              <OneViewSemanticStatusBadge
+                                status={alertStatusLabel(alert) === "Ativo" ? "monitoring-down" : "monitoring-normalized"}
+                                label={alertStatusLabel(alert)}
+                              />
                             </TableCell>
                           </TableRow>
                         );
@@ -1135,57 +1281,53 @@ export default function HistoricoPage() {
                   icon={<Siren className="h-5 w-5" />}
                   title="Nenhum alerta encontrado para os filtros selecionados."
                   action={(
-                    <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
+                    <OneViewButton type="button" variant="secondary" size="sm" onClick={clearFilters}>
                       Limpar filtros
-                    </Button>
+                    </OneViewButton>
                   )}
                 />
               )}
               {alertsLoaded && !alertsError && alertPages > 1 ? (
                 <div className="flex flex-col gap-3 border-t border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-muted-foreground">
+                  <p className="ov-type-caption text-muted-foreground">
                     Página {page} de {alertPages} · {countLabel}
                   </p>
                   <div className="flex gap-2">
-                    <Button
+                    <OneViewButton
                       type="button"
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       disabled={page <= 1 || alertsLoading}
                       onClick={() => patchParams({ page: String(Math.max(1, page - 1)) })}
                     >
                       Anterior
-                    </Button>
-                    <Button
+                    </OneViewButton>
+                    <OneViewButton
                       type="button"
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       disabled={page >= alertPages || alertsLoading}
                       onClick={() => patchParams({ page: String(page + 1) })}
                     >
                       Próxima
-                    </Button>
+                    </OneViewButton>
                   </div>
                 </div>
               ) : null}
-            </SectionPanel>
+            </section>
           </TabsContent>
 
           <TabsContent value="eventos" className="mt-4 min-w-0 space-y-4">
             <FilterBar
               aria-label="Filtros de eventos do histórico"
-              footer={(
-                <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
-                  Limpar filtros
-                </Button>
-              )}
+              className="ov-surface-official space-y-3 p-4"
             >
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-eventos-cliente">Cliente</Label>
+              <div className="grid gap-2 lg:grid-cols-[minmax(11rem,14rem)_minmax(16rem,1fr)_minmax(11rem,14rem)_auto]">
+                <div>
+                  <Label className="sr-only" htmlFor="historico-eventos-cliente">Cliente</Label>
                   <Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}>
-                    <SelectTrigger id="historico-eventos-cliente" aria-label="Filtrar por cliente" className={OV_FILTER_CONTROL}>
-                      <SelectValue placeholder="Cliente" />
+                    <SelectTrigger id="historico-eventos-cliente" aria-label="Filtrar por cliente" className="ov-control-official h-9">
+                      <SelectValue placeholder="Cliente: Todos" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">
@@ -1205,35 +1347,23 @@ export default function HistoricoPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-eventos-fonte">Fonte Zabbix</Label>
-                  <ZabbixSourceFilter
-                    id="historico-eventos-fonte"
-                    value={fonte}
-                    options={facets?.datasources ?? []}
-                    onValueChange={(value) => changeFilter("datasource", value)}
-                    triggerClassName="w-full"
+                <label className="relative block min-w-0">
+                  <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="historico-busca"
+                    className="ov-control-official h-9 pl-9"
+                    aria-label="Buscar no histórico"
+                    placeholder="Buscar host, problema ou cliente"
+                    value={searchDraft}
+                    onChange={(event) => setSearchDraft(event.target.value)}
                   />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-tipo">Tipo</Label>
-                  <Select value={eventType} onValueChange={(value) => changeFilter("event_type", value)}>
-                    <SelectTrigger id="historico-tipo" aria-label="Filtrar por tipo de evento" className={OV_FILTER_CONTROL}>
-                      <SelectValue placeholder="Tipo de evento" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {EVENT_TYPE_FILTERS.map((item) => (
-                        <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-periodo">Período</Label>
+                </label>
+                <div>
+                  <Label className="sr-only" htmlFor="historico-periodo">Período</Label>
                   <div className="flex gap-2">
                     <Select value={period} onValueChange={(value) => changeFilter("period", value)}>
-                      <SelectTrigger id="historico-periodo" aria-label="Filtrar por período" className={cn(OV_FILTER_CONTROL, "flex-1")}>
-                        <SelectValue placeholder="Período" />
+                      <SelectTrigger id="historico-periodo" aria-label="Filtrar por período" className="ov-control-official h-9 flex-1">
+                        <SelectValue placeholder="Todo período" />
                       </SelectTrigger>
                       <SelectContent>
                         {PERIOD_PRESETS.map((item) => (
@@ -1244,9 +1374,9 @@ export default function HistoricoPage() {
                     {period === "custom" ? (
                       <Popover>
                         <PopoverTrigger asChild>
-                          <Button type="button" variant="outline" size="icon" aria-label="Selecionar intervalo personalizado">
+                          <OneViewButton type="button" variant="secondary" size="icon" className="h-9 w-9 px-0" aria-label="Selecionar intervalo personalizado">
                             <CalendarRange className="h-4 w-4" />
-                          </Button>
+                          </OneViewButton>
                         </PopoverTrigger>
                         <PopoverContent align="end" className="w-auto p-3">
                           <Calendar
@@ -1261,27 +1391,62 @@ export default function HistoricoPage() {
                     ) : null}
                   </div>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-busca">Host / problema</Label>
-                  <Input
-                    id="historico-busca"
-                    aria-label="Buscar no histórico"
-                    placeholder="Buscar host ou problema"
-                    value={searchDraft}
-                    onChange={(event) => setSearchDraft(event.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="historico-ator">Ator</Label>
-                  <Input
-                    id="historico-ator"
-                    aria-label="Filtrar por ator"
-                    placeholder="Buscar ator"
-                    value={actorDraft}
-                    onChange={(event) => setActorDraft(event.target.value)}
-                  />
-                </div>
+                <OneViewButton
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="h-9 justify-between lg:justify-center"
+                  aria-expanded={filtersOpen}
+                  aria-controls="historico-eventos-mais-filtros"
+                  onClick={() => setFiltersOpen((open) => !open)}
+                >
+                  <ListFilter aria-hidden="true" className="h-4 w-4" />
+                  Mais filtros
+                  {moreFiltersCount > 0 ? <Badge variant="secondary">{moreFiltersCount}</Badge> : null}
+                  <ChevronDown aria-hidden="true" className={cn("h-4 w-4 transition-transform", filtersOpen && "rotate-180")} />
+                </OneViewButton>
               </div>
+
+              {filtersOpen ? (
+                <div id="historico-eventos-mais-filtros" aria-label="Mais filtros" className="grid gap-3 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="historico-eventos-fonte">Fonte Zabbix</Label>
+                    <ZabbixSourceFilter
+                      id="historico-eventos-fonte"
+                      value={fonte}
+                      options={facets?.datasources ?? []}
+                      onValueChange={(value) => changeFilter("datasource", value)}
+                      triggerClassName="ov-control-official w-full"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="historico-tipo">Tipo</Label>
+                    <Select value={eventType} onValueChange={(value) => changeFilter("event_type", value)}>
+                      <SelectTrigger id="historico-tipo" aria-label="Filtrar por tipo de evento" className="ov-control-official h-9">
+                        <SelectValue placeholder="Tipo de evento" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {EVENT_TYPE_FILTERS.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="historico-ator">Ator</Label>
+                    <Input
+                      id="historico-ator"
+                      className="ov-control-official h-9"
+                      aria-label="Filtrar por ator"
+                      placeholder="Buscar ator"
+                      value={actorDraft}
+                      onChange={(event) => setActorDraft(event.target.value)}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              {activeFiltersContent}
             </FilterBar>
 
             {eventsError ? (
@@ -1292,7 +1457,7 @@ export default function HistoricoPage() {
               />
             ) : null}
 
-            <SectionPanel>
+            <section className="ov-surface-official overflow-hidden" aria-label="Eventos do histórico">
               {eventsLoading && !eventsLoaded ? (
                 <div className="space-y-3 p-4" aria-label="Carregando histórico operacional">
                   <Skeleton className="h-4 w-24" />
@@ -1303,16 +1468,16 @@ export default function HistoricoPage() {
               ) : eventItems.length ? (
                 eventType === "acks" ? (
                   <div className="overflow-x-auto">
-                    <Table>
+                    <Table className="ov-operational-table table-fixed">
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Cliente</TableHead>
-                          <TableHead>Host</TableHead>
-                          <TableHead>Problema</TableHead>
-                          <TableHead>Ator</TableHead>
-                          <TableHead>Comentário</TableHead>
-                          <TableHead>Ocorrido em</TableHead>
-                          <TableHead>Severidade</TableHead>
+                          <TableHead className="w-[32%] ov-type-caption font-semibold lg:w-[20%]">Cliente</TableHead>
+                          <TableHead className="hidden w-[14%] ov-type-caption font-semibold lg:table-cell">Host</TableHead>
+                          <TableHead className="w-[42%] ov-type-caption font-semibold lg:w-[22%]">Problema</TableHead>
+                          <TableHead className="hidden w-[12%] ov-type-caption font-semibold xl:table-cell">Ator</TableHead>
+                          <TableHead className="hidden w-[16%] ov-type-caption font-semibold xl:table-cell">Comentário</TableHead>
+                          <TableHead className="w-[26%] ov-type-caption font-semibold lg:w-[16%]">Ocorrido em</TableHead>
+                          <TableHead className="hidden w-[10%] ov-type-caption font-semibold lg:table-cell">Severidade</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1347,23 +1512,23 @@ export default function HistoricoPage() {
                                     item.operational_scope_label || historyEventClientLabel(item)
                                   }
                                   showName
-                                  nameClassName="truncate text-sm"
+                                  nameClassName="truncate ov-type-body"
                                 />
                               </TableCell>
-                              <TableCell className="max-w-[12rem] truncate">
+                              <TableCell className="hidden max-w-[12rem] truncate lg:table-cell">
                                 {canonicalHostName(item)}
                               </TableCell>
                               <TableCell className="max-w-[16rem] truncate">
                                 {item.problem_name || "Problema não informado"}
                               </TableCell>
-                              <TableCell className="max-w-[10rem] truncate">{actorName || "—"}</TableCell>
-                              <TableCell className="max-w-[16rem] truncate text-xs text-muted-foreground">
+                              <TableCell className="hidden max-w-[10rem] truncate xl:table-cell">{actorName || "—"}</TableCell>
+                              <TableCell className="hidden max-w-[16rem] truncate ov-type-caption text-muted-foreground xl:table-cell">
                                 {comment || "—"}
                               </TableCell>
-                              <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                              <TableCell className="whitespace-nowrap ov-type-caption text-muted-foreground">
                                 {formatWhen(item.occurred_at)}
                               </TableCell>
-                              <TableCell>
+                              <TableCell className="hidden lg:table-cell">
                                 <SeverityBadge severity={item.severity} />
                               </TableCell>
                             </TableRow>
@@ -1376,7 +1541,7 @@ export default function HistoricoPage() {
                   <div className="divide-y divide-border/60">
                     {groupedEvents.map((group) => (
                       <section key={group.key} className="px-4 py-3">
-                        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <h2 className="mb-2 ov-type-caption font-semibold uppercase tracking-wide text-muted-foreground">
                           {group.label}
                         </h2>
                         <ol className="space-y-2">
@@ -1393,7 +1558,7 @@ export default function HistoricoPage() {
                             return (
                               <li
                                 key={item.id}
-                                className="cursor-pointer rounded-[10px] border border-border/60 bg-background/40 px-3 py-2.5 hover:bg-muted/40"
+                                className="ov-surface-official cursor-pointer px-4 py-3 hover:bg-muted/40"
                                 tabIndex={0}
                                 role="button"
                                 aria-label={`Abrir detalhe de ${item.problem_name || canonicalHostName(item)}`}
@@ -1407,21 +1572,21 @@ export default function HistoricoPage() {
                               >
                                 <div className="min-w-0 space-y-1">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-[11px] tabular-nums text-muted-foreground">
+                                    <span className="ov-type-caption tabular-nums text-muted-foreground">
                                       {formatClock(item.occurred_at)}
                                     </span>
-                                    <p className="text-sm font-semibold">{title}</p>
+                                    <p className="ov-type-body font-semibold">{title}</p>
                                     <SeverityBadge severity={item.severity} />
                                   </div>
-                                  <p className="truncate text-sm font-medium">{item.problem_name || "Problema não informado"}</p>
-                                  <p className="truncate text-xs text-muted-foreground">
+                                  <p className="truncate ov-type-body font-semibold">{item.problem_name || "Problema não informado"}</p>
+                                  <p className="truncate ov-type-caption text-muted-foreground">
                                     Host: {canonicalHostName(item)} · {customer}
                                   </p>
                                   {actorName && String(item.event_type || "").toLowerCase() !== "acknowledged" ? (
-                                    <p className="text-[11px] text-muted-foreground">Responsável: {actorName}</p>
+                                    <p className="ov-type-caption text-muted-foreground">Responsável: {actorName}</p>
                                   ) : null}
                                   {comment ? (
-                                    <p className="line-clamp-2 text-xs text-muted-foreground">
+                                    <p className="line-clamp-2 ov-type-caption text-muted-foreground">
                                       Comentário: {comment}
                                     </p>
                                   ) : null}
@@ -1439,40 +1604,40 @@ export default function HistoricoPage() {
                   icon={<History className="h-5 w-5" />}
                   title="Nenhum evento encontrado para os filtros selecionados."
                   action={(
-                    <Button type="button" variant="outline" size="sm" className={OV_CTA} onClick={clearFilters}>
+                    <OneViewButton type="button" variant="secondary" size="sm" onClick={clearFilters}>
                       Limpar filtros
-                    </Button>
+                    </OneViewButton>
                   )}
                 />
               )}
               {eventsLoaded && !eventsError && eventPages > 1 ? (
                 <div className="flex flex-col gap-3 border-t border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-muted-foreground">
+                  <p className="ov-type-caption text-muted-foreground">
                     Página {page} de {eventPages} · {countLabel}
                   </p>
                   <div className="flex gap-2">
-                    <Button
+                    <OneViewButton
                       type="button"
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       disabled={page <= 1 || eventsLoading}
                       onClick={() => patchParams({ page: String(Math.max(1, page - 1)) })}
                     >
                       Anterior
-                    </Button>
-                    <Button
+                    </OneViewButton>
+                    <OneViewButton
                       type="button"
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       disabled={page >= eventPages || eventsLoading}
                       onClick={() => patchParams({ page: String(page + 1) })}
                     >
                       Próxima
-                    </Button>
+                    </OneViewButton>
                   </div>
                 </div>
               ) : null}
-            </SectionPanel>
+            </section>
           </TabsContent>
         </Tabs>
       </div>

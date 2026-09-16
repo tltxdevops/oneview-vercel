@@ -17,14 +17,14 @@ async function read(relativePath) {
 test("OV-P0-81: tabela Histórico mantém colunas de auditoria e abre drawer na linha", async () => {
   const historico = await read("src/pages/Historico.tsx");
 
-  assert.match(historico, /<TableHead>Cliente<\/TableHead>/);
-  assert.match(historico, /<TableHead>Severidade<\/TableHead>/);
-  assert.match(historico, /<TableHead>Host<\/TableHead>/);
-  assert.match(historico, /<TableHead>Problema<\/TableHead>/);
-  assert.match(historico, /<TableHead>Início<\/TableHead>/);
-  assert.match(historico, /<TableHead>ACK<\/TableHead>/);
-  assert.match(historico, /<TableHead>Chamado<\/TableHead>/);
-  assert.match(historico, /<TableHead>Estado<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Cliente<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Severidade<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Host<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Problema<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Início<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>ACK<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Chamado<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Estado<\/TableHead>/);
   assert.match(historico, /onClick=\{\(\) => openAlertDetail\(alert\.id\)\}/);
   assert.match(historico, /role="button"/);
   assert.match(historico, /cursor-pointer/);

@@ -366,7 +366,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.match(sidebar, /History/);
   assert.ok(sidebar.indexOf('href: "/alertas"') < sidebar.indexOf('href: "/historico"'));
   assert.doesNotMatch(sidebar, /name: "Histórico", href: "\/alertas"/);
-  assert.match(historico, /text-xl font-semibold tracking-tight text-foreground">Histórico</);
+  assert.match(historico, /ov-type-page-title text-foreground">Histórico</);
   assert.match(historico, /TabsTrigger value="alertas"/);
   assert.match(historico, /TabsTrigger value="eventos"/);
   assert.match(historico, /fetchAlerts/);
@@ -2145,14 +2145,14 @@ test("OV-P0-43 Monitoramento alinha faixa de severidades, janela e fila única",
 test("OV-P0-44 Histórico enxuga colunas e abre drawer na linha", async () => {
   const historico = await read("src/pages/Historico.tsx");
 
-  assert.match(historico, /<TableHead>Cliente<\/TableHead>/);
-  assert.match(historico, /<TableHead>Severidade<\/TableHead>/);
-  assert.match(historico, /<TableHead>Host<\/TableHead>/);
-  assert.match(historico, /<TableHead>Problema<\/TableHead>/);
-  assert.match(historico, /<TableHead>Início<\/TableHead>/);
-  assert.match(historico, /<TableHead>ACK<\/TableHead>/);
-  assert.match(historico, /<TableHead>Chamado<\/TableHead>/);
-  assert.match(historico, /<TableHead>Estado<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Cliente<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Severidade<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Host<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Problema<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Início<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>ACK<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Chamado<\/TableHead>/);
+  assert.match(historico, /<TableHead[^>]*>Estado<\/TableHead>/);
   assert.doesNotMatch(historico, /<TableHead className="text-right">Ação<\/TableHead>/);
   assert.doesNotMatch(historico, /<TableHead>Responsável<\/TableHead>/);
   assert.doesNotMatch(historico, /<TableHead>Horário do ACK<\/TableHead>/);
@@ -2184,7 +2184,7 @@ test("OV-P0-45 cabeçalhos padronizados na Topbar sem PageHeader duplicado", asy
 
   assert.match(index, /text-xl font-semibold tracking-tight text-foreground">Início</);
   assert.match(alerts, /text-xl font-semibold tracking-tight text-foreground">Alertas</);
-  assert.match(historico, /text-xl font-semibold tracking-tight text-foreground">Histórico</);
+  assert.match(historico, /ov-type-page-title text-foreground">Histórico</);
   assert.match(monitoring, /text-xl font-semibold tracking-tight text-foreground">Monitoramento</);
   assert.match(chamados, /text-xl font-semibold tracking-tight text-foreground">Chamados</);
   assert.doesNotMatch(index, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
