@@ -157,7 +157,12 @@ export const ONEVIEW_INCIDENT_STATE_STATUS: Record<string, OneViewSemanticStatus
   "8": "incident-cancelled",
 };
 
-export type OneViewSeverity = "information" | "warning" | "average" | "high" | "disaster";
+/**
+ * Includes legacy `critical` and the Zabbix zero-severity state so a row from
+ * the API can never make the semantic badge fail to render. `critical` keeps
+ * the official High visual treatment.
+ */
+export type OneViewSeverity = "information" | "warning" | "average" | "high" | "disaster" | "critical" | "not_classified";
 
 export const ONEVIEW_SEVERITY_CATALOG: Record<OneViewSeverity, { label: string; className: string }> = {
   information: { label: "Information", className: "ov-severity-information" },
@@ -165,6 +170,8 @@ export const ONEVIEW_SEVERITY_CATALOG: Record<OneViewSeverity, { label: string; 
   average: { label: "Average", className: "ov-severity-average" },
   high: { label: "High", className: "ov-severity-high" },
   disaster: { label: "Disaster", className: "ov-severity-disaster" },
+  critical: { label: "High", className: "ov-severity-high" },
+  not_classified: { label: "Not classified", className: "ov-severity-not-classified" },
 };
 
 export const ONEVIEW_COMPONENT_RULES = {

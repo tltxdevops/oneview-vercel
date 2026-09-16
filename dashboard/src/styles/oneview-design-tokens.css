@@ -71,6 +71,9 @@
     --ov-severity-disaster: 0 72% 28%;
     --ov-severity-disaster-surface: 0 58% 93%;
     --ov-severity-disaster-border: 0 72% 42%;
+    --ov-severity-not-classified: 215 19% 35%;
+    --ov-severity-not-classified-surface: 210 20% 97%;
+    --ov-severity-not-classified-border: 214 20% 78%;
 
     /* OneView Operational UI: three official radius decisions. */
     --ov-radius-control: 0.5rem;
@@ -163,6 +166,9 @@
     --ov-severity-disaster: 0 91% 90%;
     --ov-severity-disaster-surface: 0 61% 12%;
     --ov-severity-disaster-border: 0 91% 71%;
+    --ov-severity-not-classified: 214 32% 80%;
+    --ov-severity-not-classified-surface: 220 20% 15%;
+    --ov-severity-not-classified-border: 214 20% 50%;
 
     --ov-shadow-surface: none;
     --ov-shadow-overlay: 0 20px 40px hsl(0 0% 0% / 0.45);
@@ -308,6 +314,7 @@
   .ov-severity-average { --ov-semantic-foreground: var(--ov-severity-average); --ov-semantic-background: var(--ov-severity-average-surface); --ov-semantic-border: var(--ov-severity-average-border); }
   .ov-severity-high { --ov-semantic-foreground: var(--ov-severity-high); --ov-semantic-background: var(--ov-severity-high-surface); --ov-semantic-border: var(--ov-severity-high-border); }
   .ov-severity-disaster { --ov-semantic-foreground: var(--ov-severity-disaster); --ov-semantic-background: var(--ov-severity-disaster-surface); --ov-semantic-border: var(--ov-severity-disaster-border); }
+  .ov-severity-not-classified { --ov-semantic-foreground: var(--ov-severity-not-classified); --ov-semantic-background: var(--ov-severity-not-classified-surface); --ov-semantic-border: var(--ov-severity-not-classified-border); }
 
   .ov-health-indicator { display: inline-flex; align-items: center; gap: var(--ov-space-8); color: hsl(var(--ov-color-text-secondary)); }
   .ov-health-indicator::before { width: 0.5rem; height: 0.5rem; flex: none; border-radius: var(--ov-radius-full); background: hsl(var(--ov-health-color)); content: ""; }

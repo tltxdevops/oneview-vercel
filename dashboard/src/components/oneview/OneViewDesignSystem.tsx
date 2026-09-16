@@ -113,7 +113,8 @@ export function OneViewSeverityBadge({ severity, label, showDot, className, ...p
   label?: string;
   showDot?: boolean;
 }) {
-  const definition = ONEVIEW_SEVERITY_CATALOG[severity];
+  // A stale runtime payload must degrade to the neutral badge, never blank Alerts.
+  const definition = ONEVIEW_SEVERITY_CATALOG[severity] ?? ONEVIEW_SEVERITY_CATALOG.not_classified;
   return <SemanticBadge label={label || definition.label} showDot={showDot} className={cn("ov-severity-badge", definition.className, className)} data-oneview-severity={severity} {...props} />;
 }
 

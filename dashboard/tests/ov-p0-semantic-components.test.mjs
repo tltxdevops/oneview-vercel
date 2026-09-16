@@ -20,6 +20,7 @@ const semanticPairs = [
   ["--ov-severity-average", "--ov-severity-average-surface"],
   ["--ov-severity-high", "--ov-severity-high-surface"],
   ["--ov-severity-disaster", "--ov-severity-disaster-surface"],
+  ["--ov-severity-not-classified", "--ov-severity-not-classified-surface"],
 ];
 
 function cssBlock(css, selector) {
@@ -108,4 +109,13 @@ test("OV-SEMANTIC: Home uses only the imported severity badge", () => {
   const index = read("src/pages/Index.tsx");
   assert.doesNotMatch(index, /<SeverityBadge\b/);
   assert.match(index, /<OneViewSeverityBadge severity=\{item\.severity\} showDot=\{false\} className="h-5 px-1\.5"/);
+});
+
+test("OV-SEMANTIC: severidade N/C e critical legado nunca derrubam a tabela", () => {
+  const catalog = read("src/lib/oneview-design-system.ts");
+  const component = read("src/components/oneview/OneViewDesignSystem.tsx");
+
+  assert.match(catalog, /critical: \{ label: "High", className: "ov-severity-high" \}/);
+  assert.match(catalog, /not_classified: \{ label: "Not classified", className: "ov-severity-not-classified" \}/);
+  assert.match(component, /ONEVIEW_SEVERITY_CATALOG\[severity\] \?\? ONEVIEW_SEVERITY_CATALOG\.not_classified/);
 });
