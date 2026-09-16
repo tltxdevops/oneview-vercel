@@ -36,7 +36,7 @@ test("OV-P0-112 Alertas: coluna compacta Chamado com INC clicável", async () =>
     read("src/pages/Alerts.tsx"),
     read("src/components/oneview/AlertServiceNowReferenceCell.tsx"),
   ]);
-  assert.match(alerts, /<TableHead className="px-3 text-left">Chamado<\/TableHead>/);
+  assert.match(alerts, /<TableHead[^>]*>Chamado<\/TableHead>/);
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(alerts, /não limpa detail\/history|não zera detail\/history/);
   assert.match(cell, /stopPropagation/);

@@ -73,8 +73,7 @@ test("um único controle coordena refresh e timers sem Pausar", async () => {
   assert.match(alerts, /if \(document\.hidden\) return/);
   assert.doesNotMatch(alerts, /topbarRightSection=\{<PlatformHealthStrip/);
   assert.doesNotMatch(alerts, /showHealthStrip=\{false\}/);
-  assert.match(alerts, /text-xl font-semibold tracking-tight text-foreground">Alertas</);
-  assert.match(alerts, /\{clientSelector\}/);
+  assert.match(alerts, /<PageHeader title="Alertas" aside=\{clientSelector\}/);
   assert.match(alerts, /enableAutoRefresh=\{false\}/);
   assert.doesNotMatch(alerts, /aria-label="Atualizar dados"/);
   assert.doesNotMatch(alerts, /Atualizar dados em segundo plano|Atualizar agora/);
@@ -114,7 +113,8 @@ test("filtros ficam na barra e continuam server-side", async () => {
     read("src/pages/Alerts.tsx"),
     read("src/lib/alerts-query.ts"),
   ]);
-  assert.doesNotMatch(alerts, /Filtros de alertas|Ocultar filtros|Mostrar filtros|FILTERS_STORAGE_KEY/);
+  assert.doesNotMatch(alerts, /Ocultar filtros|Mostrar filtros|FILTERS_STORAGE_KEY/);
+  assert.match(alerts, /<FilterBar aria-label="Filtros de alertas"/);
   assert.match(alerts, /selectedCustomerKeys/);
   assert.match(alerts, /ClientIdentity/);
   assert.doesNotMatch(alerts, /confidenceFilter|Baixa confiança/);
@@ -134,8 +134,8 @@ test("filtros ficam na barra e continuam server-side", async () => {
   assert.match(alerts, /sortableHeader\("Host", "host"\)/);
   assert.match(alerts, /sortableHeader\("Severidade", "severity"\)/);
   assert.match(alerts, /sortableHeader\("Problema", "problem"\)/);
-  assert.match(alerts, /aria-label="Pesquisar host"/);
-  assert.match(alerts, /aria-label="Pesquisar problema"/);
+  assert.match(alerts, /aria-label="Campo de busca"/);
+  assert.match(alerts, /aria-label="Busca server-side"/);
   assert.match(alerts, /aria-label="ACK da origem"/);
   assert.match(alerts, /ALERTS_SORT_OPTIONS/);
   assert.doesNotMatch(alerts, /Saúde operacional/);
@@ -778,29 +778,26 @@ test("alertas preserva a normalização canônica de severidade Zabbix", async (
 });
 
 test("cards de indicadores aplicam filtros rápidos sem textos redundantes", async () => {
-  const [alerts, metricStrip] = await Promise.all([
-    read("src/pages/Alerts.tsx"),
-    read("src/components/oneview/CompactMetricStrip.tsx"),
-  ]);
+  const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /type SummaryFilter =[\s\S]*"information"[\s\S]*"warning"[\s\S]*"average"[\s\S]*"high"[\s\S]*"disaster"[\s\S]*"not_classified"/);
   assert.match(alerts, /const applySummaryFilter = \(filter: SummaryFilter\)/);
-  assert.match(alerts, /CompactMetricStrip/);
-  assert.match(metricStrip, /aria-label=\{`Filtrar alertas: \$\{item\.label\}/);
-  assert.match(metricStrip, /md:flex-nowrap/);
-  assert.match(alerts, /onClick: \(\) => applySummaryFilter\(card\.filter\)/);
+  assert.match(alerts, /OneViewKpiCard/);
+  assert.match(alerts, /aria-label="Indicadores de alertas"/);
+  assert.match(alerts, /2xl:grid-cols-9/);
+  assert.match(alerts, /onClick=\{\(\) => applySummaryFilter\(card\.filter\)\}/);
   assert.match(alerts, /VISUAL_SEVERITY_STRIP/);
-  assert.match(alerts, /Severidade fora da faixa visual/);
+  assert.doesNotMatch(alerts, /Severidade fora da faixa visual/);
   assert.match(alerts, /title: "Em acompanhamento"/);
   assert.match(alerts, /Ocorrências atualmente mantidas como ativas no OneView\./);
   assert.match(alerts, /formatNullableCount|value === null \? "—" : Number\(value\)\.toLocaleString\("pt-BR"\)/);
   assert.match(alerts, /filteredSummary/);
-  assert.match(alerts, /Filtros rápidos por indicadores/);
+  assert.match(alerts, /Indicadores de alertas/);
   assert.doesNotMatch(alerts, /Total persistido/);
   assert.doesNotMatch(alerts, /title: "Alertas ativos"/);
   assert.doesNotMatch(alerts, /Resumo global do OneView/);
   assert.doesNotMatch(alerts, /Métricas de todo o ambiente\. Os controles da tabela afetam somente a listagem\./);
   assert.doesNotMatch(alerts, /Escopo desta tabela:/);
-  assert.doesNotMatch(alerts, /xl:grid-cols-5[\s\S]*summaryCards\.map/);
+  assert.match(alerts, /xl:grid-cols-5[\s\S]*summaryCards\.map/);
   assert.match(alerts, /filtrados por \{tableCustomerScope\}/);
 });
 
@@ -847,8 +844,8 @@ test("OV-P0-17 resumo operacional compacto prioriza tabela", async () => {
   ]);
 
   assert.match(alerts, /OV-P0-17/);
-  assert.match(alerts, /CompactMetricStrip/);
-  assert.match(metricStrip, /md:flex-nowrap/);
+  assert.match(alerts, /OneViewKpiCard/);
+  assert.match(alerts, /2xl:grid-cols-9/);
   assert.match(alerts, /title: "Em acompanhamento"/);
   assert.match(alerts, /title: "Reconhecidos"/);
   assert.match(alerts, /title: "Pendentes"/);
@@ -905,9 +902,9 @@ test("tabela reserva espaço para ACK e ações; sidebar com toggle de tema", as
   assert.doesNotMatch(alerts, /sortableHeader\("Cliente", "client"\)|sortableHeader\("Fonte", "datasource"\)/);
   assert.doesNotMatch(alerts, />OneView<\/span>|Não tratado/);
   assert.doesNotMatch(alerts, /CustomerLogo customer=\{\{ key: alert\.customer_key/);
-  assert.match(alerts, /aria-label=\"Ver detalhes do alerta\"/);
-  assert.match(alerts, /<Eye className=\"h-3\.5 w-3\.5\" \/>\s*<span className=\"sr-only\">Ver detalhes do alerta<\/span>/);
-  assert.doesNotMatch(alerts, /<Eye className=\"h-3\.5 w-3\.5\" \/> Ver/);
+  assert.match(alerts, /aria-label=\"Ver detalhes\"/);
+  assert.match(alerts, /<Eye className=\"h-4 w-4\" \/>\s*<span className=\"sr-only\">Ver detalhes<\/span>/);
+  assert.match(alerts, /<TooltipContent>Ver detalhes<\/TooltipContent>/);
   assert.doesNotMatch(alerts, /dataSource=\{currentDataSource\}/);
   assert.match(sidebar, /Ativar modo escuro/);
   assert.match(sidebar, /Ativar modo claro/);
@@ -1101,9 +1098,9 @@ test("fila operacional /alertas cobre contrato OV-P0-07", async () => {
   assert.match(alerts, /sourceAckPresentation/);
   assert.match(alerts, /Reconhecido por \$\{ack\.actorLabel\}/);
   assert.match(alerts, /ack\.status !== "acknowledged"/);
-  assert.match(alerts, />Pendente</);
+  assert.match(alerts, /status="incident-waiting" label="Pendente"/);
   assert.match(alerts, /ack\.actorLabel \? `Reconhecido por \$\{ack\.actorLabel\}` : "Reconhecido"/);
-  assert.match(alerts, /ack\.at \? <p[\s\S]*formatDateTime\(ack\.at\)/);
+  assert.match(alerts, /ack\.at \? ` · \$\{formatDateTime\(ack\.at\)\}`/);
   assert.doesNotMatch(alerts, /RITM\d+|SLA vencido|Sem chamado/);
   assert.doesNotMatch(alerts, /Integração ServiceNow em preparação/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
@@ -2046,7 +2043,7 @@ test("OV-P0-41 Alertas: faixa de 5 severidades, Cliente na tabela, Chamado via r
   const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /VISUAL_SEVERITY_STRIP/);
   assert.match(alerts, /"information",\s*"warning",\s*"average",\s*"high",\s*"disaster"/);
-  assert.match(alerts, /Severidade fora da faixa visual/);
+  assert.doesNotMatch(alerts, /Severidade fora da faixa visual/);
   assert.match(alerts, /notClassifiedCard/);
   assert.match(alerts, /setSelectedSeverities\(\(current\) => \(/);
   assert.match(alerts, /severities: selectedSeverities/);
@@ -2171,7 +2168,7 @@ test("OV-P0-44 Histórico enxuga colunas e abre drawer na linha", async () => {
   assert.match(historico, /pageSize: PAGE_SIZE/);
 });
 
-test("OV-P0-45 cabeçalhos padronizados na Topbar sem PageHeader duplicado", async () => {
+test("OV-P0-45 cabeçalhos padronizados na Topbar", async () => {
   const [index, alerts, historico, monitoring, chamados, appLayout, topbar] = await Promise.all([
     read("src/pages/Index.tsx"),
     read("src/pages/Alerts.tsx"),
@@ -2183,13 +2180,13 @@ test("OV-P0-45 cabeçalhos padronizados na Topbar sem PageHeader duplicado", asy
   ]);
 
   assert.match(index, /text-xl font-semibold tracking-tight text-foreground">Início</);
-  assert.match(alerts, /text-xl font-semibold tracking-tight text-foreground">Alertas</);
+  assert.match(alerts, /<PageHeader title="Alertas" aside=\{clientSelector\}/);
   assert.match(historico, /ov-type-page-title text-foreground">Histórico</);
   assert.match(monitoring, /text-xl font-semibold tracking-tight text-foreground">Monitoramento</);
   assert.match(chamados, /text-xl font-semibold tracking-tight text-foreground">Chamados</);
   assert.doesNotMatch(index, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.doesNotMatch(historico, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
-  assert.doesNotMatch(alerts, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
+  assert.match(alerts, /from "@\/components\/oneview\/PageHeader"/);
   assert.doesNotMatch(chamados, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.match(appLayout, /showHealthStrip \? <PlatformHealthStrip/);
   assert.doesNotMatch(index, /PlatformHealthStrip/);

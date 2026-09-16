@@ -63,8 +63,9 @@ test("OV-P0-78 páginas usam componentes/tokens compartilhados", async () => {
   assert.match(index, /OperationalCta/);
   assert.match(index, /OV_FILTER_CONTROL|OV_FILTER_CHIP/);
 
-  assert.match(alerts, /OV_FILTER_CONTROL/);
-  assert.match(alerts, /OV_CTA/);
+  assert.match(alerts, /FilterBar/);
+  assert.match(alerts, /ov-control-official/);
+  assert.match(alerts, /OneViewButton|OneViewTextAction/);
   assert.match(alerts, /text-left/);
   assert.match(alerts, /text-right[\s\S]*Duração|Duração[\s\S]*text-right/);
 

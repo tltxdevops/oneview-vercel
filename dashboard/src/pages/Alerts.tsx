@@ -4,7 +4,15 @@ import { endOfDay, format, formatDistanceToNow, startOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { FilterBar } from "@/components/oneview/FilterBar";
+import {
+  OneViewButton,
+  OneViewKpiCard,
+  OneViewPill,
+  OneViewSemanticStatusBadge,
+  OneViewSeverityBadge,
+  OneViewTextAction,
+} from "@/components/oneview/OneViewDesignSystem";
 import {
   ClientIdentity,
   CLASSIFICATION_PENDING_LABEL,
@@ -22,16 +30,14 @@ import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceN
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
-import { SeverityBadge } from "@/components/badges/SeverityBadge";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/oneview/PageHeader";
 import { Calendar } from "@/components/ui/calendar";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
@@ -64,7 +70,6 @@ import {
   requestAlertAcknowledgement,
 } from "@/lib/oneview-api";
 import { ONEVIEW_SEVERITY_UI } from "@/lib/oneview-severity-visual";
-import { OV_CTA, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   ALERTS_DATE_FIELD_OPTIONS,
   ALERTS_DATE_PRESET_OPTIONS,
@@ -93,7 +98,6 @@ import {
   Activity,
   ArrowUpDown,
   CalendarRange,
-  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -102,7 +106,6 @@ import {
   History,
   Loader2,
   RefreshCcw,
-  Search,
   ServerCog,
   Siren,
   SlidersHorizontal,
@@ -159,7 +162,7 @@ type SummaryFilter =
   | "disaster"
   | "not_classified";
 
-/** Faixa visual obrigatória (OV-P0-41). Not classified fica fora. */
+/** Cinco severidades operacionais; "Não classificados" integra a mesma faixa de KPIs. */
 const VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
   "information",
   "warning",
@@ -1165,7 +1168,7 @@ export default function AlertsPage() {
     if (!metrics) return null;
     return severityCounts[severity] ?? 0;
   };
-  // OV-P0-17 / OV-P0-41: faixa operacional + cinco severidades Zabbix; Not classified separado.
+  // OV-P0-17 / OV-P0-41: indicadores operacionais + severidades na mesma faixa oficial.
   const operationalCards = [
     {
       filter: "active" as const,
@@ -1194,9 +1197,17 @@ export default function AlertsPage() {
   }));
   const notClassifiedCard = {
     filter: "not_classified" as const,
-    title: severityCatalog.not_classified.label,
+    title: "Não classificados",
     value: severityCountFor("not_classified"),
-    description: temporalDescription ?? "Fora da faixa visual das cinco severidades",
+    description: temporalDescription ?? "Sem classificação de severidade",
+  };
+  const summaryCards = [...operationalCards, ...severityCards, notClassifiedCard];
+  const summaryTone = (filter: SummaryFilter): "neutral" | "danger" | "success" | "warning" | "info" => {
+    if (filter === "active" || filter === "high" || filter === "disaster") return "danger";
+    if (filter === "acknowledged") return "success";
+    if (filter === "pending" || filter === "warning" || filter === "average") return "warning";
+    if (filter === "information") return "info";
+    return "neutral";
   };
 
   const customerCards = useMemo(() => {
@@ -1246,6 +1257,13 @@ export default function AlertsPage() {
       remove: () => setSearchQuery(""),
     } : null,
   ].filter((chip): chip is { label: string; remove: () => void } => Boolean(chip));
+  const severityFilterValue = selectedSeverities.length === 0
+    ? "all"
+    : selectedSeverities.length === 2 && selectedSeverities.includes("disaster") && selectedSeverities.includes("high")
+      ? "priority"
+      : selectedSeverities.length === 1
+        ? selectedSeverities[0]
+        : "multiple";
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + alerts.length - 1, pagination.total_items);
@@ -1572,81 +1590,54 @@ export default function AlertsPage() {
     <AppLayout
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      clientSelect={(
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Alertas</h1>
-          {clientSelector}
-        </div>
-      )}
+      clientSelect={<PageHeader title="Alertas" aside={clientSelector} />}
       contentClassName="gap-3 p-3 lg:px-4"
     >
       {hasSnapshot ? (
-        <Card className="rounded-[10px] border border-amber-300 bg-amber-50 p-4 shadow-sm">
+        <section className="ov-callout-warning p-4 shadow-none" role="status">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
-              <WifiOff className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
+              <WifiOff className="mt-0.5 h-5 w-5 shrink-0" />
               <div>
-                <h2 className="text-sm font-semibold text-amber-900">Dados em modo de contingência</h2>
-                <p className="text-sm text-amber-800">A conexão em tempo real está indisponível e os dados podem estar desatualizados.</p>
-                <p className="mt-1 text-xs text-amber-700">
+                <h2 className="ov-type-section-title">Dados em modo de contingência</h2>
+                <p className="ov-type-body">A conexão em tempo real está indisponível e os dados podem estar desatualizados.</p>
+                <p className="mt-1 ov-type-caption">
                   Consulta: {formatDateTime(lastCheckedAt)}{fallbackCode ? ` · Código: ${safeDisplayText(fallbackCode)}` : ""}
                 </p>
               </div>
             </div>
-            <Button type="button" variant="outline" size="sm" className="ov-error-action" onClick={() => void refreshAll()} disabled={isRefreshing}>
+            <OneViewButton type="button" variant="secondary" className="ov-error-action" onClick={() => void refreshAll()} disabled={isRefreshing}>
               <RefreshCcw className="h-4 w-4" /> Tentar novamente
-            </Button>
+            </OneViewButton>
           </div>
-        </Card>
+        </section>
       ) : null}
 
       {summaryError ? <OperationalErrorBanner message={summaryError} /> : null}
 
-      <div className="space-y-1.5">
-        <CompactMetricStrip
-          aria-label="Filtros rápidos por indicadores"
-          items={[...operationalCards, ...severityCards].map((card) => {
-            const showSkeleton = isSummaryLoading && !health && !metrics && card.value === null;
-            const unknown = card.value === null && !showSkeleton;
-            return {
-              key: card.filter,
-              label: card.title,
-              value: formatCardValue(card.value),
-              description: card.description,
-              selected: summaryFilterIsActive(card.filter),
-              unknown,
-              loading: showSkeleton,
-              onClick: () => applySummaryFilter(card.filter),
-            };
-          })}
-          footer={temporalDescription ? (
-            <p className="border-t border-border/50 px-2.5 py-1 text-[10px] text-muted-foreground">{temporalDescription}</p>
-          ) : null}
-        />
-        <CompactMetricStrip
-          aria-label="Severidade fora da faixa visual"
-          className="border-dashed"
-          items={[{
-            key: notClassifiedCard.filter,
-            label: notClassifiedCard.title,
-            value: formatCardValue(notClassifiedCard.value),
-            description: notClassifiedCard.description,
-            selected: summaryFilterIsActive(notClassifiedCard.filter),
-            unknown: notClassifiedCard.value === null && !(isSummaryLoading && !health && !metrics),
-            loading: isSummaryLoading && !health && !metrics && notClassifiedCard.value === null,
-            onClick: () => applySummaryFilter(notClassifiedCard.filter),
-          }]}
-        />
-      </div>
+      <section aria-label="Indicadores de alertas" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-9">
+        {summaryCards.map((card) => (
+          <OneViewKpiCard
+            key={card.filter}
+            label={card.title}
+            value={formatCardValue(card.value)}
+            hint={card.description}
+            tone={summaryTone(card.filter)}
+            selected={summaryFilterIsActive(card.filter)}
+            className="ov-kpi-official"
+            onClick={() => applySummaryFilter(card.filter)}
+          />
+        ))}
+      </section>
 
-      <Card className="overflow-hidden ov-panel">
-        <div className="border-b border-border/70 px-4 py-3">
+      <section className="ov-surface-official overflow-hidden">
+        <header className="border-b border-border/70 px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h2 className="text-base font-semibold text-foreground">
+              <h2 className="ov-type-section-title text-foreground">
                 {ALERTS_VIEWS.find((item) => item.id === alertsView)?.label ?? "Alertas"} · filtrados por {tableCustomerScope}
               </h2>
-              <p className="text-xs text-muted-foreground">
+              <p className="ov-type-caption text-muted-foreground">
                 {alertsView === "forgotten"
                   ? "Alertas ativos sem ACK acima do tempo esperado."
                   : "Fila por cliente para ação imediata"}
@@ -1656,51 +1647,39 @@ export default function AlertsPage() {
                 {snapshotCoverage?.partial ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos` : ""}
               </p>
             </div>
-            <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Visualizações de alertas">
-              {ALERTS_VIEWS.map((view) => (
-                <button
-                  key={view.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={alertsView === view.id}
-                  onClick={() => applyAlertsView(view.id)}
-                  className={cn(
-                    "rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                    alertsView === view.id
-                      ? "border-foreground/30 bg-foreground text-background"
-                      : "border-border/70 bg-muted/30 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-                  )}
-                >
-                  {view.label}
-                </button>
-              ))}
-            </div>
+            <Tabs value={alertsView} onValueChange={(value) => applyAlertsView(value as AlertsView)}>
+              <TabsList aria-label="Visualizações de alertas" className="h-9 justify-start overflow-x-auto">
+                {ALERTS_VIEWS.map((view) => (
+                  <TabsTrigger key={view.id} value={view.id} className="h-7">
+                    {view.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
           </div>
+        </header>
 
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <FilterBar aria-label="Filtros de alertas" className="ov-surface-official m-3 space-y-3 p-4">
+          <div className="flex flex-col gap-3">
+            <div className="order-2 flex min-w-0 flex-wrap items-center gap-2" aria-label="Filtros ativos">
+              {activeFilterChips.length > 0 ? <span className="ov-type-caption font-semibold text-muted-foreground">Filtros ativos:</span> : null}
               {activeFilterChips.map((chip) => (
-                <Button
+                <OneViewPill
                   key={chip.label}
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="h-7 rounded-md px-2.5 text-xs"
+                  className="h-8"
                   onClick={() => { chip.remove(); setPage(1); }}
                 >
                   {chip.label}<X className="h-3 w-3" />
-                </Button>
+                </OneViewPill>
               ))}
-              {activeFilterChips.length === 0 ? (
-                <span className="text-[11px] text-muted-foreground">Filtros server-side · alteração volta para a página 1</span>
-              ) : null}
+              {activeFilterChips.length > 0 ? <OneViewTextAction onClick={clearFilters}>Limpar todos</OneViewTextAction> : null}
             </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            <div className="order-1 grid gap-2 sm:grid-cols-2 lg:grid-cols-[9rem_11rem_minmax(18rem,1fr)_auto_auto]">
               <Select
                 value={statusFilter}
                 onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}
               >
-                <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[120px]")} aria-label="Estado">
+                <SelectTrigger className="ov-control-official h-9 w-full" aria-label="Estado">
                   <SelectValue placeholder="Estado" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1711,25 +1690,31 @@ export default function AlertsPage() {
               </Select>
 
               <Select
-                value={sourceAckFilter}
-                onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}
+                value={severityFilterValue}
+                onValueChange={(value) => {
+                  setSelectedSeverities(value === "all" ? [] : value === "priority" ? ["disaster", "high"] : [value as OneViewSeverity]);
+                  setPage(1);
+                }}
               >
-                <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[120px]")} aria-label="ACK da origem">
-                  <SelectValue placeholder="ACK" />
+                <SelectTrigger className="ov-control-official h-9 w-full" aria-label="Severidade">
+                  <SelectValue placeholder="Severidade" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="acknowledged">Com ACK</SelectItem>
-                  <SelectItem value="unacknowledged">Sem ACK</SelectItem>
+                  <SelectItem value="all">Todas</SelectItem>
+                  <SelectItem value="priority">High e Disaster</SelectItem>
+                  {severityFilterValue === "multiple" ? <SelectItem value="multiple" disabled>Múltiplas</SelectItem> : null}
+                  {severityOrder.map((severity) => (
+                    <SelectItem key={severity} value={severity}>{severityCatalog[severity].label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
 
-              <div className="flex h-8 items-center gap-1 rounded-md border border-border/70 bg-white px-1">
+              <div className="ov-control-official flex h-9 min-w-0 items-center gap-1 border border-input bg-background px-1">
                 <Select
                   value={searchField}
                   onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}
                 >
-                  <SelectTrigger className="h-7 w-[100px] border-0 bg-transparent px-2 text-xs shadow-none" aria-label="Campo de busca">
+                  <SelectTrigger className="h-full w-[7.5rem] border-0 bg-transparent px-2 ov-type-caption shadow-none" aria-label="Campo de busca">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1741,54 +1726,49 @@ export default function AlertsPage() {
                 <Input
                   value={searchQuery}
                   onChange={(event) => { setSearchQuery(event.target.value); setPage(1); }}
-                  placeholder="Buscar…"
-                  className="h-7 w-[140px] border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
+                  placeholder="Buscar alerta, host ou cliente…"
+                  className="h-full min-w-0 flex-1 border-0 bg-transparent px-1 ov-type-body shadow-none focus-visible:ring-0"
                   aria-label="Busca server-side"
                 />
               </div>
 
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button
+                  <OneViewButton
                     type="button"
-                    variant="outline"
-                    size="sm"
-                    className={cn("h-8 px-2.5 text-xs", hasTemporalFilter && "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")}
+                    variant="secondary"
+                    className={cn("h-9 px-3", hasTemporalFilter && "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")}
                   >
-                    <CalendarRange className="h-3.5 w-3.5" />
+                    <CalendarRange className="h-4 w-4" />
                     Período
-                  </Button>
+                  </OneViewButton>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-[340px] space-y-3 p-3">
                   <div>
-                    <p className="text-sm font-semibold">Filtrar por período</p>
-                    <p className="text-[11px] text-muted-foreground">Janelas rolantes a partir de agora (não desde meia-noite).</p>
+                    <p className="ov-type-section-title">Filtrar por período</p>
+                    <p className="ov-type-caption text-muted-foreground">Janelas rolantes a partir de agora (não desde meia-noite).</p>
                   </div>
                   <div className="flex flex-wrap gap-1.5" role="group" aria-label="Atalhos de período">
                     {([
                       { id: "24h", label: "Últimas 24 horas" },
                       { id: "30d", label: "Últimos 30 dias" },
                     ] as const).map((preset) => (
-                      <Button
+                      <OneViewPill
                         key={preset.id}
-                        type="button"
-                        size="sm"
-                        variant={datePreset === preset.id ? "default" : "outline"}
-                        className="h-7 px-2.5 text-[11px]"
-                        aria-pressed={datePreset === preset.id}
+                        selected={datePreset === preset.id}
                         onClick={() => applyDatePreset(preset.id)}
                       >
                         {preset.label}
-                      </Button>
+                      </OneViewPill>
                     ))}
                   </div>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
                     Campo
                     <Select
                       value={dateField}
                       onValueChange={(value) => { setDateField(value as AlertsDateField); setPage(1); }}
                     >
-                      <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="ov-control-official h-9"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {ALERTS_DATE_FIELD_OPTIONS.map((option) => (
                           <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
@@ -1796,10 +1776,10 @@ export default function AlertsPage() {
                       </SelectContent>
                     </Select>
                   </label>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
                     Janela
                     <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}>
-                      <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="ov-control-official h-9"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">Sem período</SelectItem>
                         {ALERTS_DATE_PRESET_OPTIONS.map((option) => (
@@ -1819,32 +1799,45 @@ export default function AlertsPage() {
                     />
                   ) : null}
                   {hasTemporalFilter ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 w-full text-xs"
+                    <OneViewTextAction
+                      className="w-full text-center"
                       onClick={() => { setDatePreset("all"); setDateRange(undefined); setPage(1); }}
                     >
                       Limpar período
-                    </Button>
+                    </OneViewTextAction>
                   ) : null}
                 </PopoverContent>
               </Popover>
 
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button type="button" variant="outline" size="sm" className="h-8 px-2.5 text-xs">
-                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <OneViewButton type="button" variant="secondary" className="h-9 px-3">
+                    <SlidersHorizontal className="h-4 w-4" />
                     Mais filtros
-                  </Button>
+                  </OneViewButton>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-[280px] space-y-3 p-3">
                   <div>
-                    <p className="text-sm font-semibold">Mais filtros</p>
-                    <p className="text-[11px] text-muted-foreground">Ordenação e paginação da consulta.</p>
+                    <p className="ov-type-section-title">Mais filtros</p>
+                    <p className="ov-type-caption text-muted-foreground">ACK, ordenação e paginação da consulta.</p>
                   </div>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
+                    ACK da origem
+                    <Select
+                      value={sourceAckFilter}
+                      onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}
+                    >
+                      <SelectTrigger className="ov-control-official h-9" aria-label="ACK da origem">
+                        <SelectValue placeholder="ACK" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos</SelectItem>
+                        <SelectItem value="acknowledged">Com ACK</SelectItem>
+                        <SelectItem value="unacknowledged">Sem ACK</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
                     Ordenação
                     <Select
                       value={sortOptionKey(
@@ -1860,7 +1853,7 @@ export default function AlertsPage() {
                         setPage(1);
                       }}
                     >
-                      <SelectTrigger className="h-9 bg-white text-xs" aria-label="Ordenação">
+                      <SelectTrigger className="ov-control-official h-9" aria-label="Ordenação">
                         <SelectValue placeholder="Ordenação" />
                       </SelectTrigger>
                       <SelectContent>
@@ -1872,10 +1865,10 @@ export default function AlertsPage() {
                       </SelectContent>
                     </Select>
                   </label>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
                     Itens por página
                     <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}>
-                      <SelectTrigger className="h-9 bg-white" aria-label="Itens por página"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="ov-control-official h-9" aria-label="Itens por página"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="25">25</SelectItem>
                         <SelectItem value="50">50</SelectItem>
@@ -1886,25 +1879,22 @@ export default function AlertsPage() {
                 </PopoverContent>
               </Popover>
 
-              {activeFilterChips.length > 0 ? (
-                <Button type="button" variant="ghost" size="sm" className={OV_CTA} onClick={clearFilters}>Limpar</Button>
-              ) : null}
             </div>
           </div>
-        </div>
+        </FilterBar>
 
         {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} /> : null}
 
         <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading}>
           {isAlertsLoading && hasLoadedAlerts ? (
-            <div className="sticky top-0 z-20 flex items-center justify-center gap-2 border-b border-border/50 bg-background/90 px-3 py-1 text-[11px] text-muted-foreground backdrop-blur">
-              <Loader2 className="h-3 w-3 animate-spin" />
+            <div className="sticky top-0 z-20 flex items-center justify-center gap-2 border-b border-border/50 bg-background/90 px-3 py-2 ov-type-caption text-muted-foreground backdrop-blur">
+              <Loader2 className="h-4 w-4 animate-spin" />
               Atualizando...
             </div>
           ) : null}
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
           <TooltipProvider delayDuration={250}>
-          <Table className="min-w-[1240px] w-full table-fixed text-[11px]">
+          <Table className="ov-operational-table min-w-[1240px] w-full table-fixed">
             <colgroup>
               <col className="w-[8%]" />
               <col className="w-[11%]" />
@@ -1918,103 +1908,17 @@ export default function AlertsPage() {
               <col className="w-[6%]" />
             </colgroup>
             <TableHeader className="sticky top-0 z-10">
-              <TableRow className="border-border/70 bg-muted/80 text-[10px] text-muted-foreground hover:bg-muted/80">
-                <TableHead className="px-3 text-left">
-                  <div className="flex items-center justify-start gap-1">
-                    {sortableHeader("Severidade", "severity")}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", selectedSeverities.length > 0 && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Filtrar prioridade">
-                          <Search className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="start" className="w-56 space-y-1 p-2">
-                        {severityOrder.map((severity) => {
-                          const selected = selectedSeverities.includes(severity);
-                          return (
-                            <Button
-                              key={severity}
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className={cn("h-8 w-full justify-start border px-2 text-xs", severityCatalog[severity].tone, selected && "ring-2 ring-primary/40")}
-                              onClick={() => {
-                                setSelectedSeverities((current) => selected ? current.filter((item) => item !== severity) : [...current, severity]);
-                                setPage(1);
-                              }}
-                            >
-                              {severityCatalog[severity].short} · {severityCatalog[severity].label}
-                              {selected ? <Check className="ml-auto h-3.5 w-3.5" /> : null}
-                            </Button>
-                          );
-                        })}
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </TableHead>
-                <TableHead className="px-3 text-left">Cliente</TableHead>
-                <TableHead className="px-3 text-left">
-                  <div className="flex items-center justify-start gap-1">
-                    {sortableHeader("Host", "host")}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", searchField === "host" && debouncedSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar host">
-                          <Search className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="start" className="w-72 p-3">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          Pesquisar somente em host
-                          <Input
-                            autoFocus
-                            value={searchField === "host" ? searchQuery : ""}
-                            onChange={(event) => {
-                              setSearchField("host");
-                              setSearchQuery(event.target.value);
-                              setPage(1);
-                            }}
-                            placeholder="Nome visível ou técnico"
-                            className="mt-1 h-8"
-                          />
-                        </label>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </TableHead>
-                <TableHead className="px-3 text-left">
-                  <div className="flex items-center justify-start gap-1">
-                    {sortableHeader("Problema", "problem")}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0", searchField === "problem" && debouncedSearch && "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")} aria-label="Pesquisar problema">
-                          <Search className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="end" className="w-80 p-3">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          Pesquisar somente em problema
-                          <Input
-                            autoFocus
-                            value={searchField === "problem" ? searchQuery : ""}
-                            onChange={(event) => {
-                              setSearchField("problem");
-                              setSearchQuery(event.target.value);
-                              setPage(1);
-                            }}
-                            placeholder="Descrição do problema"
-                            className="mt-1 h-8"
-                          />
-                        </label>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </TableHead>
-                <TableHead className="px-3 text-left">{sortableHeader("Início", "first_seen_at")}</TableHead>
-                <TableHead className="px-3 text-right">{sortableHeader("Duração", "duration")}</TableHead>
-                <TableHead className="px-3 text-left">{sortableHeader("ACK", "acknowledged_source")}</TableHead>
-                <TableHead className="px-3 text-left">Chamado</TableHead>
-                <TableHead className="px-3 text-left">{sortableHeader("Estado", "status")}</TableHead>
-                <TableHead className="px-3 text-center">Ações</TableHead>
+              <TableRow className="border-border bg-muted/80 ov-type-caption text-muted-foreground hover:bg-muted/80">
+                <TableHead className="text-left font-semibold">{sortableHeader("Severidade", "severity")}</TableHead>
+                <TableHead className="text-left font-semibold">Cliente</TableHead>
+                <TableHead className="text-left font-semibold">{sortableHeader("Host", "host")}</TableHead>
+                <TableHead className="text-left font-semibold">{sortableHeader("Problema", "problem")}</TableHead>
+                <TableHead className="text-left font-semibold">{sortableHeader("Início", "first_seen_at")}</TableHead>
+                <TableHead className="text-right font-semibold">{sortableHeader("Duração", "duration")}</TableHead>
+                <TableHead className="text-left font-semibold">{sortableHeader("ACK", "acknowledged_source")}</TableHead>
+                <TableHead className="text-left font-semibold">Chamado</TableHead>
+                <TableHead className="text-left font-semibold">{sortableHeader("Estado", "status")}</TableHead>
+                <TableHead className="text-center font-semibold">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -2057,10 +1961,10 @@ export default function AlertsPage() {
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openAlert(alert); } }}
                     className={cn("cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60", selectedAlertId === alert.id && "bg-muted/60")}
                   >
-                    <TableCell className="align-middle px-3 py-2.5 text-left">
-                      <SeverityBadge severity={severityKey} />
+                    <TableCell className="text-left">
+                      <OneViewSeverityBadge severity={severityKey} />
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-left">
+                    <TableCell className="text-left">
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <span className="inline-flex max-w-full justify-center">
@@ -2073,56 +1977,48 @@ export default function AlertsPage() {
                               operationalScope={alert.operational_scope}
                               operationalScopeLabel={alert.operational_scope_label}
                               showName
-                              nameClassName="max-w-[9rem] truncate text-left text-xs font-semibold"
+                              nameClassName="max-w-[9rem] truncate text-left ov-type-body font-semibold"
                             />
                           </span>
                         </TooltipTrigger>
                         <TooltipContent side="top" className="max-w-xs break-words">{clientLabel}</TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-left">
+                    <TableCell className="text-left">
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <div className="min-w-0">
-                            <p className="truncate font-semibold">{hostLabel}</p>
-                            {technicalHost && technicalHost !== hostLabel ? (
-                              <p className="truncate font-mono text-[9px] text-muted-foreground">{technicalHost}</p>
-                            ) : null}
-                          </div>
+                          <p className="truncate ov-type-body font-semibold">{hostLabel}</p>
                         </TooltipTrigger>
                         <TooltipContent side="top" className="max-w-xs break-words">
                           {technicalHost && technicalHost !== hostLabel ? `${hostLabel} · ${technicalHost}` : hostLabel}
                         </TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-left">
+                    <TableCell className="text-left">
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <p className="line-clamp-2 font-medium leading-4">{problemLabel}</p>
+                          <p className="truncate ov-type-body font-medium">{problemLabel}</p>
                         </TooltipTrigger>
                         <TooltipContent side="top" className="max-w-sm break-words">
                           {safeDisplayText(alert.problem_name, "Alerta sem descrição")}
                         </TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-left font-mono text-muted-foreground">
+                    <TableCell className="text-left font-mono ov-type-caption text-muted-foreground">
                       {alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{durationLabel}</TableCell>
-                    <TableCell className="overflow-hidden align-middle px-3 py-2.5 text-left">
+                    <TableCell className="text-right font-mono ov-type-caption tabular-nums text-muted-foreground">{durationLabel}</TableCell>
+                    <TableCell className="overflow-hidden text-left">
                       {(() => {
                         const ack = sourceAckPresentation(alert);
                         if (ack.status !== "acknowledged") {
-                          return <span className="text-[11px] font-medium text-amber-800">Pendente</span>;
+                          return <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />;
                         }
                         const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido";
                         return (
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <div className="min-w-0">
-                                <p className="truncate text-[11px] font-medium leading-4 text-foreground">{ackLabel}</p>
-                                {ack.at ? <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{formatDateTime(ack.at)}</p> : null}
-                              </div>
+                              <span className="inline-flex max-w-full"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" /></span>
                             </TooltipTrigger>
                             <TooltipContent side="top" className="max-w-xs break-words">
                               {ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}
@@ -2131,29 +2027,36 @@ export default function AlertsPage() {
                         );
                       })()}
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-left">
+                    <TableCell className="text-left">
                       <AlertServiceNowReferenceCell reference={alert.servicenow_reference} />
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-left">
-                      <p className={cn("font-medium", isActive ? "text-red-700" : "text-emerald-700")}>{isActive ? "Ativo" : "Resolvido"}</p>
+                    <TableCell className="text-left">
+                      <OneViewSemanticStatusBadge
+                        status={isActive ? "monitoring-down" : "monitoring-normalized"}
+                        label={isActive ? "Ativo" : "Resolvido"}
+                      />
                     </TableCell>
-                    <TableCell className="align-middle px-3 py-2.5 text-center">
+                    <TableCell className="text-center">
                       <div className="flex items-center justify-center gap-1 whitespace-nowrap">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          aria-label="Ver detalhes do alerta"
-                          title="Ver detalhes do alerta"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openAlert(alert);
-                          }}
-                        >
-                          <Eye className="h-3.5 w-3.5" />
-                          <span className="sr-only">Ver detalhes do alerta</span>
-                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <OneViewButton
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="ov-control-official-compact h-8 min-h-8 w-8 px-0"
+                              aria-label="Ver detalhes"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openAlert(alert);
+                              }}
+                            >
+                              <Eye className="h-4 w-4" />
+                              <span className="sr-only">Ver detalhes</span>
+                            </OneViewButton>
+                          </TooltipTrigger>
+                          <TooltipContent>Ver detalhes</TooltipContent>
+                        </Tooltip>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -2165,17 +2068,17 @@ export default function AlertsPage() {
         </div>
 
         <div className="flex flex-col gap-3 border-t border-border/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted-foreground">
+          <p className="ov-type-caption text-muted-foreground">
             Página {pagination.total_pages === 0 ? 0 : pagination.page} de {pagination.total_pages}
             {" · "}
             {pagination.total_items.toLocaleString("pt-BR")} resultado{pagination.total_items === 1 ? "" : "s"}
           </p>
           <div className="flex items-center gap-2">
-            <Button type="button" variant="outline" size="sm" disabled={!pagination.has_previous || isAlertsLoading} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="h-4 w-4" />Anterior</Button>
-            <Button type="button" variant="outline" size="sm" disabled={!pagination.has_next || isAlertsLoading} onClick={() => setPage((current) => current + 1)}>Próxima<ChevronRight className="h-4 w-4" /></Button>
+            <OneViewButton type="button" variant="secondary" disabled={!pagination.has_previous || isAlertsLoading} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="h-4 w-4" />Anterior</OneViewButton>
+            <OneViewButton type="button" variant="secondary" disabled={!pagination.has_next || isAlertsLoading} onClick={() => setPage((current) => current + 1)}>Próxima<ChevronRight className="h-4 w-4" /></OneViewButton>
           </div>
         </div>
-      </Card>
+      </section>
 
       <AlertDetailDrawer
         open={selectedAlertId !== null}
