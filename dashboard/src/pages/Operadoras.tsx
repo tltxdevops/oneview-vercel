@@ -3,6 +3,7 @@ import { Bell, ChevronDown, Link as LinkIcon, Repeat2, RotateCcw, Search } from 
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
+import { IncidentActions } from "@/components/oneview/IncidentActions";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
@@ -894,6 +895,7 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const [claimedAssignee, setClaimedAssignee] = useState<string | null>(null);
   const detailId = `incident-detail-${slotKey}-${incident.sys_id || incident.number || "unknown"}`;
   const canExpand = Boolean(incident.sys_id);
   const terminal = ["6", "7", "8"].includes(String(incident.state || "").trim());
@@ -910,11 +912,12 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
       <div className="min-w-0">
         <p className="flex flex-wrap items-center gap-1.5"><b>{incident.number || "INC"}</b><OneViewIncidentStatusBadge state={incident.state} display={incident.state_display} /></p>
         <p className="mt-1 text-xs text-muted-foreground">Aberto {timestampLabel(incident.opened_at)} · Atualizado {timestampLabel(incident.updated_at)}</p>
-        <p className="mt-1 text-xs font-medium text-foreground/80">{assigneeLabel}: {incidentAssignee(incident)}</p>
+        <p className="mt-1 text-xs font-medium text-foreground/80">{assigneeLabel}: {claimedAssignee || incidentAssignee(incident)}</p>
         {incident.short_description ? <p className="mt-1 text-xs text-muted-foreground">{incident.short_description}</p> : null}
       </div>
       <span className="shrink-0 text-xs font-medium text-primary">{expanded ? "Recolher" : "Ver detalhes"}</span>
     </button>
+    {slotKey === "current" ? <IncidentActions incident={incident} onClaimed={(result) => setClaimedAssignee(result.incident.assigned_to_name)} /> : null}
     {expanded && incident.sys_id ? <div id={detailId}><IncidentDetailPanel incident={incident} /></div> : null}
   </div>;
 }

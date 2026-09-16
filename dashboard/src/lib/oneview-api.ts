@@ -46,6 +46,7 @@ export class OneViewApiError extends Error {
     message: string,
     readonly status: number,
     readonly code: string,
+    readonly details?: Readonly<Record<string, string | boolean>>,
   ) {
     super(message);
     this.name = "OneViewApiError";
@@ -77,9 +78,23 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let errorCode = "request_failed";
+    let errorDetails: Record<string, string | boolean> | undefined;
     try {
-      const errorBody = await response.json() as { error?: unknown };
+      const errorBody = await response.json() as {
+        error?: unknown;
+        current_assignee_name?: unknown;
+        requires_confirmation?: unknown;
+      };
       if (typeof errorBody?.error === "string" && /^[a-z0-9_]+$/i.test(errorBody.error)) errorCode = errorBody.error;
+      const currentAssignee = typeof errorBody?.current_assignee_name === "string"
+        ? errorBody.current_assignee_name.trim().slice(0, 120)
+        : "";
+      if (currentAssignee || typeof errorBody?.requires_confirmation === "boolean") {
+        errorDetails = {
+          ...(currentAssignee ? { current_assignee_name: currentAssignee } : {}),
+          ...(typeof errorBody?.requires_confirmation === "boolean" ? { requires_confirmation: errorBody.requires_confirmation } : {}),
+        };
+      }
     } catch {
       // A resposta de erro nunca é exibida integralmente para evitar vazamento de detalhes internos.
     }
@@ -115,11 +130,21 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       invalid_work_note: "A nota deve ser texto simples, não vazio, com no máximo 2000 caracteres.",
       invalid_hold_reason: "Selecione um motivo de espera homologado.",
       action_not_found: "Solicitação operacional não encontrada.",
+      SERVICENOW_CLAIM_DISABLED: "Ação de assumir chamado indisponível neste ambiente.",
+      SERVICENOW_NOC_MEMBERSHIP_REQUIRED: "Seu usuário não pertence ao grupo N1 - Serviços - NOC no ServiceNow.",
+      SERVICENOW_USER_NOT_FOUND: "Seu usuário não foi localizado no ServiceNow.",
+      SERVICENOW_USER_AMBIGUOUS: "Seu usuário possui mais de um registro no ServiceNow.",
+      SERVICENOW_USER_INACTIVE: "Seu usuário está inativo no ServiceNow.",
+      SERVICENOW_UNAVAILABLE: "ServiceNow indisponível temporariamente.",
+      INCIDENT_ASSIGNED_TO_OTHER: "Este chamado já possui outro responsável.",
+      INVALID_CLAIM_REQUEST: "Solicitação para assumir chamado inválida.",
+      INCIDENT_NOT_FOUND: "Chamado não encontrado no ServiceNow.",
     };
     throw new OneViewApiError(
       messages[errorCode] || `Não foi possível consultar o OneView (${response.status}).`,
       response.status,
       errorCode,
+      errorDetails,
     );
   }
 
@@ -1419,6 +1444,42 @@ export type ServiceNowIncidentActionStatus = {
   error_code: string | null;
   idempotent: boolean;
 };
+
+export type ServiceNowOperatorIdentity = {
+  available: boolean;
+  service_now_user?: { name: string; email: string };
+  noc_member: boolean;
+  error?: string;
+};
+
+export type ServiceNowIncidentClaimResponse = {
+  success: true;
+  already_assigned: boolean;
+  incident: {
+    incident_number: string | null;
+    state: string | null;
+    assigned_to_name: string | null;
+    assignment_group_name: string | null;
+    updated_on: string | null;
+  };
+};
+
+export async function fetchServiceNowOperatorIdentity(signal?: AbortSignal): Promise<ServiceNowOperatorIdentity> {
+  return fetchApi<ServiceNowOperatorIdentity>("/oneview/servicenow/me", { signal });
+}
+
+export async function requestServiceNowIncidentClaim({
+  sysId,
+  confirmReassign = false,
+}: {
+  sysId: string;
+  confirmReassign?: boolean;
+}): Promise<ServiceNowIncidentClaimResponse> {
+  return fetchApi<ServiceNowIncidentClaimResponse>(
+    `/oneview/incidents/${encodeURIComponent(sysId)}/claim`,
+    { method: "POST", body: JSON.stringify({ confirm_reassign: confirmReassign }) },
+  );
+}
 
 export async function fetchServiceNowIncidentActionOptions(sysId: string, signal?: AbortSignal): Promise<ServiceNowIncidentActionOptions> {
   return fetchApi<ServiceNowIncidentActionOptions>(`/oneview/incidents/${encodeURIComponent(sysId)}/actions`, { signal });

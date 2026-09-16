@@ -175,7 +175,8 @@ function assertGetOnly(method) {
   }
 }
 
-function buildBasicAuthHeader(username, password) {
+/** Shared server-only auth header for the explicit ServiceNow write boundary. */
+export function buildServiceNowAuthorizationHeader({ username, password }) {
   const token = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
   return `Basic ${token}`;
 }
@@ -268,7 +269,7 @@ function parseLinkNext(linkHeader) {
   return match?.[1] || null;
 }
 
-async function readJsonBody(response) {
+export async function readServiceNowJsonBody(response) {
   const contentLength = Number(response.headers.get("content-length") || 0);
   if (contentLength > MAX_RESPONSE_BYTES) {
     throw new ServiceNowClientError("servicenow_response_too_large", { status: 502 });
@@ -303,7 +304,7 @@ async function serviceNowFetchOnce(url, { config, fetchImpl }) {
       method: "GET",
       headers: {
         Accept: "application/json",
-        Authorization: buildBasicAuthHeader(config.username, config.password),
+        Authorization: buildServiceNowAuthorizationHeader(config),
       },
       redirect: "error",
       signal: controller.signal,
@@ -396,7 +397,7 @@ export async function serviceNowGet(table, options = {}) {
     method: "GET",
   });
 
-  const body = await readJsonBody(response);
+  const body = await readServiceNowJsonBody(response);
   const records = Array.isArray(body?.result) ? body.result : [];
   const totalCountHeader = response.headers.get("x-total-count");
   const totalCount =
@@ -444,7 +445,7 @@ export async function serviceNowStats(table, options = {}) {
     method: "GET",
   });
 
-  const body = await readJsonBody(response);
+  const body = await readServiceNowJsonBody(response);
   const rows = normalizeStatsRows(body?.result);
 
   return {
