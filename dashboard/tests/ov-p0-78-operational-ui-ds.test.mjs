@@ -25,10 +25,10 @@ test("OV-P0-78 tokens e componentes compartilhados existem", async () => {
   ]);
 
   assert.match(tokens, /export const OV_FILTER_CONTROL/);
-  assert.match(tokens, /h-8/);
+  assert.match(tokens, /"ov-filter-control"/);
   assert.match(tokens, /OV_CLIENT_FILTER_WIDTH|w-\[12rem\]/);
   assert.match(tokens, /export const OV_CTA/);
-  assert.match(tokens, /h-7 px-2 text-xs/);
+  assert.match(tokens, /"ov-cta"/);
   assert.match(tokens, /OV_FILTER_DIVIDER/);
   assert.match(tokens, /OV_SEGMENTED/);
 
@@ -69,8 +69,9 @@ test("OV-P0-78 páginas usam componentes/tokens compartilhados", async () => {
   assert.match(alerts, /text-left/);
   assert.match(alerts, /text-right[\s\S]*Duração|Duração[\s\S]*text-right/);
 
-  assert.match(historico, /OV_FILTER_CONTROL/);
-  assert.match(historico, /OV_CTA/);
+  assert.match(historico, /FilterBar/);
+  assert.match(historico, /ov-control-official/);
+  assert.match(historico, /OneViewButton|OneViewTextAction/);
 });
 
 test("OV-P0-78 severidade: High claro ≠ Disaster forte", async () => {

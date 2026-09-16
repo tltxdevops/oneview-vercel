@@ -24,18 +24,17 @@ test("ServiceNow states use the centralized semantic status palette", () => {
   assert.match(badgeSource, /data-tone=\{visual\.tone\}/);
 });
 
-test("monitoring stays red for failures and green for normalized links", () => {
-  assert.match(pageSource, /monitoringDown: "text-error dark:text-red-300"/);
-  assert.match(pageSource, /monitoringNormalized: "text-success"/);
-  assert.match(pageSource, /failing \? OPERATOR_STATUS_TONE\.monitoringDown : OPERATOR_STATUS_TONE\.monitoringNormalized/);
+test("monitoring uses the semantic down and normalized statuses", () => {
+  assert.match(pageSource, /OneViewSemanticStatusBadge/);
+  assert.match(pageSource, /status=\{failing \? "monitoring-down" : "monitoring-normalized"\}/);
+  assert.doesNotMatch(pageSource, /OPERATOR_STATUS_TONE/);
 });
 
-test("secondary meanings use warning, violet, and pending-classification accents", () => {
-  assert.match(pageSource, /divergence: "border-warning\/40 bg-warning\/10 text-amber-800/);
-  assert.match(pageSource, /recurrence: "border-violet-300 bg-violet-50 text-violet-800/);
-  assert.match(pageSource, /classificationPending: "border-warning\/35 bg-warning\/10 text-amber-800/);
-  assert.match(pageSource, /className=\{OPERATOR_STATUS_TONE\.divergence\}>● \{divergenceLabel\(link\)\}/);
-  assert.doesNotMatch(pageSource, /variant="destructive"[^>]*>[^<]*\{divergenceLabel/);
+test("secondary meanings use the official semantic badges", () => {
+  assert.match(pageSource, /status="divergence" label=\{divergenceLabel\(link\)\}/);
+  assert.match(pageSource, /status="recurrence" label=\{`\$\{count\} quedas \/ 24h`\}/);
+  assert.match(pageSource, /status="classification-pending"/);
+  assert.doesNotMatch(pageSource, /border-violet-|text-amber-|bg-amber-|OPERATOR_STATUS_TONE/);
 });
 
 test("incident status is a discrete badge and queue rows remain neutral", () => {

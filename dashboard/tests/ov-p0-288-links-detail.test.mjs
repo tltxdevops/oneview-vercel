@@ -66,6 +66,7 @@ test("OV-P0-288 drawer caches demand detail and never restores alert navigation"
   const page = await readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8");
   assert.match(page, /detailCache/);
   assert.match(page, /detailRequests/);
+  assert.match(page, /DETAIL_CACHE_TTL_MS/);
   assert.match(page, /fetchCanonicalLinkDetail/);
   assert.match(page, /Skeleton/);
   assert.doesNotMatch(page, /<LinkDrawer/);

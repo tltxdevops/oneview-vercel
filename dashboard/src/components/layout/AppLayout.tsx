@@ -25,6 +25,7 @@ interface AppLayoutProps {
   dataSource?: OneViewDataSourceKind | null;
   checkedAt?: string | null;
   showHealthStrip?: boolean;
+  wallboard?: boolean;
 }
 
 const DEFAULT_REFRESH_INTERVAL = 60;
@@ -46,6 +47,7 @@ export function AppLayout({
   dataSource,
   checkedAt,
   showHealthStrip = true,
+  wallboard = false,
 }: AppLayoutProps) {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -138,8 +140,8 @@ export function AppLayout({
 
   return (
     <div className="flex h-dvh overflow-hidden bg-background antialiased">
-      <Sidebar />
-      <div className="ml-14 flex h-dvh min-w-0 flex-1 flex-col overflow-hidden">
+      {!wallboard ? <Sidebar /> : null}
+      <div className={cn("flex h-dvh min-w-0 flex-1 flex-col overflow-hidden", !wallboard && "ml-14")}>
         <Topbar
           clientSection={topbarLeft}
           rightSection={topbarRight}
@@ -152,9 +154,9 @@ export function AppLayout({
                 <header className="flex flex-col gap-2">
                   <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0 space-y-1">
-                      {title && <h1 className="text-xl font-semibold tracking-tight">{title}</h1>}
+                      {title && <h1 className="ov-typography-page-title">{title}</h1>}
                       {description && (
-                        <p className="text-sm text-muted-foreground">{description}</p>
+                        <p className="ov-typography-body text-muted-foreground">{description}</p>
                       )}
                     </div>
                     {(headerAside || refreshMeta) && (
@@ -172,9 +174,10 @@ export function AppLayout({
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className={cn(
                   "border px-3 py-1 hover:bg-inherit",
+                  "ov-status-badge",
                   effectiveDataSource === "database"
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : "border-amber-200 bg-amber-50 text-amber-800",
+                    ? "ov-status-monitoring-normalized"
+                    : "ov-status-classification-pending",
                 )}>
                   <BadgeCheck className="mr-1.5 h-3.5 w-3.5" />
                   {effectiveDataSource === "database" ? "Banco em tempo real" : "Cópia atualizada"}

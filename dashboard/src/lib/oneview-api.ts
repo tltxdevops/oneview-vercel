@@ -7,14 +7,42 @@ import { canonicalClientName, canonicalHostName } from "@/components/oneview/Cli
 const API_BASE_URL = "/api";
 /** OV-P0-279: same BFF read shares an in-flight promise and a brief route cache. */
 const READ_CACHE_TTL_MS = 8_000;
-const readCache = new Map<string, { value: unknown; expiresAt: number }>();
+const READ_CACHE_STALE_TTL_MS = 5 * 60_000;
+const INCIDENT_DETAIL_TTL_MS = 60_000;
+type CachedRead<T = unknown> = { value: T; freshUntil: number; expiresAt: number };
+const readCache = new Map<string, CachedRead>();
 const inFlightReads = new Map<string, Promise<unknown>>();
+const incidentDetailCache = new Map<string, { value: unknown; expiresAt: number }>();
+const incidentDetailInFlight = new Map<string, Promise<unknown>>();
+const operatorReminderCache = new Map<string, { items: unknown[]; expiresAt: number }>();
+const operatorReminderInFlight = new Map<string, Promise<unknown>>();
+const operatorReminderGeneration = new Map<string, number>();
 export function oneViewReadCacheKey(path: string, init?: RequestInit) {
   return `${path}|${String(init?.method || "GET").toUpperCase()}`;
 }
 export function clearOneViewReadCache() { readCache.clear(); inFlightReads.clear(); }
+export function invalidateOneViewReadCache(pathPrefix?: string) {
+  if (!pathPrefix) {
+    clearOneViewReadCache();
+    return;
+  }
+  const prefix = pathPrefix.startsWith("/") ? pathPrefix : `/${pathPrefix}`;
+  for (const key of [...readCache.keys()]) {
+    if (key.startsWith(`${prefix}|`) || key.startsWith(`${prefix}?`)) readCache.delete(key);
+  }
+}
 export function canShareOneViewRead(init?: RequestInit) {
   return (!init?.method || init.method.toUpperCase() === "GET") && !init?.signal;
+}
+
+function cacheReadValue<T>(key: string, value: T) {
+  const now = Date.now();
+  readCache.set(key, { value, freshUntil: now + READ_CACHE_TTL_MS, expiresAt: now + READ_CACHE_STALE_TTL_MS });
+}
+
+function shouldInvalidateReadCache(path: string, method?: string) {
+  const verb = String(method || "GET").toUpperCase();
+  return verb !== "GET" && path.startsWith("/oneview/");
 }
 
 async function authHeaders(): Promise<Record<string, string>> {
@@ -54,15 +82,23 @@ export class OneViewApiError extends Error {
 }
 
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
-  const isRead = !init?.method || init.method.toUpperCase() === "GET";
+  const method = String(init?.method || "GET").toUpperCase();
+  const isRead = method === "GET";
   // A Promise bound to one component's AbortSignal cannot be shared safely:
   // unmounting that component would reject the next screen's identical GET.
   const canShare = canShareOneViewRead(init);
   const key = oneViewReadCacheKey(path, init);
   const cached = isRead ? readCache.get(key) : undefined;
-  if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+  const now = Date.now();
+  if (cached && cached.freshUntil > now) return cached.value as T;
   const shared = canShare ? inFlightReads.get(key) : undefined;
-  if (shared) return shared as Promise<T>;
+  if (shared) {
+    if (cached && cached.expiresAt > now) {
+      void shared.catch(() => undefined);
+      return cached.value as T;
+    }
+    return shared as Promise<T>;
+  }
   const request = (async () => {
   const authorization = await authHeaders();
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -171,8 +207,25 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   if (canShare) inFlightReads.set(key, request);
   try {
     const value = await request;
-    if (isRead) readCache.set(key, { value, expiresAt: Date.now() + READ_CACHE_TTL_MS });
+    if (isRead) cacheReadValue(key, value);
+    else if (shouldInvalidateReadCache(path, method)) {
+      const root = path.split("?")[0];
+      const base = root.replace(/\/[0-9a-f-]{8,}.*$/i, "").replace(/\/[^/]+$/, "") || "/oneview";
+      invalidateOneViewReadCache(base);
+      if (path.includes("/incidents")) {
+        incidentDetailCache.clear();
+        incidentDetailInFlight.clear();
+      }
+      if (path.includes("/reminders")) {
+        operatorReminderCache.clear();
+        operatorReminderInFlight.clear();
+        operatorReminderGeneration.clear();
+      }
+    }
     return value;
+  } catch (cause) {
+    if (isRead && cached && cached.expiresAt > Date.now()) return cached.value as T;
+    throw cause;
   } finally { if (canShare) inFlightReads.delete(key); }
 }
 
@@ -1508,30 +1561,36 @@ export type OperationalSubject = {
   source_trigger_id: string | null;
   fallback_subject_keys?: string[];
 };
-const incidentDetailCache = new Map<string, OneViewIncident>();
-const incidentDetailInFlight = new Map<string, Promise<OneViewIncident>>();
+const incidentDetailCacheTyped = incidentDetailCache as Map<string, { value: OneViewIncident; expiresAt: number }>;
+const incidentDetailInFlightTyped = incidentDetailInFlight as Map<string, Promise<OneViewIncident>>;
 
 export function clearIncidentDetailCache() {
-  incidentDetailCache.clear();
-  incidentDetailInFlight.clear();
+  incidentDetailCacheTyped.clear();
+  incidentDetailInFlightTyped.clear();
+}
+
+export function clearOneViewSessionCaches() {
+  clearOneViewReadCache();
+  clearIncidentDetailCache();
+  clearOperatorReminderCache();
 }
 
 export async function fetchIncidentDetail(sysId: string): Promise<OneViewIncident> {
   const key = String(sysId || "").trim().toLowerCase();
-  const cached = incidentDetailCache.get(key);
-  if (cached) return cached;
-  const pending = incidentDetailInFlight.get(key);
+  const cached = incidentDetailCacheTyped.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const pending = incidentDetailInFlightTyped.get(key);
   if (pending) return pending;
   const request = fetchApi<{ item: OneViewIncident }>(`/oneview/incidents/detail/${encodeURIComponent(key)}`)
     .then(({ item }) => {
-      incidentDetailCache.set(key, item);
+      incidentDetailCacheTyped.set(key, { value: item, expiresAt: Date.now() + INCIDENT_DETAIL_TTL_MS });
       return item;
     });
-  incidentDetailInFlight.set(key, request);
+  incidentDetailInFlightTyped.set(key, request);
   try {
     return await request;
   } finally {
-    incidentDetailInFlight.delete(key);
+    incidentDetailInFlightTyped.delete(key);
   }
 }
 
@@ -1649,9 +1708,8 @@ export type OperatorReminder = {
 };
 type OperatorRemindersResponse = { items: OperatorReminder[] };
 const OPERATOR_REMINDER_CACHE_TTL_MS = 45_000;
-const operatorReminderCache = new Map<string, { items: OperatorReminder[]; expiresAt: number }>();
-const operatorReminderInFlight = new Map<string, Promise<OperatorReminder[]>>();
-const operatorReminderGeneration = new Map<string, number>();
+const operatorReminderCacheTyped = operatorReminderCache as Map<string, { items: OperatorReminder[]; expiresAt: number }>;
+const operatorReminderInFlightTyped = operatorReminderInFlight as Map<string, Promise<OperatorReminder[]>>;
 type ReminderLinkIdentity = Pick<CanonicalLink, "id" | "data_source_id" | "source_host_id"> & { circuit_key?: string | null; operational_subject?: OperationalSubject | null; subject_type?: OperatorReminder["subject_type"]; subject_key?: string | null; source_trigger_id?: string | null };
 
 export function operatorReminderCacheKey(link: ReminderLinkIdentity) {
@@ -1659,17 +1717,17 @@ export function operatorReminderCacheKey(link: ReminderLinkIdentity) {
 }
 
 export function getCachedOperatorReminders(link: ReminderLinkIdentity): OperatorReminder[] | null {
-  const cached = operatorReminderCache.get(operatorReminderCacheKey(link));
+  const cached = operatorReminderCacheTyped.get(operatorReminderCacheKey(link));
   if (!cached || cached.expiresAt <= Date.now()) {
-    if (cached) operatorReminderCache.delete(operatorReminderCacheKey(link));
+    if (cached) operatorReminderCacheTyped.delete(operatorReminderCacheKey(link));
     return null;
   }
   return cached.items;
 }
 
 export function clearOperatorReminderCache() {
-  operatorReminderCache.clear();
-  operatorReminderInFlight.clear();
+  operatorReminderCacheTyped.clear();
+  operatorReminderInFlightTyped.clear();
   operatorReminderGeneration.clear();
 }
 
@@ -1691,7 +1749,7 @@ function operatorReminderPath(link: Pick<CanonicalLink, "id" | "data_source_id" 
   return `/oneview/links/${encodeURIComponent(link.id)}/reminders?${query.toString()}`;
 }
 function storeOperatorReminders(link: ReminderLinkIdentity, items: OperatorReminder[]) {
-  operatorReminderCache.set(operatorReminderCacheKey(link), { items, expiresAt: Date.now() + OPERATOR_REMINDER_CACHE_TTL_MS });
+  operatorReminderCacheTyped.set(operatorReminderCacheKey(link), { items, expiresAt: Date.now() + OPERATOR_REMINDER_CACHE_TTL_MS });
   return items;
 }
 function replaceOperatorReminders(link: ReminderLinkIdentity, items: OperatorReminder[]) {
@@ -1705,7 +1763,7 @@ export async function fetchOperatorReminders(link: ReminderLinkIdentity, options
     const cached = getCachedOperatorReminders(link);
     if (cached) return cached;
   }
-  const pending = operatorReminderInFlight.get(cacheKey);
+  const pending = operatorReminderInFlightTyped.get(cacheKey);
   if (pending) return pending;
   const path = operatorReminderPath(link);
   if (options.force) readCache.delete(oneViewReadCacheKey(path));
@@ -1729,8 +1787,8 @@ export async function fetchOperatorReminders(link: ReminderLinkIdentity, options
       }));
       throw cause;
     })
-    .finally(() => operatorReminderInFlight.delete(cacheKey));
-  operatorReminderInFlight.set(cacheKey, request);
+    .finally(() => operatorReminderInFlightTyped.delete(cacheKey));
+  operatorReminderInFlightTyped.set(cacheKey, request);
   return request;
 }
 export async function createOperatorReminder(link: ReminderLinkIdentity, scheduledFor: string): Promise<OperatorReminder> {

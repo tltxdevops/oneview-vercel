@@ -315,15 +315,14 @@ test("OV-P0-247 legacy route remains; Links presents circuit-level entities", as
   assert.match(app, /OperadorasPage/);
   assert.match(sidebar, /name: "Links"/);
   assert.match(sidebar, /href: "\/operadoras"/);
-  assert.match(page, /title="Links"/);
-  assert.match(page, /zabbix_link_inventory/);
+  assert.match(page, /ov-typography-page-title text-foreground">Links</);
   assert.match(page, /fetchCanonicalLinks/);
   assert.match(page, /isAbortError/);
   assert.match(page, /request\.current === controller/);
   assert.match(page, /request\.current = null/);
   assert.match(page, /Todos/);
   assert.match(page, /Não informada na origem/);
-  assert.match(page, /Serviço \/ Circuito/);
+  assert.match(page, /Link \/ local/);
   assert.match(page, /Pendente de classificação/);
   assert.match(api, /export async function fetchOperatorQueue/);
   assert.match(api, /\/oneview\/operator-queue/);

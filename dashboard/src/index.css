@@ -202,7 +202,11 @@ All colors MUST be HSL.
   }
 
   .ov-error-banner {
-    @apply flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-red-300/70 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-none;
+    @apply flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm shadow-none;
+    border: 1px solid hsl(var(--ov-color-danger) / 0.45);
+    border-radius: var(--ov-radius-lg);
+    background: hsl(var(--ov-status-monitoring-down-surface));
+    color: hsl(var(--ov-status-monitoring-down));
   }
 
   .ov-error-banner .ov-error-action {
@@ -214,7 +218,11 @@ All colors MUST be HSL.
   }
 
   .ov-panel {
-    @apply rounded-[10px] border border-border/70 bg-card text-card-foreground shadow-sm dark:shadow-none;
+    border: 1px solid hsl(var(--ov-color-border) / 0.7);
+    border-radius: var(--ov-radius-lg);
+    background: hsl(var(--ov-color-surface));
+    color: hsl(var(--ov-color-text-primary));
+    box-shadow: var(--ov-shadow-surface);
   }
 
   .animate-fade-in {

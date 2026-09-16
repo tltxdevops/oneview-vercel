@@ -13,6 +13,7 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { IncidentQuickSheet } from "@/components/oneview/IncidentQuickSheet";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
@@ -34,6 +35,9 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
+import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useAuthContext } from "@/context/AuthContext";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   AlertDetailResponse,
@@ -96,6 +100,7 @@ import {
 
 const SUMMARY_REFRESH_MS = 10_000;
 const LIST_REFRESH_MS = 10_000;
+const HOME_DASHBOARD_WIDGETS = dashboardWidgetsForPage("home").filter((widget) => widget.id !== "health");
 
 /** Ordem visual Home OV-P0-42A (sem Not classified — chip no mesmo bloco). */
 const HOME_VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
@@ -342,6 +347,12 @@ function HomeOperatorRow({ item }: { item: OperatorQueueItem }) {
 }
 
 export default function Index() {
+  const { user } = useAuthContext();
+  const dashboard = useOneViewDashboardLayout({
+    page: "home",
+    actorId: user?.id || user?.email,
+    widgets: HOME_DASHBOARD_WIDGETS,
+  });
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedAlertId = searchParams.get("alert");
   const homeWindow = parseHomeOperationalWindow(searchParams.get("window"));
@@ -825,7 +836,7 @@ export default function Index() {
     };
   });
 
-  const headerControls = (
+  const headerControls = dashboard.isWallboard ? null : (
     <div className="flex items-center gap-2">
       {isBackgroundUpdating ? (
         <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -862,17 +873,19 @@ export default function Index() {
     <AppLayout
       clientSelect={(
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Início</h1>
-          {windowSelector}
+          <h1 className="shrink-0 ov-typography-page-title text-foreground">Início</h1>
+          {!dashboard.isWallboard ? windowSelector : null}
           {showInitialLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
         </div>
       )}
       topbarRightSection={headerControls}
       enableAutoRefresh={false}
       showRefreshMeta={false}
+      wallboard={dashboard.isWallboard}
       contentClassName="gap-3 p-3 lg:px-4"
     >
-      <div className="space-y-3">
+      <ConfigurableDashboard controller={dashboard}>
+        <ConfigurableDashboardWidget id="operational-summary">
         <SectionPanel
           aria-label="Resumo operacional"
           title="Resumo operacional"
@@ -893,13 +906,14 @@ export default function Index() {
             <OperationalErrorBanner className="mt-1.5 rounded-none border-x-0 border-b-0" message={sectionErrors.summary} />
           ) : null}
         </SectionPanel>
+        </ConfigurableDashboardWidget>
 
         {/* Alertas | Chamados lado a lado, como no Monitoramento. */}
-        <div className="grid items-stretch gap-3 lg:min-h-[32rem] lg:grid-cols-5">
+        <ConfigurableDashboardWidget id="recent-alerts">
           <SectionPanel
-            className="flex min-h-0 flex-col overflow-hidden lg:col-span-3"
+            className="flex min-h-0 flex-col overflow-hidden"
             title="Alertas Recentes"
-            aside={(
+            aside={dashboard.isWallboard ? null : (
               <div className={HOME_PANEL_HEADER_ASIDE}>
                 <HomePanelCount value={alertsTotal} />
                 <OperationalCta to={homeAlertsHref}>Ver todos</OperationalCta>
@@ -907,7 +921,7 @@ export default function Index() {
             )}
             bodyClassName="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-0"
           >
-            <div className={HOME_FILTER_ROW}>
+            {!dashboard.isWallboard ? <div className={HOME_FILTER_ROW}>
               <OperationalFilterGroup label="Modo de alertas">
                 <OperationalSegmentedControl
                   aria-label="Modo de alertas"
@@ -954,7 +968,7 @@ export default function Index() {
                   </SelectContent>
                 </Select>
               </OperationalFilterGroup>
-            </div>
+            </div> : null}
             <div className={cn(HOME_LIST_DIVIDE, "min-h-0 flex-1 overflow-y-auto")}>
               <SectionState
                 loading={isListsLoading && !homeAlerts.length}
@@ -974,17 +988,19 @@ export default function Index() {
               </p>
             ) : null}
           </SectionPanel>
+        </ConfigurableDashboardWidget>
 
+        <ConfigurableDashboardWidget id="incidents">
           <SectionPanel
-            className="flex min-h-0 flex-col overflow-hidden lg:col-span-2"
+            className="flex min-h-0 flex-col overflow-hidden"
             title={incidentsPanelTitle}
             description={queueOverflowLabel(incidentsTotal, homeIncidents.length)}
-            aside={(
+            aside={dashboard.isWallboard ? null : (
               <div className={HOME_PANEL_HEADER_ASIDE}>
                 <OperationalCta to={chamadosHref}>Ver todos em Chamados</OperationalCta>
               </div>
             )}
-            toolbar={(
+            toolbar={dashboard.isWallboard ? null : (
               <OperationalIncidentsToolbar
                 mode={incidentsMode}
                 onModeChange={changeIncidentsMode}
@@ -1019,12 +1035,13 @@ export default function Index() {
               />
             )}
           </SectionPanel>
-        </div>
+        </ConfigurableDashboardWidget>
 
+        <ConfigurableDashboardWidget id="failed-links">
         <SectionPanel
           className="overflow-hidden"
           title="Links"
-          aside={<OperationalCta to="/operadoras">Ver conectividade</OperationalCta>}
+          aside={dashboard.isWallboard ? null : <OperationalCta to="/operadoras">Ver conectividade</OperationalCta>}
           bodyClassName="px-3 pb-2 pt-0"
         >
           <div className="grid grid-cols-3 gap-2 border-b border-border/60 py-2 text-center">
@@ -1043,11 +1060,13 @@ export default function Index() {
             <div className={HOME_LIST_DIVIDE}>{operatorItems.map((item) => <HomeOperatorRow key={item.alert_id || `${item.incident_number}-${item.operator_tag}`} item={item} />)}</div>
           </SectionState>
         </SectionPanel>
+        </ConfigurableDashboardWidget>
 
+        <ConfigurableDashboardWidget id="recent-events">
         <SectionPanel
           className="flex min-h-0 flex-col overflow-hidden"
           title="Eventos recentes"
-          aside={(
+          aside={dashboard.isWallboard ? null : (
             <div className={HOME_PANEL_HEADER_ASIDE}>
               <HomePanelCount value={eventsTotal} />
               <OperationalCta to="/historico">Abrir histórico</OperationalCta>
@@ -1131,7 +1150,8 @@ export default function Index() {
             </div>
           </SectionState>
         </SectionPanel>
-      </div>
+        </ConfigurableDashboardWidget>
+      </ConfigurableDashboard>
 
       <IncidentQuickSheet
         incident={selectedIncident}

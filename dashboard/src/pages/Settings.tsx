@@ -5,8 +5,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { Card } from "@/components/ui/card";
+import { SectionPanel } from "@/components/oneview/SectionPanel";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useAuthContext } from "@/context/AuthContext";
 import {
   DataSource,
   OneViewDataSourceKind,
@@ -37,6 +39,15 @@ import {
   statusLabel as platformStatusLabel,
 } from "@/lib/platform-health";
 import { cn } from "@/lib/utils";
+import {
+  ONEVIEW_DASHBOARD_TEMPLATE_LABEL,
+  ONEVIEW_DASHBOARD_TEMPLATES,
+  readOneViewDashboardPreferences,
+  resetOneViewDashboardPreferences,
+  setOneViewDashboardPreferredTemplate,
+  type OneViewDashboardPreferences,
+  type OneViewDashboardTemplate,
+} from "@/lib/oneview-dashboard-layout";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -48,8 +59,8 @@ const sourceStatusLabel: Record<DataSource["status"], string> = {
 
 /** OV-P0-105 — badges de status com tokens de tema. */
 function sourceStatusClass(status: DataSource["status"]) {
-  if (status === "active") return "border-border bg-success/10 text-success";
-  if (status === "error") return "border-border bg-error/10 text-error";
+  if (status === "active") return "ov-status-monitoring-normalized";
+  if (status === "error") return "ov-status-monitoring-down";
   return "border-border bg-muted text-muted-foreground";
 }
 
@@ -64,7 +75,7 @@ function settingsHealthLabel(level: HealthLevel) {
 
 function healthToneClass(level: HealthLevel) {
   if (level === "ok") return "text-success";
-  if (level === "warn") return "text-amber-700 dark:text-amber-400";
+  if (level === "warn") return "text-[hsl(var(--ov-color-warning))]";
   if (level === "down") return "text-error";
   return "text-muted-foreground";
 }
@@ -94,6 +105,8 @@ function recoveryLabel(level: HealthLevel, failureCount: number | null | undefin
 }
 
 export default function SettingsPage() {
+  const { user } = useAuthContext();
+  const actorId = user?.id || user?.email;
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [dataSource, setDataSource] = useState<OneViewDataSourceKind | null>(null);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
@@ -102,7 +115,24 @@ export default function SettingsPage() {
   const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [dashboardPreferences, setDashboardPreferences] = useState<OneViewDashboardPreferences>(
+    () => readOneViewDashboardPreferences(actorId),
+  );
   const loadRequestRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    setDashboardPreferences(readOneViewDashboardPreferences(actorId));
+  }, [actorId]);
+
+  const setHomeDashboardTemplate = useCallback((template: OneViewDashboardTemplate) => {
+    setDashboardPreferences(setOneViewDashboardPreferredTemplate("home", template, actorId));
+    toast.success("Preferência da Home salva para este usuário neste navegador.");
+  }, [actorId]);
+
+  const resetDashboardPreferences = useCallback(() => {
+    setDashboardPreferences(resetOneViewDashboardPreferences(actorId));
+    toast.success("Layouts do painel restaurados para o padrão operacional.");
+  }, [actorId]);
 
   const loadPage = useCallback(() => {
     if (loadRequestRef.current) return loadRequestRef.current;
@@ -161,14 +191,7 @@ export default function SettingsPage() {
       checkedAt={checkedAt}
     >
       <div className="space-y-6 text-foreground">
-        <Card className="border-border bg-card p-6 text-card-foreground" aria-label="Saúde da aplicação">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">Saúde da aplicação</h2>
-              <p className="text-sm text-muted-foreground">Último sync e estado de cada origem. A faixa do topo é só o resumo.</p>
-            </div>
-            <Button variant="outline" onClick={() => void loadPage()} disabled={loading}>Atualizar</Button>
-          </div>
+        <SectionPanel title="Saúde da aplicação" description="Último sync e estado de cada origem. A faixa do topo é só o resumo." aside={<Button variant="outline" onClick={() => void loadPage()} disabled={loading}>Atualizar</Button>} bodyClassName="p-4" aria-label="Saúde da aplicação">
           {(["PLATFORM", "ZABBIX", "SERVICENOW", "WORKERS", "INTEGRATIONS"] as const).map((category) => {
             const items = runtimeHealth?.components.filter((item) => item.category === category) ?? [];
             return (
@@ -181,13 +204,13 @@ export default function SettingsPage() {
                     const tone = operationalToneFromStatus(item.status, item.last_success_at);
                     const hasDimensions = Boolean(item.dimensions && Object.keys(item.dimensions).length);
                     return (
-                      <div key={item.id} className="rounded-md border border-border/70 px-3 py-2 text-sm">
+                      <div key={item.id} className="ov-panel px-3 py-2 text-sm">
                         <div className="flex items-center justify-between gap-2">
                           <span className="inline-flex min-w-0 items-center gap-2">
                             <span aria-hidden="true" className={cn("h-2 w-2 shrink-0 rounded-full", operationalToneDotClass(tone))} />
                             <span className="truncate font-medium">{item.name}</span>
                             {item.badge ? (
-                              <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                              <span className="ov-status-badge ov-status-classification-pending">
                                 {item.badge_label || "Origem silenciosa"}
                               </span>
                             ) : null}
@@ -235,13 +258,13 @@ export default function SettingsPage() {
                           </div>
                         ) : null}
                         {item.cause ? (
-                          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">Causa: {item.cause}</p>
+                          <p className="mt-1 text-xs text-[hsl(var(--ov-color-warning))]">Causa: {item.cause}</p>
                         ) : null}
                         {item.recommended_action ? (
                           <p className="mt-1 text-xs text-muted-foreground">Ação: {item.recommended_action}</p>
                         ) : null}
                         {item.warning ? (
-                          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">Warning: {item.warning}</p>
+                          <p className="mt-1 text-xs text-[hsl(var(--ov-color-warning))]">Warning: {item.warning}</p>
                         ) : null}
                         {item.current_error ? (
                           <p className="mt-1 text-xs text-error">
@@ -259,28 +282,9 @@ export default function SettingsPage() {
               </section>
             );
           })}
-        </Card>
+        </SectionPanel>
 
-        <Card className="border-border bg-card p-6 text-card-foreground" aria-label="Saúde da automação" hidden>
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">Saúde da automação</h2>
-              <p className="text-sm text-muted-foreground">
-                Estado do banco, worker e fonte Teletex. A sincronização é feita pelo worker.
-              </p>
-            </div>
-            <Button variant="outline" onClick={() => void loadPage()} disabled={loading}>
-              {loading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Atualizando...
-                </>
-              ) : (
-                "Atualizar"
-              )}
-            </Button>
-          </div>
-
+        <SectionPanel className="hidden" title="Saúde da automação" description="Estado do banco, worker e fonte Teletex. A sincronização é feita pelo worker." aside={<Button variant="outline" onClick={() => void loadPage()} disabled={loading}>{loading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Atualizando...</> : "Atualizar"}</Button>} bodyClassName="p-4" aria-label="Saúde da automação">
           <dl className="grid gap-3 sm:grid-cols-2">
             {healthSnapshot.items.map((item) => (
               <div
@@ -315,15 +319,47 @@ export default function SettingsPage() {
               <dd className="text-sm font-medium text-foreground">{recoveryLabel(teletexLevel, failureCount)}</dd>
             </div>
           </dl>
-        </Card>
+        </SectionPanel>
 
-        <Card className="border-border bg-card p-6 text-card-foreground">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-foreground">Fontes de dados</h2>
-            <p className="text-sm text-muted-foreground">
-              Status e última sincronização bem-sucedida. Sem ações manuais de sync nesta tela.
-            </p>
+        <SectionPanel
+          title="Preferências de painel"
+          description="Salvas neste navegador para sua conta. Não alteram dados operacionais nem integrações."
+          bodyClassName="space-y-4 p-4"
+          aside={(
+            <Button type="button" size="sm" variant="outline" onClick={resetDashboardPreferences}>
+              Restaurar layouts
+            </Button>
+          )}
+        >
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="space-y-1.5">
+              <span className="ov-typography-small font-medium text-foreground">Home</span>
+              <Select
+                value={dashboardPreferences.templates.home}
+                onValueChange={(value) => setHomeDashboardTemplate(value as OneViewDashboardTemplate)}
+              >
+                <SelectTrigger className="ov-filter-control w-full" aria-label="Template padrão da Home">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ONEVIEW_DASHBOARD_TEMPLATES.filter((template) => template !== "wallboard").map((template) => (
+                    <SelectItem key={template} value={template}>
+                      {ONEVIEW_DASHBOARD_TEMPLATE_LABEL[template]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <div className="ov-panel px-3 py-2.5">
+              <p className="ov-typography-small font-medium text-foreground">Monitoramento</p>
+              <p className="mt-1 ov-typography-small text-muted-foreground">
+                Operacional fixo. A fila e os chamados permanecem no layout NOC estável para não comprometer interação ou leitura.
+              </p>
+            </div>
           </div>
+        </SectionPanel>
+
+        <SectionPanel title="Fontes de dados" description="Status e última sincronização bem-sucedida. Sem ações manuais de sync nesta tela." bodyClassName="p-4">
 
           {loading && dataSources.length === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
@@ -331,11 +367,11 @@ export default function SettingsPage() {
               Carregando fontes de dados...
             </div>
           ) : dataSources.length === 0 ? (
-            <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+            <div className="ov-panel p-4 text-sm text-muted-foreground">
               Nenhuma fonte de dados disponível na resposta atual.
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-md border border-border">
+            <div className="overflow-x-auto ov-radius-md border border-border">
               <table className="w-full min-w-[720px] text-sm text-foreground">
                 <thead>
                   <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
@@ -362,7 +398,7 @@ export default function SettingsPage() {
                       <td className="px-3 py-3">
                         <span
                           className={cn(
-                            "inline-flex rounded-md border px-2 py-1 text-xs font-medium",
+                            "ov-status-badge",
                             sourceStatusClass(source.status),
                           )}
                         >
@@ -387,7 +423,7 @@ export default function SettingsPage() {
               </table>
             </div>
           )}
-        </Card>
+        </SectionPanel>
       </div>
     </AppLayout>
   );

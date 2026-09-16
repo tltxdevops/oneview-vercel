@@ -352,18 +352,19 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.doesNotMatch(index, /A integração com o ServiceNow está em preparação\.|Abrir área de chamados/);
   assert.doesNotMatch(index, /SyncsStatusPanel|PlatformHealthStrip/);
   assert.doesNotMatch(index, /Saúde da plataforma/);
-  assert.match(index, /lg:grid-cols-5/);
+  assert.match(index, /ConfigurableDashboardWidget id="recent-alerts"/);
+  assert.match(index, /ConfigurableDashboardWidget id="incidents"/);
   assert.match(index, /showRefreshMeta=\{false\}/);
   assert.doesNotMatch(index, /dataSource=\{currentDataSource\}|checkedAt=\{lastCheckedAt\}/);
   assert.match(index, /Abrir resumo de \$\{/);
   assert.match(index, /fetchHomeAlerts|status: "active"/);
   assert.match(index, /title=\{incidentsPanelTitle\}/);
-  assert.match(index, /title="Operadoras"/);
+  assert.match(index, /title="Links"/);
   assert.match(app, /path="\/historico"/);
   assert.match(app, /HistoricoPage/);
   assert.match(sidebar, /name: "Histórico"/);
   assert.match(sidebar, /href: "\/historico"/);
-  assert.match(sidebar, /History/);
+  assert.match(sidebar, /icon: "history"/);
   assert.ok(sidebar.indexOf('href: "/alertas"') < sidebar.indexOf('href: "/historico"'));
   assert.doesNotMatch(sidebar, /name: "Histórico", href: "\/alertas"/);
   assert.match(historico, /ov-type-page-title text-foreground">Histórico</);
@@ -479,8 +480,9 @@ test("página de chamados lista incidents do BFF read-only", async () => {
 });
 
 test("navegação lateral aponta somente para rotas registradas no App", async () => {
-  const [sidebar, app, index, pages] = await Promise.all([
+  const [sidebar, iconMap, app, index, pages] = await Promise.all([
     read("src/components/layout/Sidebar.tsx"),
+    read("src/lib/oneview-icons.ts"),
     read("src/App.tsx"),
     read("src/pages/Index.tsx"),
     list("src/pages"),
@@ -508,13 +510,14 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
   assert.ok(!sidebarHrefs.includes("/config"), "Sidebar não deve listar /config em baseNavigation");
   assert.match(sidebar, /to="\/config"/);
   assert.match(sidebar, /Configurações/);
-  assert.match(sidebar, /Settings/);
+  assert.match(sidebar, /ONEVIEW_ICON_MAP/);
+  assert.match(iconMap, /settings:\s*Settings/);
   assert.match(sidebar, /aspect-square.*rounded-full|rounded-full.*aspect-square/);
   assert.match(sidebar, /Ativar modo escuro/);
   assert.match(sidebar, /Ativar modo claro/);
   assert.match(sidebar, /setStoredTheme/);
-  assert.match(sidebar, /Sun/);
-  assert.match(sidebar, /Moon/);
+  assert.match(iconMap, /themeDark:\s*Moon/);
+  assert.match(iconMap, /themeLight:\s*Sun/);
 
   for (const removed of ["/kpis", "/relatorios"]) {
     assert.ok(!sidebarHrefs.includes(removed), `Sidebar não deve expor ${removed}`);
@@ -536,23 +539,29 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
 });
 
 test("OV-P0-20 navegação operacional diferencia Monitoramento, Alertas e Histórico", async () => {
-  const sidebar = await read("src/components/layout/Sidebar.tsx");
+  const [sidebar, iconMap] = await Promise.all([
+    read("src/components/layout/Sidebar.tsx"),
+    read("src/lib/oneview-icons.ts"),
+  ]);
 
-  assert.match(sidebar, /icon: Monitor/);
-  assert.match(sidebar, /icon: Bell/);
-  assert.match(sidebar, /icon: History/);
+  assert.match(sidebar, /icon: "monitoring"/);
+  assert.match(sidebar, /icon: "alerts"/);
+  assert.match(sidebar, /icon: "history"/);
+  assert.match(iconMap, /monitoring:\s*Monitor/);
+  assert.match(iconMap, /alerts:\s*Bell/);
+  assert.match(iconMap, /history:\s*History/);
   assert.match(sidebar, /liveDot: true/);
   assert.match(sidebar, /secondary: "Fila operacional"/);
   assert.match(sidebar, /secondary: "Eventos e ações"/);
   assert.match(sidebar, /navToneClasses/);
-  assert.match(sidebar, /bg-white\/10/);
-  assert.match(sidebar, /rounded-xl/);
+  assert.match(sidebar, /bg-sidebar-accent/);
+  assert.match(sidebar, /rounded-lg/);
   assert.doesNotMatch(sidebar, /accent: "monitor"|accent: "alerts"|accent: "history"/);
   assert.doesNotMatch(sidebar, /bg-emerald-500\/15|text-emerald-300|bg-emerald-400/);
   assert.doesNotMatch(sidebar, /bg-amber-500\/15|text-amber-200|bg-red-400/);
   assert.doesNotMatch(sidebar, /bg-sky-500\/15|text-sky-200|bg-sky-400/);
   assert.doesNotMatch(sidebar, /h-7 w-1/);
-  assert.match(sidebar, /hover:bg-white\/5/);
+  assert.match(sidebar, /hover:bg-sidebar-accent/);
   assert.match(sidebar, /focus-visible:ring-2/);
   assert.match(sidebar, /aria-label=\{secondary \? `\$\{name\}\. \$\{secondary\}` : name\}/);
   assert.doesNotMatch(sidebar, /alerts_count|badgeCount|total_items|contagem/i);
@@ -1732,7 +1741,7 @@ test("OV-P0-30/38 Monitoramento usa Sidebar real + Disaster recentes server-side
   assert.ok(pages.includes("Monitoring.tsx"));
 
   assert.match(sidebar, /w-14/);
-  assert.match(sidebar, /hover:w-56/);
+  assert.match(sidebar, /hover:w-60/);
   assert.match(sidebar, /oneview-monitor-sidebar-open/);
   assert.doesNotMatch(index, /MonitoringControlsRail|w-\[200px\]|monitoringCollapse/);
   assert.doesNotMatch(alerts, /MonitoringControlsRail|monitoringCollapse/);
@@ -1775,7 +1784,8 @@ test("OV-P0-31 Home drawer, Esquecidos e ClientIdentity compartilhado", async ()
   assert.match(index, /HOME_EVENTS_LIMIT|fetchRecentOperationalEvents/);
   assert.match(index, /title="Alertas"|Prioritários/);
   assert.doesNotMatch(index, /Clientes mais impactados/);
-  assert.match(index, /lg:grid-cols-5/);
+  assert.match(index, /ConfigurableDashboardWidget id="recent-alerts"/);
+  assert.match(index, /ConfigurableDashboardWidget id="incidents"/);
   assert.match(index, /useSearchParams/);
   assert.match(index, /searchParams\.get\("alert"\)/);
   assert.match(index, /next\.set\("alert", alert\.id\)/);
@@ -1927,7 +1937,8 @@ test("OV-P0-42A Home: faixa de 5 severidades via filtered_summary (1 consulta)",
 
   assert.match(index, /title="Alertas"|Prioritários/);
   assert.match(index, /Eventos recentes/);
-  assert.match(index, /lg:grid-cols-5/);
+  assert.match(index, /ConfigurableDashboardWidget id="recent-alerts"/);
+  assert.match(index, /ConfigurableDashboardWidget id="incidents"/);
   assert.match(index, /AlertDetailDrawer/);
   assert.match(index, /open=\{selectedAlertId !== null\}/);
   assert.match(index, /HOME_ALERTS_PAGE_SIZE|fetchHomeAlerts/);
@@ -2179,11 +2190,11 @@ test("OV-P0-45 cabeçalhos padronizados na Topbar", async () => {
     read("src/components/layout/Topbar.tsx"),
   ]);
 
-  assert.match(index, /text-xl font-semibold tracking-tight text-foreground">Início</);
+  assert.match(index, /ov-typography-page-title text-foreground">Início</);
   assert.match(alerts, /<PageHeader title="Alertas" aside=\{clientSelector\}/);
   assert.match(historico, /ov-type-page-title text-foreground">Histórico</);
-  assert.match(monitoring, /text-xl font-semibold tracking-tight text-foreground">Monitoramento</);
-  assert.match(chamados, /text-xl font-semibold tracking-tight text-foreground">Chamados</);
+  assert.match(monitoring, /ov-typography-page-title text-foreground">Monitoramento</);
+  assert.match(chamados, /ov-typography-page-title text-foreground">Chamados</);
   assert.doesNotMatch(index, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.doesNotMatch(historico, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.match(alerts, /from "@\/components\/oneview\/PageHeader"/);

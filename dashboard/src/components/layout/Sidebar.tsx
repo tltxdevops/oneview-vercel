@@ -1,4 +1,3 @@
-import { Home, Bell, History, Monitor, ChevronLeft, ChevronRight, Ticket, Radio, Settings, LogOut, Sun, Moon, type LucideIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -6,11 +5,20 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { getStoredTheme, setStoredTheme, type Theme } from "@/lib/settings";
 import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
+import { ONEVIEW_ICON_MAP, type OneViewIconName } from "@/lib/oneview-icons";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const MONITOR_SIDEBAR_STORAGE_KEY = "oneview-monitor-sidebar-open";
 
-const SIDEBAR_ICON_SLOT = "flex h-9 w-14 shrink-0 items-center justify-center";
-const SIDEBAR_LABEL = "flex min-w-0 flex-1 items-center pr-2.5 opacity-0 transition-opacity group-hover:opacity-100";
+const SIDEBAR_ICON_SLOT = "flex h-10 w-14 shrink-0 items-center justify-center";
+const SIDEBAR_LABEL = "pointer-events-none flex min-w-0 flex-1 items-center pr-3 opacity-0 transition-[opacity,transform] duration-150 -translate-x-1 group-hover/sidebar:pointer-events-auto group-hover/sidebar:translate-x-0 group-hover/sidebar:opacity-100 group-focus-within/sidebar:pointer-events-auto group-focus-within/sidebar:translate-x-0 group-focus-within/sidebar:opacity-100";
 const SIDEBAR_LABEL_TEXT = "truncate text-sm leading-none";
 
 type SidebarProps = {
@@ -26,7 +34,7 @@ type SidebarProps = {
 type NavItem = {
   name: string;
   href: string;
-  icon: LucideIcon;
+  icon: OneViewIconName;
   secondary?: string;
   liveDot?: boolean;
   iconClassName?: string;
@@ -34,29 +42,29 @@ type NavItem = {
 
 // OV-P0-18/19/20: /config fora da lista principal; atalho no rodapé (acima do perfil).
 const baseNavigation: NavItem[] = [
-  { name: "Início", href: "/", icon: Home },
-  { name: "Monitoramento", href: "/monitoramento", icon: Monitor, liveDot: true },
-  { name: "Alertas", href: "/alertas", icon: Bell, secondary: "Fila operacional" },
-  { name: "Histórico", href: "/historico", icon: History, secondary: "Eventos e ações" },
-  { name: "Chamados", href: "/chamados", icon: Ticket, secondary: "ServiceNow" },
-  { name: "Links", href: "/operadoras", icon: Radio, secondary: "Conectividade" },
+  { name: "Início", href: "/", icon: "home" },
+  { name: "Monitoramento", href: "/monitoramento", icon: "monitoring", liveDot: true },
+  { name: "Alertas", href: "/alertas", icon: "alerts", secondary: "Fila operacional" },
+  { name: "Histórico", href: "/historico", icon: "history", secondary: "Eventos e ações" },
+  { name: "Chamados", href: "/chamados", icon: "incidents", secondary: "ServiceNow" },
+  { name: "Links", href: "/operadoras", icon: "links", secondary: "Conectividade" },
 ];
 
 function navToneClasses(isActive: boolean) {
   if (!isActive) {
     return {
-      item: "text-white/55 hover:bg-white/5 hover:text-white",
-      icon: "text-white/55 group-hover/link:text-white",
-      label: "text-white/55 group-hover/link:text-white",
-      secondary: "text-white/40",
+      item: "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+      icon: "text-sidebar-foreground/60 group-hover/link:text-sidebar-accent-foreground",
+      label: "text-sidebar-foreground/65 group-hover/link:text-sidebar-accent-foreground",
+      secondary: "text-sidebar-foreground/45",
     };
   }
 
   return {
-    item: "bg-white/10 text-white",
-    icon: "text-white",
-    label: "text-white",
-    secondary: "text-white/60",
+    item: "bg-sidebar-accent text-sidebar-accent-foreground shadow-[inset_0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-sidebar-accent",
+    icon: "text-sidebar-accent-foreground",
+    label: "text-sidebar-accent-foreground",
+    secondary: "text-sidebar-accent-foreground/65",
   };
 }
 
@@ -82,7 +90,7 @@ function writeMonitorSidebarOpen(open: boolean) {
 function SidebarNavItem({
   name,
   to,
-  icon: Icon,
+  icon,
   secondary,
   liveDot,
   iconClassName,
@@ -90,12 +98,13 @@ function SidebarNavItem({
 }: {
   name: string;
   to: string;
-  icon: LucideIcon;
+  icon: OneViewIconName;
   secondary?: string;
   liveDot?: boolean;
   iconClassName?: string;
   end?: boolean;
 }) {
+  const Icon = ONEVIEW_ICON_MAP[icon];
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -104,12 +113,15 @@ function SidebarNavItem({
           onMouseEnter={() => prefetchOneViewRoute(to)}
           onFocus={() => prefetchOneViewRoute(to)}
           end={end}
+          title={name}
           aria-label={secondary ? `${name}. ${secondary}` : name}
           className={({ isActive }) => {
             const tones = navToneClasses(isActive);
             return cn(
-              "group/link relative flex min-h-9 w-full items-center rounded-xl py-1 text-left transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+              "group/link relative flex min-h-10 w-full items-center overflow-hidden rounded-lg py-1 text-left transition-colors",
+              "before:absolute before:inset-y-2 before:left-0 before:w-[3px] before:rounded-r-full before:bg-sidebar-foreground before:opacity-0 before:transition-opacity",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+              isActive && "before:opacity-100",
               tones.item,
             );
           }}
@@ -125,7 +137,7 @@ function SidebarNavItem({
                       aria-hidden="true"
                       className={cn(
                         "absolute right-3 top-1.5 h-1.5 w-1.5 rounded-full",
-                        isActive ? "bg-emerald-300" : "bg-emerald-500/70",
+                        isActive ? "bg-success" : "bg-success/70",
                       )}
                     />
                   ) : null}
@@ -140,7 +152,7 @@ function SidebarNavItem({
           }}
         </NavLink>
       </TooltipTrigger>
-      <TooltipContent side="right" className="group-hover:hidden">
+      <TooltipContent side="right" className="group-hover/sidebar:hidden group-focus-within/sidebar:hidden">
         <p>{name}</p>
         {secondary ? <p className="text-xs text-muted-foreground">{secondary}</p> : null}
       </TooltipContent>
@@ -208,6 +220,10 @@ export function Sidebar({
   }, [displayUser?.name, displayUser?.email]);
 
   const themeLabel = theme === "light" ? "Ativar modo escuro" : "Ativar modo claro";
+  const ThemeIcon = theme === "light" ? ONEVIEW_ICON_MAP.themeDark : ONEVIEW_ICON_MAP.themeLight;
+  const CollapseIcon = ONEVIEW_ICON_MAP.sidebarCollapse;
+  const ExpandIcon = ONEVIEW_ICON_MAP.sidebarExpand;
+  const LogoutIcon = ONEVIEW_ICON_MAP.logout;
 
   if (monitoringCollapse && !navOpen) {
     return (
@@ -219,17 +235,17 @@ export function Sidebar({
         title="Abrir navegação"
         data-monitor-sidebar="collapsed"
       >
-        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+        <ExpandIcon className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
     );
   }
 
   return (
     <aside
-      className="group fixed inset-y-0 left-0 z-40 flex h-dvh max-h-dvh w-14 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar transition-[width] duration-200 ease-linear hover:w-56"
+      className="group/sidebar fixed inset-y-0 left-0 z-40 flex h-dvh max-h-dvh w-14 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar transition-[width,box-shadow] duration-200 ease-out hover:w-60 hover:shadow-xl focus-within:w-60 focus-within:shadow-xl"
       data-monitor-sidebar={monitoringCollapse ? "open" : undefined}
     >
-      <div className="relative flex h-14 shrink-0 items-center border-b border-white/10">
+      <div className="relative flex h-14 shrink-0 items-center border-b border-sidebar-border">
         <div className="flex h-full min-w-0 flex-1 items-center">
           <span className={cn(SIDEBAR_ICON_SLOT, "h-14")}>
             <img
@@ -242,7 +258,7 @@ export function Sidebar({
             />
           </span>
           <span className={SIDEBAR_LABEL}>
-            <span className={cn(SIDEBAR_LABEL_TEXT, "font-semibold text-white")}>OneView</span>
+            <span className={cn(SIDEBAR_LABEL_TEXT, "font-semibold text-sidebar-foreground")}>OneView</span>
           </span>
         </div>
       </div>
@@ -274,17 +290,13 @@ export function Sidebar({
               aria-label={themeLabel}
               aria-pressed={theme === "dark"}
               className={cn(
-                "group/link flex min-h-9 w-full items-center rounded-xl py-1 text-left text-white/55 transition-colors",
-                "hover:bg-white/5 hover:text-white",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+                "group/link flex min-h-10 w-full items-center rounded-lg py-1 text-left text-sidebar-foreground/65 transition-colors",
+                "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
               )}
             >
               <span className={SIDEBAR_ICON_SLOT}>
-                {theme === "light" ? (
-                  <Moon className="h-4 w-4 shrink-0" />
-                ) : (
-                  <Sun className="h-4 w-4 shrink-0" />
-                )}
+                <ThemeIcon className="h-4 w-4 shrink-0" />
               </span>
               <span className={SIDEBAR_LABEL}>
                 <span className={cn(SIDEBAR_LABEL_TEXT, "font-medium")}>
@@ -293,95 +305,88 @@ export function Sidebar({
               </span>
             </button>
           </TooltipTrigger>
-          <TooltipContent side="right" className="group-hover:hidden">
+          <TooltipContent side="right" className="group-hover/sidebar:hidden group-focus-within/sidebar:hidden">
             <p>{themeLabel}</p>
           </TooltipContent>
         </Tooltip>
 
-        <SidebarNavItem name="Configurações" to="/config" icon={Settings} />
+        <SidebarNavItem name="Configurações" to="/config" icon="settings" />
       </div>
 
-      <div className="shrink-0 space-y-1 border-t border-white/10 py-3">
-        <div className="flex min-h-9 w-full items-center">
+      <div className="shrink-0 border-t border-sidebar-border py-3">
+        <DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className={cn(SIDEBAR_ICON_SLOT, "relative")}>
-                <span
-                  className="relative flex h-8 w-8 aspect-square items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/10 text-[11px] font-semibold uppercase text-white"
-                  aria-label={displayUser ? `Perfil (${displayUser.email})` : "Usuário não autenticado"}
-                >
-                  {displayUser?.photo && !profilePhotoFailed ? (
-                    <img
-                      src={displayUser.photo}
-                      alt=""
-                      className="h-full w-full object-cover"
-                      onError={() => setProfilePhotoFailed(true)}
-                    />
-                  ) : (
-                    <span>{initials}</span>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  disabled={!displayUser}
+                  aria-label={displayUser ? `Abrir menu de ${displayUser.name}` : "Menu do usuário"}
+                  title="Menu do usuário"
+                  className={cn(
+                    "flex min-h-12 w-full items-center overflow-hidden rounded-lg py-1 text-left text-sidebar-foreground/70 transition-colors",
+                    "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+                    "disabled:cursor-not-allowed disabled:opacity-40",
                   )}
-                </span>
-              </span>
+                >
+                  <span className={cn(SIDEBAR_ICON_SLOT, "relative")}>
+                    <span className="relative flex h-8 w-8 aspect-square items-center justify-center overflow-hidden rounded-full border border-sidebar-border bg-sidebar-accent text-[11px] font-semibold uppercase text-sidebar-accent-foreground">
+                      {displayUser?.photo && !profilePhotoFailed ? (
+                        <img
+                          src={displayUser.photo}
+                          alt=""
+                          className="h-full w-full object-cover"
+                          onError={() => setProfilePhotoFailed(true)}
+                        />
+                      ) : <span>{initials}</span>}
+                    </span>
+                  </span>
+                  <span className={cn(SIDEBAR_LABEL, "flex-col items-start justify-center gap-1")}>
+                    <span className={cn(SIDEBAR_LABEL_TEXT, "w-full font-semibold text-sidebar-accent-foreground")}>
+                      {displayUser?.name ?? "Usuário"}
+                    </span>
+                    <span className="w-full truncate text-xs leading-none text-sidebar-foreground/55">
+                      {displayUser?.email ?? "sso@teletex.com"}
+                    </span>
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
             </TooltipTrigger>
-            <TooltipContent side="right" className="group-hover:hidden">
+            <TooltipContent side="right" className="group-hover/sidebar:hidden group-focus-within/sidebar:hidden">
               {displayUser ? (
                 <div className="space-y-0.5">
                   <p className="text-sm font-semibold">{displayUser.name}</p>
-                  <p className="text-xs text-muted-foreground/80">{displayUser.email}</p>
+                  <p className="text-xs text-muted-foreground/80">Conta</p>
                 </div>
-              ) : (
-                <p>Não autenticado</p>
-              )}
+              ) : <p>Não autenticado</p>}
             </TooltipContent>
           </Tooltip>
-
-          <div className="hidden min-w-0 flex-1 flex-col justify-center pr-2.5 group-hover:flex">
-            <span className="truncate text-sm font-semibold leading-none text-white">
-              {displayUser?.name ?? "Usuário"}
-            </span>
-            <span className="mt-1 truncate text-xs leading-none text-white/55">
-              {displayUser?.email ?? "sso@teletex.com"}
-            </span>
-          </div>
-        </div>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={logout}
-              disabled={!displayUser}
-              aria-label="Sair"
-              className={cn(
-                "group/link flex min-h-9 w-full items-center rounded-xl py-1 text-left text-white/55 transition-colors",
-                "hover:bg-white/5 hover:text-white",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
-                "disabled:cursor-not-allowed disabled:opacity-40",
-              )}
-            >
-              <span className={SIDEBAR_ICON_SLOT}>
-                <LogOut className="h-4 w-4 shrink-0" />
-              </span>
-              <span className={SIDEBAR_LABEL}>
-                <span className={cn(SIDEBAR_LABEL_TEXT, "font-medium")}>Sair</span>
-              </span>
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right" className="group-hover:hidden">
-            <p>Sair</p>
-          </TooltipContent>
-        </Tooltip>
+          <DropdownMenuContent side="right" align="end" sideOffset={8} className="w-64 ov-radius-lg">
+            <DropdownMenuLabel className="py-3">
+              <p className="truncate text-sm font-semibold">{displayUser?.name ?? "Usuário"}</p>
+              <p className="mt-1 truncate text-xs font-normal text-muted-foreground">{displayUser?.email ?? ""}</p>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled>Conta — em breve</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => void logout()} className="text-destructive focus:text-destructive">
+              <LogoutIcon className="mr-2 h-4 w-4" />
+              Sair
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {monitoringCollapse ? (
         <button
           type="button"
           onClick={() => setNavOpen(false)}
-          className="absolute right-0 top-1/2 z-50 flex h-10 w-4 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-white/70 shadow-sm transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          className="absolute right-0 top-1/2 z-50 flex h-10 w-4 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-sidebar-foreground/70 shadow-sm transition-colors hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
           aria-label="Recolher navegação do monitoramento"
           title="Recolher navegação"
         >
-          <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+          <CollapseIcon className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       ) : null}
     </aside>

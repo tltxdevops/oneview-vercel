@@ -17,6 +17,7 @@ import {
   serverAuthEnabled,
   startServerMicrosoftLogin,
 } from "@/lib/server-auth";
+import { clearOneViewSessionCaches } from "@/lib/oneview-api";
 
 type AuthUser = {
   id: string | null;
@@ -115,6 +116,7 @@ function persistUser(user: AuthUser | null) {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
     } else {
       window.localStorage.removeItem(STORAGE_KEY);
+      clearOneViewSessionCaches();
     }
   } catch (error) {
     console.warn("[auth] Falha ao persistir usuário", error);
@@ -217,7 +219,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (!isMountedRef.current) return;
 
       const normalized = normalizeUser(account, profile, photo);
-      setUser(normalized);
+      setUser((current) => {
+        const nextIdentity = `${normalized.id || ""}:${normalized.email || ""}`.toLowerCase();
+        const currentIdentity = `${current?.id || ""}:${current?.email || ""}`.toLowerCase();
+        if (current && currentIdentity !== nextIdentity) clearOneViewSessionCaches();
+        return normalized;
+      });
       persistUser(normalized);
       setError(null);
     } catch (err) {
@@ -355,6 +362,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [environmentError]);
 
   const logout = useCallback(async () => {
+    clearOneViewSessionCaches();
     if (serverAuthEnabled()) {
       await logoutServerAuth();
       persistUser(null);

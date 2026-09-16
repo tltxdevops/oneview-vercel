@@ -15,15 +15,20 @@ async function read(relativePath) {
 }
 
 test("OV-P0-105 Sidebar: toggle Claro/Escuro com setStoredTheme e aria-pressed", async () => {
-  const sidebar = await read("src/components/layout/Sidebar.tsx");
+  const [sidebar, icons] = await Promise.all([
+    read("src/components/layout/Sidebar.tsx"),
+    read("src/lib/oneview-icons.ts"),
+  ]);
 
   assert.match(sidebar, /aria-pressed=\{theme === "dark"\}/);
   assert.match(sidebar, /setStoredTheme/);
   assert.match(sidebar, /getStoredTheme/);
   assert.match(sidebar, /Ativar modo escuro/);
   assert.match(sidebar, /Ativar modo claro/);
-  assert.match(sidebar, /Sun/);
-  assert.match(sidebar, /Moon/);
+  assert.match(sidebar, /ONEVIEW_ICON_MAP\.themeDark/);
+  assert.match(sidebar, /ONEVIEW_ICON_MAP\.themeLight/);
+  assert.match(icons, /themeDark:\s*Moon/);
+  assert.match(icons, /themeLight:\s*Sun/);
 });
 
 test("OV-P0-105 Settings: sem card de tema; tokens sem bg-gray/text-white/amber-50 fixos", async () => {
@@ -34,7 +39,8 @@ test("OV-P0-105 Settings: sem card de tema; tokens sem bg-gray/text-white/amber-
   assert.doesNotMatch(settings, /getStoredTheme|setStoredTheme/);
   assert.doesNotMatch(settings, /<h2[^>]*>Tema<\/h2>/);
 
-  assert.match(settings, /border-border bg-card/);
+  assert.match(settings, /SectionPanel/);
+  assert.match(settings, /ov-panel/);
   assert.match(settings, /text-card-foreground|text-foreground/);
   assert.match(settings, /text-muted-foreground/);
   assert.match(settings, /hover:bg-muted\/30/);
@@ -44,8 +50,8 @@ test("OV-P0-105 Settings: sem card de tema; tokens sem bg-gray/text-white/amber-
   assert.doesNotMatch(settings, /bg-amber-50|border-amber-200|text-amber-800/);
   assert.doesNotMatch(settings, /bg-green-50|text-green-700|bg-red-50|text-red-700/);
 
-  assert.match(settings, /bg-success\/10 text-success/);
-  assert.match(settings, /bg-error\/10 text-error/);
+  assert.match(settings, /ov-status-monitoring-normalized/);
+  assert.match(settings, /ov-status-monitoring-down/);
 });
 
 test("OV-P0-105 shared Input/Button/Card usam tokens de tema", async () => {

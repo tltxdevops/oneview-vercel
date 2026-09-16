@@ -25,7 +25,6 @@ import { TruncatedText } from "@/components/oneview/TruncatedText";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -277,14 +276,14 @@ function Panel({
   return (
     <section
       className={cn(
-        "flex flex-col overflow-hidden rounded-lg border border-border bg-card/90",
+        "ov-panel flex flex-col overflow-hidden",
         empty ? "shrink-0" : "min-h-0 flex-1",
         className,
       )}
     >
       <div className="flex shrink-0 flex-col items-stretch gap-2 border-b border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:py-1.5">
         <div className="min-w-0">
-          <h2 className="break-words text-sm font-semibold tracking-wide text-foreground sm:text-base">{title}</h2>
+          <h2 className="ov-typography-section-title break-words text-foreground">{title}</h2>
           {overflow ? <p className="text-[11px] font-medium text-muted-foreground">{overflow}</p> : null}
         </div>
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5 sm:shrink-0 sm:justify-end">
@@ -308,7 +307,7 @@ function Panel({
           {toolbar}
         </div>
       ) : null}
-      {error ? <p className="shrink-0 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-200/90">{error}</p> : null}
+      {error ? <p className="shrink-0 px-3 py-1.5 ov-typography-small text-[hsl(var(--ov-color-warning))]">{error}</p> : null}
       <div className={cn("overflow-hidden px-3", empty ? "py-1.5" : "min-h-0 flex-1 py-1.5")}>{children}</div>
     </section>
   );
@@ -446,8 +445,8 @@ function MonitorAlertRow({
             className={cn(
               "inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider",
               freshTone === "disaster"
-                ? "text-red-800 dark:text-red-200"
-                : "text-red-600 dark:text-red-300",
+                ? "text-[hsl(var(--ov-color-danger))]"
+                : "text-[hsl(var(--ov-color-danger))]",
             )}
           >
             <span className="ov-fresh-dot" aria-hidden="true" />
@@ -460,10 +459,10 @@ function MonitorAlertRow({
         <Badge
           variant="outline"
           className={cn(
-            "text-[10px]",
+            "ov-status-badge",
             acked
-              ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-200"
-              : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200",
+              ? "ov-status-monitoring-normalized"
+              : "ov-status-classification-pending",
           )}
         >
           {acked ? "Com ACK" : "Sem ACK"}
@@ -1338,7 +1337,7 @@ export default function MonitoringPage() {
       >
       <header className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
         {/* OV-P0-104 — topo: título · ações · health à direita */}
-        <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Monitoramento</h1>
+        <h1 className="shrink-0 ov-typography-page-title text-foreground">Monitoramento</h1>
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
           {isUpdating ? (
             <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
@@ -1494,7 +1493,7 @@ export default function MonitoringPage() {
                   items={severityStripItems}
                 />
                 {sectionErrors.summary ? (
-                  <p className="text-xs text-amber-700 dark:text-amber-200/90">{sectionErrors.summary}</p>
+                  <p className="ov-typography-small text-[hsl(var(--ov-color-warning))]">{sectionErrors.summary}</p>
                 ) : null}
               </div>
               {!hasLoaded && !queueAlerts.length ? (

@@ -1,5 +1,5 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Bell, ChevronDown, Link as LinkIcon, Repeat2, RotateCcw, Search } from "lucide-react";
+import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
@@ -7,6 +7,7 @@ import { IncidentActions } from "@/components/oneview/IncidentActions";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { OneViewKpiCard, OneViewSemanticStatusBadge } from "@/components/oneview/OneViewDesignSystem";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentStatusBadge";
 import { Badge } from "@/components/ui/badge";
@@ -28,15 +29,8 @@ const ALL = "all";
 const REFRESH_MS = 10_000;
 const RECENT_EPISODE_PREVIEW = 5;
 const COLUMN_STORAGE_KEY = "oneview.operadoras.columns.v1";
+const DETAIL_CACHE_TTL_MS = 60_000;
 let drawerOpenedAt = 0;
-const OPERATOR_STATUS_TONE = Object.freeze({
-  monitoringDown: "text-error dark:text-red-300",
-  monitoringNormalized: "text-success",
-  monitoringNormalizedBadge: "border-success/40 bg-success/10 text-success",
-  divergence: "border-warning/40 bg-warning/10 text-amber-800 dark:text-amber-200",
-  recurrence: "border-violet-300 bg-violet-50 text-violet-800 dark:border-violet-400/40 dark:bg-violet-950/35 dark:text-violet-200",
-  classificationPending: "border-warning/35 bg-warning/10 text-amber-800 dark:text-amber-200",
-});
 const REQUIRED_COLUMNS = ["link_local", "situation", "latest_alert", "current_incident", "follow_up"] as const;
 const OPTIONAL_COLUMNS = [
   ["link_type", "Tipo do link"], ["carrier", "Operadora"], ["datasource", "Fonte Zabbix"],
@@ -79,8 +73,10 @@ function stateLabel(value: CanonicalLink["state"]) {
 }
 
 function StateBadge({ state }: { state: CanonicalLink["state"] }) {
+  if (state === "critical") return <OneViewSemanticStatusBadge status="monitoring-down" label={stateLabel(state)} />;
+  if (state === "normal") return <OneViewSemanticStatusBadge status="monitoring-normalized" label={stateLabel(state)} />;
   return (
-    <Badge variant={state === "critical" ? "destructive" : state === "normal" ? "outline" : "secondary"} className={state === "normal" ? OPERATOR_STATUS_TONE.monitoringNormalizedBadge : undefined}>
+    <Badge variant="secondary">
       {stateLabel(state)}
     </Badge>
   );
@@ -88,7 +84,7 @@ function StateBadge({ state }: { state: CanonicalLink["state"] }) {
 
 function ResolutionBadge({ link }: { link: CanonicalLink }) {
   if (link.resolution_status === "resolved") return null;
-  return <Badge variant="outline" className={OPERATOR_STATUS_TONE.classificationPending}>Pendente de classificação</Badge>;
+  return <OneViewSemanticStatusBadge status="classification-pending" label="Pendente de classificação" />;
 }
 
 function linkTypeLabel(link: CanonicalLink) {
@@ -161,7 +157,7 @@ function divergenceLabel(link: CanonicalLink) {
 }
 
 function DivergenceHint({ link }: { link: CanonicalLink }) {
-  if (link.divergence_type) return <Badge variant="outline" className={OPERATOR_STATUS_TONE.divergence}>● {divergenceLabel(link)}</Badge>;
+  if (link.divergence_type) return <OneViewSemanticStatusBadge status="divergence" label={divergenceLabel(link)} />;
   return null;
 }
 
@@ -169,9 +165,7 @@ function MonitoringStatus({ link }: { link: CanonicalLink }) {
   const failing = Boolean(link.active_alerts);
   return (
     <div className="min-w-0 space-y-1">
-      <p className={cn("truncate text-sm font-medium", failing ? OPERATOR_STATUS_TONE.monitoringDown : OPERATOR_STATUS_TONE.monitoringNormalized)}>
-        {failing ? `Em falha há ${failureDuration(link)}` : "Normalizado"}
-      </p>
+      <OneViewSemanticStatusBadge status={failing ? "monitoring-down" : "monitoring-normalized"} label={failing ? `Em falha há ${failureDuration(link)}` : "Normalizado"} />
       <div className="flex flex-wrap items-center gap-1">
         {link.max_severity ? <SeverityBadge severity={link.max_severity} /> : null}
         <DivergenceHint link={link} />
@@ -181,7 +175,7 @@ function MonitoringStatus({ link }: { link: CanonicalLink }) {
 }
 
 function FollowUp({ link }: { link: CanonicalLink }) {
-  return link.resolution_status !== "resolved" ? <Badge variant="outline" className={OPERATOR_STATUS_TONE.classificationPending}>Classificação pendente</Badge> : <span className="text-muted-foreground">—</span>;
+  return link.resolution_status !== "resolved" ? <OneViewSemanticStatusBadge status="classification-pending" /> : <span className="text-muted-foreground">—</span>;
 }
 function queueReminderKey(dataSourceId: string, subjectType: string | null | undefined, subjectKey: string | null | undefined) {
   return subjectType && subjectKey ? `${dataSourceId}:${subjectType}:${subjectKey}` : null;
@@ -200,7 +194,7 @@ function ReminderQuickAction({ link, reminder, onOpen }: { link: CanonicalLink; 
 function RecurrenceHint({ link }: { link: CanonicalLink }) {
   const count = Number(link.occurrences_24h || 0);
   if (!link.is_recurrent || count < 2) return null;
-  return <Badge variant="outline" className={cn(OPERATOR_STATUS_TONE.recurrence, "gap-1 font-semibold")}><Repeat2 className="h-3 w-3" aria-hidden />{count} quedas / 24h</Badge>;
+  return <OneViewSemanticStatusBadge status="recurrence" label={`${count} quedas / 24h`} />;
 }
 function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }) {
   const [showAllRecent, setShowAllRecent] = useState(false);
@@ -308,17 +302,6 @@ function ChipGroup({
   );
 }
 
-function KpiCard({ label, value, tone = "default", onClick }: { label: string; value?: number; tone?: "default" | "danger"; onClick?: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className="rounded-lg border border-border/70 bg-card px-3 py-3 text-left shadow-sm transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-      <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className={cn("mt-1 text-2xl font-semibold tabular-nums", tone === "danger" && "text-red-700 dark:text-red-300")}>
-        {typeof value === "number" ? value.toLocaleString("pt-BR") : "—"}
-      </p>
-    </button>
-  );
-}
-
 function MobileLinkCard({ item, reminder, onOpen }: { item: CanonicalLink; reminder: OperatorReminderFeedItem | OperatorReminder | null; onOpen: (item: CanonicalLink) => void }) {
   return (
     <button
@@ -383,7 +366,7 @@ export default function OperadorasPage() {
   const requestVersion = useRef(0);
   const hasPayload = useRef(false);
   const selectedId = useRef<string | null>(null);
-  const detailCache = useRef(new Map<string, CanonicalLinkDetail>());
+  const detailCache = useRef(new Map<string, { value: CanonicalLinkDetail; expiresAt: number }>());
   const detailRequests = useRef(new Map<string, Promise<CanonicalLinkDetail>>());
 
   const load = useCallback(async (mode: "initial" | "quiet" | "manual" = "initial") => {
@@ -433,6 +416,12 @@ export default function OperadorasPage() {
         setInitialError(null);
         setRefreshError(null);
         setLoading(false);
+        if (mode !== "quiet") {
+          const now = Date.now();
+          for (const [key, cached] of detailCache.current) {
+            if (cached.expiresAt <= now) detailCache.current.delete(key);
+          }
+        }
       }
     } catch (cause) {
       if (!controller.signal.aborted && !isAbortError(cause)) {
@@ -450,20 +439,36 @@ export default function OperadorasPage() {
     }
   }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
 
+  const cachedDetail = (key: string) => {
+    const cached = detailCache.current.get(key);
+    if (!cached) return undefined;
+    if (cached.expiresAt <= Date.now()) {
+      detailCache.current.delete(key);
+      return undefined;
+    }
+    return cached.value;
+  };
+
   const loadDetail = useCallback(async (link: CanonicalLink) => {
     const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
+    const cached = cachedDetail(key);
+    if (cached && selectedId.current === key) {
+      setDetail(cached);
+      setDetailError(null);
+      setDetailLoading(false);
+    }
     let pending = detailRequests.current.get(key);
     if (!pending) {
       pending = fetchCanonicalLinkDetail(link);
       detailRequests.current.set(key, pending);
     }
-    if (selectedId.current === key && !detailCache.current.has(key)) {
+    if (selectedId.current === key && !cached) {
       setDetailLoading(true);
       setDetailError(null);
     }
     try {
       const result = await pending;
-      detailCache.current.set(key, result);
+      detailCache.current.set(key, { value: result, expiresAt: Date.now() + DETAIL_CACHE_TTL_MS });
       if (selectedId.current === key) {
         setDetail(result);
         setDetailError(null);
@@ -483,9 +488,9 @@ export default function OperadorasPage() {
     // Open the drawer first; defer heavy detail state work off the click INP path.
     startTransition(() => {
       setSelected(link);
-      setDetail(detailCache.current.get(key) || null);
+      setDetail(cachedDetail(key) || null);
       setDetailError(null);
-      setDetailLoading(!detailCache.current.has(key));
+      setDetailLoading(!cachedDetail(key));
     });
     void loadDetail(link);
   }, [loadDetail]);
@@ -597,7 +602,7 @@ export default function OperadorasPage() {
 
   return (
     <AppLayout
-      clientSelect={<div className="flex min-w-0 items-center gap-2"><LinkIcon className="h-4 w-4 shrink-0 text-primary" aria-hidden /><div className="min-w-0"><h1 className="truncate text-sm font-semibold">Links</h1><p className="hidden truncate text-xs text-muted-foreground lg:block">Circuitos, alertas e chamados relacionados</p></div></div>}
+      clientSelect={<h1 className="shrink-0 ov-typography-page-title text-foreground">Links</h1>}
       onRefresh={() => void load("manual")}
       enableAutoRefresh={false}
       showRefreshMeta={false}
@@ -605,7 +610,7 @@ export default function OperadorasPage() {
       checkedAt={payload?.checked_at}
     >
       <div className="min-w-0 space-y-3">
-        <nav aria-label="Visões da página de links" className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-border/70 bg-card p-1">
+        <nav aria-label="Visões da página de links" className="ov-segmented-control flex min-w-0 gap-1 overflow-x-auto">
           {([
             ["open", "Em falha"], ["normalized", "Normalizados"], ["all", "Todos"],
           ] as Array<[QueueTab, string]>).map(([value, label]) => (
@@ -620,10 +625,12 @@ export default function OperadorasPage() {
 
         {view === "reminders" ? <OperatorRemindersPanel onOpenCircuit={openLink} /> : <>
         <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
-          {kpis.map(({ tab: targetTab, divergence: targetDivergence, incident: targetIncident, recurrence: targetRecurrence, situation: targetSituation, ...item }) => (
-            <KpiCard
-              key={item.label}
-              {...item}
+          {kpis.map(({ tab: targetTab, divergence: targetDivergence, incident: targetIncident, recurrence: targetRecurrence, situation: targetSituation, label, value, tone }) => (
+            <OneViewKpiCard
+              key={label}
+              label={label}
+              value={typeof value === "number" ? value.toLocaleString("pt-BR") : "—"}
+              tone={tone === "danger" ? "danger" : "neutral"}
               onClick={() => {
                 setView("queue");
                 setTab(targetTab);
@@ -646,7 +653,7 @@ export default function OperadorasPage() {
           </div>
         ) : null}
 
-        <section aria-label="Filtros de links" className="space-y-3 rounded-lg border border-border/70 bg-card p-3 shadow-sm">
+        <section aria-label="Filtros de links" className="ov-panel space-y-3 p-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <ClientFilterCombobox
               open={customerFilterOpen}
@@ -755,13 +762,13 @@ export default function OperadorasPage() {
 
         {initialError && !payload ? <OperationalErrorBanner message={initialError} onRetry={() => void load("manual")} /> : null}
         {refreshError && payload ? (
-          <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <div role="status" className="ov-callout-warning flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-sm">
             <span>{refreshError} {lastSuccessfulRefreshAt ? `Última atualização bem-sucedida: ${refreshTime(lastSuccessfulRefreshAt)}.` : ""}</span>
             <Button type="button" variant="outline" size="sm" onClick={() => void load("manual")} disabled={loading}>Tentar novamente</Button>
           </div>
         ) : null}
         {payload?.integration_status?.servicenow === "degraded" ? (
-          <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <div role="status" className="ov-callout-warning px-3 py-2 text-xs">
             Correlação ServiceNow indisponível nesta consulta; chamados não foram considerados.
           </div>
         ) : null}

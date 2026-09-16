@@ -32,8 +32,8 @@ export function SectionPanel({
       {hasHeader ? (
         <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
           <div className="min-w-0">
-            {title ? <h2 className="text-sm font-semibold">{title}</h2> : null}
-            {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+            {title ? <h2 className="ov-typography-section-title">{title}</h2> : null}
+            {description ? <p className="ov-typography-small text-muted-foreground">{description}</p> : null}
           </div>
           {aside ? <div className="shrink-0">{aside}</div> : null}
         </div>

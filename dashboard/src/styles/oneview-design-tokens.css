@@ -273,3 +273,72 @@
   .ov-health-degraded { --ov-health-color: var(--ov-color-warning); }
   .ov-health-down { --ov-health-color: var(--ov-color-danger); }
   .ov-health-unknown { --ov-health-color: var(--ov-color-neutral); }
+
+  /* Shared presentation primitives. Keep page code semantic rather than bespoke. */
+  .ov-panel {
+    border: 1px solid hsl(var(--ov-color-border) / 0.7);
+    border-radius: var(--ov-radius-lg);
+    background: hsl(var(--ov-color-surface));
+    color: hsl(var(--ov-color-text-primary));
+    box-shadow: var(--ov-shadow-surface);
+  }
+
+  .ov-filter-control {
+    height: var(--ov-control-height-sm);
+    border: 1px solid hsl(var(--ov-color-border) / 0.7);
+    border-radius: var(--ov-radius-md);
+    background: hsl(var(--ov-color-surface));
+    color: hsl(var(--ov-color-text-primary));
+    font-size: 0.75rem;
+    box-shadow: var(--ov-shadow-surface);
+  }
+
+  .ov-filter-control:hover { border-color: hsl(var(--ov-color-text-primary) / 0.3); }
+  .ov-filter-chip, .ov-segmented-item { height: var(--ov-control-height-sm); padding-inline: var(--ov-space-12); font-size: 0.75rem; }
+  .ov-segmented-control { display: inline-flex; align-items: center; border: 1px solid hsl(var(--ov-color-border) / 0.7); border-radius: var(--ov-radius-md); background: hsl(var(--ov-color-surface)); padding: var(--ov-space-4); }
+  .ov-cta { height: 1.75rem; padding-inline: var(--ov-space-8); font-size: 0.75rem; }
+  .ov-table-head { font-size: 0.75rem; line-height: 1rem; font-weight: 500; color: hsl(var(--ov-color-text-muted)); }
+  .ov-list-row { min-height: 2.5rem; padding-block: var(--ov-space-8); }
+
+  .ov-density-compact { --ov-density-row-height: 2.5rem; --ov-density-control-height: var(--ov-control-height-sm); --ov-density-gap: var(--ov-space-8); }
+  .ov-density-default { --ov-density-row-height: 3rem; --ov-density-control-height: var(--ov-control-height-md); --ov-density-gap: var(--ov-space-12); }
+
+  .ov-callout-warning {
+    border: 1px solid hsl(var(--ov-color-warning) / 0.4);
+    border-radius: var(--ov-radius-lg);
+    background: hsl(var(--ov-status-divergence-surface));
+    color: hsl(var(--ov-status-divergence));
+  }
+
+  .ov-callout-danger {
+    border: 1px solid hsl(var(--ov-color-danger) / 0.45);
+    border-radius: var(--ov-radius-lg);
+    background: hsl(var(--ov-status-monitoring-down-surface));
+    color: hsl(var(--ov-status-monitoring-down));
+  }
+
+  /* Configurable dashboards: grid is desktop-first; mobile deliberately reflows vertically. */
+  .ov-dashboard { position: relative; display: flex; min-width: 0; flex-direction: column; gap: var(--ov-space-12); }
+  .ov-dashboard-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--ov-space-8); min-height: 0; }
+  .ov-dashboard-organize { height: 1.75rem; width: 1.75rem; color: hsl(var(--muted-foreground) / 0.42); }
+  .ov-dashboard-organize:hover,
+  .ov-dashboard-organize-active { color: hsl(var(--foreground)); }
+  .ov-dashboard-edit-bar { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; gap: var(--ov-space-8); }
+  .ov-dashboard-grid { display: grid; min-width: 0; grid-template-columns: repeat(12, minmax(0, 1fr)); align-items: start; gap: var(--ov-space-12); }
+  .ov-dashboard-widget { grid-column: span var(--ov-dashboard-width, 12) / span var(--ov-dashboard-width, 12); min-width: 0; min-height: calc(var(--ov-dashboard-height, 2) * 4rem); }
+  .ov-dashboard-widget-editing { position: relative; cursor: grab; border: 1px dashed hsl(var(--ov-color-primary) / 0.45); border-radius: var(--ov-radius-lg); padding: var(--ov-space-4); }
+  .ov-dashboard-widget-editing:active { cursor: grabbing; }
+  .ov-dashboard-widget-pinned { border-color: hsl(var(--ov-color-primary) / 0.65); }
+  .ov-dashboard-widget-editor { display: flex; align-items: center; gap: var(--ov-space-8); min-height: 2rem; padding: 0 var(--ov-space-4) var(--ov-space-4); }
+  .ov-dashboard-wallboard { gap: var(--ov-space-16); }
+  .ov-dashboard-wallboard .ov-dashboard-grid { gap: var(--ov-space-16); }
+  .ov-dashboard-wallboard .ov-typography-page-title { font-size: 1.5rem; line-height: 2rem; }
+  .ov-dashboard-wallboard .ov-typography-section-title { font-size: 1rem; line-height: 1.5rem; }
+  .ov-dashboard-wallboard-exit { display: flex; justify-content: flex-end; align-items: center; gap: var(--ov-space-8); }
+
+  @media (max-width: 767px) {
+    .ov-dashboard-toolbar { justify-content: flex-start; }
+    .ov-dashboard-grid { grid-template-columns: minmax(0, 1fr); }
+    .ov-dashboard-widget { grid-column: 1; min-height: auto; }
+    .ov-dashboard-widget-editor { flex-wrap: wrap; }
+  }

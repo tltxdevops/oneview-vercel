@@ -60,8 +60,8 @@ test("OV-P0-248: Home V3 keeps alert deep link, operator panel, and monitoring i
   assert.match(home, /excludeOperator: true/);
   assert.match(home, /assigned_to/);
   assert.match(page, /title="Alertas Recentes"/);
-  assert.match(page, /title="Operadoras"/);
-  assert.match(page, /Ver fila de Operadoras/);
+  assert.match(page, /title="Links"/);
+  assert.match(page, /Ver conectividade/);
   assert.match(page, /OperationalIncidentsToolbar/);
   assert.match(page, /OperationalIncidentsQueueList/);
   assert.match(page, /IncidentQuickSheet/);

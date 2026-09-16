@@ -5,7 +5,7 @@
 
 /** Controles de filtro (Select, combobox, chips de filtro). */
 export const OV_FILTER_CONTROL =
-  "h-8 rounded-md border border-border/70 bg-card text-xs shadow-sm hover:border-foreground/30 hover:bg-card";
+  "ov-filter-control";
 
 /** Largura fixa do combobox Cliente. */
 export const OV_CLIENT_FILTER_WIDTH = "w-[12rem] min-w-[12rem] max-w-[12rem]";
@@ -14,26 +14,26 @@ export const OV_CLIENT_FILTER_WIDTH = "w-[12rem] min-w-[12rem] max-w-[12rem]";
 export const OV_CLIENT_FILTER_TRIGGER = `${OV_FILTER_CONTROL} ${OV_CLIENT_FILTER_WIDTH} justify-between px-2`;
 
 /** Chip/botão de filtro (severidade, janela) — mesma altura dos demais filtros. */
-export const OV_FILTER_CHIP = "h-8 px-2.5 text-xs";
+export const OV_FILTER_CHIP = "ov-filter-chip";
 
 /** Item do segmented control (Prioritários/Todos). */
-export const OV_SEGMENTED_ITEM = "h-8 px-2.5 text-xs";
+export const OV_SEGMENTED_ITEM = "ov-segmented-item";
 
 /** Grupo segmented. */
 export const OV_SEGMENTED_GROUP =
-  "inline-flex items-center rounded-md border border-border/70 bg-card p-0.5";
+  "ov-segmented-control";
 
 /** Separador visual entre grupos de filtro (Cliente | Modo | Severidade | Período). */
 export const OV_FILTER_DIVIDER = "hidden h-6 w-px shrink-0 bg-border/80 sm:block";
 
 /** CTAs operacionais: Ver todos / Abrir / Limpar. */
-export const OV_CTA = "h-7 px-2 text-xs";
+export const OV_CTA = "ov-cta";
 
 /** Célula/coluna de duração ou ação — alinhamento à direita. */
 export const OV_COL_END = "text-right tabular-nums";
 
 /** Header de tabela operacional. */
-export const OV_TABLE_HEAD = "text-left text-xs font-medium text-muted-foreground";
+export const OV_TABLE_HEAD = "ov-table-head text-left";
 
 /** Linha de lista operacional — altura consistente. */
-export const OV_LIST_ROW = "min-h-10 py-2";
+export const OV_LIST_ROW = "ov-list-row";

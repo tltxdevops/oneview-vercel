@@ -451,7 +451,7 @@ export default function ChamadosPage() {
       contentClassName="gap-3 p-3 lg:px-4"
       clientSelect={(
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="shrink-0 text-xl font-semibold tracking-tight text-foreground">Chamados</h1>
+          <h1 className="shrink-0 ov-typography-page-title text-foreground">Chamados</h1>
           <Badge variant="outline" className="text-[10px]">
             ServiceNow
           </Badge>
@@ -548,7 +548,7 @@ export default function ChamadosPage() {
                       value={draft.callerId}
                       onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}
                     >
-                      <SelectTrigger id="chamados-caller" className="h-9">
+                      <SelectTrigger id="chamados-caller" className="ov-filter-control">
                         <SelectValue placeholder="Todos" />
                       </SelectTrigger>
                       <SelectContent>
@@ -578,7 +578,7 @@ export default function ChamadosPage() {
                 onChange={(event) => setDraft((prev) => ({ ...prev, search: event.target.value }))}
                 onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
                 placeholder="INC… ou descrição"
-                className="h-9"
+                className="ov-filter-control"
               />
             </div>
             <div className="space-y-1">
@@ -589,7 +589,7 @@ export default function ChamadosPage() {
                 onChange={(event) => setDraft((prev) => ({ ...prev, company: event.target.value }))}
                 onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
                 placeholder="Nome do cliente"
-                className="h-9"
+                className="ov-filter-control"
               />
             </div>
             <div className="space-y-1">
@@ -598,7 +598,7 @@ export default function ChamadosPage() {
                 value={draft.unassigned ? "all" : draft.state}
                 onValueChange={(value) => setDraft((prev) => ({ ...prev, state: value, unassigned: false }))}
               >
-                <SelectTrigger id="chamados-state" className="h-9">
+                <SelectTrigger id="chamados-state" className="ov-filter-control">
                   <SelectValue placeholder="Todos" />
                 </SelectTrigger>
                 <SelectContent>
@@ -614,7 +614,7 @@ export default function ChamadosPage() {
                 value={draft.contactType}
                 onValueChange={(value) => setDraft((prev) => ({ ...prev, contactType: value }))}
               >
-                <SelectTrigger id="chamados-contact-type" className="h-9">
+                <SelectTrigger id="chamados-contact-type" className="ov-filter-control">
                   <SelectValue placeholder="Todos os canais" />
                 </SelectTrigger>
                 <SelectContent>
@@ -630,7 +630,7 @@ export default function ChamadosPage() {
                 value={draft.priority}
                 onValueChange={(value) => setDraft((prev) => ({ ...prev, priority: value }))}
               >
-                <SelectTrigger id="chamados-priority" className="h-9">
+                <SelectTrigger id="chamados-priority" className="ov-filter-control">
                   <SelectValue placeholder="Todas" />
                 </SelectTrigger>
                 <SelectContent>
@@ -650,7 +650,7 @@ export default function ChamadosPage() {
                   unassigned: false,
                 }))}
               >
-                <SelectTrigger id="chamados-analyst" className="h-9">
+                <SelectTrigger id="chamados-analyst" className="ov-filter-control">
                   <SelectValue placeholder="Todos" />
                 </SelectTrigger>
                 <SelectContent>
@@ -666,7 +666,7 @@ export default function ChamadosPage() {
                 value={draft.period}
                 onValueChange={(value) => setDraft((prev) => ({ ...prev, period: value }))}
               >
-                <SelectTrigger id="chamados-period" className="h-9">
+                <SelectTrigger id="chamados-period" className="ov-filter-control">
                   <SelectValue placeholder="Todo o período" />
                 </SelectTrigger>
                 <SelectContent>

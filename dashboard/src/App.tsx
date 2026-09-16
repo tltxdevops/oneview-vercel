@@ -14,7 +14,12 @@ import { getBrowserRouterBase } from "@/lib/basePath";
 const queryClient = new QueryClient();
 const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const HistoricoPage = lazy(() => import("@/pages/Historico")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras"));
 const UiKitPage = lazy(() => import("@/pages/UiKit"));
-const route = (node: ReactNode) => <Suspense fallback={null}>{node}</Suspense>;
+const routeFallback = (
+  <div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">
+    Carregando tela...
+  </div>
+);
+const route = (node: ReactNode) => <Suspense fallback={routeFallback}>{node}</Suspense>;
 
 /**
  * OV-P0-141B — páginas sem fonte real permanecem apenas no servidor local.
@@ -40,12 +45,12 @@ const App = () => (
             <Route path="/monitoramento" element={route(<MonitoringPage />)} />
             <Route path="/alertas" element={route(<AlertsPage />)} />
             <Route path="/historico" element={route(<HistoricoPage />)} />
-            {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={null}><BancoDadosPage /></Suspense>} />}
-            {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={null}><CertificadosPage /></Suspense>} />}
+            {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={routeFallback}><BancoDadosPage /></Suspense>} />}
+            {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={routeFallback}><CertificadosPage /></Suspense>} />}
             <Route path="/chamados" element={route(<ChamadosPage />)} />
             <Route path="/operadoras" element={route(<OperadorasPage />)} />
             <Route path="/ui-kit" element={route(<UiKitPage />)} />
-            {WorkspacesPage && <Route path="/workspaces" element={<Suspense fallback={null}><WorkspacesPage /></Suspense>} />}
+            {WorkspacesPage && <Route path="/workspaces" element={<Suspense fallback={routeFallback}><WorkspacesPage /></Suspense>} />}
             <Route path="/config" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<NotFound />} />
