@@ -64,13 +64,22 @@ const configuredLogoutUri = readAuthConfig("VITE_AZURE_POST_LOGOUT_URI", "MICROS
 const localRedirectUri = cleanAuthValue(import.meta.env.VITE_AZURE_REDIRECT_URI_LOCAL);
 const localLogoutUri = cleanAuthValue(import.meta.env.VITE_AZURE_POST_LOGOUT_URI_LOCAL);
 
+function isCurrentOriginUrl(value: string) {
+  if (!origin || !value) return false;
+  try {
+    return new URL(value).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
 const resolvedRedirectUri =
   (isLocalhost && localRedirectUri) ? localRedirectUri :
-  configuredRedirectUri || currentOriginRedirectUri;
+  (isCurrentOriginUrl(configuredRedirectUri) ? configuredRedirectUri : currentOriginRedirectUri);
 
 const resolvedLogoutUri =
   (isLocalhost && localLogoutUri) ? localLogoutUri :
-  configuredLogoutUri || currentOriginLogoutUri;
+  (isCurrentOriginUrl(configuredLogoutUri) ? configuredLogoutUri : currentOriginLogoutUri);
 
 const tenantId = readAuthConfig(
   "VITE_AZURE_TENANT_ID",

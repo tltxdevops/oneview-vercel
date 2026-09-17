@@ -1,9 +1,11 @@
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import settings from "@/lib/settings";
+import { FullscreenFab } from "@/components/layout/FullscreenFab";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 import { Badge } from "@/components/ui/badge";
 import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
+import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { OneViewDataSourceKind } from "@/lib/oneview-api";
@@ -146,6 +148,7 @@ export function AppLayout({
           clientSection={topbarLeft}
           rightSection={topbarRight}
           className={topbarClassName}
+          showBrand={wallboard}
         />
         <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
           <div className={cn("flex flex-col gap-3 p-3 lg:px-4", contentClassName)}>
@@ -153,11 +156,8 @@ export function AppLayout({
               (title || description || headerAside || refreshMeta) && (
                 <header className="flex flex-col gap-2">
                   <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="min-w-0 space-y-1">
-                      {title && <h1 className="ov-typography-page-title">{title}</h1>}
-                      {description && (
-                        <p className="ov-typography-body text-muted-foreground">{description}</p>
-                      )}
+                    <div className="min-w-0">
+                      {title ? <SectionAccentTitle level={1}>{title}</SectionAccentTitle> : null}
                     </div>
                     {(headerAside || refreshMeta) && (
                       <div className="flex flex-col items-end gap-2 text-right">
@@ -191,6 +191,7 @@ export function AppLayout({
             {children}
           </div>
         </main>
+        {!wallboard ? <FullscreenFab /> : null}
       </div>
     </div>
   );

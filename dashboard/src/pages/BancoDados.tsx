@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -228,30 +229,21 @@ export default function BancoDadosPage() {
     }));
   }, [averageCpu, filteredInstances.length]);
 
-  const description = useMemo(() => {
-    if (selectedClient === "all") {
-      return "Visão consolidada da saúde dos bancos de dados monitorados.";
-    }
-    const client = mockClients.find((c) => c.id === selectedClient);
-    return client
-      ? `Status operacional dos bancos associados a ${client.name}.`
-      : "Status operacional dos bancos para o cliente selecionado.";
-  }, [selectedClient]);
-
   return (
     <AppLayout
-      title="Banco de Dados"
-      description={description}
-      clientSelect={
-        <ClientSelect
-          clients={mockClients}
-          selectedClient={selectedClient}
-          onClientChange={handleClientSelect}
-        />
-      }
+      clientSelect={(
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <SectionAccentTitle level={1}>Banco de Dados</SectionAccentTitle>
+          <ClientSelect
+            clients={mockClients}
+            selectedClient={selectedClient}
+            onClientChange={handleClientSelect}
+          />
+        </div>
+      )}
       onRefresh={handleRefresh}
       refreshInterval={REFRESH_INTERVAL_SECONDS}
-      headerAside={
+      topbarRightSection={(
         <div className="flex flex-col items-end gap-1 text-right text-xs text-muted-foreground">
           <span>
             Latência média: <span className="font-semibold text-foreground">{formatLatency(averageLatency)}</span>
@@ -260,7 +252,7 @@ export default function BancoDadosPage() {
             CPU média: <span className="font-semibold text-foreground">{formatPercentage(averageCpu)}</span>
           </span>
         </div>
-      }
+      )}
     >
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {kpis.map((kpi) => (

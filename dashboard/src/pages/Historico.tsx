@@ -23,6 +23,7 @@ import {
   OneViewPill,
   OneViewSemanticStatusBadge,
   OneViewTextAction,
+  SectionAccentTitle,
 } from "@/components/oneview/OneViewDesignSystem";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
@@ -956,14 +957,7 @@ export default function HistoricoPage() {
       enableAutoRefresh={false}
       showRefreshMeta={false}
       contentClassName="gap-3 p-3 lg:px-4"
-      clientSelect={(
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="shrink-0 ov-type-page-title text-foreground">Histórico</h1>
-          <Badge variant="outline" className="ov-pill-official ov-type-caption">
-            {countLabel}
-          </Badge>
-        </div>
-      )}
+      clientSelect={<SectionAccentTitle level={1}>Histórico</SectionAccentTitle>}
     >
       <div className="min-w-0 space-y-3">
         <Tabs value={tab} onValueChange={switchTab}>

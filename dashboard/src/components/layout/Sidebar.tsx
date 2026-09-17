@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { getStoredTheme, setStoredTheme, type Theme } from "@/lib/settings";
 import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
+import { TeletexMark } from "@/components/layout/TeletexMark";
 import { ONEVIEW_ICON_MAP, type OneViewIconName } from "@/lib/oneview-icons";
 const MONITOR_SIDEBAR_STORAGE_KEY = "oneview-monitor-sidebar-open";
 
@@ -16,7 +17,7 @@ const SIDEBAR_FOCUS_RING =
 const SIDEBAR_ACTIVE_BAR =
   "before:absolute before:inset-y-2 before:left-0 before:w-[3px] before:rounded-r-full before:bg-sidebar-foreground/80 before:opacity-0 before:transition-opacity";
 const SIDEBAR_PROFILE_LABEL =
-  "pointer-events-none flex min-w-0 max-h-0 flex-1 flex-col items-start gap-1 overflow-hidden pr-3 opacity-0 transition-[opacity,transform,max-height] duration-150 -translate-x-1 group-hover/sidebar:pointer-events-auto group-hover/sidebar:max-h-14 group-hover/sidebar:translate-x-0 group-hover/sidebar:opacity-100 group-focus-within/sidebar:pointer-events-auto group-focus-within/sidebar:max-h-14 group-focus-within/sidebar:translate-x-0 group-focus-within/sidebar:opacity-100";
+  "pointer-events-none flex min-w-0 flex-1 flex-col justify-center gap-1 overflow-hidden pr-3 opacity-0 transition-[opacity,transform] duration-150 -translate-x-1 group-hover/sidebar:pointer-events-auto group-hover/sidebar:translate-x-0 group-hover/sidebar:opacity-100 group-focus-within/sidebar:pointer-events-auto group-focus-within/sidebar:translate-x-0 group-focus-within/sidebar:opacity-100";
 
 type SidebarProps = {
   /**
@@ -242,20 +243,13 @@ export function Sidebar({
 
   return (
     <aside
-      className="group/sidebar fixed inset-y-0 left-0 z-40 flex h-dvh max-h-dvh w-14 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar transition-[width,box-shadow] duration-200 ease-out hover:w-60 hover:shadow-xl focus-within:w-60 focus-within:shadow-xl"
+      className="group/sidebar fixed inset-y-0 left-0 z-40 flex h-dvh max-h-dvh w-14 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar transition-[width,box-shadow] duration-200 ease-out hover:w-64 hover:shadow-xl focus-within:w-64 focus-within:shadow-xl"
       data-monitor-sidebar={monitoringCollapse ? "open" : undefined}
     >
       <div className="relative flex h-14 shrink-0 items-center border-b border-sidebar-border">
         <div className="flex h-full min-w-0 flex-1 items-center">
           <span className={cn(SIDEBAR_ICON_SLOT, "h-14")}>
-            <img
-              src="/tltx/tltx-t-branco.png?v=4"
-              alt="TLTX"
-              width={28}
-              height={28}
-              className="h-[28px] w-[28px] shrink-0 select-none object-contain"
-              draggable={false}
-            />
+            <TeletexMark />
           </span>
           <span className={SIDEBAR_LABEL}>
             <span className={cn(SIDEBAR_LABEL_TEXT, "font-semibold text-sidebar-foreground")}>OneView</span>
@@ -281,7 +275,7 @@ export function Sidebar({
         ))}
       </nav>
 
-      <div className="shrink-0 space-y-1 py-3">
+      <div className="relative z-10 shrink-0 space-y-1 bg-sidebar py-3 pb-2">
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -313,11 +307,11 @@ export function Sidebar({
         <SidebarNavItem name="Configurações" to="/config" icon="settings" />
       </div>
 
-      <div className="shrink-0 border-t border-sidebar-border px-0 pb-2 pt-3">
+      <div className="relative z-0 shrink-0 overflow-hidden border-t border-sidebar-border bg-sidebar px-0 pb-3 pt-4">
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex w-full items-start">
-              <div className={cn(SIDEBAR_ICON_SLOT, "h-8")}>
+            <div className="flex h-12 w-full items-center overflow-hidden">
+              <div className={cn(SIDEBAR_ICON_SLOT, "h-12")}>
                 <span className="relative flex h-8 w-8 aspect-square items-center justify-center overflow-hidden rounded-full border border-sidebar-border bg-sidebar-accent text-[10px] font-semibold uppercase text-sidebar-accent-foreground">
                   {displayUser?.photo && !profilePhotoFailed ? (
                     <img
@@ -329,8 +323,8 @@ export function Sidebar({
                   ) : <span>{initials}</span>}
                 </span>
               </div>
-              <div className={SIDEBAR_PROFILE_LABEL}>
-                <span className={cn(SIDEBAR_LABEL_TEXT, "block h-8 leading-8 font-semibold text-sidebar-foreground")}>
+              <div className={cn(SIDEBAR_PROFILE_LABEL, "h-12")}>
+                <span className={cn(SIDEBAR_LABEL_TEXT, "block max-h-4 truncate font-semibold leading-4 text-sidebar-foreground")}>
                   {displayUser?.name ?? "Usuário"}
                 </span>
                 <button
@@ -339,7 +333,7 @@ export function Sidebar({
                   disabled={!displayUser}
                   aria-label="Sair"
                   className={cn(
-                    "block text-left text-[10px] font-medium leading-none text-sidebar-foreground/50 transition-colors",
+                    "block max-h-3 text-left text-[10px] font-medium leading-3 text-sidebar-foreground/50 transition-colors",
                     "hover:text-sidebar-foreground disabled:cursor-not-allowed disabled:opacity-40",
                     SIDEBAR_FOCUS_RING,
                   )}

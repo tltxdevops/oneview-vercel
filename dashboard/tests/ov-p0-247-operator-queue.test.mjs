@@ -315,7 +315,7 @@ test("OV-P0-247 legacy route remains; Links presents circuit-level entities", as
   assert.match(app, /OperadorasPage/);
   assert.match(sidebar, /name: "Links"/);
   assert.match(sidebar, /href: "\/operadoras"/);
-  assert.match(page, /ov-typography-page-title text-foreground">Links</);
+  assert.match(page, /SectionAccentTitle level=\{1\}>Links<\/SectionAccentTitle>/);
   assert.match(page, /fetchCanonicalLinks/);
   assert.match(page, /isAbortError/);
   assert.match(page, /request\.current === controller/);

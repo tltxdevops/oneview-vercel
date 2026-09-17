@@ -8,6 +8,7 @@ import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -449,14 +450,7 @@ export default function ChamadosPage() {
       enableAutoRefresh={false}
       showRefreshMeta={false}
       contentClassName="gap-3 p-3 lg:px-4"
-      clientSelect={(
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="shrink-0 ov-typography-page-title text-foreground">Chamados</h1>
-          <Badge variant="outline" className="text-[10px]">
-            ServiceNow
-          </Badge>
-        </div>
-      )}
+      clientSelect={<SectionAccentTitle level={1}>Chamados</SectionAccentTitle>}
     >
       <div className="space-y-3">
         <CompactMetricStrip

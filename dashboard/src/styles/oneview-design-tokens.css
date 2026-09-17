@@ -385,6 +385,18 @@
   .ov-dashboard-wallboard .ov-typography-section-title { font-size: 1rem; line-height: 1.5rem; }
   .ov-dashboard-wallboard-exit { display: flex; justify-content: flex-end; align-items: center; gap: var(--ov-space-8); }
 
+  .ov-fullscreen-fab {
+    position: fixed;
+    right: var(--ov-space-16);
+    bottom: var(--ov-space-16);
+    z-index: 40;
+    height: 2.5rem;
+    width: 2.5rem;
+    border-radius: var(--ov-radius-full);
+    background: hsl(var(--background) / 0.96);
+    box-shadow: 0 4px 16px hsl(var(--foreground) / 0.08);
+  }
+
   @media (max-width: 767px) {
     .ov-dashboard-toolbar { justify-content: flex-start; }
     .ov-dashboard-grid { grid-template-columns: minmax(0, 1fr); }

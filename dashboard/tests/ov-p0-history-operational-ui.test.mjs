@@ -11,7 +11,7 @@ async function readHistory() {
 test("Histórico usa tabs e quick filters oficiais sem criar variante visual local", async () => {
   const source = await readHistory();
 
-  assert.match(source, /ov-type-page-title text-foreground">Histórico/);
+  assert.match(source, /clientSelect=\{<SectionAccentTitle level=\{1\}>Histórico<\/SectionAccentTitle>\}/);
   assert.match(source, /TabsTrigger value="alertas">Alertas/);
   assert.match(source, /TabsTrigger value="eventos">Eventos/);
   assert.match(source, /HISTORY_RISK_PRESETS\.map/);

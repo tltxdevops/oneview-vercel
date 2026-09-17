@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CircleAlert, Component, LayoutTemplate, Palette, Shapes } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import {
   UiKitComponentsSection,
   UiKitFoundationsSection,
@@ -27,8 +28,7 @@ function UiKit() {
 
   return (
     <AppLayout
-      title="OneView UI Kit v1.1"
-      description="Fonte de verdade visual para novas telas. Links / Operadoras é a referência operacional de maturidade."
+      clientSelect={<SectionAccentTitle level={1}>OneView UI Kit v1.1</SectionAccentTitle>}
       enableAutoRefresh={false}
       showRefreshMeta={false}
       showHealthStrip={false}

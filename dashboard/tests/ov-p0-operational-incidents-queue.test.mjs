@@ -126,7 +126,8 @@ test("Home e Monitoramento: 3 modos, multi-select e janela", async () => {
 
   assert.match(index, /fetchOperationalIncidents/);
   assert.match(index, /OperationalIncidentsToolbar/);
-  assert.match(index, /title=\{incidentsPanelTitle\}/);
+  assert.match(index, /title=\{<SectionAccentTitle>Chamados<\/SectionAccentTitle>\}/);
+  assert.match(index, /description=\{incidentsPanelTitle\}/);
   assert.match(index, /em acompanhamento/);
   assert.match(index, /sem responsável/);
 

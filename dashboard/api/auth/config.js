@@ -29,16 +29,6 @@ function firstAuthValue(...values) {
   return "";
 }
 
-function requestOrigin(req) {
-  const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
-  const host = forwardedHost || String(req.headers.host || "").trim();
-  if (!host) return "";
-
-  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
-  const proto = forwardedProto || "https";
-  return `${proto}://${host}`;
-}
-
 export default function handler(req, res) {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
 
@@ -55,14 +45,12 @@ export default function handler(req, res) {
     process.env.MICROSOFT_CLIENT_ID,
     process.env.NEXT_PUBLIC_MICROSOFT_CLIENT_ID,
   );
-  const origin = publicAppOrigin(req) || requestOrigin(req);
+  const origin = publicAppOrigin(req);
   const authority =
     firstAuthValue(process.env.VITE_AZURE_AUTHORITY, process.env.MICROSOFT_AUTHORITY) ||
     (tenantId ? `https://login.microsoftonline.com/${tenantId}` : "");
-  const redirectUri = firstAuthValue(microsoftRedirectUri(req), process.env.VITE_AZURE_REDIRECT_URI, origin ? `${origin}/sso/callback` : "");
+  const redirectUri = firstAuthValue(microsoftRedirectUri(req));
   const postLogoutUri = firstAuthValue(
-    process.env.VITE_AZURE_POST_LOGOUT_URI,
-    process.env.MICROSOFT_POST_LOGOUT_URI,
     origin ? `${origin}/login` : "",
   );
   const scopes = firstAuthValue(process.env.VITE_AZURE_SCOPES, process.env.MICROSOFT_SCOPE) ||

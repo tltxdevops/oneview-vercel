@@ -108,6 +108,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.error(
+      `[oneview-local-api] Porta ${apiPort} já está em uso. ` +
+      "Um npm run dev anterior ainda está rodando — use http://localhost:" + appPort + " " +
+      "ou encerre o processo na porta " + apiPort + " antes de iniciar outro.",
+    );
+    process.exit(1);
+  }
+  throw error;
+});
+
 server.listen(apiPort, () => {
   console.log(`[oneview-local-api] http://localhost:${apiPort}`);
 });

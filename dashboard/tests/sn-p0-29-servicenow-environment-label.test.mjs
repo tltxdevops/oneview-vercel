@@ -31,7 +31,8 @@ test("SN-P0-29 superfícies operacionais: badge/sidebar sem ServiceNow DEV", asy
     read("src/components/oneview/AlertRelatedIncidentsSection.tsx"),
   ]);
 
-  assert.match(chamados, />\s*ServiceNow\s*</);
+  assert.doesNotMatch(chamados, /<Badge[^>]*>[\s\S]*ServiceNow/);
+  assert.match(chamados, /ServiceNowDevLink/);
   assert.doesNotMatch(chamados, /ServiceNow DEV/);
   assert.match(sidebar, /secondary:\s*"ServiceNow"/);
   assert.doesNotMatch(sidebar, /ServiceNow DEV/);

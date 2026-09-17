@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { ClientSelect } from "@/components/certificados/ClientSelect";
 import { CertificateStatusBadge } from "@/components/certificados/CertificateStatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -188,17 +189,18 @@ export default function CertificadosPage() {
 
   return (
     <AppLayout
-      title="Certificados"
-      description="Monitoramento de certificados SSL/TLS e status de expiração."
-      clientSelect={
-        <ClientSelect
-          clients={mockClients}
-          selectedClient={selectedClient}
-          onClientChange={(clientId) => {
-            setSelectedClient(Array.isArray(clientId) ? (clientId[0] ?? "all") : clientId);
-          }}
-        />
-      }
+      clientSelect={(
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <SectionAccentTitle level={1}>Certificados</SectionAccentTitle>
+          <ClientSelect
+            clients={mockClients}
+            selectedClient={selectedClient}
+            onClientChange={(clientId) => {
+              setSelectedClient(Array.isArray(clientId) ? (clientId[0] ?? "all") : clientId);
+            }}
+          />
+        </div>
+      )}
       onRefresh={handleRefresh}
       refreshInterval={REFRESH_INTERVAL_SECONDS}
     >

@@ -4,6 +4,9 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 const DEFAULT_TENANT_ID = "9c36f529-164f-47cd-bca0-ba7c0d710407";
 const DEFAULT_SCOPE = "openid profile email User.Read";
 const MICROSOFT_CALLBACK_PATH = "/api/auth/microsoft/callback";
+const ONEVIEW_PRODUCTION_ORIGIN = "https://oneview.teletex.com.br";
+const ONEVIEW_DEVELOPMENT_ORIGIN = "https://oneview.teletexdev.com.br";
+const CANONICAL_PUBLIC_ORIGINS = new Set([ONEVIEW_PRODUCTION_ORIGIN, ONEVIEW_DEVELOPMENT_ORIGIN]);
 const GRAPH_PROFILE_PHOTO_URL = "https://graph.microsoft.com/v1.0/me/photo/$value";
 const MAX_PROFILE_PHOTO_BYTES = 512 * 1024;
 const PROFILE_PHOTO_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
@@ -90,14 +93,44 @@ function normalizeOrigin(value) {
   }
 }
 
+function isProductionDeployment() {
+  return [process.env.VERCEL_ENV, process.env.ONEVIEW_RUNTIME_ENV]
+    .some((value) => clean(value).toLowerCase() === "production");
+}
+
+function isLocalDevelopmentOrigin(origin) {
+  if (isProductionDeployment()) return false;
+  try {
+    const parsed = new URL(origin);
+    return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function isKnownPublicOrigin(origin) {
+  return CANONICAL_PUBLIC_ORIGINS.has(origin) || isLocalDevelopmentOrigin(origin);
+}
+
+function isOriginAllowedInCurrentEnvironment(origin) {
+  if (!isKnownPublicOrigin(origin)) return false;
+  // Production never accepts a development hostname from Host or env config.
+  return !isProductionDeployment() || origin === ONEVIEW_PRODUCTION_ORIGIN;
+}
+
+function configuredOrigin(value) {
+  const origin = normalizeOrigin(value);
+  return isOriginAllowedInCurrentEnvironment(origin) ? origin : "";
+}
+
 function configuredPrimaryOrigin() {
-  const explicit = normalizeOrigin(process.env.ONEVIEW_PUBLIC_ORIGIN || process.env.APP_PUBLIC_ORIGIN);
+  const explicit = configuredOrigin(process.env.ONEVIEW_PUBLIC_ORIGIN || process.env.APP_PUBLIC_ORIGIN);
   if (explicit) return explicit;
 
   const redirectUri = clean(process.env.MICROSOFT_REDIRECT_URI);
   if (redirectUri) {
     try {
-      return normalizeOrigin(new URL(redirectUri).origin);
+      return configuredOrigin(new URL(redirectUri).origin);
     } catch {
       // fallback below
     }
@@ -109,7 +142,7 @@ function allowedOrigins() {
   const configured = String(process.env.ONEVIEW_ALLOWED_ORIGINS || "")
     .split(",")
     .map(normalizeOrigin)
-    .filter(Boolean);
+    .filter(isOriginAllowedInCurrentEnvironment);
   const primary = configuredPrimaryOrigin();
   return [...new Set([...configured, primary].filter(Boolean))];
 }
@@ -133,14 +166,13 @@ export function requestOrigin(req) {
   const forwardedProto = clean(String(req.headers?.["x-forwarded-proto"] || "").split(",")[0]);
   const proto = forwardedProto || "http";
   const candidate = normalizeOrigin(host ? `${proto}://${host}` : "");
-  const allowed = allowedOrigins();
-  if (!allowed.length) return candidate;
-  return allowed.includes(candidate) ? candidate : (configuredPrimaryOrigin() || candidate);
+  if (isOriginAllowedInCurrentEnvironment(candidate)) return candidate;
+  return configuredPrimaryOrigin();
 }
 
 export function microsoftRedirectUri(req) {
   const origin = requestOrigin(req);
-  return origin ? `${origin}${MICROSOFT_CALLBACK_PATH}` : clean(process.env.MICROSOFT_REDIRECT_URI);
+  return origin ? `${origin}${MICROSOFT_CALLBACK_PATH}` : "";
 }
 
 export function publicAppOrigin(req) {

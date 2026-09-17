@@ -281,7 +281,9 @@ test("OV-P0-26 saúde Teletex-only e shell denso sem zoom/scale", async () => {
   assert.match(appLayout, /gap-3 p-3/);
   assert.match(sidebar, /w-14/);
   assert.doesNotMatch(sidebar, /w-20 hover:w-64/);
-  assert.match(topbar, /min-h-10/);
+  assert.match(topbar, /h-14/);
+  assert.match(topbar, /TeletexMark/);
+  assert.match(appLayout, /FullscreenFab/);
   assert.match(pageHeader, /SectionAccentTitle level=\{1\}>\{title\}<\/SectionAccentTitle>/);
   assert.match(metricStrip, /min-w-\[5\.5rem\]/);
   assert.match(filterBar, /ov-panel p-2\.5/);
@@ -306,7 +308,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
     read("src/pages/Historico.tsx"),
   ]);
   assert.match(index, /SectionAccentTitle level=\{1\}>Início/);
-  assert.match(index, /Visão geral da operação Teletex/);
+  assert.doesNotMatch(index, /Visão geral da operação Teletex/);
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);
   assert.match(index, /homeOperationalWindowActiveLabel/);
   assert.doesNotMatch(index, /Total persistido|Em acompanhamento no OneView|active_total/);
@@ -2189,12 +2191,13 @@ test("OV-P0-44 Histórico enxuga colunas e abre drawer na linha", async () => {
 });
 
 test("OV-P0-45 cabeçalhos padronizados na Topbar", async () => {
-  const [index, alerts, historico, monitoring, chamados, appLayout, topbar] = await Promise.all([
+  const [index, alerts, historico, monitoring, chamados, operadoras, appLayout, topbar] = await Promise.all([
     read("src/pages/Index.tsx"),
     read("src/pages/Alerts.tsx"),
     read("src/pages/Historico.tsx"),
     read("src/pages/Monitoring.tsx"),
     read("src/pages/Chamados.tsx"),
+    read("src/pages/Operadoras.tsx"),
     read("src/components/layout/AppLayout.tsx"),
     read("src/components/layout/Topbar.tsx"),
   ]);
@@ -2205,6 +2208,7 @@ test("OV-P0-45 cabeçalhos padronizados na Topbar", async () => {
   assert.match(historico, /SectionAccentTitle level=\{1\}>Histórico<\/SectionAccentTitle>/);
   assert.match(monitoring, /SectionAccentTitle level=\{1\}>Monitoramento<\/SectionAccentTitle>/);
   assert.match(chamados, /SectionAccentTitle level=\{1\}>Chamados<\/SectionAccentTitle>/);
+  assert.match(operadoras, /SectionAccentTitle level=\{1\}>Links<\/SectionAccentTitle>/);
   assert.doesNotMatch(index, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.doesNotMatch(historico, /PageHeader|from "@\/components\/oneview\/PageHeader"/);
   assert.match(alerts, /from "@\/components\/oneview\/PageHeader"/);

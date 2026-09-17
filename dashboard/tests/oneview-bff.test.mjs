@@ -10,6 +10,7 @@ import { invalidateOneViewSummaryCache, resetOneViewRuntimeCacheForTests, withOn
 import { fetchOneViewUpstream } from "../api/_lib/oneview-upstream.js";
 import { createSessionToken } from "../api/_lib/session.js";
 import authMeHandler from "../api/auth/me.js";
+import microsoftCallbackHandler from "../api/auth/microsoft/callback.js";
 
 function request(method = "GET", query = {}, headers = {}) {
   return { method, query, headers };
@@ -338,18 +339,16 @@ test("SSO mantém o host atual nas origens permitidas", () => {
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
 
   try {
-    process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview-vercel.vercel.app";
+    process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview.teletexdev.com.br";
     process.env.ONEVIEW_ALLOWED_ORIGINS = [
-      "https://oneview-vercel.vercel.app",
       "https://oneview.teletexdev.com.br",
       "https://oneview.teletex.com.br",
     ].join(",");
-    process.env.MICROSOFT_REDIRECT_URI = "https://oneview-vercel.vercel.app/api/auth/microsoft/callback";
+    process.env.MICROSOFT_REDIRECT_URI = "https://oneview.teletexdev.com.br/api/auth/microsoft/callback";
     process.env.MICROSOFT_TENANT_ID = "tenant-test";
     process.env.MICROSOFT_CLIENT_ID = "client-test";
 
     for (const host of [
-      "oneview-vercel.vercel.app",
       "oneview.teletexdev.com.br",
       "oneview.teletex.com.br",
     ]) {
@@ -373,7 +372,58 @@ test("SSO mantém o host atual nas origens permitidas", () => {
         "x-forwarded-proto": "https",
       },
     };
-    assert.equal(publicAppOrigin(unknownHost), "https://oneview-vercel.vercel.app");
+    assert.equal(publicAppOrigin(unknownHost), "https://oneview.teletexdev.com.br");
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
+test("OV-P0-290 callback preserves canonical request domain and blocks hostile host control", async () => {
+  const names = [
+    "ONEVIEW_PUBLIC_ORIGIN",
+    "ONEVIEW_ALLOWED_ORIGINS",
+    "MICROSOFT_REDIRECT_URI",
+    "VERCEL_ENV",
+    "ONEVIEW_RUNTIME_ENV",
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+
+  try {
+    process.env.ONEVIEW_PUBLIC_ORIGIN = "https://oneview.teletexdev.com.br";
+    process.env.ONEVIEW_ALLOWED_ORIGINS = "https://oneview.teletexdev.com.br,https://oneview.teletex.com.br";
+    process.env.MICROSOFT_REDIRECT_URI = "https://oneview.teletexdev.com.br/api/auth/microsoft/callback";
+    delete process.env.VERCEL_ENV;
+    delete process.env.ONEVIEW_RUNTIME_ENV;
+
+    for (const host of ["oneview.teletex.com.br", "oneview.teletexdev.com.br"]) {
+      const expectedOrigin = `https://${host}`;
+      const req = {
+        method: "GET",
+        query: { code: "code-test", state: "state-test" },
+        headers: { host, "x-forwarded-proto": "https" },
+      };
+      assert.equal(microsoftRedirectUri(req), `${expectedOrigin}/api/auth/microsoft/callback`);
+
+      const res = response();
+      await microsoftCallbackHandler(req, res);
+      assert.equal(res.statusCode, 302);
+      assert.equal(res.headers.location, `${expectedOrigin}/sso/callback?code=code-test&state=state-test`);
+    }
+
+    const hostileReq = {
+      method: "GET",
+      query: { code: "code-test" },
+      headers: { host: "oneview.teletexdev.com.br.attacker.invalid", "x-forwarded-proto": "https" },
+    };
+    assert.equal(publicAppOrigin(hostileReq), "https://oneview.teletexdev.com.br");
+
+    process.env.VERCEL_ENV = "production";
+    assert.equal(publicAppOrigin(hostileReq), "");
+    assert.equal(microsoftRedirectUri(hostileReq), "");
+    assert.equal(publicAppOrigin({ headers: { host: "oneview.teletex.com.br", "x-forwarded-proto": "https" } }), "https://oneview.teletex.com.br");
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name];

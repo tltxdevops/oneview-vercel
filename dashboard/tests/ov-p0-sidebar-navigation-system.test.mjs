@@ -26,8 +26,8 @@ test("OV-SIDEBAR: ativo, hover e expansão são distinguíveis e acessíveis", (
   assert.match(sidebar, /bg-sidebar-accent text-sidebar-accent-foreground/);
   assert.match(sidebar, /icon: "text-sidebar-accent-foreground"/);
   assert.match(sidebar, /hover:bg-sidebar-accent/);
-  assert.match(sidebar, /hover:w-60/);
-  assert.match(sidebar, /focus-within:w-60/);
+  assert.match(sidebar, /hover:w-64/);
+  assert.match(sidebar, /focus-within:w-64/);
   assert.match(sidebar, /group-hover\/sidebar:opacity-100/);
   assert.match(sidebar, /title=\{name\}/);
   assert.match(sidebar, /aria-label=/);

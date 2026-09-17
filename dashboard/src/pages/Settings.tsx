@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuthContext } from "@/context/AuthContext";
@@ -182,8 +183,7 @@ export default function SettingsPage() {
 
   return (
     <AppLayout
-      title="Configurações"
-      description="Saúde da automação e fontes de dados"
+      clientSelect={<SectionAccentTitle level={1}>Configurações</SectionAccentTitle>}
       onRefresh={loadPage}
       refreshInterval={SETTINGS_REFRESH_SECONDS}
       showRefreshMeta={false}
@@ -191,6 +191,19 @@ export default function SettingsPage() {
       checkedAt={checkedAt}
     >
       <div className="space-y-6 text-foreground">
+        <SectionPanel title="Conta" description="Identificação da sua sessão SSO." bodyClassName="p-4">
+          <dl className="grid gap-3 sm:grid-cols-2">
+            <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+              <dt className="text-sm text-muted-foreground">Nome</dt>
+              <dd className="truncate text-sm font-medium text-foreground">{user?.name ?? "—"}</dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+              <dt className="text-sm text-muted-foreground">E-mail</dt>
+              <dd className="truncate text-sm font-medium text-foreground">{user?.email ?? "—"}</dd>
+            </div>
+          </dl>
+        </SectionPanel>
+
         <SectionPanel title="Saúde da aplicação" description="Último sync e estado de cada origem. A faixa do topo é só o resumo." aside={<Button variant="outline" onClick={() => void loadPage()} disabled={loading}>Atualizar</Button>} bodyClassName="p-4" aria-label="Saúde da aplicação">
           {(["PLATFORM", "ZABBIX", "SERVICENOW", "WORKERS", "INTEGRATIONS"] as const).map((category) => {
             const items = runtimeHealth?.components.filter((item) => item.category === category) ?? [];

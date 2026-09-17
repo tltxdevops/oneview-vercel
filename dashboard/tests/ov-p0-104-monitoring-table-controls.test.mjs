@@ -34,8 +34,10 @@ test("OV-P0-104 topo: título + health + sync + fullscreen; sem filtros operacio
 
   assert.match(header, /Monitoramento/);
   assert.match(header, /PlatformHealthStrip/);
-  assert.match(header, /requestFullscreen|toggleFullscreen/);
-  assert.match(header, /h-8 w-8/);
+  assert.match(header, /TeletexMark/);
+  assert.match(monitoring, /FullscreenFab/);
+  assert.match(monitoring, /ov-fullscreen-fab|FullscreenFab/);
+  assert.doesNotMatch(header, /aria-label=\{isFullscreen/);
   assert.doesNotMatch(header, /ClientFilterCombobox/);
   assert.doesNotMatch(header, /OperationalSegmentedControl/);
   assert.doesNotMatch(header, /aria-label="Severidades"/);

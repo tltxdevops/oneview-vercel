@@ -57,7 +57,9 @@ export default defineConfig(({ mode }) => {
         },
         "/api": {
           target: env.VITE_API_PROXY_TARGET || "http://localhost:8000",
-          changeOrigin: true,
+          // The local SSO handler derives its public callback origin from Host.
+          // Preserve Vite's :6565 host so Entra returns to the SPA, not :8000.
+          changeOrigin: false,
         },
       },
     },

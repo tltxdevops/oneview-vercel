@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Expand, Eye, Loader2, Minimize2, RefreshCcw, ChevronsUpDown, Check } from "lucide-react";
+import { Eye, Loader2, RefreshCcw, ChevronsUpDown, Check } from "lucide-react";
+import { FullscreenFab } from "@/components/layout/FullscreenFab";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { TeletexMark } from "@/components/layout/TeletexMark";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import {
@@ -1089,18 +1091,6 @@ export default function MonitoringPage() {
     wasFullscreen.current = isFullscreen;
   }, [isFullscreen, navOpen]);
 
-  const toggleFullscreen = useCallback(async () => {
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else {
-        await document.documentElement.requestFullscreen();
-      }
-    } catch {
-      // Fullscreen pode ser bloqueado pelo navegador; a tela permanece utilizável.
-    }
-  }, []);
-
   const loadSelectedAlert = useCallback(async (alertId: string) => {
     detailRequest.current?.abort();
     const controller = new AbortController();
@@ -1319,6 +1309,7 @@ export default function MonitoringPage() {
       className="noc-monitor flex h-[100dvh] w-[100vw] max-h-[100dvh] max-w-[100vw] overflow-hidden bg-background text-foreground antialiased"
       data-tv={tvMode ? "1" : "0"}
     >
+      <FullscreenFab />
       <Sidebar
         monitoringCollapse
         open={navOpen}
@@ -1330,11 +1321,11 @@ export default function MonitoringPage() {
           navOpen ? "ml-14" : "ml-0",
         )}
       >
-      <header className="flex shrink-0 items-center gap-3 border-b border-border/60 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/60 bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         {/* OV-P0-104 — topo: título · ações · health à direita */}
-        <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-3">
+          {!navOpen ? <TeletexMark inverted /> : null}
           <SectionAccentTitle level={1}>Monitoramento</SectionAccentTitle>
-          <p className="ov-type-secondary text-muted-foreground">Visão operacional em tempo real</p>
         </div>
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
           {isUpdating ? (
@@ -1343,20 +1334,6 @@ export default function MonitoringPage() {
               Atualizando
             </span>
           ) : <span className="hidden shrink-0 ov-type-caption text-muted-foreground sm:inline">Atualizado: {lastUpdatedLabel}</span>}
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            onClick={() => void toggleFullscreen()}
-            aria-label={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
-            aria-pressed={isFullscreen}
-            title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
-          >
-            {isFullscreen
-              ? <Minimize2 className="h-4 w-4" aria-hidden="true" />
-              : <Expand className="h-4 w-4" aria-hidden="true" />}
-          </Button>
           <PlatformHealthStrip />
         </div>
       </header>

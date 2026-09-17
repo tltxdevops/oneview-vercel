@@ -7,7 +7,7 @@ import { IncidentActions } from "@/components/oneview/IncidentActions";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
-import { OneViewKpiCard, OneViewSemanticStatusBadge } from "@/components/oneview/OneViewDesignSystem";
+import { OneViewKpiCard, OneViewSemanticStatusBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentStatusBadge";
 import { Badge } from "@/components/ui/badge";
@@ -602,7 +602,7 @@ export default function OperadorasPage() {
 
   return (
     <AppLayout
-      clientSelect={<h1 className="shrink-0 ov-typography-page-title text-foreground">Links</h1>}
+      clientSelect={<SectionAccentTitle level={1}>Links</SectionAccentTitle>}
       onRefresh={() => void load("manual")}
       enableAutoRefresh={false}
       showRefreshMeta={false}

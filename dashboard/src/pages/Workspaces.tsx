@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { WorkspaceCard } from "@/components/workspaces/WorkspaceCard";
 import { WorkspaceFilters } from "@/components/workspaces/WorkspaceFilters";
 import { WorkspaceDetailsModal } from "@/components/workspaces/WorkspaceDetailsModal";
@@ -265,16 +266,17 @@ export default function WorkspacesPage() {
   }, []);
 
   return (
-    <AppLayout 
-      title="workspaces Cisco"
-      description="Monitoramento de salas e dispositivos Webex"
-      clientSelect={
-        <ClientSelect
-          clients={mockClients}
-          selectedClient={selectedClient}
-          onClientChange={handleClientChange}
-        />
-      }
+    <AppLayout
+      clientSelect={(
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <SectionAccentTitle level={1}>Workspaces Cisco</SectionAccentTitle>
+          <ClientSelect
+            clients={mockClients}
+            selectedClient={selectedClient}
+            onClientChange={handleClientChange}
+          />
+        </div>
+      )}
       onRefresh={handleRefresh}
       refreshInterval={REFRESH_INTERVAL_SECONDS}
       enableAutoRefresh={true}

@@ -38,6 +38,20 @@ test("Alertas keeps all nine KPI filters in one official KPI row", async () => {
   assert.doesNotMatch(alerts, /Severidade fora da faixa visual|border-dashed/);
 });
 
+test("Alertas keeps Cliente in the filter bar instead of crowding the topbar", async () => {
+  const alerts = await read("src/pages/Alerts.tsx");
+
+  assert.match(alerts, /clientSelect=\{<PageHeader title="Alertas" \/>\}/);
+  assert.doesNotMatch(alerts, /<PageHeader title="Alertas" aside=\{clientSelector\}/);
+  assert.match(alerts, /<FilterBar[\s\S]*?\{clientSelector\}[\s\S]*?<Select/);
+});
+
+test("Alertas keeps rendering when a stale filtered response contains an invalid item", async () => {
+  const alerts = await read("src/pages/Alerts.tsx");
+
+  assert.match(alerts, /candidateItems\.filter\(\(item\): item is OneViewAlert => Boolean\(item && typeof item === "object"\)\)/);
+});
+
 test("Alertas preserves table columns and exposes the official detail action", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
 

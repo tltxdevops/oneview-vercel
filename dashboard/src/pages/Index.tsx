@@ -955,10 +955,7 @@ export default function Index() {
     <AppLayout
       clientSelect={(
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <div className="min-w-0">
-            <SectionAccentTitle level={1}>Início</SectionAccentTitle>
-            <p className="ov-type-secondary text-muted-foreground">Visão geral da operação Teletex</p>
-          </div>
+          <SectionAccentTitle level={1}>Início</SectionAccentTitle>
           {showInitialLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
         </div>
       )}

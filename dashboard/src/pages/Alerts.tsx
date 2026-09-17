@@ -191,9 +191,12 @@ const emptyPagination: AlertPagination = {
  */
 function normalizeAlertResponse(response: AlertListResponse, requestedPage: number, requestedPageSize: number) {
   const runtimeResponse = (response ?? {}) as AlertListResponse & { alerts?: OneViewAlert[] };
-  const items = Array.isArray(runtimeResponse.items)
+  const candidateItems = Array.isArray(runtimeResponse.items)
     ? runtimeResponse.items
     : Array.isArray(runtimeResponse.alerts) ? runtimeResponse.alerts : [];
+  // Um item inválido de uma resposta antiga/parcial não pode desmontar a página
+  // ao trocar filtros. A falha de consulta continua exibida pelo banner normal.
+  const items = candidateItems.filter((item): item is OneViewAlert => Boolean(item && typeof item === "object"));
   const rawPagination = runtimeResponse.pagination;
   const totalItems = Number.isFinite(Number(rawPagination?.total_items))
     ? Math.max(0, Number(rawPagination?.total_items))
@@ -1584,13 +1587,14 @@ export default function AlertsPage() {
       selectedLabel={selectedCustomerLabel}
       onToggle={toggleCustomer}
       countNoun={customerFilterCountNoun(alertsView === "priority" ? "prioritary" : "filter")}
+      triggerClassName="h-9 w-full justify-between"
     />
   );
   return (
     <AppLayout
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      clientSelect={<PageHeader title="Alertas" aside={clientSelector} />}
+      clientSelect={<PageHeader title="Alertas" />}
       contentClassName="gap-3 p-3 lg:px-4"
     >
       {hasSnapshot ? (
@@ -1674,7 +1678,9 @@ export default function AlertsPage() {
               ))}
               {activeFilterChips.length > 0 ? <OneViewTextAction onClick={clearFilters}>Limpar todos</OneViewTextAction> : null}
             </div>
-            <div className="order-1 grid gap-2 sm:grid-cols-2 lg:grid-cols-[9rem_11rem_minmax(18rem,1fr)_auto_auto]">
+            <div className="order-1 grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(13rem,16rem)_9rem_11rem_minmax(18rem,1fr)_auto_auto]">
+              {clientSelector}
+
               <Select
                 value={statusFilter}
                 onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}
