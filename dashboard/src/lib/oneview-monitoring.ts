@@ -40,7 +40,8 @@ export const MONITOR_ALL_SEVERITIES = [
 
 export type MonitorAlertSeverity = (typeof MONITOR_ALL_SEVERITIES)[number];
 
-export const MONITOR_QUEUE_LIMIT = 14;
+export const MONITOR_QUEUE_LIMIT = 25;
+export const MONITOR_QUEUE_ITEM_LIMIT_OPTIONS = [10, 25, 50] as const;
 export const MONITOR_HOSTS_LIMIT = 6;
 /** Painel de chamados: teto do BFF, lista rolável. */
 export const MONITOR_UNASSIGNED_LIMIT = OPERATIONAL_INCIDENTS_PAGE_SIZE;

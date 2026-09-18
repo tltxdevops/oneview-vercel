@@ -14,6 +14,7 @@ import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
+import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import { IncidentQuickSheet } from "@/components/oneview/IncidentQuickSheet";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
@@ -37,6 +38,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import { useAuthContext } from "@/context/AuthContext";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
@@ -110,6 +112,14 @@ import {
 const SUMMARY_REFRESH_MS = 10_000;
 const LIST_REFRESH_MS = 10_000;
 const HOME_DASHBOARD_WIDGETS = dashboardWidgetsForPage("home").filter((widget) => widget.id !== "health");
+
+const HOME_EVENT_COLUMNS = [
+  { id: "client", label: "Cliente" },
+  { id: "host", label: "Host" },
+  { id: "problem", label: "Problema", required: true },
+  { id: "severity", label: "Severidade" },
+  { id: "time", label: "Horário" },
+] as const;
 
 /** Ordem visual Home OV-P0-42A (sem Not classified — chip no mesmo bloco). */
 const HOME_VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
@@ -230,6 +240,15 @@ const HOME_PANEL_HEADER_ASIDE = "inline-flex h-7 items-center gap-2";
 const HOME_PANEL_COUNT = "text-xs font-medium tabular-nums text-muted-foreground";
 const HOME_FILTER_ROW = "flex flex-wrap items-center gap-2 border-b border-border/60 py-1.5";
 const HOME_LIST_DIVIDE = "divide-y divide-border/60";
+
+function configuredWidgetItemLimit(
+  widgets: Array<{ id: string; itemLimit?: number }>,
+  id: string,
+  fallback: number,
+) {
+  const value = widgets.find((widget) => widget.id === id)?.itemLimit;
+  return Number.isFinite(value) && Number(value) > 0 ? Math.trunc(Number(value)) : fallback;
+}
 
 function SectionState({
   loading,
@@ -362,6 +381,11 @@ export default function Index() {
     actorId: user?.id || user?.email,
     widgets: HOME_DASHBOARD_WIDGETS,
   });
+  const homeEventColumns = useOneViewTableColumns({ tableId: "home-events", actorId: user?.id || user?.email, definitions: HOME_EVENT_COLUMNS });
+  const alertItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "recent-alerts", HOME_ALERTS_PAGE_SIZE);
+  const incidentItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "incidents", 7);
+  const operatorItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "failed-links", 3);
+  const eventItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "recent-events", HOME_EVENTS_LIMIT);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedAlertId = searchParams.get("alert");
   const homeWindow = parseHomeOperationalWindow(searchParams.get("window"));
@@ -373,7 +397,7 @@ export default function Index() {
   });
   const warmedFacets = useOneViewWarmRead<OneViewFacetsResponse>({ cachePath: ONEVIEW_FACETS_PATH });
   const warmedHome = warmedHomeAlerts.data
-    ? homeAlertsResultFromResponse(warmedHomeAlerts.data, HOME_ALERTS_PAGE_SIZE)
+    ? homeAlertsResultFromResponse(warmedHomeAlerts.data, alertItemLimit)
     : null;
 
   const [alertMode, setAlertMode] = useState<HomeAlertMode>(DEFAULT_HOME_ALERT_MODE);
@@ -381,6 +405,7 @@ export default function Index() {
   const [alertStatus, setAlertStatus] = useState<HomeAlertStatus>("active");
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>([]);
   const [clientFilterOpen, setClientFilterOpen] = useState(false);
+  const [eventSearch, setEventSearch] = useState("");
   const [customerOptions, setCustomerOptions] = useState<ClientFilterOption[]>([
     { key: "all", name: "Todos" },
   ]);
@@ -580,7 +605,7 @@ export default function Index() {
         severity: severityFilter,
         customers: selectedCustomerKeys,
         status: alertStatus,
-        limit: HOME_ALERTS_PAGE_SIZE,
+        limit: alertItemLimit,
         windowMs,
         signal: controller.signal,
         now: bucketOneViewReadNow(),
@@ -605,7 +630,7 @@ export default function Index() {
         setCriticalHomeReady(true);
       }
     }
-  }, [alertMode, alertStatus, selectedCustomerKeys, setSectionError, severityFilter, windowMs]);
+  }, [alertItemLimit, alertMode, alertStatus, selectedCustomerKeys, setSectionError, severityFilter, windowMs]);
 
   const loadLists = useCallback(async (mode: "initial" | "quiet" | "manual" = "quiet") => {
     if (mode === "quiet" && listsRequest.current && !listsRequest.current.signal.aborted) return;
@@ -626,13 +651,13 @@ export default function Index() {
           severity: severityFilter,
           customers: selectedCustomerKeys,
           status: alertStatus,
-          limit: HOME_ALERTS_PAGE_SIZE,
+          limit: alertItemLimit,
           windowMs,
           signal: controller.signal,
           now,
         }),
         fetchRecentOperationalEvents({
-          limit: HOME_EVENTS_LIMIT,
+          limit: eventItemLimit,
           customers: selectedCustomerKeys,
           signal: controller.signal,
           now,
@@ -641,6 +666,7 @@ export default function Index() {
         fetchOperationalIncidents({
           mode: incidentsMode,
           assignedTo: incidentsAssignedTo,
+          limit: incidentItemLimit,
           windowMs,
           signal: controller.signal,
           now,
@@ -648,7 +674,7 @@ export default function Index() {
         fetchOperatorQueue({
           tab: "all",
           alertStatus: "active",
-          pageSize: 3,
+          pageSize: operatorItemLimit,
           signal: controller.signal,
         }),
       ];
@@ -677,7 +703,7 @@ export default function Index() {
 
       if (historyResult.status === "fulfilled") {
         const payload = historyResult.value as Awaited<ReturnType<typeof fetchRecentOperationalEvents>>;
-        const events = (payload.items ?? []).filter(isAllowedHomeEvent).slice(0, HOME_EVENTS_LIMIT);
+        const events = (payload.items ?? []).filter(isAllowedHomeEvent).slice(0, eventItemLimit);
         setRecentEvents(events);
         setEventsTotal(payload.total);
         setListsMeta((current) => ({
@@ -740,11 +766,15 @@ export default function Index() {
     }
   }, [
     alertMode,
+    alertItemLimit,
     alertStatus,
     beginQuietUpdate,
     endQuietUpdate,
     incidentsAssignedTo,
+    incidentItemLimit,
     incidentsMode,
+    eventItemLimit,
+    operatorItemLimit,
     selectedCustomerKeys,
     setSectionError,
     severityFilter,
@@ -885,7 +915,14 @@ export default function Index() {
       ? `${incidentsTitleCount.toLocaleString("pt-BR")} chamados`
       : `${incidentsTitleCount.toLocaleString("pt-BR")} sem responsável`;
   const chamadosHref = buildOperationalChamadosHref({ mode: incidentsMode, assignedTo: incidentsAssignedTo });
-  const operatorItems = (operatorQueue?.items ?? []).slice(0, 3);
+  const visibleHomeAlerts = homeAlerts.slice(0, alertItemLimit);
+  const visibleHomeIncidents = homeIncidents.slice(0, incidentItemLimit);
+  const operatorItems = (operatorQueue?.items ?? []).slice(0, operatorItemLimit);
+  const normalizedEventSearch = eventSearch.trim().toLocaleLowerCase("pt-BR");
+  const visibleRecentEvents = recentEvents
+    .filter((item) => !normalizedEventSearch || [item.customer_name, canonicalHostName(item), item.problem_name, item.severity]
+      .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(normalizedEventSearch)))
+    .slice(0, eventItemLimit);
   const operatorCounts = operatorQueue?.counts;
 
   // OV-P0-42A: faixa das cinco severidades (ativos + first_seen na janela). Zero válido ≠ erro ("—").
@@ -898,6 +935,7 @@ export default function Index() {
       key: severity,
       label: formatOneViewSeverityLabel(severity),
       value: formatMetricCount(value),
+      tone: severity === "information" ? "info" as const : severity === "warning" || severity === "average" ? "warning" as const : "danger" as const,
       description: `${homeOperationalWindowActiveLabel(homeWindow)} · ${formatOneViewSeverityLabel(severity)}`,
       unknown: value == null && !severityStripLoading,
       loading: severityStripLoading,
@@ -963,7 +1001,7 @@ export default function Index() {
       enableAutoRefresh={false}
       showRefreshMeta={false}
       wallboard={dashboard.isWallboard}
-      contentClassName="gap-3 p-3 lg:px-4"
+      contentClassName="gap-2 p-3 lg:px-4"
     >
       {contextBar}
       <ConfigurableDashboard controller={dashboard}>
@@ -1062,14 +1100,14 @@ export default function Index() {
                 emptyMessage="Nenhum alerta recente na fila operacional com os filtros atuais."
                 onRetry={() => void loadLists("manual")}
               >
-                {homeAlerts.map((alert) => (
+                {visibleHomeAlerts.map((alert) => (
                   <HomeAlertRow key={alert.id} alert={alert} onOpen={openAlert} />
                 ))}
               </SectionState>
             </div>
-            {queueOverflowLabel(alertsTotal, homeAlerts.length) ? (
+            {queueOverflowLabel(alertsTotal, visibleHomeAlerts.length) ? (
               <p className="border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">
-                {queueOverflowLabel(alertsTotal, homeAlerts.length)}
+                {queueOverflowLabel(alertsTotal, visibleHomeAlerts.length)}
               </p>
             ) : null}
           </SectionPanel>
@@ -1107,7 +1145,7 @@ export default function Index() {
               />
             ) : (
               <OperationalIncidentsQueueList
-                items={homeIncidents}
+                items={visibleHomeIncidents}
                 onOpen={openIncident}
                 selectedKey={selectedIncidentKey}
                 showAnalyst={showIncidentAnalysts}
@@ -1169,19 +1207,26 @@ export default function Index() {
             emptyMessage="Nenhum evento operacional recente disponível."
             onRetry={() => void loadLists("manual")}
           >
+            <ConfigurableTableToolbar
+              search={eventSearch}
+              onSearchChange={setEventSearch}
+              searchPlaceholder="Buscar nos eventos carregados…"
+              searchLabel="Buscar na tabela de eventos recentes"
+              columns={homeEventColumns}
+              scopeHint="A busca considera os eventos carregados neste painel."
+            />
             <div className="max-h-[18rem] overflow-auto xl:max-h-[20rem]">
               <table className="w-full min-w-[36rem] table-fixed text-left text-sm">
                 <thead className="sticky top-0 z-[1] bg-card">
                   <tr className="border-b border-border/70 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="w-[18%] px-3 py-1.5 font-semibold">Cliente</th>
-                    <th className="w-[18%] px-3 py-1.5 font-semibold">Host</th>
-                    <th className="w-[32%] px-3 py-1.5 font-semibold">Problema</th>
-                    <th className="w-[16%] px-3 py-1.5 font-semibold">Severidade</th>
-                    <th className="w-[16%] px-3 py-1.5 font-semibold">Horário</th>
+                    {homeEventColumns.visibleColumns.map((column) => <th key={column.id} className="px-3 py-1.5 font-semibold">{column.label}</th>)}
                   </tr>
                 </thead>
                 <tbody>
-                  {recentEvents.map((item) => (
+                  {!visibleRecentEvents.length ? (
+                    <tr><td colSpan={homeEventColumns.visibleColumns.length} className="px-3 py-5 text-center text-xs text-muted-foreground">Nenhum evento corresponde à busca.</td></tr>
+                  ) : null}
+                  {visibleRecentEvents.map((item) => (
                     <tr
                       key={item.id}
                       className="cursor-pointer border-b border-border/50 last:border-b-0 hover:bg-muted/30"
@@ -1195,42 +1240,13 @@ export default function Index() {
                       tabIndex={0}
                       aria-label={`Abrir alerta de ${item.problem_name || "evento"}`}
                     >
-                      <td className="truncate px-3 py-1.5 text-[11px] font-semibold text-foreground">
-                        <span className="inline-flex max-w-full items-center gap-1.5">
-                          <ClientIdentity
-                            customer={{
-                              key: item.customer_key,
-                              name: item.customer_name,
-                            }}
-                            operationalScope={item.operational_scope}
-                            operationalScopeLabel={item.operational_scope_label}
-                            size="sm"
-                            className="shrink-0"
-                          />
-                          <TruncatedText className="text-[11px] font-semibold text-foreground">
-                            {operationalClientLabel({
-                              key: item.customer_key,
-                              name: item.customer_name,
-                              operational_scope: item.operational_scope,
-                              operational_scope_label: item.operational_scope_label,
-                            })}
-                          </TruncatedText>
-                        </span>
-                      </td>
-                      <td className="px-3 py-1.5 text-[11px] text-foreground/80">
-                        <TruncatedText>{canonicalHostName(item)}</TruncatedText>
-                      </td>
-                      <td className="px-3 py-1.5 text-[11px] text-muted-foreground">
-                        <TruncatedText>{item.problem_name || "—"}</TruncatedText>
-                      </td>
-                      <td className="px-3 py-1.5">
-                        {item.severity ? (
-                          <OneViewSeverityBadge severity={item.severity} showDot={false} className="h-5 px-1.5" />
-                        ) : "—"}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-1.5 text-[11px] text-muted-foreground">
-                        {formatClock(item.occurred_at)}
-                      </td>
+                      {homeEventColumns.visibleColumns.map((column) => {
+                        if (column.id === "client") return <td key={column.id} className="truncate px-3 py-1.5 text-[11px] font-semibold text-foreground"><span className="inline-flex max-w-full items-center gap-1.5"><ClientIdentity customer={{ key: item.customer_key, name: item.customer_name }} operationalScope={item.operational_scope} operationalScopeLabel={item.operational_scope_label} size="sm" className="shrink-0" /><TruncatedText className="text-[11px] font-semibold text-foreground">{operationalClientLabel({ key: item.customer_key, name: item.customer_name, operational_scope: item.operational_scope, operational_scope_label: item.operational_scope_label })}</TruncatedText></span></td>;
+                        if (column.id === "host") return <td key={column.id} className="px-3 py-1.5 text-[11px] text-foreground/80"><TruncatedText>{canonicalHostName(item)}</TruncatedText></td>;
+                        if (column.id === "problem") return <td key={column.id} className="px-3 py-1.5 text-[11px] text-muted-foreground"><TruncatedText>{item.problem_name || "—"}</TruncatedText></td>;
+                        if (column.id === "severity") return <td key={column.id} className="px-3 py-1.5">{item.severity ? <OneViewSeverityBadge severity={item.severity} showDot={false} className="h-5 px-1.5" /> : "—"}</td>;
+                        return <td key={column.id} className="whitespace-nowrap px-3 py-1.5 text-[11px] text-muted-foreground">{formatClock(item.occurred_at)}</td>;
+                      })}
                     </tr>
                   ))}
                 </tbody>

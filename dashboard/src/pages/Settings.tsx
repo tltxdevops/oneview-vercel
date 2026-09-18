@@ -47,6 +47,7 @@ import {
   resetOneViewDashboardPreferences,
   setOneViewDashboardPreferredTemplate,
   type OneViewDashboardPreferences,
+  type OneViewDashboardPage,
   type OneViewDashboardTemplate,
 } from "@/lib/oneview-dashboard-layout";
 import { Loader2 } from "lucide-react";
@@ -125,9 +126,9 @@ export default function SettingsPage() {
     setDashboardPreferences(readOneViewDashboardPreferences(actorId));
   }, [actorId]);
 
-  const setHomeDashboardTemplate = useCallback((template: OneViewDashboardTemplate) => {
-    setDashboardPreferences(setOneViewDashboardPreferredTemplate("home", template, actorId));
-    toast.success("Preferência da Home salva para este usuário neste navegador.");
+  const setDashboardTemplate = useCallback((page: OneViewDashboardPage, template: OneViewDashboardTemplate) => {
+    setDashboardPreferences(setOneViewDashboardPreferredTemplate(page, template, actorId));
+    toast.success("Preferência de painel salva para este usuário neste navegador.");
   }, [actorId]);
 
   const resetDashboardPreferences = useCallback(() => {
@@ -344,31 +345,34 @@ export default function SettingsPage() {
             </Button>
           )}
         >
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="ov-typography-small font-medium text-foreground">Home</span>
-              <Select
-                value={dashboardPreferences.templates.home}
-                onValueChange={(value) => setHomeDashboardTemplate(value as OneViewDashboardTemplate)}
-              >
-                <SelectTrigger className="ov-filter-control w-full" aria-label="Template padrão da Home">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ONEVIEW_DASHBOARD_TEMPLATES.filter((template) => template !== "wallboard").map((template) => (
-                    <SelectItem key={template} value={template}>
-                      {ONEVIEW_DASHBOARD_TEMPLATE_LABEL[template]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <div className="ov-panel px-3 py-2.5">
-              <p className="ov-typography-small font-medium text-foreground">Monitoramento</p>
-              <p className="mt-1 ov-typography-small text-muted-foreground">
-                Operacional fixo. A fila e os chamados permanecem no layout NOC estável para não comprometer interação ou leitura.
-              </p>
-            </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {([
+              ["home", "Home"],
+              ["monitoring", "Monitoramento"],
+              ["alerts", "Alertas"],
+              ["incidents", "Chamados"],
+              ["history", "Histórico"],
+              ["operators", "Links"],
+            ] as Array<[OneViewDashboardPage, string]>).map(([page, label]) => (
+              <label key={page} className="space-y-1.5">
+                <span className="ov-typography-small font-medium text-foreground">{label}</span>
+                <Select
+                  value={dashboardPreferences.templates[page]}
+                  onValueChange={(value) => setDashboardTemplate(page, value as OneViewDashboardTemplate)}
+                >
+                  <SelectTrigger className="ov-filter-control w-full" aria-label={`Template padrão de ${label}`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ONEVIEW_DASHBOARD_TEMPLATES.filter((template) => template !== "wallboard").map((template) => (
+                      <SelectItem key={template} value={template}>
+                        {ONEVIEW_DASHBOARD_TEMPLATE_LABEL[template]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            ))}
           </div>
         </SectionPanel>
 

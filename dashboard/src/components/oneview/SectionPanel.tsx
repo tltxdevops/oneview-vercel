@@ -34,12 +34,12 @@ export function SectionPanel({
       className={cn("ov-panel", className)}
     >
       {hasHeader ? (
-        <div className={cn("flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5", headerClassName)}>
+        <div className={cn("flex flex-col gap-2 border-b border-border/60 px-3 py-2.5 sm:flex-row sm:items-start sm:justify-between sm:gap-3", headerClassName)}>
           <div className="min-w-0">
             {title ? (typeof title === "string" ? <h2 className="ov-typography-section-title">{title}</h2> : title) : null}
             {description ? <p className="ov-typography-small text-muted-foreground">{description}</p> : null}
           </div>
-          {aside ? <div className="shrink-0">{aside}</div> : null}
+          {aside ? <div className="min-w-0 shrink sm:text-right">{aside}</div> : null}
         </div>
       ) : null}
       {toolbar ? (

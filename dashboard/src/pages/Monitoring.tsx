@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Eye, Loader2, RefreshCcw, ChevronsUpDown, Check } from "lucide-react";
-import { FullscreenFab } from "@/components/layout/FullscreenFab";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TeletexMark } from "@/components/layout/TeletexMark";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
@@ -16,6 +15,8 @@ import {
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
+import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { OperationalFilterGroup } from "@/components/oneview/OperationalFilterGroup";
@@ -38,6 +39,10 @@ import {
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { useAuthContext } from "@/context/AuthContext";
+import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
+import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
   AlertDetailResponse,
@@ -79,8 +84,10 @@ import {
   type LiveTransition,
 } from "@/lib/oneview-live-transition";
 import {
+  DEFAULT_MONITOR_WINDOW,
   MONITOR_ALERT_MODE,
   MONITOR_QUEUE_LIMIT,
+  MONITOR_QUEUE_ITEM_LIMIT_OPTIONS,
   MONITOR_QUEUE_SORT,
   MONITOR_QUEUE_SORT_OPTIONS,
   MONITOR_SEVERITY_CHIP_OPTIONS,
@@ -139,14 +146,60 @@ type SectionErrors = Partial<Record<"summary" | "queue" | "incidents", string | 
 
 /**
  * Grid da fila — Cliente | Host | Problema | Severidade | ACK | Início | Duração | Ação.
- * Validado mentalmente em 1366×768 e 1920×1080 (problema absorve o restante).
+ * Trilhas fixas + Problema flexível. Header e linhas compartilham a mesma largura
+ * (w-full num wrapper com min-width), para as colunas ficarem alinhadas.
  */
-const QUEUE_GRID =
-  "grid grid-cols-[minmax(7.5rem,10rem)_minmax(0,1fr)_6rem_3.75rem] items-center gap-x-2 md:grid-cols-[minmax(8rem,11rem)_minmax(7rem,10rem)_minmax(0,1fr)_6rem_3.75rem] xl:grid-cols-[minmax(9rem,12rem)_minmax(7rem,10rem)_minmax(0,1fr)_6rem_4.5rem_5.25rem_5rem_4rem] xl:gap-x-3 min-[1440px]:grid-cols-[minmax(8rem,11rem)_minmax(7rem,9rem)_minmax(0,1fr)_6rem_3.75rem] min-[1800px]:grid-cols-[minmax(9rem,12rem)_minmax(7rem,10rem)_minmax(0,1fr)_6rem_4.5rem_5.25rem_5rem_4rem]";
+const MONITOR_ALERT_COLUMNS = [
+  { id: "client", label: "Cliente" },
+  { id: "host", label: "Host" },
+  { id: "problem", label: "Problema", required: true },
+  { id: "severity", label: "Severidade" },
+  { id: "ack", label: "ACK" },
+  { id: "started", label: "Início" },
+  { id: "duration", label: "Duração" },
+  { id: "action", label: "Ação" },
+] as const;
+type MonitorAlertColumnId = typeof MONITOR_ALERT_COLUMNS[number]["id"];
 
-/** OV-P0-75 — coluna direita ~40% a partir de 1440px; abaixo empilha (1366). */
-const COMMAND_CENTER_GRID =
-  "grid min-h-0 flex-none gap-2 min-[1440px]:flex-1 min-[1440px]:grid-cols-[minmax(0,60fr)_minmax(0,40fr)]";
+const MONITOR_INCIDENT_COLUMNS = [
+  { id: "number", label: "Número", required: true },
+  { id: "client", label: "Cliente" },
+  { id: "updated", label: "Atualização" },
+  { id: "analyst", label: "Analista" },
+  { id: "priority", label: "Prioridade" },
+  { id: "state", label: "Estado" },
+] as const;
+type MonitorIncidentColumnId = typeof MONITOR_INCIDENT_COLUMNS[number]["id"];
+
+const MONITOR_ALERT_COLUMN_WIDTH: Record<MonitorAlertColumnId, string> = {
+  client: "11rem",
+  host: "12rem",
+  problem: "minmax(0,1fr)",
+  severity: "8rem",
+  ack: "7rem",
+  started: "6.5rem",
+  duration: "5.75rem",
+  action: "4rem",
+};
+const MONITOR_INCIDENT_COLUMN_WIDTH: Record<MonitorIncidentColumnId, string> = {
+  number: "7.5rem",
+  client: "minmax(0,1fr)",
+  updated: "6.5rem",
+  analyst: "8rem",
+  priority: "7rem",
+  state: "7.5rem",
+};
+
+const MONITOR_ALERT_TABLE_MIN_WIDTH = "64rem";
+const MONITOR_INCIDENT_TABLE_MIN_WIDTH = "40rem";
+
+function monitorColumnAlign(column: string) {
+  if (column === "started" || column === "duration" || column === "updated") return "justify-self-end text-right";
+  if (column === "action") return "justify-self-center text-center";
+  return "justify-self-start text-left";
+}
+
+const MONITORING_DASHBOARD_WIDGETS = dashboardWidgetsForPage("monitoring").filter((widget) => widget.id !== "health");
 
 function formatDurationSeconds(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
@@ -313,53 +366,45 @@ function Panel({
 function MonitorUnassignedRow({
   item,
   onOpen,
+  columns,
+  gridTemplate,
   selected = false,
   showAnalyst = false,
   liveTransition = null,
 }: {
   item: OneViewIncident;
   onOpen: (item: OneViewIncident) => void;
+  columns: readonly MonitorIncidentColumnId[];
+  gridTemplate: string;
   selected?: boolean;
   showAnalyst?: boolean;
   liveTransition?: LiveTransition | null;
 }) {
   const number = displayIncidentField(item.number);
   const analyst = displayIncidentField(item.assigned_to_display, item.assigned_to);
+  const cells: Record<MonitorIncidentColumnId, ReactNode> = {
+    number: <span key="number" className="block truncate text-[13px] font-semibold text-foreground" title={number}>{number}</span>,
+    client: <span key="client" className="block truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>{displayIncidentField(item.company_display, item.company)}</span>,
+    updated: <span key="updated" className="block truncate text-[11px] tabular-nums text-muted-foreground" title={formatUpdatedAgo(item.sys_updated_on)}>{formatUpdatedAgo(item.sys_updated_on)}</span>,
+    analyst: <span key="analyst" className="block truncate text-[10px] text-muted-foreground" title={analyst}>{showAnalyst ? analyst : "—"}</span>,
+    priority: <span key="priority"><Badge variant="secondary" className="h-5 max-w-full truncate px-1.5 text-[10px]">{displayIncidentField(item.priority_display, item.priority)}</Badge></span>,
+    state: <span key="state"><Badge variant="outline" className="h-5 max-w-full truncate px-1.5 text-[10px]">{displayIncidentField(item.state_display, item.state)}</Badge></span>,
+  };
   return (
     <button
       type="button"
       onClick={() => onOpen(item)}
       aria-current={selected ? "true" : undefined}
       className={cn(
-        "grid w-full grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] gap-x-2 gap-y-0.5 border-b border-border/50 py-1.5 text-left last:border-b-0 transition-colors hover:bg-muted/40",
+        "ov-monitoring-table-grid grid w-full min-h-10 items-center gap-x-3 border-b border-border/50 px-1 py-1.5 text-left last:border-b-0 transition-colors hover:bg-muted/40",
         selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
         liveTransition && "ov-live-transition",
       )}
+      style={{ gridTemplateColumns: gridTemplate }}
       aria-label={`Abrir chamado ${number}${liveTransition ? ` · ${liveTransition.label}` : ""}`}
     >
-      <p className="truncate text-[13px] font-semibold text-foreground" title={number}>{number}</p>
-      <p className="truncate text-right text-[11px] text-muted-foreground" title={formatUpdatedAgo(item.sys_updated_on)}>
-        {formatUpdatedAgo(item.sys_updated_on)}
-      </p>
-      <p className="truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>
-        {displayIncidentField(item.company_display, item.company)}
-      </p>
-      <div className="flex flex-wrap items-center justify-end gap-1">
-        {liveTransition ? (
-          <span className="ov-live-transition-badge" aria-live="polite">{liveTransition.label}</span>
-        ) : null}
-        {showAnalyst ? (
-          <span className="max-w-[8rem] truncate text-[10px] text-muted-foreground" title={analyst}>
-            {analyst}
-          </span>
-        ) : null}
-        <Badge variant="secondary" className="h-5 max-w-[7rem] truncate px-1.5 text-[10px]">
-          {displayIncidentField(item.priority_display, item.priority)}
-        </Badge>
-        <Badge variant="outline" className="h-5 max-w-[7rem] truncate px-1.5 text-[10px]">
-          {displayIncidentField(item.state_display, item.state)}
-        </Badge>
-      </div>
+      {columns.map((column) => <span key={column} className={cn("min-w-0 overflow-hidden", monitorColumnAlign(column))}>{cells[column]}</span>)}
+      {liveTransition ? <span className="ov-live-transition-badge sr-only" aria-live="polite">{liveTransition.label}</span> : null}
     </button>
   );
 }
@@ -372,18 +417,53 @@ function MonitorUnassignedRow({
 function MonitorAlertRow({
   alert,
   onOpen,
+  columns,
+  gridTemplate,
   selected = false,
   freshTone = null,
   liveTransition = null,
 }: {
   alert: OneViewAlert;
   onOpen: (alert: OneViewAlert) => void;
+  columns: readonly MonitorAlertColumnId[];
+  gridTemplate: string;
   selected?: boolean;
   freshTone?: FreshAttentionTone | null;
   liveTransition?: LiveTransition | null;
 }) {
   const acked = Boolean(alert.acknowledged_source);
   const fresh = Boolean(freshTone);
+  const clientLabel = operationalClientLabel({
+    key: alert.customer_key,
+    name: alert.customer_name,
+    source: alert.customer_source,
+    operational_scope: alert.operational_scope,
+    operational_scope_label: alert.operational_scope_label,
+  });
+  const clientTitle = normalizeOperationalScope(alert.operational_scope) === "unknown"
+    ? `${clientLabel} · ${CLASSIFICATION_PENDING_LABEL}`
+    : clientLabel;
+  const cells: Record<MonitorAlertColumnId, ReactNode> = {
+    client: (
+      <span key="client" className="flex min-w-0 items-center gap-2" title={clientTitle}>
+        <ClientIdentity customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source }} operationalScope={alert.operational_scope} operationalScopeLabel={alert.operational_scope_label} size="xs" className="shrink-0" />
+        <TruncatedText className="text-sm font-semibold text-foreground" title={clientTitle}>{clientLabel}</TruncatedText>
+      </span>
+    ),
+    host: <TruncatedText key="host" className="text-xs text-foreground/85">{canonicalHostName(alert)}</TruncatedText>,
+    problem: <TruncatedText key="problem" className="text-xs text-muted-foreground">{alert.problem_name}</TruncatedText>,
+    severity: (
+      <span key="severity" className="flex min-w-0 items-center gap-1 whitespace-nowrap">
+        <OneViewSeverityBadge severity={alert.severity} showDot={false} />
+        {liveTransition ? <span className="ov-live-transition-badge" aria-live="polite">{liveTransition.label}</span> : null}
+        {fresh ? <span className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider text-[hsl(var(--ov-color-danger))]"><span className="ov-fresh-dot" aria-hidden="true" />Novo</span> : null}
+      </span>
+    ),
+    ack: <span key="ack"><OneViewSemanticStatusBadge status={acked ? "monitoring-normalized" : "classification-pending"} label={acked ? "Com ACK" : "Sem ACK"} showDot={false} /></span>,
+    started: <span key="started" className="block truncate text-xs tabular-nums text-muted-foreground">{formatCompactFirstSeen(alert.first_seen_at || alert.started_at)}</span>,
+    duration: <span key="duration" className="block truncate text-xs tabular-nums text-muted-foreground">{formatDurationSeconds(alert.duration_seconds)}</span>,
+    action: <span key="action" className="inline-flex h-7 items-center justify-center gap-1 text-xs font-medium text-primary">Abrir<Eye className="h-3 w-3" aria-hidden="true" /></span>,
+  };
 
   return (
     <button
@@ -391,94 +471,31 @@ function MonitorAlertRow({
       onClick={() => onOpen(alert)}
       aria-current={selected ? "true" : undefined}
       className={cn(
-        QUEUE_GRID,
-        "min-h-12 w-full px-1 py-2 text-left transition-colors hover:bg-muted/50",
+        "ov-monitoring-table-grid grid w-full min-h-12 items-center gap-x-3 px-1 py-2 text-left transition-colors hover:bg-muted/50",
         selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
         freshTone === "disaster" && "ov-fresh-attention-disaster",
         freshTone === "high" && "ov-fresh-attention-high",
         liveTransition && "ov-live-transition",
       )}
+      style={{ gridTemplateColumns: gridTemplate }}
       aria-label={`Abrir alerta ${alert.problem_name || alert.id}${fresh ? " · Novo" : ""}${liveTransition ? ` · ${liveTransition.label}` : ""}`}
     >
-      <span className="flex min-w-0 items-center gap-2">
-        <ClientIdentity
-          customer={{
-            key: alert.customer_key,
-            name: alert.customer_name,
-            source: alert.customer_source,
-          }}
-          operationalScope={alert.operational_scope}
-          operationalScopeLabel={alert.operational_scope_label}
-          size="sm"
-          className="shrink-0"
-        />
-        <span className="min-w-0">
-          <TruncatedText className="text-sm font-semibold text-foreground">
-            {operationalClientLabel({
-              key: alert.customer_key,
-              name: alert.customer_name,
-              source: alert.customer_source,
-              operational_scope: alert.operational_scope,
-              operational_scope_label: alert.operational_scope_label,
-            })}
-          </TruncatedText>
-          {normalizeOperationalScope(alert.operational_scope) === "unknown" ? (
-            <TruncatedText className="text-[10px] text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</TruncatedText>
-          ) : null}
-        </span>
-      </span>
-
-      <TruncatedText className="hidden min-w-0 text-left text-xs text-foreground/85 md:block">{canonicalHostName(alert)}</TruncatedText>
-
-      <TruncatedText className="min-w-0 text-left text-xs text-muted-foreground">{alert.problem_name}</TruncatedText>
-
-      <span className="flex min-w-0 flex-wrap items-center gap-1 justify-self-start">
-        <OneViewSeverityBadge severity={alert.severity} showDot={false} />
-        {liveTransition ? (
-          <span className="ov-live-transition-badge" aria-live="polite">{liveTransition.label}</span>
-        ) : null}
-        {fresh ? (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider",
-              freshTone === "disaster"
-                ? "text-[hsl(var(--ov-color-danger))]"
-                : "text-[hsl(var(--ov-color-danger))]",
-            )}
-          >
-            <span className="ov-fresh-dot" aria-hidden="true" />
-            Novo
-          </span>
-        ) : null}
-      </span>
-
-      <span className="hidden justify-self-start xl:block min-[1440px]:hidden min-[1800px]:block">
-        <OneViewSemanticStatusBadge
-          status={acked ? "monitoring-normalized" : "classification-pending"}
-          label={acked ? "Com ACK" : "Sem ACK"}
-          showDot={false}
-        />
-      </span>
-
-      <span className="hidden justify-self-end text-right text-xs tabular-nums text-muted-foreground xl:block min-[1440px]:hidden min-[1800px]:block">
-        {formatCompactFirstSeen(alert.first_seen_at || alert.started_at)}
-      </span>
-
-      <span className="hidden justify-self-end text-right text-xs tabular-nums text-muted-foreground xl:block min-[1440px]:hidden min-[1800px]:block">
-        {formatDurationSeconds(alert.duration_seconds)}
-      </span>
-
-      <span className="justify-self-center text-center">
-        <span className="inline-flex h-7 items-center justify-center gap-1 text-xs font-medium text-primary">
-          Abrir
-          <Eye className="h-3 w-3" aria-hidden="true" />
-        </span>
-      </span>
+      {columns.map((column) => <span key={column} className={cn("min-w-0 overflow-hidden", monitorColumnAlign(column))}>{cells[column]}</span>)}
     </button>
   );
 }
 
 export default function MonitoringPage() {
+  const { user } = useAuthContext();
+  const dashboard = useOneViewDashboardLayout({
+    page: "monitoring",
+    actorId: user?.id || user?.email,
+    widgets: MONITORING_DASHBOARD_WIDGETS,
+  });
+  const monitorAlertColumns = useOneViewTableColumns({ tableId: "monitor-alerts", actorId: user?.id || user?.email, definitions: MONITOR_ALERT_COLUMNS });
+  const monitorIncidentColumns = useOneViewTableColumns({ tableId: "monitor-incidents", actorId: user?.id || user?.email, definitions: MONITOR_INCIDENT_COLUMNS });
+  const monitoringQueueItemLimit = dashboard.layout.widgets.find((item) => item.id === "monitoring-queue")?.itemLimit ?? MONITOR_QUEUE_LIMIT;
+  const monitoringIncidentItemLimit = dashboard.layout.widgets.find((item) => item.id === "incidents")?.itemLimit ?? MONITOR_UNASSIGNED_LIMIT;
   const [searchParams, setSearchParams] = useSearchParams();
   const tvMode = searchParams.get("tv") === "1";
   const homeWindow = parseMonitorWindow(searchParams.get("window"));
@@ -504,6 +521,8 @@ export default function MonitoringPage() {
   );
 
   const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(null);
+  const [alertSearch, setAlertSearch] = useState("");
+  const [incidentSearch, setIncidentSearch] = useState("");
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(() => peekOneViewFacets());
   const [queueAlerts, setQueueAlerts] = useState<OneViewAlert[]>([]);
   const [queueTotal, setQueueTotal] = useState(0);
@@ -529,7 +548,6 @@ export default function MonitoringPage() {
   const [relatedAlertChecked, setRelatedAlertChecked] = useState(false);
   const detailRequest = useRef<AbortController | null>(null);
   const relatedAlertRequest = useRef<AbortController | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [navOpen, setNavOpen] = useState(() => {
     try {
       const raw = sessionStorage.getItem("oneview-monitor-sidebar-open");
@@ -552,8 +570,6 @@ export default function MonitoringPage() {
   });
 
   const inFlight = useRef<Promise<void> | null>(null);
-  const openBeforeFullscreen = useRef(true);
-  const wasFullscreen = useRef(false);
   const listsAbort = useRef<AbortController | null>(null);
   const hasDataRef = useRef(false);
   const freshKnownIdsRef = useRef<Set<string>>(new Set());
@@ -728,6 +744,7 @@ export default function MonitoringPage() {
       key: severity,
       label: formatOneViewSeverityLabel(severity),
       value: formatNullableCount(value),
+      tone: severity === "information" ? "info" as const : severity === "warning" || severity === "average" ? "warning" as const : "danger" as const,
       description: `${monitorWindowActiveLabel(homeWindow)} · ${formatOneViewSeverityLabel(severity)}`,
       unknown: value == null && !severityStripLoading,
       loading: severityStripLoading,
@@ -785,7 +802,7 @@ export default function MonitoringPage() {
           severity: severitySelection,
           customers,
           datasources,
-          limit: MONITOR_QUEUE_LIMIT,
+          limit: monitoringQueueItemLimit,
           windowMs,
           sort: queueSort,
           signal: controller.signal,
@@ -796,7 +813,7 @@ export default function MonitoringPage() {
           assignedTo: incidentsAssignedTo,
           windowMs,
           now,
-          limit: MONITOR_UNASSIGNED_LIMIT,
+          limit: monitoringIncidentItemLimit,
           signal: controller.signal,
         }),
       ];
@@ -982,7 +999,7 @@ export default function MonitoringPage() {
 
     inFlight.current = request;
     return request;
-  }, [alertMode, incidentsAssignedTo, incidentsMode, queueSort, selectedCustomerKeys, selectedDatasources, setSectionError, severitySelection, windowMs]);
+  }, [alertMode, incidentsAssignedTo, incidentsMode, monitoringIncidentItemLimit, monitoringQueueItemLimit, queueSort, selectedCustomerKeys, selectedDatasources, setSectionError, severitySelection, windowMs]);
 
   useEffect(() => {
     void refreshAll();
@@ -1004,7 +1021,7 @@ export default function MonitoringPage() {
     };
   }, [refreshAll]);
 
-  const displayQueueAlerts = mergeLiveTransitionQueue({
+  const mergedQueueAlerts = mergeLiveTransitionQueue({
     serverItems: queueAlerts,
     pinnedById: alertPinnedRef.current,
     transitions: alertTransitions,
@@ -1014,8 +1031,8 @@ export default function MonitoringPage() {
       hideResolved: true,
       hideAssigned: false,
     },
-  });
-  const displayUnassignedIncidents = mergeLiveTransitionQueue({
+  }).slice(0, monitoringQueueItemLimit);
+  const mergedUnassignedIncidents = mergeLiveTransitionQueue({
     serverItems: unassignedIncidents,
     pinnedById: incidentPinnedRef.current,
     transitions: incidentTransitions,
@@ -1026,7 +1043,19 @@ export default function MonitoringPage() {
       hideAssigned: incidentsMode === INCIDENTS_QUEUE_MODE.unassigned,
     },
     idOf: (item) => String(item.sys_id || item.id || ""),
-  });
+  }).slice(0, monitoringIncidentItemLimit);
+  const normalizedAlertSearch = alertSearch.trim().toLocaleLowerCase("pt-BR");
+  const displayQueueAlerts = mergedQueueAlerts.filter((alert) => !normalizedAlertSearch || [
+    operationalClientLabel(alert), canonicalHostName(alert), alert.problem_name, alert.severity,
+  ].some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(normalizedAlertSearch)));
+  const normalizedIncidentSearch = incidentSearch.trim().toLocaleLowerCase("pt-BR");
+  const displayUnassignedIncidents = mergedUnassignedIncidents.filter((item) => !normalizedIncidentSearch || [
+    item.number, item.company_display, item.company, item.assigned_to_display, item.assigned_to, item.priority_display, item.state_display,
+  ].some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(normalizedIncidentSearch)));
+  const monitorAlertColumnIds = monitorAlertColumns.visibleColumns.map((column) => column.id);
+  const monitorAlertGrid = monitorAlertColumnIds.map((column) => MONITOR_ALERT_COLUMN_WIDTH[column]).join(" ");
+  const monitorIncidentColumnIds = monitorIncidentColumns.visibleColumns.map((column) => column.id);
+  const monitorIncidentGrid = monitorIncidentColumnIds.map((column) => MONITOR_INCIDENT_COLUMN_WIDTH[column]).join(" ");
 
   useEffect(() => {
     const next = reconcileFreshAttention({
@@ -1071,25 +1100,6 @@ export default function MonitoringPage() {
     }, Math.min(250, LIVE_TRANSITION_DURATION_MS));
     return () => window.clearInterval(timer);
   }, [alertTransitions, incidentTransitions]);
-
-  useEffect(() => {
-    const onFullscreenChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
-    };
-    document.addEventListener("fullscreenchange", onFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, []);
-
-  useEffect(() => {
-    if (isFullscreen === wasFullscreen.current) return;
-    if (isFullscreen) {
-      openBeforeFullscreen.current = navOpen;
-      setNavOpen(false);
-    } else {
-      setNavOpen(openBeforeFullscreen.current);
-    }
-    wasFullscreen.current = isFullscreen;
-  }, [isFullscreen, navOpen]);
 
   const loadSelectedAlert = useCallback(async (alertId: string) => {
     detailRequest.current?.abort();
@@ -1309,16 +1319,17 @@ export default function MonitoringPage() {
       className="noc-monitor flex h-[100dvh] w-[100vw] max-h-[100dvh] max-w-[100vw] overflow-hidden bg-background text-foreground antialiased"
       data-tv={tvMode ? "1" : "0"}
     >
-      <FullscreenFab />
-      <Sidebar
-        monitoringCollapse
-        open={navOpen}
-        onOpenChange={setNavOpen}
-      />
+      {!dashboard.isWallboard ? (
+        <Sidebar
+          monitoringCollapse
+          open={navOpen}
+          onOpenChange={setNavOpen}
+        />
+      ) : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-[margin] duration-200",
-          navOpen ? "ml-14" : "ml-0",
+          !dashboard.isWallboard && navOpen ? "ml-14" : "ml-0",
         )}
       >
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/60 bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -1340,7 +1351,7 @@ export default function MonitoringPage() {
 
       <div className="mx-auto flex h-0 w-full max-w-[1920px] min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2 sm:p-3 min-[1440px]:overflow-hidden">
         {/* OV-P0-75: >=1440 fila ~60% | chamados ~40%; em 1366 empilha abaixo */}
-        <section aria-label="Filtros operacionais" className="ov-panel shrink-0 p-3">
+        <section aria-label="Filtros operacionais" className="hidden">
           <div className="flex flex-wrap items-center gap-2">
             <OperationalFilterGroup label="Cliente">
               <ClientFilterCombobox
@@ -1421,12 +1432,15 @@ export default function MonitoringPage() {
           </div>
         </section>
 
-        <div className="shrink-0 space-y-1">
-          <CompactMetricStrip aria-label="Severidades ativas na janela" items={severityStripItems} />
-          {sectionErrors.summary ? <p className="ov-typography-small text-[hsl(var(--ov-color-warning))]">{sectionErrors.summary}</p> : null}
-        </div>
+        <ConfigurableDashboard controller={dashboard} className="min-h-0 flex-1">
+          <ConfigurableDashboardWidget id="operational-summary">
+            <div className="shrink-0 space-y-1">
+              <CompactMetricStrip aria-label="Severidades ativas na janela" items={severityStripItems} />
+              {sectionErrors.summary ? <p className="ov-typography-small text-[hsl(var(--ov-color-warning))]">{sectionErrors.summary}</p> : null}
+            </div>
+          </ConfigurableDashboardWidget>
 
-        <div className={COMMAND_CENTER_GRID}>
+          <ConfigurableDashboardWidget id="monitoring-queue">
           <Panel
             title={<SectionAccentTitle>Fila operacional</SectionAccentTitle>}
             description={queuePanelDescription}
@@ -1434,7 +1448,7 @@ export default function MonitoringPage() {
             onRetry={() => void refreshAll()}
             overflow={queueOverflowLabel(queueTotal, queueAlerts.length)}
             empty={queueEmpty}
-            className="min-h-[24rem] min-[1440px]:min-h-0 min-[1440px]:flex-1"
+            className="h-full min-h-[24rem] min-[1440px]:min-h-0 min-[1440px]:flex-1"
             aside={(
               <div className="inline-flex items-center gap-2">
                 <span className="ov-type-caption font-semibold tabular-nums text-muted-foreground">{formatNullableCount(queueTotal)} na fila</span>
@@ -1443,6 +1457,48 @@ export default function MonitoringPage() {
             )}
           >
             <div className="flex h-full min-h-0 flex-col">
+              <ConfigurableTableToolbar
+                search={alertSearch}
+                onSearchChange={setAlertSearch}
+                searchPlaceholder="Buscar nos alertas carregados…"
+                searchLabel="Buscar na fila operacional"
+              columns={monitorAlertColumns}
+              scopeHint="A busca considera os alertas carregados nesta fila."
+              className="-mx-4 -mt-2 mb-2"
+              activeFilterCount={selectedCustomerKeys.length + selectedDatasources.length + (homeWindow === DEFAULT_MONITOR_WINDOW ? 0 : 1) + (alertMode === MONITOR_ALERT_MODE.prioritary ? 0 : 1) + (queueSort === MONITOR_QUEUE_SORT.recent ? 0 : 1)}
+              onClearFilters={() => { setSelectedCustomerKeys([]); setSelectedDatasources([]); setMonitorWindow(DEFAULT_MONITOR_WINDOW); setAlertMode(MONITOR_ALERT_MODE.prioritary); setQueueSort(MONITOR_QUEUE_SORT.recent); }}
+              trailing={(
+                <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  Mostrar
+                  <Select
+                    value={String(monitoringQueueItemLimit)}
+                    onValueChange={(value) => {
+                      const next = Number.parseInt(value, 10);
+                      if (Number.isFinite(next)) dashboard.updateWidget("monitoring-queue", { itemLimit: next });
+                    }}
+                  >
+                    <SelectTrigger className="h-9 w-[4.75rem] px-2 text-xs" aria-label="Quantidade de alertas na fila">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                      {(dashboard.widgets.find((widget) => widget.id === "monitoring-queue")?.itemLimitOptions ?? MONITOR_QUEUE_ITEM_LIMIT_OPTIONS).map((limit) => (
+                        <SelectItem key={limit} value={String(limit)}>{limit}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              )}
+              filters={(
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerCards} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={toggleCustomer} triggerClassName="h-9 w-full" countNoun={customerFilterCountNoun(alertMode === MONITOR_ALERT_MODE.prioritary ? "prioritary" : "filter")} /></div>
+                  <div className="space-y-1 text-xs text-muted-foreground">Fonte<ZabbixSourceFilter value={selectedDatasources[0] || "all"} options={facets?.datasources ?? []} onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])} triggerClassName="h-9 w-full" /></div>
+                  <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={homeWindow} onValueChange={(value) => setMonitorWindow(parseMonitorWindow(value))}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{MONITOR_WINDOW_OPTIONS.map((preset) => <SelectItem key={preset} value={preset}>{preset}</SelectItem>)}</SelectContent></Select></label>
+                  <label className="space-y-1 text-xs text-muted-foreground">Fila<Select value={alertMode} onValueChange={(value) => setAlertMode(parseMonitorAlertMode(value))}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value={MONITOR_ALERT_MODE.prioritary}>Prioritários</SelectItem><SelectItem value={MONITOR_ALERT_MODE.all}>Todos</SelectItem></SelectContent></Select></label>
+                  <label className="space-y-1 text-xs text-muted-foreground">Ordenação<Select value={queueSort} onValueChange={(value) => setQueueSort(parseMonitorQueueSort(value))}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{MONITOR_QUEUE_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label>
+                  <div className="space-y-1 text-xs text-muted-foreground sm:col-span-2 lg:col-span-3"><span>Severidades</span><div className="flex flex-wrap gap-1.5">{MONITOR_SEVERITY_CHIP_OPTIONS.map((option) => <Button key={option.value} type="button" variant={activeSeverities.includes(option.value) ? "default" : "outline"} size="sm" className="h-8" onClick={() => toggleSeverityChip(option.value)}>{option.label}</Button>)}</div></div>
+                </div>
+              )}
+            />
               {!hasLoaded && !queueAlerts.length ? (
                 <p className="py-2 text-center text-sm text-muted-foreground">Carregando…</p>
               ) : !queueAlerts.length ? (
@@ -1452,41 +1508,48 @@ export default function MonitoringPage() {
                     : "Nenhum alerta ativo na janela."}
                 </p>
               ) : (
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <div
-                    className={cn(
-                      QUEUE_GRID,
-                      "shrink-0 border-b border-border/70 px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground",
-                    )}
-                    aria-hidden="true"
-                  >
-                    <span className="text-left">Cliente</span>
-                    <span className="hidden text-left md:block">Host</span>
-                    <span className="text-left">Problema</span>
-                    <span className="text-left">Severidade</span>
-                    <span className="hidden text-left xl:block min-[1440px]:hidden min-[1800px]:block">ACK</span>
-                    <span className="hidden text-right xl:block min-[1440px]:hidden min-[1800px]:block">Início</span>
-                    <span className="hidden text-right xl:block min-[1440px]:hidden min-[1800px]:block">Duração</span>
-                    <span className="text-center">Ação</span>
-                  </div>
-                  <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
+                <>
+                <div className="min-h-0 flex-1 overflow-auto overscroll-contain max-h-[calc(100dvh-20rem)]">
+                  <div className="ov-monitoring-table" style={{ minWidth: MONITOR_ALERT_TABLE_MIN_WIDTH }}>
+                    <div
+                      className="ov-monitoring-table-grid sticky top-0 z-10 grid shrink-0 items-center gap-x-3 border-b border-border/70 bg-background px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                      style={{ gridTemplateColumns: monitorAlertGrid }}
+                      aria-hidden="true"
+                    >
+                      {monitorAlertColumns.visibleColumns.map((column) => <span key={column.id} className={cn("min-w-0 truncate", monitorColumnAlign(column.id))}>{column.label}</span>)}
+                    </div>
+                    <ul className="divide-y divide-border">
                     {displayQueueAlerts.map((alert) => (
                       <li key={alert.id}>
                         <MonitorAlertRow
                           alert={alert}
                           onOpen={openAlert}
+                          columns={monitorAlertColumnIds}
+                          gridTemplate={monitorAlertGrid}
                           selected={selectedAlertId === alert.id}
                           freshTone={freshAttentionIds.has(alert.id) ? freshAttentionTone(alert.severity) : null}
                           liveTransition={alertTransitions.get(alert.id) ?? null}
                         />
                       </li>
                     ))}
-                  </ul>
+                    </ul>
+                  </div>
                 </div>
+                {queueTotal > displayQueueAlerts.length ? (
+                  <div className="mt-2 flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
+                    <p className="text-[11px] font-medium tabular-nums text-muted-foreground">
+                      Mostrando {displayQueueAlerts.length.toLocaleString("pt-BR")} de {formatNullableCount(queueTotal)}
+                    </p>
+                    <OperationalCta to={alertsHref}>Ver todos em Alertas</OperationalCta>
+                  </div>
+                ) : null}
+                </>
               )}
             </div>
           </Panel>
+          </ConfigurableDashboardWidget>
 
+          <ConfigurableDashboardWidget id="incidents">
           <Panel
             title={<SectionAccentTitle>Chamados</SectionAccentTitle>}
             description={unassignedPanelTitle}
@@ -1498,16 +1561,18 @@ export default function MonitoringPage() {
             aside={(
               <OperationalCta to={chamadosHref}>Ver todos em Chamados</OperationalCta>
             )}
-            toolbar={(
-              <OperationalIncidentsToolbar
-                mode={incidentsMode}
-                onModeChange={setIncidentsMode}
-                assignedTo={incidentsAssignedTo}
-                onAssignedToChange={setIncidentsAssignedTo}
-                analysts={incidentAssignees}
-              />
-            )}
           >
+            <ConfigurableTableToolbar
+              search={incidentSearch}
+              onSearchChange={setIncidentSearch}
+              searchPlaceholder="Buscar nos chamados carregados…"
+              searchLabel="Buscar na fila de chamados"
+              columns={monitorIncidentColumns}
+              activeFilterCount={(incidentsMode === INCIDENTS_QUEUE_MODE.unassigned ? 0 : 1) + incidentsAssignedTo.length}
+              scopeHint="A busca considera os chamados carregados nesta fila."
+              className="-mx-4 -mt-2 mb-2"
+              filters={<OperationalIncidentsToolbar mode={incidentsMode} onModeChange={setIncidentsMode} assignedTo={incidentsAssignedTo} onAssignedToChange={setIncidentsAssignedTo} analysts={incidentAssignees} />}
+            />
             {!hasLoaded && !unassignedIncidents.length ? (
               <p className="py-2 text-center text-sm text-muted-foreground">Carregando…</p>
             ) : !unassignedIncidents.length ? (
@@ -1519,32 +1584,35 @@ export default function MonitoringPage() {
                     : "Nenhum chamado monitoring sem responsável."}
               </p>
             ) : (
-              <div className="flex h-full min-h-0 flex-col">
-                <div
-                  className="grid shrink-0 grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] gap-x-2 border-b border-border/70 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
-                  aria-hidden="true"
-                >
-                  <span>Número · Cliente</span>
-                  <span className="text-right">
-                    {showIncidentAnalysts ? "Atualização · Analista · Prioridade · Estado" : "Atualização · Prioridade · Estado"}
-                  </span>
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 flex-1 overflow-auto">
+                <div className="ov-monitoring-table" style={{ minWidth: MONITOR_INCIDENT_TABLE_MIN_WIDTH }}>
+                  <div
+                    className="ov-monitoring-table-grid sticky top-0 z-10 grid shrink-0 items-center gap-x-3 border-b border-border/70 bg-background pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                    style={{ gridTemplateColumns: monitorIncidentGrid }}
+                    aria-hidden="true"
+                  >
+                    {monitorIncidentColumns.visibleColumns.map((column) => <span key={column.id} className={cn("min-w-0 truncate", monitorColumnAlign(column.id))}>{column.label}</span>)}
+                  </div>
+                  <div>
                   {displayUnassignedIncidents.map((item) => (
                     <MonitorUnassignedRow
                       key={item.sys_id || item.number || String(item.sys_updated_on)}
                       item={item}
                       onOpen={openIncident}
+                      columns={monitorIncidentColumnIds}
+                      gridTemplate={monitorIncidentGrid}
                       selected={selectedIncidentKey === incidentKey(item)}
                       showAnalyst={showIncidentAnalysts}
                       liveTransition={incidentTransitions.get(String(item.sys_id || item.id || "")) ?? null}
                     />
                   ))}
+                  </div>
                 </div>
               </div>
             )}
           </Panel>
-        </div>
+          </ConfigurableDashboardWidget>
+        </ConfigurableDashboard>
       </div>
       </div>
 

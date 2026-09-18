@@ -1,6 +1,8 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
+import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { IncidentActions } from "@/components/oneview/IncidentActions";
@@ -12,7 +14,6 @@ import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentStatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -24,18 +25,30 @@ import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL, OV_TABLE_HEAD } from "@/lib/oneview-operational-ui";
+import { useAuthContext } from "@/context/AuthContext";
+import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
+import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 
 const ALL = "all";
 const REFRESH_MS = 10_000;
 const RECENT_EPISODE_PREVIEW = 5;
-const COLUMN_STORAGE_KEY = "oneview.operadoras.columns.v1";
 const DETAIL_CACHE_TTL_MS = 60_000;
 let drawerOpenedAt = 0;
-const REQUIRED_COLUMNS = ["link_local", "situation", "latest_alert", "current_incident", "follow_up"] as const;
-const OPTIONAL_COLUMNS = [
-  ["link_type", "Tipo do link"], ["carrier", "Operadora"], ["datasource", "Fonte Zabbix"],
-  ["severity", "Severidade"], ["classification", "Pendência de classificação"],
+const LINK_TABLE_COLUMNS = [
+  { id: "link_local", label: "Link / local", required: true },
+  { id: "situation", label: "Situação" },
+  { id: "latest_alert", label: "Último alerta" },
+  { id: "current_incident", label: "Chamado atual" },
+  { id: "follow_up", label: "Acompanhamento" },
+  { id: "link_type", label: "Tipo do link", defaultVisible: false },
+  { id: "carrier", label: "Operadora", defaultVisible: false },
+  { id: "datasource", label: "Fonte Zabbix", defaultVisible: false },
+  { id: "severity", label: "Severidade", defaultVisible: false },
+  { id: "classification", label: "Classificação", defaultVisible: false },
 ] as const;
+type LinkTableColumnId = typeof LINK_TABLE_COLUMNS[number]["id"];
+const OPERATOR_DASHBOARD_WIDGETS = dashboardWidgetsForPage("operators").filter((widget) => widget.id !== "operators-filters");
 type QueueTab = "open" | "normalized" | "all";
 type OperationalSituation = "all" | "failure_without_incident" | "failure_with_open_incident" | "failure_with_closed_incident" | "normalized_with_open_incident" | "normalized_without_open_incident";
 type ActivityPeriod = "all" | "1h" | "4h" | "24h" | "7d";
@@ -45,17 +58,6 @@ type ReminderView = "scheduled" | "sent" | "skipped" | "failed" | "cancelled" | 
 type ReminderPeriod = "all" | "30m" | "1h" | "4h" | "8h" | "24h" | "7d" | "custom";
 type ReminderIncidentFilter = "all" | "with" | "without";
 type ReminderSort = "default" | "recent" | "oldest";
-type OptionalColumn = typeof OPTIONAL_COLUMNS[number][0];
-type VisibleColumns = Record<OptionalColumn, boolean>;
-
-function storedColumns(): VisibleColumns {
-  const fallback: VisibleColumns = { link_type: false, carrier: false, datasource: false, severity: false, classification: false };
-  if (typeof window === "undefined") return fallback;
-  try {
-    const stored = JSON.parse(window.localStorage.getItem(COLUMN_STORAGE_KEY) || "{}") as Partial<VisibleColumns>;
-    return { ...fallback, ...Object.fromEntries(OPTIONAL_COLUMNS.map(([key]) => [key, Boolean(stored[key])])) };
-  } catch { return fallback; }
-}
 
 function isAbortError(cause: unknown) {
   if (!(cause instanceof Error)) return false;
@@ -238,10 +240,6 @@ function RecurrencePanel({ link }: { link: CanonicalLink | CanonicalLinkDetail }
   );
 }
 
-function ColumnsChooser({ columns, onChange }: { columns: VisibleColumns; onChange: (column: OptionalColumn, checked: boolean) => void }) {
-  return <Popover><PopoverTrigger asChild><Button type="button" size="sm" variant="outline">Colunas</Button></PopoverTrigger><PopoverContent align="end" className="w-64 space-y-3 p-3"><p className="text-sm font-medium">Colunas da fila</p><div className="space-y-2">{REQUIRED_COLUMNS.map((column) => <label key={column} className="flex items-center gap-2 text-sm"><Checkbox checked disabled aria-label={column} /><span>{({ link_local: "Link / Local", situation: "Situação", latest_alert: "Último alerta", current_incident: "Chamado atual", follow_up: "Acompanhamento" })[column]}</span></label>)}{OPTIONAL_COLUMNS.map(([column, label]) => <label key={column} className="flex cursor-pointer items-center gap-2 text-sm"><Checkbox checked={columns[column]} onCheckedChange={(checked) => onChange(column, checked === true)} /><span>{label}</span></label>)}</div></PopoverContent></Popover>;
-}
-
 function Filter({
   label,
   value,
@@ -267,6 +265,211 @@ function Filter({
         </SelectContent>
       </Select>
     </div>
+  );
+}
+
+function ColumnHeaderFilter({
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger className={cn(OV_FILTER_CONTROL, "mt-1 h-7 w-full min-w-0 text-[11px]")} aria-label={ariaLabel}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((option) => (
+          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+const OPERATIONAL_SITUATION_FILTER_OPTIONS = [
+  { value: ALL, label: "Todas" },
+  { value: "failure_without_incident", label: "Falha sem chamado" },
+  { value: "failure_with_open_incident", label: "Falha com chamado aberto" },
+  { value: "failure_with_closed_incident", label: "Falha com chamado encerrado" },
+  { value: "normalized_with_open_incident", label: "Normalizado com chamado aberto" },
+  { value: "normalized_without_open_incident", label: "Normalizado sem chamado" },
+] as const;
+
+const CHAMADO_FILTER_OPTIONS = [
+  { value: ALL, label: "Todos" },
+  { value: "no", label: "Sem chamado" },
+  { value: "yes", label: "Com chamado" },
+];
+
+const INCIDENT_STATE_FILTER_OPTIONS = [
+  { value: ALL, label: "Todos" },
+  { value: "1", label: "Novo" },
+  { value: "2", label: "Em andamento" },
+  { value: "3", label: "Em espera" },
+  { value: "6", label: "Resolvido" },
+  { value: "7", label: "Fechado" },
+  { value: "8", label: "Cancelado" },
+];
+
+const ACTIVITY_PERIOD_FILTER_OPTIONS = [
+  { value: ALL, label: "Todos" },
+  { value: "1h", label: "1h" },
+  { value: "4h", label: "4h" },
+  { value: "24h", label: "24h" },
+  { value: "7d", label: "7d" },
+];
+
+const SEVERITY_FILTER_OPTIONS = [
+  { value: ALL, label: "Todas" },
+  { value: "disaster", label: "Disaster" },
+  { value: "high", label: "High" },
+  { value: "average", label: "Average" },
+  { value: "warning", label: "Warning" },
+];
+
+function LinkTableColumnHeader({
+  column,
+  facets,
+  operationalSituation,
+  activityPeriod,
+  chamadoChip,
+  incidentState,
+  datasource,
+  severity,
+  classification,
+  carrier,
+  onOperationalSituationChange,
+  onActivityPeriodChange,
+  onChamadoChange,
+  onIncidentStateChange,
+  onDatasourceChange,
+  onSeverityChange,
+  onClassificationChange,
+  onCarrierChange,
+}: {
+  column: { id: LinkTableColumnId; label: string };
+  facets: CanonicalLinksResponse["facets"] | undefined;
+  operationalSituation: OperationalSituation;
+  activityPeriod: ActivityPeriod;
+  chamadoChip: string;
+  incidentState: string;
+  datasource: string;
+  severity: string;
+  classification: string;
+  carrier: string;
+  onOperationalSituationChange: (value: OperationalSituation) => void;
+  onActivityPeriodChange: (value: ActivityPeriod) => void;
+  onChamadoChange: (value: string) => void;
+  onIncidentStateChange: (value: string) => void;
+  onDatasourceChange: (value: string) => void;
+  onSeverityChange: (value: string) => void;
+  onClassificationChange: (value: string) => void;
+  onCarrierChange: (value: string) => void;
+}) {
+  const filter = (() => {
+    if (column.id === "situation") {
+      return (
+        <ColumnHeaderFilter
+          ariaLabel="Filtrar por situação"
+          value={operationalSituation}
+          options={[...OPERATIONAL_SITUATION_FILTER_OPTIONS]}
+          onChange={(value) => onOperationalSituationChange(value as OperationalSituation)}
+        />
+      );
+    }
+    if (column.id === "latest_alert") {
+      return (
+        <ColumnHeaderFilter
+          ariaLabel="Filtrar por período de alerta"
+          value={activityPeriod}
+          options={ACTIVITY_PERIOD_FILTER_OPTIONS}
+          onChange={(value) => onActivityPeriodChange(value as ActivityPeriod)}
+        />
+      );
+    }
+    if (column.id === "current_incident") {
+      return (
+        <div className="space-y-1">
+          <ColumnHeaderFilter
+            ariaLabel="Filtrar por chamado"
+            value={chamadoChip}
+            options={CHAMADO_FILTER_OPTIONS}
+            onChange={onChamadoChange}
+          />
+          {chamadoChip === "yes" ? (
+            <ColumnHeaderFilter
+              ariaLabel="Filtrar por status do chamado"
+              value={incidentState}
+              options={INCIDENT_STATE_FILTER_OPTIONS}
+              onChange={onIncidentStateChange}
+            />
+          ) : null}
+        </div>
+      );
+    }
+    if (column.id === "datasource") {
+      return (
+        <ColumnHeaderFilter
+          ariaLabel="Filtrar por fonte Zabbix"
+          value={datasource}
+          options={optionList(facets?.datasources).map((item) => ({
+            ...item,
+            label: item.value === ALL ? item.label : zabbixSourceDisplayName(item.label),
+          }))}
+          onChange={onDatasourceChange}
+        />
+      );
+    }
+    if (column.id === "severity") {
+      return (
+        <ColumnHeaderFilter
+          ariaLabel="Filtrar por severidade"
+          value={severity}
+          options={SEVERITY_FILTER_OPTIONS}
+          onChange={onSeverityChange}
+        />
+      );
+    }
+    if (column.id === "classification") {
+      return (
+        <ColumnHeaderFilter
+          ariaLabel="Filtrar por classificação"
+          value={classification}
+          options={optionList(facets?.classifications, "Todas")}
+          onChange={onClassificationChange}
+        />
+      );
+    }
+    if (column.id === "carrier") {
+      return (
+        <ColumnHeaderFilter
+          ariaLabel="Filtrar por operadora"
+          value={carrier}
+          options={[
+            { value: ALL, label: "Todas" },
+            { value: "unknown", label: "Não informada na origem" },
+          ]}
+          onChange={onCarrierChange}
+        />
+      );
+    }
+    return null;
+  })();
+
+  return (
+    <TableHead key={column.id} className={cn(OV_TABLE_HEAD, "align-top")}>
+      <div className="space-y-0.5">
+        <span className="block">{column.label}</span>
+        {filter}
+      </div>
+    </TableHead>
   );
 }
 
@@ -327,6 +530,14 @@ function MobileLinkCard({ item, reminder, onOpen }: { item: CanonicalLink; remin
 }
 
 export default function OperadorasPage() {
+  const { user } = useAuthContext();
+  const dashboard = useOneViewDashboardLayout({
+    page: "operators",
+    actorId: user?.id || user?.email,
+    widgets: OPERATOR_DASHBOARD_WIDGETS,
+  });
+  const linkTableColumns = useOneViewTableColumns({ tableId: "operator-links", actorId: user?.id || user?.email, definitions: LINK_TABLE_COLUMNS });
+  const operatorQueuePageSize = dashboard.layout.widgets.find((item) => item.id === "operators-queue")?.itemLimit ?? 50;
   const [payload, setPayload] = useState<CanonicalLinksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -360,9 +571,12 @@ export default function OperadorasPage() {
   const [detail, setDetail] = useState<CanonicalLinkDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [columns, setColumns] = useState<VisibleColumns>(storedColumns);
   const request = useRef<AbortController | null>(null);
   const requestDone = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    setPage(1);
+  }, [operatorQueuePageSize]);
   const requestVersion = useRef(0);
   const hasPayload = useRef(false);
   const selectedId = useRef<string | null>(null);
@@ -406,7 +620,7 @@ export default function OperadorasPage() {
         activity_period: activityPeriod === ALL ? undefined : activityPeriod,
         search,
         page,
-        page_size: 50,
+        page_size: operatorQueuePageSize,
         signal: controller.signal,
       });
       if (!controller.signal.aborted) {
@@ -437,7 +651,7 @@ export default function OperadorasPage() {
       }
       finishRequest?.();
     }
-  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
+  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, operatorQueuePageSize, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
 
   const cachedDetail = (key: string) => {
     const cached = detailCache.current.get(key);
@@ -530,10 +744,6 @@ export default function OperadorasPage() {
   }, [payload, view]);
 
   useEffect(() => {
-    try { window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(columns)); } catch { /* browser preference is optional */ }
-  }, [columns]);
-
-  useEffect(() => {
     const id = window.setInterval(() => {
       if (document.hidden || view !== "queue") return;
       void load("quiet");
@@ -557,9 +767,23 @@ export default function OperadorasPage() {
   };
   const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
     .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
-  const panelFilterCount = [datasource, classification, state, ack, severity, carrier]
-    .filter((value) => value !== ALL).length + (divergence ? 1 : 0);
-  const optionalColumnCount = OPTIONAL_COLUMNS.filter(([column]) => columns[column]).length;
+  const panelFilterCount = [state, ack]
+    .filter((value) => value !== ALL).length;
+  const topbarRightSection = useMemo(() => {
+    const checkedAt = payload?.checked_at;
+    const checkedAtLabel = checkedAt ? (() => {
+      const date = new Date(checkedAt);
+      return Number.isNaN(date.getTime()) ? null : date.toLocaleString("pt-BR");
+    })() : null;
+    if (!checkedAtLabel && !refreshing) return null;
+    return (
+      <span className="whitespace-nowrap text-xs text-muted-foreground">
+        {checkedAtLabel ? <>Última consulta: {checkedAtLabel}</> : null}
+        {refreshing ? <>{checkedAtLabel ? " · " : ""}Atualizando…</> : null}
+      </span>
+    );
+  }, [payload?.checked_at, refreshing]);
+  const visibleLinkColumnIds = linkTableColumns.visibleColumns.map((column) => column.id);
   const chamadoChip = incident === ALL && incidentState === ALL ? ALL : incident;
   const customerOptions = useMemo(() => [
     { key: ALL, name: "Todos" },
@@ -572,12 +796,10 @@ export default function OperadorasPage() {
   const kpis = useMemo(() => [
     { label: "Em falha", value: totals?.operational.open, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "all" as OperationalSituation },
     { label: "Sem chamado", value: totals?.operational.without_incident, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_without_incident" as OperationalSituation },
-    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_with_open_incident" as OperationalSituation },
-    { label: "Recorrentes", value: totals?.operational.recurrent, tab: "all" as QueueTab, incident: ALL, recurrence: "recurrent" as const, divergence: "" as const, situation: "all" as OperationalSituation },
-    { label: "Divergências", value: totals?.operational.divergences, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "any" as const, situation: "all" as OperationalSituation },
+    { label: "Com chamado aberto", value: totals?.operational.with_open_incident, tone: "info" as const, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_with_open_incident" as OperationalSituation },
+    { label: "Recorrentes", value: totals?.operational.recurrent, tone: "recurrence" as const, tab: "all" as QueueTab, incident: ALL, recurrence: "recurrent" as const, divergence: "" as const, situation: "all" as OperationalSituation },
+    { label: "Divergências", value: totals?.operational.divergences, tone: "warning" as const, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "any" as const, situation: "all" as OperationalSituation },
   ], [totals]);
-  const toggleColumn = (column: OptionalColumn, checked: boolean) => setColumns((current) => ({ ...current, [column]: checked }));
-
   const clearFilters = () => {
     setCustomer(ALL);
     setDatasource(ALL);
@@ -603,11 +825,11 @@ export default function OperadorasPage() {
   return (
     <AppLayout
       clientSelect={<SectionAccentTitle level={1}>Links</SectionAccentTitle>}
+      topbarRightSection={topbarRightSection}
       onRefresh={() => void load("manual")}
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      dataSource={payload ? "database" : null}
-      checkedAt={payload?.checked_at}
+      wallboard={dashboard.isWallboard}
     >
       <div className="min-w-0 space-y-3">
         <nav aria-label="Visões da página de links" className="ov-segmented-control flex min-w-0 gap-1 overflow-x-auto">
@@ -623,14 +845,15 @@ export default function OperadorasPage() {
           </Button>
         </nav>
 
-        {view === "reminders" ? <OperatorRemindersPanel onOpenCircuit={openLink} /> : <>
+        {view === "reminders" ? <OperatorRemindersPanel onOpenCircuit={openLink} /> : <ConfigurableDashboard controller={dashboard}>
+        <ConfigurableDashboardWidget id="operators-summary">
         <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
           {kpis.map(({ tab: targetTab, divergence: targetDivergence, incident: targetIncident, recurrence: targetRecurrence, situation: targetSituation, label, value, tone }) => (
             <OneViewKpiCard
               key={label}
               label={label}
               value={typeof value === "number" ? value.toLocaleString("pt-BR") : "—"}
-              tone={tone === "danger" ? "danger" : "neutral"}
+              tone={tone ?? "neutral"}
               onClick={() => {
                 setView("queue");
                 setTab(targetTab);
@@ -652,7 +875,9 @@ export default function OperadorasPage() {
             <span>{totals?.pending_classification ?? 0} pendentes de classificação</span>
           </div>
         ) : null}
+        </ConfigurableDashboardWidget>
 
+        <ConfigurableDashboardWidget id="operators-filters">
         <section aria-label="Filtros de links" className="ov-panel space-y-3 p-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <ClientFilterCombobox
@@ -668,17 +893,6 @@ export default function OperadorasPage() {
               }}
               countNoun="neste filtro"
             />
-            <div className="relative min-w-[12rem] flex-1">
-              <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
-              <Input
-                id="links-search"
-                className={cn(OV_FILTER_CONTROL, "h-8 w-full pl-8")}
-                value={search}
-                onChange={(event) => { setSearch(event.target.value); setPage(1); }}
-                placeholder="Buscar link ou host"
-                aria-label="Busca"
-              />
-            </div>
             <Button type="button" variant={filtersOpen ? "default" : "outline"} size="sm" className="h-8" onClick={() => setFiltersOpen((open) => !open)}>
               <ChevronDown className={cn("mr-1.5 h-3.5 w-3.5 transition-transform", filtersOpen && "rotate-180")} />
               Mais filtros
@@ -729,15 +943,6 @@ export default function OperadorasPage() {
               <p className="mb-2 text-xs font-medium text-muted-foreground">Filtros complementares</p>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   <Filter
-                    label="Fonte Zabbix"
-                    value={datasource}
-                    options={optionList(payload?.facets.datasources).map((item) => ({
-                      ...item,
-                      label: item.value === ALL ? item.label : zabbixSourceDisplayName(item.label),
-                    }))}
-                    onChange={setFilter(setDatasource)}
-                  />
-                  <Filter
                     label="Estado"
                     value={state}
                     options={[
@@ -749,11 +954,7 @@ export default function OperadorasPage() {
                     ]}
                     onChange={setFilter(setState)}
                   />
-                  <Filter label="Classificação" value={classification} options={optionList(payload?.facets.classifications)} onChange={setFilter(setClassification)} />
-                  <Filter label="Severidade" value={severity} options={[{ value: ALL, label: "Todas" }, { value: "disaster", label: "Disaster" }, { value: "high", label: "High" }, { value: "average", label: "Average" }, { value: "warning", label: "Warning" }]} onChange={setFilter(setSeverity)} />
                   <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
-                  <Filter label="Divergências" value={divergence || ALL} options={[{ value: ALL, label: "Todas" }, { value: "any", label: "Somente divergências" }]} onChange={(value) => { setDivergence(value === ALL ? "" : "any"); setPage(1); }} />
-                  <Filter label="Operadora" value={carrier} options={[{ value: ALL, label: "Todas" }, { value: "unknown", label: "Não informada na origem" }]} onChange={setFilter(setCarrier)} />
                   <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
               </div>
             </div>
@@ -772,14 +973,36 @@ export default function OperadorasPage() {
             Correlação ServiceNow indisponível nesta consulta; chamados não foram considerados.
           </div>
         ) : null}
-        {lastSuccessfulRefreshAt ? <p className="text-xs text-muted-foreground">{refreshing ? "Atualizando… · " : ""}Última atualização bem-sucedida: {refreshTime(lastSuccessfulRefreshAt)}</p> : null}
+        </ConfigurableDashboardWidget>
 
+        <ConfigurableDashboardWidget id="operators-queue">
+        {initialError && !payload ? <OperationalErrorBanner message={initialError} onRetry={() => void load("manual")} /> : null}
+        {refreshError && payload ? <div role="status" className="ov-callout-warning mb-2 flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-sm"><span>{refreshError} {lastSuccessfulRefreshAt ? `Última atualização bem-sucedida: ${refreshTime(lastSuccessfulRefreshAt)}.` : ""}</span><Button type="button" variant="outline" size="sm" onClick={() => void load("manual")} disabled={loading}>Tentar novamente</Button></div> : null}
         <SectionPanel
           title="Fila operacional de links"
           description="Situação atual, alertas e chamados por circuito"
-          aside={<div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{refreshing ? "Atualizando…" : `${payload?.pagination.total_items ?? 0} links`}</span><ColumnsChooser columns={columns} onChange={toggleColumn} /></div>}
+          aside={<span className="text-xs text-muted-foreground">{refreshing ? "Atualizando…" : `${payload?.pagination.total_items ?? 0} links`}</span>}
           bodyClassName="p-0"
         >
+          <ConfigurableTableToolbar
+            search={search}
+            onSearchChange={(value) => { setSearch(value); setPage(1); }}
+            searchPlaceholder="Buscar link, host ou cliente…"
+            searchLabel="Buscar na tabela de links"
+            columns={linkTableColumns}
+            updating={refreshing}
+            activeFilterCount={Math.max(0, activeFilterCount - (search.trim() ? 1 : 0))}
+            onClearFilters={clearFilters}
+            filters={(
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerOptions} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={(key) => { setCustomer(key === ALL || key === customer ? ALL : key); setCustomerFilterOpen(false); setPage(1); }} countNoun="neste filtro" /></div>
+                <Filter label="Recorrência" value={recurrence} options={[{ value: "all", label: "Todos" }, { value: "recurrent", label: "Recorrentes" }]} onChange={(value) => { setRecurrence(value === "recurrent" ? "recurrent" : "all"); setPage(1); }} />
+                <Filter label="Estado" value={state} options={[{ value: ALL, label: "Todos" }, { value: "critical", label: "Crítico" }, { value: "alert", label: "Alerta" }, { value: "attention", label: "Atenção" }, { value: "normal", label: "Normal" }]} onChange={setFilter(setState)} />
+                <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
+                <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
+              </div>
+            )}
+          />
           {loading && !payload ? (
             <div className="space-y-2 p-3"><Skeleton className="h-16 w-full" /><Skeleton className="h-16 w-full" /></div>
           ) : !items.length ? (
@@ -794,53 +1017,50 @@ export default function OperadorasPage() {
               <div className="divide-y divide-border/60 md:hidden">
                 {items.map((item) => <MobileLinkCard key={item.id} item={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openLink} />)}
               </div>
-              <div className={cn("hidden md:block", optionalColumnCount > 0 && "overflow-x-auto")}>
-                <Table className={cn("w-full table-fixed", optionalColumnCount > 0 && "min-w-[70rem]")}>
-                  <colgroup>
-                    <col className="w-[32%]" />
-                    <col className="w-[18%]" />
-                    <col className="w-[18%]" />
-                    <col className="w-[18%]" />
-                    <col className="w-[14%]" />
-                    {columns.link_type ? <col className="w-36" /> : null}
-                    {columns.carrier ? <col className="w-36" /> : null}
-                    {columns.datasource ? <col className="w-36" /> : null}
-                    {columns.severity ? <col className="w-32" /> : null}
-                    {columns.classification ? <col className="w-40" /> : null}
-                  </colgroup>
+              <div className="hidden overflow-x-auto md:block">
+                <Table className={cn("w-full table-fixed", visibleLinkColumnIds.length > 6 && "min-w-[70rem]")}>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className={OV_TABLE_HEAD}>Link / local</TableHead>
-                      <TableHead className={OV_TABLE_HEAD}>Situação</TableHead>
-                      <TableHead className={OV_TABLE_HEAD}>Último alerta</TableHead>
-                      <TableHead className={OV_TABLE_HEAD}>Chamado atual</TableHead>
-                      <TableHead className={OV_TABLE_HEAD}>Lembrete</TableHead>
-                      {columns.link_type ? <TableHead className={OV_TABLE_HEAD}>Tipo do link</TableHead> : null}
-                      {columns.carrier ? <TableHead className={OV_TABLE_HEAD}>Operadora</TableHead> : null}
-                      {columns.datasource ? <TableHead className={OV_TABLE_HEAD}>Fonte Zabbix</TableHead> : null}
-                      {columns.severity ? <TableHead className={OV_TABLE_HEAD}>Severidade</TableHead> : null}
-                      {columns.classification ? <TableHead className={OV_TABLE_HEAD}>Classificação</TableHead> : null}
+                      {linkTableColumns.visibleColumns.map((column) => (
+                        <LinkTableColumnHeader
+                          key={column.id}
+                          column={column}
+                          facets={payload?.facets}
+                          operationalSituation={operationalSituation}
+                          activityPeriod={activityPeriod}
+                          chamadoChip={chamadoChip}
+                          incidentState={incidentState}
+                          datasource={datasource}
+                          severity={severity}
+                          classification={classification}
+                          carrier={carrier}
+                          onOperationalSituationChange={(value) => { setOperationalSituation(value); setPage(1); }}
+                          onActivityPeriodChange={(value) => { setActivityPeriod(value); setPage(1); }}
+                          onChamadoChange={(value) => { setIncident(value); setIncidentState(ALL); setPage(1); }}
+                          onIncidentStateChange={(value) => { setIncidentState(value); if (value !== ALL) setIncident("yes"); setPage(1); }}
+                          onDatasourceChange={setFilter(setDatasource)}
+                          onSeverityChange={setFilter(setSeverity)}
+                          onClassificationChange={setFilter(setClassification)}
+                          onCarrierChange={setFilter(setCarrier)}
+                        />
+                      ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {items.map((item) => (
                       <TableRow key={item.id} className="cursor-pointer" onClick={() => openLink(item)}>
-                        <TableCell className="min-w-0">
-                          <p className="truncate text-sm font-medium">{text(item.customer_name)} · {localLabel(item)}</p>
-                          <p className="mt-1 truncate text-xs text-muted-foreground">{linkLabel(item)}</p>
-                        </TableCell>
-                        <TableCell className="min-w-0"><MonitoringStatus link={item} /></TableCell>
-                        <TableCell className="min-w-0">
-                          <p className="truncate text-sm font-medium">{latestAlertLabel(item.latest_alert_at)}</p>
-                          <p className="mt-1 truncate text-xs text-muted-foreground">{text(item.latest_alert?.problem_name || item.latest_alert?.trigger_description, "Sem alerta registrado")}</p>
-                        </TableCell>
-                        <TableCell className="min-w-0"><CurrentIncident link={item} /></TableCell>
-                        <TableCell className="min-w-0"><div className="space-y-1"><ReminderQuickAction link={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openReminder} /><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>
-                        {columns.link_type ? <TableCell className="min-w-0 truncate text-xs">{linkTypeLabel(item)}</TableCell> : null}
-                        {columns.carrier ? <TableCell className="min-w-0 truncate text-xs">{text(item.carrier_name)}</TableCell> : null}
-                        {columns.datasource ? <TableCell className="min-w-0 truncate text-xs">{zabbixSourceDisplayName(item.datasource)}</TableCell> : null}
-                        {columns.severity ? <TableCell className="min-w-0">{item.max_severity ? <SeverityBadge severity={item.max_severity} /> : "—"}</TableCell> : null}
-                        {columns.classification ? <TableCell className="min-w-0"><ResolutionBadge link={item} /></TableCell> : null}
+                        {visibleLinkColumnIds.map((column) => {
+                          if (column === "link_local") return <TableCell key={column} className="min-w-0"><p className="truncate text-sm font-medium">{text(item.customer_name)} · {localLabel(item)}</p><p className="mt-1 truncate text-xs text-muted-foreground">{linkLabel(item)}</p></TableCell>;
+                          if (column === "situation") return <TableCell key={column} className="min-w-0"><MonitoringStatus link={item} /></TableCell>;
+                          if (column === "latest_alert") return <TableCell key={column} className="min-w-0"><p className="truncate text-sm font-medium">{latestAlertLabel(item.latest_alert_at)}</p><p className="mt-1 truncate text-xs text-muted-foreground">{text(item.latest_alert?.problem_name || item.latest_alert?.trigger_description, "Sem alerta registrado")}</p></TableCell>;
+                          if (column === "current_incident") return <TableCell key={column} className="min-w-0"><CurrentIncident link={item} /></TableCell>;
+                          if (column === "follow_up") return <TableCell key={column} className="min-w-0"><div className="space-y-1"><ReminderQuickAction link={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openReminder} /><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>;
+                          if (column === "link_type") return <TableCell key={column} className="min-w-0 truncate text-xs">{linkTypeLabel(item)}</TableCell>;
+                          if (column === "carrier") return <TableCell key={column} className="min-w-0 truncate text-xs">{text(item.carrier_name)}</TableCell>;
+                          if (column === "datasource") return <TableCell key={column} className="min-w-0 truncate text-xs">{zabbixSourceDisplayName(item.datasource)}</TableCell>;
+                          if (column === "severity") return <TableCell key={column} className="min-w-0">{item.max_severity ? <SeverityBadge severity={item.max_severity} /> : "—"}</TableCell>;
+                          return <TableCell key={column} className="min-w-0"><ResolutionBadge link={item} /></TableCell>;
+                        })}
                       </TableRow>
                     ))}
                   </TableBody>
@@ -859,7 +1079,8 @@ export default function OperadorasPage() {
             </div>
           </div>
         ) : null}
-        </>}
+        </ConfigurableDashboardWidget>
+        </ConfigurableDashboard>}
       </div>
 
       <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} reminderRequest={reminderRequest} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />

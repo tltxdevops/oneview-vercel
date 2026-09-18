@@ -135,7 +135,7 @@ test("parser and UI expose card filters; recurrence correlation remains query-fr
     readFile(new URL("../api/_lib/oneview-links.js", import.meta.url), "utf8"),
     readFile(new URL("../api/_lib/oneview-operational-recurrence.js", import.meta.url), "utf8"),
   ]);
-  for (const label of ["Status INC", "Situação", "Período", "Somente divergências", "Sem chamado correlacionado"]) assert.match(page, new RegExp(label));
+  for (const label of ["Status INC", "Situação", "Período", "Sem chamado correlacionado"]) assert.match(page, new RegExp(label));
   assert.match(page, /Filtros operacionais principais/);
   assert.match(page, /Filtros complementares/);
   assert.doesNotMatch(recurrence, /pool\.query|getOneViewDbPool/i);

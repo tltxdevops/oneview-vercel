@@ -13,9 +13,9 @@ async function read(relativePath) {
   return fs.readFile(path.join(root, relativePath), "utf8");
 }
 
-test("SN-P0-10 Chamados: resumo Total + 4 indicadores", async () => {
+test("SN-P0-10 Chamados: resumo operacional vivo e completo", async () => {
   const chamados = await read("src/pages/Chamados.tsx");
-  for (const label of ["Total", "Abertos", "Em andamento", "Resolvidos", "Encerrados", "Não atribuídos"]) {
+  for (const label of ["Total", "Abertos", "Em andamento", "Resolvidos", "Encerrados", "Sem responsável", "Duplicados"]) {
     assert.match(chamados, new RegExp(`label:\\s*"${label}"`));
   }
   assert.match(chamados, /counts\?\.total/);

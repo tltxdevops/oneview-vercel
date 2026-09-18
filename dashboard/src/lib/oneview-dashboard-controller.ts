@@ -35,7 +35,7 @@ export type OneViewDashboardController = {
   setDraggedId: (id: string | null) => void;
   selectTemplate: (template: OneViewDashboardTemplate) => void;
   resetLayout: () => void;
-  updateWidget: (id: string, patch: { width?: number; height?: number; hidden?: boolean; pinned?: boolean }) => void;
+  updateWidget: (id: string, patch: { width?: number; height?: number; hidden?: boolean; pinned?: boolean; itemLimit?: number }) => void;
   reorderWidgets: (sourceId: string, targetId: string) => void;
 };
 
@@ -64,7 +64,10 @@ export function useOneViewDashboardLayout({
   widgets: suppliedWidgets,
   initialTemplate,
 }: UseOneViewDashboardLayoutOptions): OneViewDashboardController {
-  const widgets = suppliedWidgets ?? dashboardWidgetsForPage(page);
+  const widgets = useMemo(
+    () => suppliedWidgets ?? dashboardWidgetsForPage(page),
+    [page, suppliedWidgets],
+  );
   const preferredTemplate = initialTemplate ?? readOneViewDashboardPreferences(actorId).templates[page] ?? "operational";
   const widgetSignature = useMemo(() => widgets.map((widget) => widget.id).join("|"), [widgets]);
   const storageScope = `${page}:${actorId || "anonymous"}:${widgetSignature}`;
@@ -106,7 +109,7 @@ export function useOneViewDashboardLayout({
     setLayout((current) => createOneViewDashboardLayout(page, current.template, widgets));
   }, [page, widgets]);
 
-  const updateWidget = useCallback((id: string, patch: { width?: number; height?: number; hidden?: boolean; pinned?: boolean }) => {
+  const updateWidget = useCallback((id: string, patch: { width?: number; height?: number; hidden?: boolean; pinned?: boolean; itemLimit?: number }) => {
     setLayout((current) => updateOneViewDashboardWidget(current, id, patch, widgets));
   }, [widgets]);
 

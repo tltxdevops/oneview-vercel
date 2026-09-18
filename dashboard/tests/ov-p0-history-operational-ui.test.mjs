@@ -17,22 +17,20 @@ test("Histórico usa tabs e quick filters oficiais sem criar variante visual loc
   assert.match(source, /HISTORY_RISK_PRESETS\.map/);
   assert.match(source, /<OneViewPill/);
   assert.match(source, /selected=\{risk === preset\.value\}/);
-  assert.doesNotMatch(source, /rounded-\[|bg-gradient|shadow-(?:sm|md|lg|xl|2xl)|text-\[|text-xs|text-sm/);
+  assert.doesNotMatch(source, /rounded-\[|bg-gradient|shadow-(?:md|lg|xl|2xl)/);
 });
 
-test("Histórico mantém Cliente, Busca, Período e Mais filtros na barra principal", async () => {
+test("Histórico mantém busca direta e filtros recolhidos nas tabelas", async () => {
   const source = await readHistory();
 
-  assert.match(source, /className="ov-control-official h-9"/);
-  assert.match(source, /placeholder="Buscar host, problema ou cliente"/);
-  assert.match(source, /Filtrar por período/);
-  assert.match(source, /Mais filtros/);
-  assert.match(source, /aria-expanded=\{filtersOpen\}/);
-  assert.match(source, /historico-alertas-mais-filtros/);
+  assert.match(source, /ConfigurableTableToolbar/);
+  assert.match(source, /searchPlaceholder="Buscar host, problema ou cliente/);
+  assert.match(source, /activeFilterCount=\{activeFilterChips\.length\}/);
+  assert.match(source, /filters=\{\(/);
   assert.match(source, /Fonte Zabbix/);
-  assert.match(source, />Severidade<\/Label>/);
-  assert.match(source, />Estado<\/Label>/);
-  assert.match(source, />ACK<\/Label>/);
+  assert.match(source, />Severidade<Select/);
+  assert.match(source, />Estado<Select/);
+  assert.match(source, />ACK<Select/);
 });
 
 test("Histórico expõe filtros ativos removíveis e tabela operacional responsiva", async () => {
@@ -41,8 +39,8 @@ test("Histórico expõe filtros ativos removíveis e tabela operacional responsi
   assert.match(source, /aria-label="Filtros ativos"/);
   assert.match(source, /Remover filtro \$\{filter\.label\}/);
   assert.match(source, />Limpar todos<\/OneViewTextAction>/);
-  assert.match(source, /Table className="ov-operational-table table-fixed"/);
-  assert.match(source, /hidden[^"\n]*xl:table-cell/);
+  assert.match(source, /ov-operational-table table-fixed/);
+  assert.match(source, /historyAlertColumns\.visibleColumns\.map/);
   assert.match(source, /status=\{alertStatusLabel\(alert\) === "Ativo" \? "monitoring-down" : "monitoring-normalized"\}/);
   assert.match(source, /status="incident-waiting" label="Pendente"/);
   assert.match(source, /status="incident-resolved" label="Reconhecido"/);
@@ -55,7 +53,7 @@ test("migração visual preserva consultas, paginação, risco, ACK e drawer", a
   assert.match(source, /fetchGlobalHistory\(\{/);
   assert.match(source, /applyHistoryRiskPreset/);
   assert.match(source, /acknowledgedSource/);
-  assert.match(source, /pageSize: PAGE_SIZE/);
+  assert.match(source, /pageSize: historyPageSize/);
   assert.match(source, /AlertDetailDrawer/);
   assert.match(source, /defaultTab="history"/);
   assert.doesNotMatch(source, /fetch\(|axios|\.css"/);

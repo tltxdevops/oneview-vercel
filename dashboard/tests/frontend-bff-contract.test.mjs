@@ -283,7 +283,7 @@ test("OV-P0-26 saúde Teletex-only e shell denso sem zoom/scale", async () => {
   assert.doesNotMatch(sidebar, /w-20 hover:w-64/);
   assert.match(topbar, /h-14/);
   assert.match(topbar, /TeletexMark/);
-  assert.match(appLayout, /FullscreenFab/);
+  assert.doesNotMatch(appLayout, /FullscreenFab/);
   assert.match(pageHeader, /SectionAccentTitle level=\{1\}>\{title\}<\/SectionAccentTitle>/);
   assert.match(metricStrip, /min-w-\[5\.5rem\]/);
   assert.match(filterBar, /ov-panel p-2\.5/);
@@ -608,9 +608,7 @@ test("OV-P0-19/38 Monitoramento NOC com Sidebar real, sem scroll e com janela re
   assert.match(monitoring, /Valores anteriores mantidos/);
   assert.match(monitoring, /PlatformHealthStrip/);
   assert.match(monitoring, /bg-background/);
-  assert.match(monitoring, /requestFullscreen/);
-  assert.match(monitoring, /exitFullscreen/);
-  assert.match(monitoring, /aria-pressed=\{isFullscreen\}/);
+  assert.doesNotMatch(monitoring, /FullscreenFab|requestFullscreen|exitFullscreen|isFullscreen/);
   assert.doesNotMatch(monitoring, /Pausar|Retomar|setIsPaused/);
 
   assert.match(monitoring, /MONITOR_QUEUE_LIMIT|PRIORITY_LIMIT/);
@@ -1711,8 +1709,7 @@ test("OV-P0-27/38 saúde operacional global + Sidebar real no Monitoramento", as
   assert.match(sidebar, /Abrir navegação do monitoramento/);
   assert.match(sidebar, /data-monitor-sidebar="collapsed"/);
   assert.match(sidebar, /top-1\/2/);
-  assert.match(monitoring, /openBeforeFullscreen|wasFullscreen/);
-  assert.match(monitoring, /Tela cheia|requestFullscreen/);
+  assert.doesNotMatch(monitoring, /FullscreenFab|openBeforeFullscreen|wasFullscreen|Tela cheia|requestFullscreen/);
   assert.match(monitoring, /h-\[100dvh\].*w-\[100vw\]/);
   assert.doesNotMatch(monitoring.replace(/<Sheet[\s\S]*?<\/Sheet>/g, ""), /overflow-x-auto|overflow-auto(?!-)/);
   assert.match(monitoring, /divide-y divide-border overflow-y-auto/);

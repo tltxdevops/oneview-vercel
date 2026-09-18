@@ -1,6 +1,5 @@
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import settings from "@/lib/settings";
-import { FullscreenFab } from "@/components/layout/FullscreenFab";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 import { Badge } from "@/components/ui/badge";
@@ -191,7 +190,6 @@ export function AppLayout({
             {children}
           </div>
         </main>
-        {!wallboard ? <FullscreenFab /> : null}
       </div>
     </div>
   );

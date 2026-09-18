@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DateRange } from "react-day-picker";
 import { endOfDay, format, formatDistanceToNow, startOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { FilterBar } from "@/components/oneview/FilterBar";
+import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import {
   OneViewButton,
   OneViewKpiCard,
@@ -26,13 +26,13 @@ import {
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { PageHeader } from "@/components/oneview/PageHeader";
 import { Calendar } from "@/components/ui/calendar";
-import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -40,6 +40,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useAuthContext } from "@/context/AuthContext";
+import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import {
   AlertDetailResponse,
   AlertHistoryItem,
@@ -97,7 +100,6 @@ import {
 import {
   Activity,
   ArrowUpDown,
-  CalendarRange,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -108,7 +110,6 @@ import {
   RefreshCcw,
   ServerCog,
   Siren,
-  SlidersHorizontal,
   UserCheck,
   WifiOff,
   X,
@@ -121,6 +122,31 @@ type AlertsView = "recent" | "open" | "priority" | "forgotten" | "resolved" | "a
 type SortField = AlertsSortKey | "client" | "datasource" | "host" | "problem" | "status" | "acknowledged_source" | "last_seen_at";
 type SortOrder = "asc" | "desc";
 type TemporalPreset = AlertsDatePreset;
+
+const ALERT_TABLE_COLUMNS = [
+  { id: "severity", label: "Severidade" },
+  { id: "client", label: "Cliente" },
+  { id: "host", label: "Host" },
+  { id: "problem", label: "Problema", required: true },
+  { id: "started", label: "Início" },
+  { id: "duration", label: "Duração" },
+  { id: "ack", label: "ACK" },
+  { id: "incident", label: "Chamado" },
+  { id: "status", label: "Estado" },
+  { id: "actions", label: "Ações" },
+] as const;
+
+type AlertTableColumnId = typeof ALERT_TABLE_COLUMNS[number]["id"];
+
+const ALERT_COLUMN_SORT: Partial<Record<AlertTableColumnId, SortField>> = {
+  severity: "severity",
+  host: "host",
+  problem: "problem",
+  started: "first_seen_at",
+  duration: "duration",
+  ack: "acknowledged_source",
+  status: "status",
+};
 type ResolvedTemporalPreset = AlertsDatePreset;
 type HistoryFilter = "all" | "acknowledgements" | "changes" | "recovery" | "legacy";
 
@@ -759,6 +785,16 @@ function historyEventIcon(eventType: string) {
 }
 
 export default function AlertsPage() {
+  const { user } = useAuthContext();
+  const dashboard = useOneViewDashboardLayout({
+    page: "alerts",
+    actorId: user?.id || user?.email,
+  });
+  const alertTableColumns = useOneViewTableColumns({
+    tableId: "alerts",
+    actorId: user?.id || user?.email,
+    definitions: ALERT_TABLE_COLUMNS,
+  });
   const [searchParams, setSearchParams] = useSearchParams();
   const initialQueryRef = useRef(new URLSearchParams(searchParams));
   const initialQuery = initialQueryRef.current;
@@ -1326,7 +1362,7 @@ export default function AlertsPage() {
   const isRefreshing = isAlertsLoading || isSummaryLoading;
   const showAlertsSkeleton = isAlertsLoading && !hasLoadedAlerts && alerts.length === 0;
   const ackRequestsEnabled = health?.capabilities?.acknowledgement === true;
-  const tableColumnCount = 10;
+  const tableColumnCount = alertTableColumns.visibleColumns.length;
 
   const clearFilters = () => {
     setSelectedCustomerKeys([]);
@@ -1595,7 +1631,8 @@ export default function AlertsPage() {
       enableAutoRefresh={false}
       showRefreshMeta={false}
       clientSelect={<PageHeader title="Alertas" />}
-      contentClassName="gap-3 p-3 lg:px-4"
+      contentClassName="gap-2 p-2 sm:p-3"
+      wallboard={dashboard.isWallboard}
     >
       {hasSnapshot ? (
         <section className="ov-callout-warning p-4 shadow-none" role="status">
@@ -1617,24 +1654,29 @@ export default function AlertsPage() {
         </section>
       ) : null}
 
-      {summaryError ? <OperationalErrorBanner message={summaryError} /> : null}
+      <ConfigurableDashboard controller={dashboard}>
+        <ConfigurableDashboardWidget id="operational-summary">
+          <div className="space-y-2">
+            {summaryError ? <OperationalErrorBanner message={summaryError} /> : null}
+            <section aria-label="Indicadores de alertas" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-9">
+              {summaryCards.map((card) => (
+                <OneViewKpiCard
+                  key={card.filter}
+                  label={card.title}
+                  value={formatCardValue(card.value)}
+                  hint={card.description}
+                  tone={summaryTone(card.filter)}
+                  selected={summaryFilterIsActive(card.filter)}
+                  className="ov-kpi-official"
+                  onClick={() => applySummaryFilter(card.filter)}
+                />
+              ))}
+            </section>
+          </div>
+        </ConfigurableDashboardWidget>
 
-      <section aria-label="Indicadores de alertas" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-9">
-        {summaryCards.map((card) => (
-          <OneViewKpiCard
-            key={card.filter}
-            label={card.title}
-            value={formatCardValue(card.value)}
-            hint={card.description}
-            tone={summaryTone(card.filter)}
-            selected={summaryFilterIsActive(card.filter)}
-            className="ov-kpi-official"
-            onClick={() => applySummaryFilter(card.filter)}
-          />
-        ))}
-      </section>
-
-      <section className="ov-surface-official overflow-hidden">
+        <ConfigurableDashboardWidget id="alerts-table">
+        <section className="ov-surface-official overflow-hidden">
         <header className="border-b border-border/70 px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
@@ -1663,231 +1705,52 @@ export default function AlertsPage() {
           </div>
         </header>
 
-        <FilterBar aria-label="Filtros de alertas" className="ov-surface-official m-3 space-y-3 p-4">
-          <div className="flex flex-col gap-3">
-            <div className="order-2 flex min-w-0 flex-wrap items-center gap-2" aria-label="Filtros ativos">
-              {activeFilterChips.length > 0 ? <span className="ov-type-caption font-semibold text-muted-foreground">Filtros ativos:</span> : null}
-              {activeFilterChips.map((chip) => (
-                <OneViewPill
-                  key={chip.label}
-                  className="h-8"
-                  onClick={() => { chip.remove(); setPage(1); }}
-                >
-                  {chip.label}<X className="h-3 w-3" />
-                </OneViewPill>
-              ))}
-              {activeFilterChips.length > 0 ? <OneViewTextAction onClick={clearFilters}>Limpar todos</OneViewTextAction> : null}
+        <ConfigurableTableToolbar
+          search={searchQuery}
+          onSearchChange={(value) => { setSearchQuery(value); setPage(1); }}
+          searchPlaceholder="Buscar alerta, host ou cliente…"
+          searchLabel="Buscar na tabela de alertas"
+          columns={alertTableColumns}
+          activeFilterCount={activeFilterChips.length}
+          onClearFilters={clearFilters}
+          updating={isAlertsLoading && hasLoadedAlerts}
+          filters={(
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <label className="space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
+              <label className="space-y-1 text-xs text-muted-foreground">Estado
+                <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Ativos</SelectItem><SelectItem value="resolved">Resolvidos</SelectItem><SelectItem value="all">Todos</SelectItem></SelectContent></Select>
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">Severidade
+                <Select value={severityFilterValue} onValueChange={(value) => { setSelectedSeverities(value === "all" ? [] : value === "priority" ? ["disaster", "high"] : [value as OneViewSeverity]); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todas</SelectItem><SelectItem value="priority">High e Disaster</SelectItem>{severityFilterValue === "multiple" ? <SelectItem value="multiple" disabled>Múltiplas</SelectItem> : null}{severityOrder.map((severity) => <SelectItem key={severity} value={severity}>{severityCatalog[severity].label}</SelectItem>)}</SelectContent></Select>
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">Campo da busca
+                <Select value={searchField} onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SEARCH_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">Campo de data
+                <Select value={dateField} onValueChange={(value) => { setDateField(value as AlertsDateField); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_DATE_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">Período
+                <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado</SelectItem></SelectContent></Select>
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">ACK da origem
+                <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="acknowledged">Com ACK</SelectItem><SelectItem value="unacknowledged">Sem ACK</SelectItem></SelectContent></Select>
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">Ordenação
+                <Select value={sortOptionKey((sortField === "acknowledged_at" || sortField === "duration" || sortField === "first_seen_at" || sortField === "last_seen_at" || sortField === "resolved_at" || sortField === "severity" ? sortField : "first_seen_at") as AlertsSortKey, sortOrder)} onValueChange={(value) => { const [sort, order] = value.split(":") as [AlertsSortKey, SortOrder]; setSortField(sort); setSortOrder(order); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SORT_OPTIONS.map((option) => <SelectItem key={`${option.id}:${option.order}`} value={`${option.id}:${option.order}`}>{option.label}</SelectItem>)}</SelectContent></Select>
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">Itens por página
+                <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
+              </label>
+              {datePreset === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={dateRange} onSelect={(range) => { setDateRange(range); setPage(1); }} /></div> : null}
             </div>
-            <div className="order-1 grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(13rem,16rem)_9rem_11rem_minmax(18rem,1fr)_auto_auto]">
-              {clientSelector}
-
-              <Select
-                value={statusFilter}
-                onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}
-              >
-                <SelectTrigger className="ov-control-official h-9 w-full" aria-label="Estado">
-                  <SelectValue placeholder="Estado" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">Ativos</SelectItem>
-                  <SelectItem value="resolved">Resolvidos</SelectItem>
-                  <SelectItem value="all">Todos</SelectItem>
-                </SelectContent>
-              </Select>
-
-              <Select
-                value={severityFilterValue}
-                onValueChange={(value) => {
-                  setSelectedSeverities(value === "all" ? [] : value === "priority" ? ["disaster", "high"] : [value as OneViewSeverity]);
-                  setPage(1);
-                }}
-              >
-                <SelectTrigger className="ov-control-official h-9 w-full" aria-label="Severidade">
-                  <SelectValue placeholder="Severidade" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas</SelectItem>
-                  <SelectItem value="priority">High e Disaster</SelectItem>
-                  {severityFilterValue === "multiple" ? <SelectItem value="multiple" disabled>Múltiplas</SelectItem> : null}
-                  {severityOrder.map((severity) => (
-                    <SelectItem key={severity} value={severity}>{severityCatalog[severity].label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <div className="ov-control-official flex h-9 min-w-0 items-center gap-1 border border-input bg-background px-1">
-                <Select
-                  value={searchField}
-                  onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}
-                >
-                  <SelectTrigger className="h-full w-[7.5rem] border-0 bg-transparent px-2 ov-type-caption shadow-none" aria-label="Campo de busca">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ALERTS_SEARCH_FIELD_OPTIONS.map((option) => (
-                      <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input
-                  value={searchQuery}
-                  onChange={(event) => { setSearchQuery(event.target.value); setPage(1); }}
-                  placeholder="Buscar alerta, host ou cliente…"
-                  className="h-full min-w-0 flex-1 border-0 bg-transparent px-1 ov-type-body shadow-none focus-visible:ring-0"
-                  aria-label="Busca server-side"
-                />
-              </div>
-
-              <Popover>
-                <PopoverTrigger asChild>
-                  <OneViewButton
-                    type="button"
-                    variant="secondary"
-                    className={cn("h-9 px-3", hasTemporalFilter && "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground")}
-                  >
-                    <CalendarRange className="h-4 w-4" />
-                    Período
-                  </OneViewButton>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-[340px] space-y-3 p-3">
-                  <div>
-                    <p className="ov-type-section-title">Filtrar por período</p>
-                    <p className="ov-type-caption text-muted-foreground">Janelas rolantes a partir de agora (não desde meia-noite).</p>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Atalhos de período">
-                    {([
-                      { id: "24h", label: "Últimas 24 horas" },
-                      { id: "30d", label: "Últimos 30 dias" },
-                    ] as const).map((preset) => (
-                      <OneViewPill
-                        key={preset.id}
-                        selected={datePreset === preset.id}
-                        onClick={() => applyDatePreset(preset.id)}
-                      >
-                        {preset.label}
-                      </OneViewPill>
-                    ))}
-                  </div>
-                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
-                    Campo
-                    <Select
-                      value={dateField}
-                      onValueChange={(value) => { setDateField(value as AlertsDateField); setPage(1); }}
-                    >
-                      <SelectTrigger className="ov-control-official h-9"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {ALERTS_DATE_FIELD_OPTIONS.map((option) => (
-                          <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
-                    Janela
-                    <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}>
-                      <SelectTrigger className="ov-control-official h-9"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Sem período</SelectItem>
-                        {ALERTS_DATE_PRESET_OPTIONS.map((option) => (
-                          <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
-                        ))}
-                        <SelectItem value="custom">Personalizado</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  {datePreset === "custom" ? (
-                    <Calendar
-                      mode="range"
-                      numberOfMonths={1}
-                      locale={ptBR}
-                      selected={dateRange}
-                      onSelect={(range) => { setDateRange(range); setPage(1); }}
-                    />
-                  ) : null}
-                  {hasTemporalFilter ? (
-                    <OneViewTextAction
-                      className="w-full text-center"
-                      onClick={() => { setDatePreset("all"); setDateRange(undefined); setPage(1); }}
-                    >
-                      Limpar período
-                    </OneViewTextAction>
-                  ) : null}
-                </PopoverContent>
-              </Popover>
-
-              <Popover>
-                <PopoverTrigger asChild>
-                  <OneViewButton type="button" variant="secondary" className="h-9 px-3">
-                    <SlidersHorizontal className="h-4 w-4" />
-                    Mais filtros
-                  </OneViewButton>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-[280px] space-y-3 p-3">
-                  <div>
-                    <p className="ov-type-section-title">Mais filtros</p>
-                    <p className="ov-type-caption text-muted-foreground">ACK, ordenação e paginação da consulta.</p>
-                  </div>
-                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
-                    ACK da origem
-                    <Select
-                      value={sourceAckFilter}
-                      onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}
-                    >
-                      <SelectTrigger className="ov-control-official h-9" aria-label="ACK da origem">
-                        <SelectValue placeholder="ACK" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Todos</SelectItem>
-                        <SelectItem value="acknowledged">Com ACK</SelectItem>
-                        <SelectItem value="unacknowledged">Sem ACK</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
-                    Ordenação
-                    <Select
-                      value={sortOptionKey(
-                        (sortField === "acknowledged_at" || sortField === "duration" || sortField === "first_seen_at" || sortField === "last_seen_at" || sortField === "resolved_at" || sortField === "severity"
-                          ? sortField
-                          : "first_seen_at") as AlertsSortKey,
-                        sortOrder,
-                      )}
-                      onValueChange={(value) => {
-                        const [sort, order] = value.split(":") as [AlertsSortKey, SortOrder];
-                        setSortField(sort);
-                        setSortOrder(order);
-                        setPage(1);
-                      }}
-                    >
-                      <SelectTrigger className="ov-control-official h-9" aria-label="Ordenação">
-                        <SelectValue placeholder="Ordenação" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ALERTS_SORT_OPTIONS.map((option) => (
-                          <SelectItem key={`${option.id}:${option.order}`} value={`${option.id}:${option.order}`}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="flex flex-col gap-1 ov-type-caption font-semibold text-muted-foreground">
-                    Itens por página
-                    <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}>
-                      <SelectTrigger className="ov-control-official h-9" aria-label="Itens por página"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="25">25</SelectItem>
-                        <SelectItem value="50">50</SelectItem>
-                        <SelectItem value="100">100</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </label>
-                </PopoverContent>
-              </Popover>
-
-            </div>
+          )}
+        />
+        {activeFilterChips.length ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-3 py-1.5" aria-label="Filtros ativos">
+            {activeFilterChips.map((chip) => <OneViewPill key={chip.label} className="h-7 px-2" onClick={() => { chip.remove(); setPage(1); }}>{chip.label}<X className="h-3 w-3" /></OneViewPill>)}
+            <OneViewTextAction className="text-xs" onClick={clearFilters}>Limpar todos</OneViewTextAction>
           </div>
-        </FilterBar>
+        ) : null}
 
         {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} /> : null}
 
@@ -1900,7 +1763,7 @@ export default function AlertsPage() {
           ) : null}
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
           <TooltipProvider delayDuration={250}>
-          <Table className="ov-operational-table min-w-[1240px] w-full table-fixed">
+          <Table className={cn("ov-operational-table w-full table-fixed", tableColumnCount > 7 ? "min-w-[1240px]" : "min-w-[760px]")}>
             <colgroup>
               <col className="w-[8%]" />
               <col className="w-[11%]" />
@@ -1915,16 +1778,11 @@ export default function AlertsPage() {
             </colgroup>
             <TableHeader className="sticky top-0 z-10">
               <TableRow className="border-border bg-muted/80 ov-type-caption text-muted-foreground hover:bg-muted/80">
-                <TableHead className="text-left font-semibold">{sortableHeader("Severidade", "severity")}</TableHead>
-                <TableHead className="text-left font-semibold">Cliente</TableHead>
-                <TableHead className="text-left font-semibold">{sortableHeader("Host", "host")}</TableHead>
-                <TableHead className="text-left font-semibold">{sortableHeader("Problema", "problem")}</TableHead>
-                <TableHead className="text-left font-semibold">{sortableHeader("Início", "first_seen_at")}</TableHead>
-                <TableHead className="text-right font-semibold">{sortableHeader("Duração", "duration")}</TableHead>
-                <TableHead className="text-left font-semibold">{sortableHeader("ACK", "acknowledged_source")}</TableHead>
-                <TableHead className="text-left font-semibold">Chamado</TableHead>
-                <TableHead className="text-left font-semibold">{sortableHeader("Estado", "status")}</TableHead>
-                <TableHead className="text-center font-semibold">Ações</TableHead>
+                {alertTableColumns.visibleColumns.map((column) => (
+                  <TableHead key={column.id} className={cn("font-semibold", column.id === "duration" ? "text-right" : column.id === "actions" ? "text-center" : "text-left")}>
+                    {ALERT_COLUMN_SORT[column.id] ? sortableHeader(column.label, ALERT_COLUMN_SORT[column.id]!) : column.label}
+                  </TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1957,6 +1815,28 @@ export default function AlertsPage() {
                 const durationLabel = Number.isFinite(Number(alert.duration_seconds)) && Number(alert.duration_seconds) >= 0
                   ? formatDurationSeconds(Number(alert.duration_seconds))
                   : "—";
+                const alertCells: Record<AlertTableColumnId, ReactNode> = {
+                  severity: <TableCell key="severity" className="text-left"><OneViewSeverityBadge severity={severityKey} /></TableCell>,
+                  client: (
+                    <TableCell key="client" className="text-left"><Tooltip><TooltipTrigger asChild><span className="inline-flex max-w-full justify-center"><ClientIdentity customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source }} operationalScope={alert.operational_scope} operationalScopeLabel={alert.operational_scope_label} showName nameClassName="max-w-[9rem] truncate text-left ov-type-body font-semibold" /></span></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{clientLabel}</TooltipContent></Tooltip></TableCell>
+                  ),
+                  host: (
+                    <TableCell key="host" className="text-left"><Tooltip><TooltipTrigger asChild><p className="truncate ov-type-body font-semibold">{hostLabel}</p></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{technicalHost && technicalHost !== hostLabel ? `${hostLabel} · ${technicalHost}` : hostLabel}</TooltipContent></Tooltip></TableCell>
+                  ),
+                  problem: (
+                    <TableCell key="problem" className="text-left"><Tooltip><TooltipTrigger asChild><p className="truncate ov-type-body font-medium">{problemLabel}</p></TooltipTrigger><TooltipContent side="top" className="max-w-sm break-words">{safeDisplayText(alert.problem_name, "Alerta sem descrição")}</TooltipContent></Tooltip></TableCell>
+                  ),
+                  started: <TableCell key="started" className="text-left font-mono ov-type-caption text-muted-foreground">{alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}</TableCell>,
+                  duration: <TableCell key="duration" className="text-right font-mono ov-type-caption tabular-nums text-muted-foreground">{durationLabel}</TableCell>,
+                  ack: (
+                    <TableCell key="ack" className="overflow-hidden text-left">{(() => { const ack = sourceAckPresentation(alert); if (ack.status !== "acknowledged") return <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />; const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido"; return <Tooltip><TooltipTrigger asChild><span className="inline-flex max-w-full"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" /></span></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}</TooltipContent></Tooltip>; })()}</TableCell>
+                  ),
+                  incident: <TableCell key="incident" className="text-left"><AlertServiceNowReferenceCell reference={alert.servicenow_reference} /></TableCell>,
+                  status: <TableCell key="status" className="text-left"><OneViewSemanticStatusBadge status={isActive ? "monitoring-down" : "monitoring-normalized"} label={isActive ? "Ativo" : "Resolvido"} /></TableCell>,
+                  actions: (
+                    <TableCell key="actions" className="text-center"><div className="flex items-center justify-center gap-1 whitespace-nowrap"><Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-8 min-h-8 w-8 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip></div></TableCell>
+                  ),
+                };
                 return (
                   <TableRow
                     key={alert.id}
@@ -1967,104 +1847,7 @@ export default function AlertsPage() {
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openAlert(alert); } }}
                     className={cn("cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60", selectedAlertId === alert.id && "bg-muted/60")}
                   >
-                    <TableCell className="text-left">
-                      <OneViewSeverityBadge severity={severityKey} />
-                    </TableCell>
-                    <TableCell className="text-left">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="inline-flex max-w-full justify-center">
-                            <ClientIdentity
-                              customer={{
-                                key: alert.customer_key,
-                                name: alert.customer_name,
-                                source: alert.customer_source,
-                              }}
-                              operationalScope={alert.operational_scope}
-                              operationalScopeLabel={alert.operational_scope_label}
-                              showName
-                              nameClassName="max-w-[9rem] truncate text-left ov-type-body font-semibold"
-                            />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-xs break-words">{clientLabel}</TooltipContent>
-                      </Tooltip>
-                    </TableCell>
-                    <TableCell className="text-left">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <p className="truncate ov-type-body font-semibold">{hostLabel}</p>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-xs break-words">
-                          {technicalHost && technicalHost !== hostLabel ? `${hostLabel} · ${technicalHost}` : hostLabel}
-                        </TooltipContent>
-                      </Tooltip>
-                    </TableCell>
-                    <TableCell className="text-left">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <p className="truncate ov-type-body font-medium">{problemLabel}</p>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-sm break-words">
-                          {safeDisplayText(alert.problem_name, "Alerta sem descrição")}
-                        </TooltipContent>
-                      </Tooltip>
-                    </TableCell>
-                    <TableCell className="text-left font-mono ov-type-caption text-muted-foreground">
-                      {alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}
-                    </TableCell>
-                    <TableCell className="text-right font-mono ov-type-caption tabular-nums text-muted-foreground">{durationLabel}</TableCell>
-                    <TableCell className="overflow-hidden text-left">
-                      {(() => {
-                        const ack = sourceAckPresentation(alert);
-                        if (ack.status !== "acknowledged") {
-                          return <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />;
-                        }
-                        const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido";
-                        return (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="inline-flex max-w-full"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" /></span>
-                            </TooltipTrigger>
-                            <TooltipContent side="top" className="max-w-xs break-words">
-                              {ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}
-                            </TooltipContent>
-                          </Tooltip>
-                        );
-                      })()}
-                    </TableCell>
-                    <TableCell className="text-left">
-                      <AlertServiceNowReferenceCell reference={alert.servicenow_reference} />
-                    </TableCell>
-                    <TableCell className="text-left">
-                      <OneViewSemanticStatusBadge
-                        status={isActive ? "monitoring-down" : "monitoring-normalized"}
-                        label={isActive ? "Ativo" : "Resolvido"}
-                      />
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <div className="flex items-center justify-center gap-1 whitespace-nowrap">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <OneViewButton
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="ov-control-official-compact h-8 min-h-8 w-8 px-0"
-                              aria-label="Ver detalhes"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openAlert(alert);
-                              }}
-                            >
-                              <Eye className="h-4 w-4" />
-                              <span className="sr-only">Ver detalhes</span>
-                            </OneViewButton>
-                          </TooltipTrigger>
-                          <TooltipContent>Ver detalhes</TooltipContent>
-                        </Tooltip>
-                      </div>
-                    </TableCell>
+                    {alertTableColumns.visibleColumns.map((column) => alertCells[column.id])}
                   </TableRow>
                 );
               })}
@@ -2084,7 +1867,9 @@ export default function AlertsPage() {
             <OneViewButton type="button" variant="secondary" disabled={!pagination.has_next || isAlertsLoading} onClick={() => setPage((current) => current + 1)}>Próxima<ChevronRight className="h-4 w-4" /></OneViewButton>
           </div>
         </div>
-      </section>
+        </section>
+        </ConfigurableDashboardWidget>
+      </ConfigurableDashboard>
 
       <AlertDetailDrawer
         open={selectedAlertId !== null}

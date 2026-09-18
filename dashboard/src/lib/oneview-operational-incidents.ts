@@ -73,6 +73,7 @@ export function prioritizeOperationalIncidents(items: OneViewIncident[]): OneVie
 export async function fetchOperationalIncidents(params?: {
   mode?: IncidentsQueueMode | string | null;
   assignedTo?: string | string[] | null;
+  limit?: number;
   windowMs?: number;
   now?: number;
   signal?: AbortSignal;
@@ -88,7 +89,7 @@ export async function fetchOperationalIncidents(params?: {
 
   const response = await fetchIncidents({
     page: 1,
-    pageSize: OPERATIONAL_INCIDENTS_PAGE_SIZE,
+    pageSize: Math.min(Math.max(Math.trunc(params?.limit ?? OPERATIONAL_INCIDENTS_PAGE_SIZE), 1), OPERATIONAL_INCIDENTS_PAGE_SIZE),
     unassigned: mode === INCIDENTS_QUEUE_MODE.unassigned ? true : undefined,
     assignedTo: assignedCsv,
     hasAssignee: mode === INCIDENTS_QUEUE_MODE.assigned && !assignedCsv ? true : undefined,

@@ -11,6 +11,7 @@ export type CompactMetricItem = {
   selected?: boolean;
   unknown?: boolean;
   loading?: boolean;
+  tone?: "neutral" | "danger" | "success" | "warning" | "info" | "recurrence";
   onClick?: () => void;
   /** Navegação declarativa (Home → Alertas). Preferir a onClick quando ambos existirem. */
   href?: string;
@@ -20,6 +21,8 @@ type CompactMetricStripProps = {
   items: CompactMetricItem[];
   footer?: ReactNode;
   className?: string;
+  /** Sobrescreve o grid padrão (ex.: fila densa de KPIs em Chamados). */
+  gridClassName?: string;
   /** Evita uma segunda surface quando o strip já está dentro de um painel. */
   surface?: boolean;
   "aria-label"?: string;
@@ -29,20 +32,21 @@ export function CompactMetricStrip({
   items,
   footer,
   className,
-  surface = true,
+  gridClassName,
+  surface = false,
   "aria-label": ariaLabel = "Indicadores",
 }: CompactMetricStripProps) {
   return (
-    <section aria-label={ariaLabel} className={cn(surface && "ov-panel", "px-1 py-0.5", className)}>
-      <div className="flex flex-wrap items-stretch divide-x divide-border/60 md:flex-nowrap">
+    <section aria-label={ariaLabel} className={cn(surface && "ov-panel p-2", className)}>
+      <div className={cn("ov-live-metric-grid", gridClassName)}>
         {items.map((item) => {
           const content = (
             <>
-              <span className="max-w-full truncate text-center ov-type-caption font-medium text-muted-foreground">{item.label}</span>
+              <span className="max-w-full truncate ov-type-caption font-medium text-muted-foreground">{item.label}</span>
               {item.loading ? (
                 <Skeleton className="h-4 w-8" />
               ) : (
-                <span className="shrink-0 text-center font-mono text-sm font-semibold tabular-nums text-foreground">
+                <span className="ov-live-metric-value shrink-0 font-mono text-lg font-semibold tabular-nums">
                   {item.value}
                 </span>
               )}
@@ -50,9 +54,8 @@ export function CompactMetricStrip({
           );
           const interactive = Boolean(item.onClick || item.href);
           const classNameItem = cn(
-            "flex min-w-[5.5rem] flex-1 flex-col items-center justify-center gap-0.5 px-2 py-1 text-center transition-colors",
+            "ov-live-metric flex min-w-0 flex-col items-start justify-center gap-1 px-4 py-3 text-left transition-colors",
             interactive && "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-            item.selected && "bg-muted/50",
           );
 
           if (item.onClick) {
@@ -65,6 +68,7 @@ export function CompactMetricStrip({
                 title={item.description}
                 onClick={item.onClick}
                 className={classNameItem}
+                data-tone={item.tone ?? "neutral"}
               >
                 {content}
               </button>
@@ -79,6 +83,7 @@ export function CompactMetricStrip({
                 aria-label={`Abrir alertas: ${item.label}${item.unknown ? " (Sem informação)" : ""}`}
                 title={item.description}
                 className={classNameItem}
+                data-tone={item.tone ?? "neutral"}
               >
                 {content}
               </Link>
@@ -86,7 +91,7 @@ export function CompactMetricStrip({
           }
 
           return (
-            <div key={item.key} title={item.description} className={classNameItem}>
+            <div key={item.key} title={item.description} className={classNameItem} data-tone={item.tone ?? "neutral"}>
               {content}
             </div>
           );

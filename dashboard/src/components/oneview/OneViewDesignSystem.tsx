@@ -154,12 +154,13 @@ export function OneViewKpiCard({ label, value, hint, tone = "neutral", selected 
     <button
       type="button"
       aria-pressed={selected}
-      className={cn("ov-surface ov-focus-accent min-w-0 px-4 py-3 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none", selected && "border-[hsl(var(--ov-color-accent-blue))] ring-1 ring-[hsl(var(--ov-color-accent-blue))]", className)}
+      data-tone={tone}
+      title={hint}
+      className={cn("ov-surface ov-kpi-official ov-focus-accent min-w-0 px-4 py-3 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none", className)}
       {...props}
     >
       <span className="block ov-typography-caption text-muted-foreground">{label}</span>
       <span className={cn("mt-1 block ov-typography-metric", toneClass)}>{value}</span>
-      {hint ? <span className="mt-1 block ov-typography-caption text-muted-foreground">{hint}</span> : null}
     </button>
   );
 }

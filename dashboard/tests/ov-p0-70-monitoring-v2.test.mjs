@@ -101,7 +101,7 @@ test("OV-P0-70 Monitoring: fila Prioritários|Todos + helpers (command center em
   assert.match(monitoring, /monitoringCollapse/);
   assert.match(monitoring, /h-\[100dvh\].*w-\[100vw\]/);
   assert.match(monitoring, /html\.style\.overflow = "hidden"/);
-  assert.match(monitoring, /requestFullscreen/);
+  assert.doesNotMatch(monitoring, /FullscreenFab|requestFullscreen/);
 
   assert.doesNotMatch(monitoring, /Alertas prioritários/);
   assert.doesNotMatch(monitoring, /title=\{`Recentes · \$\{windowLabel\}`\}/);

@@ -86,7 +86,7 @@ test("OV-P0-72 Monitoring: topo chips + tabela principal; sem coluna lateral de 
   assert.match(monitoring, /label="Janela temporal"|aria-label="Janela temporal"/);
   assert.match(monitoring, /MONITOR_WINDOW_OPTIONS\.map/);
   assert.match(monitoring, /OperationalSegmentedControl|OperationalFilterGroup/);
-  assert.match(monitoring, /requestFullscreen/);
+  assert.doesNotMatch(monitoring, /FullscreenFab|requestFullscreen/);
 
   assert.match(monitoring, /QUEUE_GRID/);
   assert.match(monitoring, />Cliente</);

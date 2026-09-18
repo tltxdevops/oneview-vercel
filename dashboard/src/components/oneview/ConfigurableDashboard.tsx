@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, type CSSProperties, type ReactNode } from "react";
-import { Eye, EyeOff, GripVertical, Pin, PinOff, RotateCcw, Settings2, Tv, X } from "lucide-react";
+import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Eye, EyeOff, GripVertical, Minus, Plus, RotateCcw, Settings2, Tv, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -16,14 +16,26 @@ export type OneViewDashboardSlot = {
   children: ReactNode;
 };
 
-const OneViewDashboardContext = createContext<OneViewDashboardController | null>(null);
-const WIDTH_PRESETS = [
-  { width: 4, label: "1/3" },
-  { width: 6, label: "1/2" },
-  { width: 8, label: "2/3" },
-  { width: 12, label: "Cheia" },
-] as const;
+type DashboardResizeGesture = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startWidth: number;
+  startHeight: number;
+  columnSize: number;
+  columnScale: number;
+  rowSize: number;
+  lastWidth: number;
+  lastHeight: number;
+};
 
+type DashboardDragGesture = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+};
+
+const OneViewDashboardContext = createContext<OneViewDashboardController | null>(null);
 function layoutItem(controller: OneViewDashboardController, id: string) {
   return compactOneViewDashboardWidgets(controller.layout.widgets).find((candidate) => candidate.id === id) ?? null;
 }
@@ -33,6 +45,11 @@ function DashboardToolbar({ controller }: { controller: OneViewDashboardControll
   const [open, setOpen] = useState(false);
   const visibleItems = compactOneViewDashboardWidgets(layout.widgets).filter((item) => !item.hidden);
   const visibleCount = visibleItems.length;
+  const finishEditing = () => {
+    controller.setDraggedId(null);
+    controller.setEditing(false);
+    setOpen(false);
+  };
 
   if (isWallboard) {
     return (
@@ -53,13 +70,23 @@ function DashboardToolbar({ controller }: { controller: OneViewDashboardControll
   }
 
   return (
-    <div className="ov-dashboard-toolbar" aria-label="Configuração do painel">
+    <div className={cn("ov-dashboard-toolbar", !isEditing && "ov-dashboard-toolbar-floating")} aria-label="Configuração do painel">
       {isEditing ? (
         <div className="ov-dashboard-edit-bar">
           <p className="ov-typography-small text-muted-foreground">
-            Arraste para reordenar. Escolha 1/3, 1/2, 2/3 ou Cheia em cada painel.
+            Arraste o painel pela alça. Para redimensionar, use o canto inferior direito.
           </p>
-          <Button type="button" size="sm" className="ov-filter-control h-7 px-2.5" onClick={() => controller.setEditing(false)}>
+          <Button
+            type="button"
+            size="sm"
+            className="ov-dashboard-finish-button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              finishEditing();
+            }}
+            onClick={finishEditing}
+          >
             Concluir
           </Button>
           <Button type="button" size="sm" variant="ghost" className="ov-filter-control h-7 gap-1.5 px-2.5" onClick={controller.resetLayout}>
@@ -73,17 +100,17 @@ function DashboardToolbar({ controller }: { controller: OneViewDashboardControll
           <Button
             type="button"
             size="icon"
-            variant="ghost"
-            className={cn("ov-dashboard-organize", (isEditing || open) && "ov-dashboard-organize-active")}
+            variant="outline"
+            className={cn("ov-dashboard-organize ov-dashboard-organize-fab", (isEditing || open) && "ov-dashboard-organize-active")}
             aria-label="Organizar painel"
             title="Organizar painel"
             aria-expanded={open}
             aria-haspopup="dialog"
           >
-            <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+            <Settings2 className="h-4 w-4" aria-hidden="true" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-80 space-y-3 p-3">
+        <PopoverContent align="end" sideOffset={8} className="w-[min(20rem,calc(100vw-2rem))] space-y-3 p-3">
           <div className="space-y-1.5">
             <p className="ov-typography-caption uppercase text-muted-foreground">Disposição</p>
             <div className="ov-segmented-control" role="group" aria-label="Template do painel">
@@ -101,6 +128,9 @@ function DashboardToolbar({ controller }: { controller: OneViewDashboardControll
                 </Button>
               ))}
             </div>
+            <p className="ov-typography-caption text-muted-foreground">
+              Celular e tablet vertical: 1 coluna · Tablet horizontal: até 2 · Desktop: grade de 12.
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -110,8 +140,11 @@ function DashboardToolbar({ controller }: { controller: OneViewDashboardControll
               className="ov-filter-control gap-1.5 px-2.5"
               aria-pressed={isEditing}
               onClick={() => {
-                controller.setEditing(!isEditing);
-                if (!isEditing) setOpen(false);
+                if (isEditing) finishEditing();
+                else {
+                  controller.setEditing(true);
+                  setOpen(false);
+                }
               }}
             >
               <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
@@ -183,118 +216,218 @@ function DashboardWidgetFrame({
   setDraggedId: (id: string | null) => void;
   children: ReactNode;
 }) {
+  const resizeGesture = useRef<DashboardResizeGesture | null>(null);
+  const dragGesture = useRef<DashboardDragGesture | null>(null);
+  const [isResizing, setIsResizing] = useState(false);
+  const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
   const item = layoutItem(controller, definition.id);
-  const visibleCount = compactOneViewDashboardWidgets(controller.layout.widgets).filter((candidate) => !candidate.hidden).length;
+  const editable = controller.isEditing;
+
+  useEffect(() => {
+    if (editable) return;
+    resizeGesture.current = null;
+    dragGesture.current = null;
+    setPreviewSize(null);
+    setDragOffset(null);
+    setIsResizing(false);
+    setDraggedId(null);
+  }, [editable, setDraggedId]);
+
   if (!item || item.hidden) return null;
 
+  const width = previewSize?.width ?? item.width;
+  const height = previewSize?.height ?? item.height;
+
   const style = {
-    "--ov-dashboard-width": item.width,
-    "--ov-dashboard-height": item.height,
+    "--ov-dashboard-width": width,
+    "--ov-dashboard-height": height,
+    "--ov-dashboard-tablet-width": Math.max(3, Math.min(6, Math.ceil(width / 2))),
     order: item.order,
+    transform: dragOffset ? `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0)` : undefined,
+    zIndex: draggedId === definition.id ? 3 : undefined,
   } as CSSProperties;
-  const editable = controller.isEditing;
-  const lastVisible = visibleCount <= 1;
-  const widthChoices = WIDTH_PRESETS.filter((preset) => preset.width >= definition.minWidth);
-  const heightChoices = Array.from(new Set([
-    definition.minHeight,
-    Math.min(8, Math.max(definition.minHeight + 1, 5)),
-    8,
-  ]));
+  const itemLimitOptions = definition.itemLimitOptions ?? [];
+  const itemLimit = item.itemLimit ?? definition.defaultItemLimit ?? itemLimitOptions[0];
+  const itemLimitIndex = itemLimitOptions.findIndex((option) => option === itemLimit);
+  const previousItemLimit = itemLimitIndex > 0 ? itemLimitOptions[itemLimitIndex - 1] : null;
+  const nextItemLimit = itemLimitIndex >= 0 && itemLimitIndex < itemLimitOptions.length - 1
+    ? itemLimitOptions[itemLimitIndex + 1]
+    : null;
+
+  const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    const grid = event.currentTarget.closest<HTMLElement>(".ov-dashboard-grid");
+    if (!grid) return;
+    const viewportWidth = window.innerWidth;
+    const columns = viewportWidth >= 1280 ? 12 : viewportWidth >= 1024 ? 6 : 1;
+    if (columns === 1) return;
+    const gridStyle = window.getComputedStyle(grid);
+    const columnGap = Number.parseFloat(gridStyle.columnGap) || 0;
+    const gridWidth = grid.getBoundingClientRect().width;
+    const columnSize = Math.max(1, (gridWidth - columnGap * (columns - 1)) / columns);
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeGesture.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: width,
+      startHeight: height,
+      columnSize,
+      columnScale: 12 / columns,
+      rowSize: viewportWidth >= 1280 ? 64 : 56,
+      lastWidth: width,
+      lastHeight: height,
+    };
+    setIsResizing(true);
+  };
+
+  const continueResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = resizeGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const widthDelta = Math.round((event.clientX - gesture.startX) / gesture.columnSize) * gesture.columnScale;
+    const heightDelta = Math.round((event.clientY - gesture.startY) / gesture.rowSize);
+    const width = Math.max(definition.minWidth, Math.min(12, Math.round(gesture.startWidth + widthDelta)));
+    const height = Math.max(definition.minHeight, Math.min(8, gesture.startHeight + heightDelta));
+    if (width === gesture.lastWidth && height === gesture.lastHeight) return;
+    gesture.lastWidth = width;
+    gesture.lastHeight = height;
+    setPreviewSize({ width, height });
+  };
+
+  const finishResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = resizeGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const { lastWidth, lastHeight } = gesture;
+    resizeGesture.current = null;
+    setPreviewSize(null);
+    setIsResizing(false);
+    controller.updateWidget(definition.id, { width: lastWidth, height: lastHeight });
+  };
+
+  const startDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || item.pinned || isResizing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragGesture.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
+    setDraggedId(definition.id);
+    setDragOffset({ x: 0, y: 0 });
+  };
+
+  const continueDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = dragGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    setDragOffset({ x: event.clientX - gesture.startX, y: event.clientY - gesture.startY });
+  };
+
+  const finishDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = dragGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragGesture.current = null;
+    setDragOffset(null);
+    setDraggedId(null);
+
+    const target = Array.from(document.querySelectorAll<HTMLElement>("[data-dashboard-widget-id]"))
+      .find((candidate) => {
+        if (candidate.dataset.dashboardWidgetId === definition.id) return false;
+        const rect = candidate.getBoundingClientRect();
+        return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+      });
+    const targetId = target?.dataset.dashboardWidgetId;
+    if (targetId) controller.reorderWidgets(definition.id, targetId);
+  };
 
   return (
     <article
-      className={cn("ov-dashboard-widget", editable && "ov-dashboard-widget-editing", item.pinned && "ov-dashboard-widget-pinned")}
+      className={cn(
+        "ov-dashboard-widget",
+        editable && "ov-dashboard-widget-editing",
+        item.pinned && "ov-dashboard-widget-pinned",
+        isResizing && "ov-dashboard-widget-resizing",
+        draggedId === definition.id && "ov-dashboard-widget-dragging",
+      )}
       style={style}
-      draggable={editable && !item.pinned}
-      onDragStart={(event) => {
-        if (!editable || item.pinned) return;
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", definition.id);
-        setDraggedId(definition.id);
-      }}
-      onDragEnd={() => setDraggedId(null)}
-      onDragOver={(event) => {
-        if (!editable || item.pinned) return;
-        const sourceId = draggedId;
-        if (!sourceId || sourceId === definition.id) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        const sourceId = event.dataTransfer.getData("text/plain") || draggedId;
-        if (sourceId) controller.reorderWidgets(sourceId, definition.id);
-        setDraggedId(null);
-      }}
+      data-dashboard-widget-id={definition.id}
+      data-dashboard-width={width}
+      data-dashboard-height={height}
       aria-label={`${definition.title}${item.pinned ? ", fixado" : ""}`}
     >
       {editable ? (
         <div className="ov-dashboard-widget-editor" role="toolbar" aria-label={`Editar ${definition.title}`}>
-          <span className="inline-flex items-center gap-1.5 ov-typography-caption text-muted-foreground">
+          <button
+            type="button"
+            className="ov-dashboard-drag-handle"
+            aria-label={`Arrastar ${definition.title} para outra posição`}
+            disabled={item.pinned}
+            onPointerDown={startDrag}
+            onPointerMove={continueDrag}
+            onPointerUp={finishDrag}
+            onPointerCancel={finishDrag}
+          >
             <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
             Arrastar
-          </span>
-          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
-            <span className="sr-only">Largura</span>
-            {widthChoices.map((preset) => (
-              <Button
-                key={preset.width}
-                type="button"
-                size="sm"
-                variant={item.width === preset.width ? "secondary" : "ghost"}
-                className="h-6 px-1.5 text-[11px]"
-                aria-label={`Largura ${preset.label} para ${definition.title}`}
-                aria-pressed={item.width === preset.width}
-                onClick={() => controller.updateWidget(definition.id, { width: preset.width })}
-              >
-                {preset.label}
-              </Button>
-            ))}
-            <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
-            <span className="sr-only">Altura</span>
-            {heightChoices.map((height, index) => {
-              const label = index === 0 ? "Baixa" : index === heightChoices.length - 1 ? "Alta" : "Média";
-              return (
+          </button>
+          <div className="ov-dashboard-widget-editor-controls">
+            {itemLimitOptions.length > 0 && itemLimit != null ? (
+              <div className="ov-dashboard-size-control" role="group" aria-label={`Quantidade de itens em ${definition.title}`}>
+                <span className="ov-dashboard-size-label">Itens</span>
                 <Button
-                  key={height}
                   type="button"
-                  size="sm"
-                  variant={item.height === height ? "secondary" : "ghost"}
-                  className="h-6 px-1.5 text-[11px]"
-                  aria-label={`Altura ${label} para ${definition.title}`}
-                  aria-pressed={item.height === height}
-                  onClick={() => controller.updateWidget(definition.id, { height })}
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8"
+                  aria-label={`Mostrar menos itens em ${definition.title}`}
+                  disabled={previousItemLimit == null}
+                  onClick={() => previousItemLimit != null && controller.updateWidget(definition.id, { itemLimit: previousItemLimit })}
                 >
-                  {label}
+                  <Minus className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
-              );
-            })}
-            <Button
-              type="button"
-              size="icon"
-              variant={item.pinned ? "secondary" : "ghost"}
-              className="h-6 w-6"
-              aria-label={`${item.pinned ? "Desafixar" : "Fixar"} ${definition.title}`}
-              aria-pressed={item.pinned}
-              onClick={() => controller.updateWidget(definition.id, { pinned: !item.pinned })}
-            >
-              {item.pinned ? <PinOff className="h-3 w-3" aria-hidden="true" /> : <Pin className="h-3 w-3" aria-hidden="true" />}
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="h-6 w-6"
-              disabled={lastVisible}
-              aria-label={`Ocultar ${definition.title}`}
-              onClick={() => controller.updateWidget(definition.id, { hidden: true })}
-            >
-              <EyeOff className="h-3 w-3" aria-hidden="true" />
-            </Button>
+                <output className="ov-dashboard-size-value" aria-label={`${itemLimit} itens visíveis em ${definition.title}`}>
+                  {itemLimit}
+                </output>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8"
+                  aria-label={`Mostrar mais itens em ${definition.title}`}
+                  disabled={nextItemLimit == null}
+                  onClick={() => nextItemLimit != null && controller.updateWidget(definition.id, { itemLimit: nextItemLimit })}
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+              </div>
+            ) : null}
+            <div className="ov-dashboard-order-control" role="group" aria-label={`Posição de ${definition.title}`}>
+            </div>
           </div>
+          <span className="ov-dashboard-resize-hint">Canto: redimensionar</span>
         </div>
       ) : null}
       {children}
+      {editable ? (
+        <button
+          type="button"
+          className="ov-dashboard-resize-handle"
+          aria-label={`Redimensionar ${definition.title} pelo canto`}
+          title="Arraste para ajustar largura e altura"
+          onPointerDown={startResize}
+          onPointerMove={continueResize}
+          onPointerUp={finishResize}
+          onPointerCancel={finishResize}
+        >
+          <span aria-hidden="true" />
+        </button>
+      ) : null}
     </article>
   );
 }

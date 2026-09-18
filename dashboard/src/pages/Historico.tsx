@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { DateRange } from "react-day-picker";
 import { format, isSameDay, startOfDay, endOfDay, subDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { CalendarRange, ChevronDown, History, ListFilter, Search, Siren, X } from "lucide-react";
+import { CalendarRange, ChevronDown, History, ListFilter, Siren, X } from "lucide-react";
 import {
   ClientIdentity,
   canonicalClientName,
@@ -12,6 +12,8 @@ import {
   historyEventClientLabel,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
+import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -20,6 +22,7 @@ import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyStat
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import {
   OneViewButton,
+  OneViewKpiCard,
   OneViewPill,
   OneViewSemanticStatusBadge,
   OneViewTextAction,
@@ -49,6 +52,10 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { useAuthContext } from "@/context/AuthContext";
+import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
+import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 import {
   applyHistoryRiskPreset,
   HISTORY_RISK_PRESETS,
@@ -76,6 +83,28 @@ import {
 } from "@/lib/oneview-api";
 
 const HISTORY_REFRESH_MS = 60_000;
+
+const HISTORY_ALERT_COLUMNS = [
+  { id: "client", label: "Cliente" },
+  { id: "severity", label: "Severidade" },
+  { id: "host", label: "Host" },
+  { id: "problem", label: "Problema", required: true },
+  { id: "started", label: "Início" },
+  { id: "ack", label: "ACK" },
+  { id: "incident", label: "Chamado" },
+  { id: "status", label: "Estado" },
+] as const;
+
+const HISTORY_EVENT_COLUMNS = [
+  { id: "client", label: "Cliente" },
+  { id: "host", label: "Host" },
+  { id: "problem", label: "Problema", required: true },
+  { id: "actor", label: "Ator" },
+  { id: "comment", label: "Comentário" },
+  { id: "occurred", label: "Ocorrido em" },
+  { id: "severity", label: "Severidade" },
+] as const;
+const HISTORY_DASHBOARD_WIDGETS = dashboardWidgetsForPage("history").filter((widget) => widget.id !== "history-filters");
 
 const ACTION_EVENT_TYPES = new Set([
   "acknowledged",
@@ -349,6 +378,15 @@ function consolidateAckEvents(items: GlobalHistoryItem[]): GlobalHistoryItem[] {
  * Clique na linha abre o drawer unificado (aba Histórico); não navega para Alertas.
  */
 export default function HistoricoPage() {
+  const { user } = useAuthContext();
+  const dashboard = useOneViewDashboardLayout({
+    page: "history",
+    actorId: user?.id || user?.email,
+    widgets: HISTORY_DASHBOARD_WIDGETS,
+  });
+  const historyAlertColumns = useOneViewTableColumns({ tableId: "history-alerts", actorId: user?.id || user?.email, definitions: HISTORY_ALERT_COLUMNS });
+  const historyEventColumns = useOneViewTableColumns({ tableId: "history-events", actorId: user?.id || user?.email, definitions: HISTORY_EVENT_COLUMNS });
+  const historyPageSize = dashboard.layout.widgets.find((item) => item.id === "history-results")?.itemLimit ?? PAGE_SIZE;
   const [searchParams, setSearchParams] = useSearchParams();
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
 
@@ -512,7 +550,7 @@ export default function HistoricoPage() {
       const searchParts = [search, actor].map((value) => value.trim()).filter(Boolean);
       const response = await fetchGlobalHistory({
         page,
-        pageSize: PAGE_SIZE,
+        pageSize: historyPageSize,
         customers: cliente === "all" ? [] : [cliente],
         datasources: fonte === "all" ? [] : [fonte],
         eventType,
@@ -536,7 +574,7 @@ export default function HistoricoPage() {
     } finally {
       if (!controller.signal.aborted) setEventsLoading(false);
     }
-  }, [actor, cliente, fonte, customRange, eventType, page, period, search]);
+  }, [actor, cliente, fonte, customRange, eventType, historyPageSize, page, period, search]);
 
   const loadAlerts = useCallback(async () => {
     alertsRequestRef.current?.abort();
@@ -559,7 +597,7 @@ export default function HistoricoPage() {
 
       let request = applyHistoryRiskPreset({
         page,
-        pageSize: PAGE_SIZE,
+        pageSize: historyPageSize,
         customers: cliente === "all" ? [] : [cliente],
         datasources: fonte === "all" ? [] : [fonte],
         severities: risk === "all" || risk === "no_ack" ? severities : undefined,
@@ -607,7 +645,7 @@ export default function HistoricoPage() {
     } finally {
       if (!controller.signal.aborted) setAlertsLoading(false);
     }
-  }, [ackFilter, alertStatus, cliente, fonte, customRange, page, period, recurrenceKey, risk, search, severities]);
+  }, [ackFilter, alertStatus, cliente, fonte, customRange, historyPageSize, page, period, recurrenceKey, risk, search, severities]);
 
   useEffect(() => {
     if (tab !== "eventos") return;
@@ -956,17 +994,20 @@ export default function HistoricoPage() {
     <AppLayout
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      contentClassName="gap-3 p-3 lg:px-4"
+      contentClassName="gap-2 p-2 sm:p-3"
       clientSelect={<SectionAccentTitle level={1}>Histórico</SectionAccentTitle>}
+      wallboard={dashboard.isWallboard}
     >
-      <div className="min-w-0 space-y-3">
+      <div className="min-w-0 space-y-2">
         <Tabs value={tab} onValueChange={switchTab}>
           <TabsList aria-label="Abas do histórico" className="w-full sm:w-auto">
             <TabsTrigger value="alertas">Alertas</TabsTrigger>
             <TabsTrigger value="eventos">Eventos</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="alertas" className="mt-4 min-w-0 space-y-4">
+          <TabsContent value="alertas" className="mt-2 min-w-0 space-y-2">
+            <ConfigurableDashboard controller={dashboard}>
+            <ConfigurableDashboardWidget id="history-filters">
             {recurrenceKey ? <div className="ov-surface-official px-4 py-3 ov-type-secondary text-muted-foreground">Histórico completo da reincidência deste ativo (mesma fonte, host e trigger).</div> : null}
             <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1 sm:flex-wrap" role="group" aria-label="Presets de risco">
               {HISTORY_RISK_PRESETS.map((preset) => (
@@ -983,9 +1024,9 @@ export default function HistoricoPage() {
 
             <FilterBar
               aria-label="Filtros de alertas do histórico"
-              className="ov-surface-official space-y-3 p-4"
+              className="ov-surface-official space-y-2 p-3"
             >
-              <div className="grid gap-2 lg:grid-cols-[minmax(11rem,14rem)_minmax(16rem,1fr)_minmax(11rem,14rem)_auto]">
+              <div className="grid gap-2 lg:grid-cols-[minmax(11rem,14rem)_minmax(11rem,14rem)_auto]">
                 <div>
                   <Label className="sr-only" htmlFor="historico-alertas-cliente">Cliente</Label>
                   <Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}>
@@ -1010,17 +1051,6 @@ export default function HistoricoPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <label className="relative block min-w-0">
-                  <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    id="historico-alertas-busca"
-                    className="ov-control-official h-9 pl-9"
-                    aria-label="Buscar alertas no histórico"
-                    placeholder="Buscar host, problema ou cliente"
-                    value={searchDraft}
-                    onChange={(event) => setSearchDraft(event.target.value)}
-                  />
-                </label>
                 <div>
                   <Label className="sr-only" htmlFor="historico-alertas-periodo">Período</Label>
                   <div className="flex gap-2">
@@ -1134,40 +1164,45 @@ export default function HistoricoPage() {
                 onRetry={() => void loadAlerts()}
               />
             ) : null}
+            </ConfigurableDashboardWidget>
 
             {showRiskSummary ? (
-              <div
-                className="ov-surface-official grid gap-2 p-4 ov-type-secondary sm:grid-cols-4"
-                aria-label="Resumo da consulta de riscos"
-              >
-                <div>
-                  <p className="text-muted-foreground">Disaster</p>
-                  <p className="ov-type-body font-semibold tabular-nums">
-                    {filteredSummary ? filteredSummary.by_severity.disaster.toLocaleString("pt-BR") : "—"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">High</p>
-                  <p className="ov-type-body font-semibold tabular-nums">
-                    {filteredSummary ? filteredSummary.by_severity.high.toLocaleString("pt-BR") : "—"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Com ACK</p>
-                  <p className="ov-type-body font-semibold tabular-nums">
-                    {filteredSummary ? filteredSummary.acknowledged_source.toLocaleString("pt-BR") : "—"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Sem ACK</p>
-                  <p className="ov-type-body font-semibold tabular-nums">
-                    {filteredSummary ? filteredSummary.unacknowledged_source.toLocaleString("pt-BR") : "—"}
-                  </p>
-                </div>
-              </div>
+              <ConfigurableDashboardWidget id="history-summary">
+                <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4" aria-label="Resumo da consulta de riscos">
+                  <OneViewKpiCard className="ov-kpi-official" label="Disaster" tone="danger" value={filteredSummary ? filteredSummary.by_severity.disaster.toLocaleString("pt-BR") : "—"} />
+                  <OneViewKpiCard className="ov-kpi-official" label="High" tone="danger" value={filteredSummary ? filteredSummary.by_severity.high.toLocaleString("pt-BR") : "—"} />
+                  <OneViewKpiCard className="ov-kpi-official" label="Com ACK" tone="success" value={filteredSummary ? filteredSummary.acknowledged_source.toLocaleString("pt-BR") : "—"} />
+                  <OneViewKpiCard className="ov-kpi-official" label="Sem ACK" tone="warning" value={filteredSummary ? filteredSummary.unacknowledged_source.toLocaleString("pt-BR") : "—"} />
+                </section>
+              </ConfigurableDashboardWidget>
             ) : null}
 
+            <ConfigurableDashboardWidget id="history-results">
             <section className="ov-surface-official overflow-hidden" aria-label="Alertas do histórico">
+              {recurrenceKey ? <div className="border-b border-border/60 px-3 py-2 ov-type-secondary text-muted-foreground">Histórico completo da reincidência deste ativo.</div> : null}
+              {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} retryLabel="Tentar novamente" onRetry={() => void loadAlerts()} /> : null}
+              <ConfigurableTableToolbar
+                search={searchDraft}
+                onSearchChange={setSearchDraft}
+                searchPlaceholder="Buscar host, problema ou cliente…"
+                searchLabel="Buscar na tabela do histórico de alertas"
+                columns={historyAlertColumns}
+                updating={alertsLoading && alertsLoaded}
+                activeFilterCount={activeFilterChips.length}
+                onClearFilters={clearFilters}
+                filters={(
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Risco<Select value={risk} onValueChange={(value) => applyRiskPreset(value as HistoryRiskPreset)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{HISTORY_RISK_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={facets?.datasources ?? []} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
+                    <label className="space-y-1 text-xs text-muted-foreground">Severidade<Select value={severitySelectValue(severities)} onValueChange={(value) => changeFilter("severity", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{SEVERITY_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Estado<Select value={alertStatus} onValueChange={(value) => changeFilter("status", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERT_STATUS_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">ACK<Select value={ackFilter} onValueChange={(value) => changeFilter("acknowledged_source", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ACK_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    {period === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={customRange} onSelect={applyCustomRange} /></div> : null}
+                  </div>
+                )}
+              />
               {alertsLoading && !alertsLoaded ? (
                 <div className="space-y-3 p-4" aria-label="Carregando alertas do histórico">
                   <Skeleton className="h-10 w-full" />
@@ -1176,17 +1211,10 @@ export default function HistoricoPage() {
                 </div>
               ) : alertItems.length ? (
                 <div className="overflow-x-auto">
-                  <Table className="ov-operational-table table-fixed">
+                  <Table className={cn("ov-operational-table table-fixed", historyAlertColumns.visibleColumns.length > 6 && "min-w-[70rem]")}>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-[28%] ov-type-caption font-semibold">Cliente</TableHead>
-                        <TableHead className="hidden w-[10%] ov-type-caption font-semibold lg:table-cell">Severidade</TableHead>
-                        <TableHead className="hidden w-[14%] ov-type-caption font-semibold xl:table-cell">Host</TableHead>
-                        <TableHead className="w-[44%] ov-type-caption font-semibold sm:w-[42%] xl:w-[20%]">Problema</TableHead>
-                        <TableHead className="hidden w-[12%] ov-type-caption font-semibold xl:table-cell">Início</TableHead>
-                        <TableHead className="hidden w-[12%] ov-type-caption font-semibold xl:table-cell">ACK</TableHead>
-                        <TableHead className="hidden w-[10%] ov-type-caption font-semibold xl:table-cell">Chamado</TableHead>
-                        <TableHead className="w-[28%] ov-type-caption font-semibold sm:w-[20%] xl:w-[10%]">Estado</TableHead>
+                        {historyAlertColumns.visibleColumns.map((column) => <TableHead key={column.id} className="ov-type-caption font-semibold">{column.label}</TableHead>)}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1210,60 +1238,16 @@ export default function HistoricoPage() {
                               }
                             }}
                           >
-                            <TableCell className="max-w-[12rem]">
-                              <ClientIdentity
-                                customer={{
-                                  key: alert.customer_key,
-                                  name: alert.customer_name,
-                                  source: alert.customer_source,
-                                  operational_scope: alert.operational_scope,
-                                  operational_scope_label: alert.operational_scope_label,
-                                }}
-                                operationalScope={alert.operational_scope}
-                                operationalScopeLabel={historyEventClientLabel({
-                                  key: alert.customer_key,
-                                  name: alert.customer_name,
-                                  operational_scope: alert.operational_scope,
-                                  operational_scope_label: alert.operational_scope_label,
-                                })}
-                                showName
-                                nameClassName="truncate ov-type-body"
-                              />
-                            </TableCell>
-                            <TableCell className="hidden lg:table-cell">
-                              <SeverityBadge severity={alert.severity} />
-                            </TableCell>
-                            <TableCell className="hidden max-w-[12rem] truncate ov-type-body font-semibold xl:table-cell">
-                              {canonicalHostName(alert)}
-                            </TableCell>
-                            <TableCell className="max-w-[18rem] truncate">
-                              {alert.problem_name || "Problema não informado"}
-                            </TableCell>
-                            <TableCell className="hidden whitespace-nowrap ov-type-caption text-muted-foreground xl:table-cell">
-                              {formatWhen(alert.first_seen_at)}
-                            </TableCell>
-                            <TableCell className="hidden max-w-[10rem] xl:table-cell">
-                              {ackActor ? (
-                                <div className="min-w-0">
-                                  <OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" />
-                                  {ackActor !== "Reconhecido" ? <p className="mt-1 truncate ov-type-caption font-semibold">{ackActor}</p> : null}
-                                  {ackAt ? (
-                                    <p className="mt-0.5 truncate ov-type-caption text-muted-foreground">{formatWhen(ackAt)}</p>
-                                  ) : null}
-                                </div>
-                              ) : (
-                                <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />
-                              )}
-                            </TableCell>
-                            <TableCell className="hidden max-w-[9rem] xl:table-cell">
-                              <AlertServiceNowReferenceCell reference={alert.servicenow_reference} />
-                            </TableCell>
-                            <TableCell>
-                              <OneViewSemanticStatusBadge
-                                status={alertStatusLabel(alert) === "Ativo" ? "monitoring-down" : "monitoring-normalized"}
-                                label={alertStatusLabel(alert)}
-                              />
-                            </TableCell>
+                            {historyAlertColumns.visibleColumns.map((column) => {
+                              if (column.id === "client") return <TableCell key={column.id} className="max-w-[12rem]"><ClientIdentity customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source, operational_scope: alert.operational_scope, operational_scope_label: alert.operational_scope_label }} operationalScope={alert.operational_scope} operationalScopeLabel={historyEventClientLabel({ key: alert.customer_key, name: alert.customer_name, operational_scope: alert.operational_scope, operational_scope_label: alert.operational_scope_label })} showName nameClassName="truncate ov-type-body" /></TableCell>;
+                              if (column.id === "severity") return <TableCell key={column.id}><SeverityBadge severity={alert.severity} /></TableCell>;
+                              if (column.id === "host") return <TableCell key={column.id} className="max-w-[12rem] truncate ov-type-body font-semibold">{canonicalHostName(alert)}</TableCell>;
+                              if (column.id === "problem") return <TableCell key={column.id} className="max-w-[18rem] truncate">{alert.problem_name || "Problema não informado"}</TableCell>;
+                              if (column.id === "started") return <TableCell key={column.id} className="whitespace-nowrap ov-type-caption text-muted-foreground">{formatWhen(alert.first_seen_at)}</TableCell>;
+                              if (column.id === "ack") return <TableCell key={column.id} className="max-w-[10rem]">{ackActor ? <div className="min-w-0"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" />{ackActor !== "Reconhecido" ? <p className="mt-1 truncate ov-type-caption font-semibold">{ackActor}</p> : null}{ackAt ? <p className="mt-0.5 truncate ov-type-caption text-muted-foreground">{formatWhen(ackAt)}</p> : null}</div> : <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />}</TableCell>;
+                              if (column.id === "incident") return <TableCell key={column.id} className="max-w-[9rem]"><AlertServiceNowReferenceCell reference={alert.servicenow_reference} /></TableCell>;
+                              return <TableCell key={column.id}><OneViewSemanticStatusBadge status={alertStatusLabel(alert) === "Ativo" ? "monitoring-down" : "monitoring-normalized"} label={alertStatusLabel(alert)} /></TableCell>;
+                            })}
                           </TableRow>
                         );
                       })}
@@ -1309,14 +1293,18 @@ export default function HistoricoPage() {
                 </div>
               ) : null}
             </section>
+            </ConfigurableDashboardWidget>
+            </ConfigurableDashboard>
           </TabsContent>
 
-          <TabsContent value="eventos" className="mt-4 min-w-0 space-y-4">
+          <TabsContent value="eventos" className="mt-2 min-w-0 space-y-2">
+            <ConfigurableDashboard controller={dashboard}>
+            <ConfigurableDashboardWidget id="history-filters">
             <FilterBar
               aria-label="Filtros de eventos do histórico"
-              className="ov-surface-official space-y-3 p-4"
+              className="ov-surface-official space-y-2 p-3"
             >
-              <div className="grid gap-2 lg:grid-cols-[minmax(11rem,14rem)_minmax(16rem,1fr)_minmax(11rem,14rem)_auto]">
+              <div className="grid gap-2 lg:grid-cols-[minmax(11rem,14rem)_minmax(11rem,14rem)_auto]">
                 <div>
                   <Label className="sr-only" htmlFor="historico-eventos-cliente">Cliente</Label>
                   <Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}>
@@ -1341,17 +1329,6 @@ export default function HistoricoPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <label className="relative block min-w-0">
-                  <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    id="historico-busca"
-                    className="ov-control-official h-9 pl-9"
-                    aria-label="Buscar no histórico"
-                    placeholder="Buscar host, problema ou cliente"
-                    value={searchDraft}
-                    onChange={(event) => setSearchDraft(event.target.value)}
-                  />
-                </label>
                 <div>
                   <Label className="sr-only" htmlFor="historico-periodo">Período</Label>
                   <div className="flex gap-2">
@@ -1450,8 +1427,31 @@ export default function HistoricoPage() {
                 onRetry={() => void loadEvents()}
               />
             ) : null}
+            </ConfigurableDashboardWidget>
 
+            <ConfigurableDashboardWidget id="history-results">
             <section className="ov-surface-official overflow-hidden" aria-label="Eventos do histórico">
+              {eventsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={eventsError} retryLabel="Tentar novamente" onRetry={() => void loadEvents()} /> : null}
+              <ConfigurableTableToolbar
+                search={searchDraft}
+                onSearchChange={setSearchDraft}
+                searchPlaceholder="Buscar evento, host, cliente ou ator…"
+                searchLabel="Buscar na tabela do histórico de eventos"
+                columns={historyEventColumns}
+                updating={eventsLoading && eventsLoaded}
+                activeFilterCount={activeFilterChips.length}
+                onClearFilters={clearFilters}
+                filters={(
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={facets?.datasources ?? []} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
+                    <label className="space-y-1 text-xs text-muted-foreground">Tipo de evento<Select value={eventType} onValueChange={(value) => changeFilter("event_type", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{EVENT_TYPE_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Ator<Input className="h-9" aria-label="Filtrar por ator" placeholder="Buscar ator" value={actorDraft} onChange={(event) => setActorDraft(event.target.value)} /></label>
+                    {period === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={customRange} onSelect={applyCustomRange} /></div> : null}
+                  </div>
+                )}
+              />
               {eventsLoading && !eventsLoaded ? (
                 <div className="space-y-3 p-4" aria-label="Carregando histórico operacional">
                   <Skeleton className="h-4 w-24" />
@@ -1462,16 +1462,10 @@ export default function HistoricoPage() {
               ) : eventItems.length ? (
                 eventType === "acks" ? (
                   <div className="overflow-x-auto">
-                    <Table className="ov-operational-table table-fixed">
+                    <Table className={cn("ov-operational-table table-fixed", historyEventColumns.visibleColumns.length > 5 && "min-w-[64rem]")}>
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="w-[32%] ov-type-caption font-semibold lg:w-[20%]">Cliente</TableHead>
-                          <TableHead className="hidden w-[14%] ov-type-caption font-semibold lg:table-cell">Host</TableHead>
-                          <TableHead className="w-[42%] ov-type-caption font-semibold lg:w-[22%]">Problema</TableHead>
-                          <TableHead className="hidden w-[12%] ov-type-caption font-semibold xl:table-cell">Ator</TableHead>
-                          <TableHead className="hidden w-[16%] ov-type-caption font-semibold xl:table-cell">Comentário</TableHead>
-                          <TableHead className="w-[26%] ov-type-caption font-semibold lg:w-[16%]">Ocorrido em</TableHead>
-                          <TableHead className="hidden w-[10%] ov-type-caption font-semibold lg:table-cell">Severidade</TableHead>
+                          {historyEventColumns.visibleColumns.map((column) => <TableHead key={column.id} className="ov-type-caption font-semibold">{column.label}</TableHead>)}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1493,38 +1487,15 @@ export default function HistoricoPage() {
                                 }
                               }}
                             >
-                              <TableCell className="max-w-[12rem]">
-                                <ClientIdentity
-                                  customer={{
-                                    key: item.customer_key,
-                                    name: item.customer_name,
-                                    operational_scope: item.operational_scope,
-                                    operational_scope_label: item.operational_scope_label,
-                                  }}
-                                  operationalScope={item.operational_scope}
-                                  operationalScopeLabel={
-                                    item.operational_scope_label || historyEventClientLabel(item)
-                                  }
-                                  showName
-                                  nameClassName="truncate ov-type-body"
-                                />
-                              </TableCell>
-                              <TableCell className="hidden max-w-[12rem] truncate lg:table-cell">
-                                {canonicalHostName(item)}
-                              </TableCell>
-                              <TableCell className="max-w-[16rem] truncate">
-                                {item.problem_name || "Problema não informado"}
-                              </TableCell>
-                              <TableCell className="hidden max-w-[10rem] truncate xl:table-cell">{actorName || "—"}</TableCell>
-                              <TableCell className="hidden max-w-[16rem] truncate ov-type-caption text-muted-foreground xl:table-cell">
-                                {comment || "—"}
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap ov-type-caption text-muted-foreground">
-                                {formatWhen(item.occurred_at)}
-                              </TableCell>
-                              <TableCell className="hidden lg:table-cell">
-                                <SeverityBadge severity={item.severity} />
-                              </TableCell>
+                              {historyEventColumns.visibleColumns.map((column) => {
+                                if (column.id === "client") return <TableCell key={column.id} className="max-w-[12rem]"><ClientIdentity customer={{ key: item.customer_key, name: item.customer_name, operational_scope: item.operational_scope, operational_scope_label: item.operational_scope_label }} operationalScope={item.operational_scope} operationalScopeLabel={item.operational_scope_label || historyEventClientLabel(item)} showName nameClassName="truncate ov-type-body" /></TableCell>;
+                                if (column.id === "host") return <TableCell key={column.id} className="max-w-[12rem] truncate">{canonicalHostName(item)}</TableCell>;
+                                if (column.id === "problem") return <TableCell key={column.id} className="max-w-[16rem] truncate">{item.problem_name || "Problema não informado"}</TableCell>;
+                                if (column.id === "actor") return <TableCell key={column.id} className="max-w-[10rem] truncate">{actorName || "—"}</TableCell>;
+                                if (column.id === "comment") return <TableCell key={column.id} className="max-w-[16rem] truncate ov-type-caption text-muted-foreground">{comment || "—"}</TableCell>;
+                                if (column.id === "occurred") return <TableCell key={column.id} className="whitespace-nowrap ov-type-caption text-muted-foreground">{formatWhen(item.occurred_at)}</TableCell>;
+                                return <TableCell key={column.id}><SeverityBadge severity={item.severity} /></TableCell>;
+                              })}
                             </TableRow>
                           );
                         })}
@@ -1632,6 +1603,8 @@ export default function HistoricoPage() {
                 </div>
               ) : null}
             </section>
+            </ConfigurableDashboardWidget>
+            </ConfigurableDashboard>
           </TabsContent>
         </Tabs>
       </div>

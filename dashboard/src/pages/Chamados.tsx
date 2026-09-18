@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { format, subDays } from "date-fns";
-import { SlidersHorizontal } from "lucide-react";
+import { Loader2, Search, SlidersHorizontal } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
+import { ConfigurableTableColumns } from "@/components/oneview/ConfigurableTableTools";
 import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -49,6 +51,10 @@ import {
   type ServiceNowIncidentActionStatus,
 } from "@/lib/oneview-api";
 import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
+import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
+import { cn } from "@/lib/utils";
+import { useAuthContext } from "@/context/AuthContext";
 
 /** SN-P0-28 — busca ^INC\d+$ → number exato no BFF. */
 const INCIDENT_EXACT_NUMBER_SEARCH_RE = /^INC\d+$/i;
@@ -75,6 +81,31 @@ const COLUMNS = [
   "Responsável",
   "Atualização",
 ] as const;
+
+const INCIDENT_COLUMN_OPTIONS = [
+  { id: "number", label: COLUMNS[0], required: true },
+  { id: "client", label: COLUMNS[1] },
+  { id: "description", label: COLUMNS[2] },
+  { id: "state", label: COLUMNS[3] },
+  { id: "priority", label: COLUMNS[4] },
+  { id: "group", label: COLUMNS[5] },
+  { id: "assignee", label: COLUMNS[6] },
+  { id: "updated", label: COLUMNS[7] },
+] as const;
+
+type IncidentColumnId = typeof INCIDENT_COLUMN_OPTIONS[number]["id"];
+
+/** Larguras fixas — tabela rola horizontalmente em vez de cortar colunas. */
+const INCIDENT_COLUMN_WIDTH: Record<IncidentColumnId, string> = {
+  number: "8%",
+  client: "12%",
+  description: "28%",
+  state: "10%",
+  priority: "9%",
+  group: "12%",
+  assignee: "12%",
+  updated: "9%",
+};
 
 const STATE_OPTIONS = [
   { value: "all", label: "Todos" },
@@ -180,6 +211,11 @@ function alertStatusLabel(value: string | null | undefined) {
 }
 
 export default function ChamadosPage() {
+  const { user } = useAuthContext();
+  const actorId = user?.id || user?.email || "anonymous";
+  const dashboard = useOneViewDashboardLayout({ page: "incidents", actorId });
+  const incidentTablePageSize = dashboard.layout.widgets.find((item) => item.id === "incidents-table")?.itemLimit ?? PAGE_SIZE;
+  const incidentColumns = useOneViewTableColumns({ tableId: "incidents", actorId, definitions: INCIDENT_COLUMN_OPTIONS });
   const [searchParams] = useSearchParams();
   const initialFilters = useMemo<DraftFilters>(() => {
     if (searchParams.get("unassigned") === "true") {
@@ -197,6 +233,10 @@ export default function ChamadosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<IncidentListResponse | null>(null);
+  const payloadRef = useRef<IncidentListResponse | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<OneViewIncident | null>(null);
   const [relatedAlert, setRelatedAlert] = useState<IncidentRelatedAlert | null>(null);
   const [relatedAlertLoading, setRelatedAlertLoading] = useState(false);
@@ -208,16 +248,44 @@ export default function ChamadosPage() {
   const [selectedDuplicateGroup, setSelectedDuplicateGroup] = useState<DuplicateIncidentGroup | null>(null);
 
   useEffect(() => {
+    setPage(1);
+  }, [incidentTablePageSize]);
+
+  useEffect(() => {
+    if (viewMode !== "list") return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") setRefreshVersion((current) => current + 1);
+    };
+    const timer = window.setInterval(refresh, 30_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [viewMode]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const search = draft.search.trim();
+      if (search === applied.search) return;
+      setPage(1);
+      setApplied((current) => ({ ...current, search }));
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [applied.search, draft.search]);
+
+  useEffect(() => {
     if (viewMode !== "list") return;
     const controller = new AbortController();
-    setLoading(true);
+    if (payloadRef.current) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     const period = periodBounds(applied.period);
     const searchParams = resolveIncidentSearch(applied.search);
 
     fetchIncidents({
       page,
-      pageSize: PAGE_SIZE,
+      pageSize: incidentTablePageSize,
       search: searchParams.search,
       number: searchParams.number,
       company: applied.company.trim() || undefined,
@@ -237,22 +305,25 @@ export default function ChamadosPage() {
     })
       .then((response) => {
         if (controller.signal.aborted) return;
+        payloadRef.current = response;
         setPayload(response);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        setError(payload ? "Atualização falhou — exibindo último dado disponível" : "Chamados indisponíveis");
+        setError(payloadRef.current ? "Atualização falhou — exibindo último dado disponível" : "Chamados indisponíveis");
         void err;
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       });
 
     return () => controller.abort();
-  }, [applied, page, viewMode]);
+  }, [applied, incidentTablePageSize, page, refreshVersion, viewMode]);
 
   useEffect(() => {
-    if (viewMode !== "duplicates") return;
     const controller = new AbortController();
     setDuplicatesLoading(true);
     setDuplicatesError(null);
@@ -279,7 +350,7 @@ export default function ChamadosPage() {
         if (!controller.signal.aborted) setDuplicatesLoading(false);
       });
     return () => controller.abort();
-  }, [applied, viewMode]);
+  }, [applied, refreshVersion]);
 
   useEffect(() => {
     if (!selected) {
@@ -326,6 +397,16 @@ export default function ChamadosPage() {
   const items = payload?.items ?? [];
   const pagination = payload?.pagination;
   const counts = payload?.counts;
+  const visibleColumnIds = incidentColumns.visibleColumns.map((column) => column.id);
+  const visibleColumnCount = visibleColumnIds.length;
+  const activeFilterCount = Number(Boolean(draft.company.trim()))
+    + Number(!draft.unassigned && draft.state !== "all")
+    + Number(draft.priority !== "all")
+    + Number(!draft.unassigned && draft.assignedTo !== "all")
+    + Number(draft.callerId !== "all")
+    + Number(draft.contactType !== "all")
+    + Number(draft.period !== "all")
+    + Number(draft.unassigned);
   const totalLabel = useMemo(() => {
     if (error) return "—";
     if (!pagination) return "—";
@@ -449,17 +530,21 @@ export default function ChamadosPage() {
     <AppLayout
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      contentClassName="gap-3 p-3 lg:px-4"
+      contentClassName="gap-2 p-2 sm:p-3"
       clientSelect={<SectionAccentTitle level={1}>Chamados</SectionAccentTitle>}
+      wallboard={dashboard.isWallboard}
     >
-      <div className="space-y-3">
+      <ConfigurableDashboard controller={dashboard} className="min-w-0">
+        <ConfigurableDashboardWidget id="operational-summary">
         <CompactMetricStrip
           aria-label="Indicadores de chamados"
+          gridClassName="ov-chamados-metric-grid"
           items={[
             {
               key: "total",
               label: "Total",
               value: error ? "—" : safeCount(counts?.total ?? pagination?.total_items),
+              tone: "info",
               loading,
               selected: viewMode === "list" && applied.state === "all" && !applied.unassigned,
               onClick: () => selectMetric("total"),
@@ -468,6 +553,7 @@ export default function ChamadosPage() {
               key: "open",
               label: "Abertos",
               value: error ? "—" : safeCount(counts?.open),
+              tone: "info",
               loading: viewMode === "list" && loading,
               selected: viewMode === "list" && applied.state === "1" && !applied.unassigned,
               onClick: () => selectMetric("open"),
@@ -476,6 +562,7 @@ export default function ChamadosPage() {
               key: "in_progress",
               label: "Em andamento",
               value: error ? "—" : safeCount(counts?.in_progress),
+              tone: "warning",
               loading: viewMode === "list" && loading,
               selected: viewMode === "list" && applied.state === "2" && !applied.unassigned,
               onClick: () => selectMetric("in_progress"),
@@ -484,6 +571,7 @@ export default function ChamadosPage() {
               key: "resolved",
               label: "Resolvidos",
               value: error ? "—" : safeCount(counts?.resolved),
+              tone: "success",
               loading: viewMode === "list" && loading,
               selected: viewMode === "list" && applied.state === "6" && !applied.unassigned,
               onClick: () => selectMetric("resolved"),
@@ -492,6 +580,7 @@ export default function ChamadosPage() {
               key: "closed",
               label: "Encerrados",
               value: error ? "—" : safeCount(counts?.closed),
+              tone: "neutral",
               loading: viewMode === "list" && loading,
               selected: viewMode === "list" && applied.state === "7" && !applied.unassigned,
               onClick: () => selectMetric("closed"),
@@ -500,6 +589,7 @@ export default function ChamadosPage() {
               key: "unassigned",
               label: "Sem responsável",
               value: error ? "—" : safeCount(counts?.unassigned),
+              tone: "danger",
               loading: viewMode === "list" && loading,
               selected: viewMode === "list" && applied.unassigned,
               onClick: () => selectMetric("unassigned"),
@@ -510,166 +600,109 @@ export default function ChamadosPage() {
               value: duplicatesError
                 ? "—"
                 : safeCount(duplicatesPayload?.stats?.duplicate_groups),
+              tone: "recurrence",
               loading: viewMode === "duplicates" && duplicatesLoading,
               selected: viewMode === "duplicates",
               onClick: () => selectMetric("duplicates"),
             },
           ]}
         />
+        </ConfigurableDashboardWidget>
 
-        <FilterBar
-          aria-label="Filtros de chamados"
-          footer={(
-            <>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button type="button" size="sm" variant="outline">
-                    <SlidersHorizontal className="h-3.5 w-3.5" />
-                    Mais filtros
-                    {draft.callerId !== "all" ? (
-                      <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">1</Badge>
-                    ) : null}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="start" className="w-[280px] space-y-3 p-3">
-                  <div>
-                    <p className="text-sm font-semibold">Mais filtros</p>
-                    <p className="text-[11px] text-muted-foreground">Caller permanece opcional.</p>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground" htmlFor="chamados-caller">Caller</label>
-                    <Select
-                      value={draft.callerId}
-                      onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}
-                    >
-                      <SelectTrigger id="chamados-caller" className="ov-filter-control">
-                        <SelectValue placeholder="Todos" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {callerOptions.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </PopoverContent>
-              </Popover>
-              <Button type="button" size="sm" onClick={() => applyFilters()}>
-                Aplicar
-              </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={clearFilters}>
-                Limpar
-              </Button>
-            </>
-          )}
-        >
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-search">Busca</label>
+        <ConfigurableDashboardWidget id="incidents-table">
+
+        <FilterBar aria-label="Ferramentas da tabela de chamados" className="mb-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <label className="relative min-w-[16rem] flex-1">
+              <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id="chamados-search"
                 value={draft.search}
                 onChange={(event) => setDraft((prev) => ({ ...prev, search: event.target.value }))}
                 onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
-                placeholder="INC… ou descrição"
-                className="ov-filter-control"
+                placeholder="Buscar na tabela por INC, cliente ou descrição…"
+                className="ov-filter-control h-9 pl-9"
+                aria-label="Buscar na tabela de chamados"
               />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-client">Cliente</label>
-              <Input
-                id="chamados-client"
-                value={draft.company}
-                onChange={(event) => setDraft((prev) => ({ ...prev, company: event.target.value }))}
-                onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
-                placeholder="Nome do cliente"
-                className="ov-filter-control"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-state">Estado</label>
-              <Select
-                value={draft.unassigned ? "all" : draft.state}
-                onValueChange={(value) => setDraft((prev) => ({ ...prev, state: value, unassigned: false }))}
-              >
-                <SelectTrigger id="chamados-state" className="ov-filter-control">
-                  <SelectValue placeholder="Todos" />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATE_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-contact-type">Canal</label>
-              <Select
-                value={draft.contactType}
-                onValueChange={(value) => setDraft((prev) => ({ ...prev, contactType: value }))}
-              >
-                <SelectTrigger id="chamados-contact-type" className="ov-filter-control">
-                  <SelectValue placeholder="Todos os canais" />
-                </SelectTrigger>
-                <SelectContent>
-                  {contactTypeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-priority">Prioridade</label>
-              <Select
-                value={draft.priority}
-                onValueChange={(value) => setDraft((prev) => ({ ...prev, priority: value }))}
-              >
-                <SelectTrigger id="chamados-priority" className="ov-filter-control">
-                  <SelectValue placeholder="Todas" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PRIORITY_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-analyst">Analista</label>
-              <Select
-                value={draft.unassigned ? "all" : draft.assignedTo}
-                onValueChange={(value) => setDraft((prev) => ({
-                  ...prev,
-                  assignedTo: value,
-                  unassigned: false,
-                }))}
-              >
-                <SelectTrigger id="chamados-analyst" className="ov-filter-control">
-                  <SelectValue placeholder="Todos" />
-                </SelectTrigger>
-                <SelectContent>
-                  {assigneeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground" htmlFor="chamados-period">Última atualização</label>
-              <Select
-                value={draft.period}
-                onValueChange={(value) => setDraft((prev) => ({ ...prev, period: value }))}
-              >
-                <SelectTrigger id="chamados-period" className="ov-filter-control">
-                  <SelectValue placeholder="Todo o período" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PERIOD_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            </label>
+
+            <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
+              <PopoverTrigger asChild>
+                <Button type="button" size="sm" variant={activeFilterCount ? "default" : "outline"} className="h-9">
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  Filtros
+                  {activeFilterCount > 0 ? <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge> : null}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-[min(44rem,calc(100vw-2rem))] space-y-3 p-4">
+                <div>
+                  <p className="text-sm font-semibold">Filtros específicos</p>
+                  <p className="text-[11px] text-muted-foreground">Abra somente quando precisar refinar a fila.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Cliente
+                    <Input value={draft.company} onChange={(event) => setDraft((prev) => ({ ...prev, company: event.target.value }))} placeholder="Nome do cliente" className="ov-filter-control" />
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Estado
+                    <Select value={draft.unassigned ? "all" : draft.state} onValueChange={(value) => setDraft((prev) => ({ ...prev, state: value, unassigned: false }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent>{STATE_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Prioridade
+                    <Select value={draft.priority} onValueChange={(value) => setDraft((prev) => ({ ...prev, priority: value }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent>{PRIORITY_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Analista
+                    <Select value={draft.unassigned ? "all" : draft.assignedTo} onValueChange={(value) => setDraft((prev) => ({ ...prev, assignedTo: value, unassigned: false }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent>{assigneeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Canal
+                    <Select value={draft.contactType} onValueChange={(value) => setDraft((prev) => ({ ...prev, contactType: value }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent>{contactTypeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Caller
+                    <Select value={draft.callerId} onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent>{callerOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Última atualização
+                    <Select value={draft.period} onValueChange={(value) => setDraft((prev) => ({ ...prev, period: value }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent>{PERIOD_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <div className="flex items-end">
+                    <Button type="button" variant={draft.unassigned ? "default" : "outline"} className="w-full" aria-pressed={draft.unassigned} onClick={() => setDraft((prev) => ({ ...prev, unassigned: !prev.unassigned, assignedTo: "all", state: "all" }))}>
+                      Sem responsável
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap justify-end gap-2 border-t border-border/60 pt-3">
+                  <Button type="button" size="sm" variant="ghost" onClick={clearFilters}>Limpar</Button>
+                  <Button type="button" size="sm" onClick={() => { applyFilters(); setFiltersOpen(false); }}>Aplicar filtros</Button>
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            <ConfigurableTableColumns controller={incidentColumns} />
+
+            {activeFilterCount > 0 ? <Button type="button" size="sm" variant="ghost" className="h-9" onClick={clearFilters}>Limpar filtros</Button> : null}
+            {refreshing ? <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Atualizando</span> : null}
           </div>
         </FilterBar>
 
@@ -682,7 +715,7 @@ export default function ChamadosPage() {
               />
             ) : null}
             <SectionPanel
-              className="overflow-hidden"
+              className="min-w-0"
               bodyClassName="space-y-3 p-3"
               title="Duplicados"
               aside={(
@@ -840,11 +873,11 @@ export default function ChamadosPage() {
         {error ? <OperationalErrorBanner message={error} onRetry={() => applyFilters()} /> : null}
 
         <SectionPanel
-          className="overflow-hidden"
-          bodyClassName="p-0"
+          className="min-w-0"
+          bodyClassName="min-w-0 p-0"
           title="Incidentes"
           aside={(
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs leading-snug text-muted-foreground">
               {loading ? "Carregando…" : totalLabel}
               {!error && pagination
                 ? ` · página ${safeCount(pagination.page)} de ${safeCount(Math.max(Number(pagination.total_pages) || 0, 1))}`
@@ -852,12 +885,20 @@ export default function ChamadosPage() {
             </p>
           )}
         >
-          <Table>
-            <TableHeader>
+          <Table className={cn(
+            "ov-operational-table w-full table-fixed",
+            visibleColumnCount >= 7 ? "min-w-[72rem]" : visibleColumnCount >= 5 ? "min-w-[56rem]" : "min-w-[40rem]",
+          )}>
+            <colgroup>
+              {visibleColumnIds.map((column) => (
+                <col key={column} style={{ width: INCIDENT_COLUMN_WIDTH[column] }} />
+              ))}
+            </colgroup>
+            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
               <TableRow className="hover:bg-transparent">
-                {COLUMNS.map((column) => (
-                  <TableHead key={column} className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    {column}
+                {incidentColumns.visibleColumns.map((column) => (
+                  <TableHead key={column.id} className="ov-type-caption px-3 font-semibold uppercase tracking-wide text-muted-foreground">
+                    {column.label}
                   </TableHead>
                 ))}
               </TableRow>
@@ -866,7 +907,7 @@ export default function ChamadosPage() {
               {loading ? (
                 Array.from({ length: 6 }).map((_, index) => (
                   <TableRow key={`skeleton-${index}`} className="hover:bg-transparent">
-                    {COLUMNS.map((column) => (
+                    {visibleColumnIds.map((column) => (
                       <TableCell key={`${column}-${index}`}>
                         <Skeleton className="h-4 w-full max-w-[10rem]" />
                       </TableCell>
@@ -875,13 +916,13 @@ export default function ChamadosPage() {
                 ))
               ) : error ? (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={COLUMNS.length} className="p-4 text-sm text-muted-foreground">
+                  <TableCell colSpan={visibleColumnCount} className="p-4 text-sm text-muted-foreground">
                     Não foi possível carregar os chamados. Use Tentar novamente.
                   </TableCell>
                 </TableRow>
               ) : items.length === 0 ? (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={COLUMNS.length} className="p-0">
+                  <TableCell colSpan={visibleColumnCount} className="p-0">
                     <OperationalEmptyState compact title="Nenhum chamado encontrado" />
                   </TableCell>
                 </TableRow>
@@ -900,22 +941,16 @@ export default function ChamadosPage() {
                       }
                     }}
                   >
-                    <TableCell className="whitespace-nowrap font-mono text-xs">{displayValue(item.number)}</TableCell>
-                    <TableCell className="max-w-[14rem] truncate text-sm" title={displayValue(item.company_display, item.company)}>
-                      {displayValue(item.company_display, item.company)}
-                    </TableCell>
-                    <TableCell className="max-w-[22rem] truncate text-sm" title={displayValue(item.short_description)}>
-                      {displayValue(item.short_description)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm">{displayValue(item.state_display, item.state)}</TableCell>
-                    <TableCell className="whitespace-nowrap text-sm">{displayValue(item.priority_display, item.priority)}</TableCell>
-                    <TableCell className="max-w-[12rem] truncate text-sm" title={displayValue(item.assignment_group_display, item.assignment_group)}>
-                      {displayValue(item.assignment_group_display, item.assignment_group)}
-                    </TableCell>
-                    <TableCell className="max-w-[12rem] truncate text-sm" title={displayValue(item.assigned_to_display, item.assigned_to)}>
-                      {displayValue(item.assigned_to_display, item.assigned_to)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(item.sys_updated_on)}</TableCell>
+                    {visibleColumnIds.map((column) => {
+                      if (column === "number") return <TableCell key={column} className="whitespace-nowrap px-3 font-mono text-xs">{displayValue(item.number)}</TableCell>;
+                      if (column === "client") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.company_display, item.company)}>{displayValue(item.company_display, item.company)}</TableCell>;
+                      if (column === "description") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.short_description)}>{displayValue(item.short_description)}</TableCell>;
+                      if (column === "state") return <TableCell key={column} className="whitespace-nowrap px-3 text-sm">{displayValue(item.state_display, item.state)}</TableCell>;
+                      if (column === "priority") return <TableCell key={column} className="whitespace-nowrap px-3 text-sm">{displayValue(item.priority_display, item.priority)}</TableCell>;
+                      if (column === "group") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.assignment_group_display, item.assignment_group)}>{displayValue(item.assignment_group_display, item.assignment_group)}</TableCell>;
+                      if (column === "assignee") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.assigned_to_display, item.assigned_to)}>{displayValue(item.assigned_to_display, item.assigned_to)}</TableCell>;
+                      return <TableCell key={column} className="whitespace-nowrap px-3 text-xs tabular-nums text-muted-foreground">{formatDateTime(item.sys_updated_on)}</TableCell>;
+                    })}
                   </TableRow>
                 ))
               )}
@@ -947,7 +982,8 @@ export default function ChamadosPage() {
         </SectionPanel>
         </>
         )}
-      </div>
+        </ConfigurableDashboardWidget>
+      </ConfigurableDashboard>
 
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>
         <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-xl">

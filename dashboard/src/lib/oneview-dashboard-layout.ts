@@ -1,6 +1,6 @@
 export const ONEVIEW_DASHBOARD_LAYOUT_VERSION = 1 as const;
 
-export const ONEVIEW_DASHBOARD_PAGES = ["home", "monitoring"] as const;
+export const ONEVIEW_DASHBOARD_PAGES = ["home", "monitoring", "alerts", "incidents", "history", "operators"] as const;
 export type OneViewDashboardPage = typeof ONEVIEW_DASHBOARD_PAGES[number];
 
 export const ONEVIEW_DASHBOARD_TEMPLATES = ["compact", "operational", "ultrawide", "wallboard"] as const;
@@ -17,6 +17,8 @@ export type OneViewDashboardWidget = {
   minWidth: number;
   minHeight: number;
   defaultSize: DashboardWidgetSize;
+  itemLimitOptions?: readonly number[];
+  defaultItemLimit?: number;
   allowedPages: OneViewDashboardPage[];
 };
 
@@ -25,6 +27,7 @@ export type OneViewDashboardWidgetLayout = DashboardWidgetSize & {
   order: number;
   hidden: boolean;
   pinned: boolean;
+  itemLimit?: number;
 };
 
 export type OneViewDashboardLayout = {
@@ -57,7 +60,7 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     minWidth: 3,
     minHeight: 2,
     defaultSize: { width: 12, height: 2 },
-    allowedPages: ["home", "monitoring"],
+    allowedPages: ["home", "monitoring", "alerts", "incidents"],
   },
   {
     id: "health",
@@ -73,6 +76,8 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     minWidth: 5,
     minHeight: 4,
     defaultSize: { width: 7, height: 4 },
+    itemLimitOptions: [3, 5, 7, 10, 15],
+    defaultItemLimit: 7,
     allowedPages: ["home"],
   },
   {
@@ -81,6 +86,8 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     minWidth: 4,
     minHeight: 4,
     defaultSize: { width: 5, height: 4 },
+    itemLimitOptions: [3, 5, 7, 10, 15],
+    defaultItemLimit: 7,
     allowedPages: ["home", "monitoring"],
   },
   {
@@ -89,6 +96,8 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     minWidth: 3,
     minHeight: 3,
     defaultSize: { width: 4, height: 3 },
+    itemLimitOptions: [3, 5, 7, 10],
+    defaultItemLimit: 3,
     allowedPages: ["home"],
   },
   {
@@ -97,6 +106,8 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     minWidth: 5,
     minHeight: 3,
     defaultSize: { width: 8, height: 4 },
+    itemLimitOptions: [3, 5, 7, 10, 15],
+    defaultItemLimit: 7,
     allowedPages: ["home"],
   },
   {
@@ -105,7 +116,63 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     minWidth: 6,
     minHeight: 5,
     defaultSize: { width: 8, height: 6 },
+    itemLimitOptions: [10, 25, 50],
+    defaultItemLimit: 25,
     allowedPages: ["monitoring"],
+  },
+  {
+    id: "alerts-table",
+    title: "Tabela de alertas",
+    minWidth: 6,
+    minHeight: 5,
+    defaultSize: { width: 12, height: 7 },
+    allowedPages: ["alerts"],
+  },
+  {
+    id: "incidents-table",
+    title: "Tabela de chamados",
+    minWidth: 6,
+    minHeight: 5,
+    defaultSize: { width: 12, height: 7 },
+    itemLimitOptions: [10, 25, 50, 100],
+    defaultItemLimit: 25,
+    allowedPages: ["incidents"],
+  },
+  {
+    id: "operators-summary",
+    title: "Resumo de links",
+    minWidth: 4,
+    minHeight: 2,
+    defaultSize: { width: 12, height: 3 },
+    allowedPages: ["operators"],
+  },
+  {
+    id: "history-summary",
+    title: "Resumo do histórico",
+    minWidth: 4,
+    minHeight: 2,
+    defaultSize: { width: 12, height: 2 },
+    allowedPages: ["history"],
+  },
+  {
+    id: "history-results",
+    title: "Resultados do histórico",
+    minWidth: 6,
+    minHeight: 5,
+    defaultSize: { width: 12, height: 7 },
+    itemLimitOptions: [25, 50, 100],
+    defaultItemLimit: 50,
+    allowedPages: ["history"],
+  },
+  {
+    id: "operators-queue",
+    title: "Fila operacional de links",
+    minWidth: 6,
+    minHeight: 5,
+    defaultSize: { width: 12, height: 7 },
+    itemLimitOptions: [10, 25, 50, 100],
+    defaultItemLimit: 50,
+    allowedPages: ["operators"],
   },
 ];
 
@@ -118,6 +185,14 @@ const TEMPLATE_WIDTHS: Record<OneViewDashboardTemplate, Record<string, Dashboard
     "failed-links": { width: 12, height: 3 },
     "recent-events": { width: 12, height: 4 },
     "monitoring-queue": { width: 12, height: 6 },
+    "alerts-table": { width: 12, height: 7 },
+    "incidents-table": { width: 12, height: 7 },
+    "operators-summary": { width: 12, height: 3 },
+    "operators-filters": { width: 12, height: 4 },
+    "operators-queue": { width: 12, height: 7 },
+    "history-filters": { width: 12, height: 4 },
+    "history-summary": { width: 12, height: 2 },
+    "history-results": { width: 12, height: 7 },
   },
   operational: {
     "operational-summary": { width: 12, height: 2 },
@@ -126,7 +201,15 @@ const TEMPLATE_WIDTHS: Record<OneViewDashboardTemplate, Record<string, Dashboard
     incidents: { width: 5, height: 4 },
     "failed-links": { width: 4, height: 4 },
     "recent-events": { width: 8, height: 4 },
-    "monitoring-queue": { width: 8, height: 6 },
+    "monitoring-queue": { width: 7, height: 6 },
+    "alerts-table": { width: 12, height: 7 },
+    "incidents-table": { width: 12, height: 7 },
+    "operators-summary": { width: 12, height: 3 },
+    "operators-filters": { width: 12, height: 4 },
+    "operators-queue": { width: 12, height: 7 },
+    "history-filters": { width: 12, height: 4 },
+    "history-summary": { width: 12, height: 2 },
+    "history-results": { width: 12, height: 7 },
   },
   ultrawide: {
     "operational-summary": { width: 12, height: 2 },
@@ -136,6 +219,14 @@ const TEMPLATE_WIDTHS: Record<OneViewDashboardTemplate, Record<string, Dashboard
     "failed-links": { width: 4, height: 4 },
     "recent-events": { width: 8, height: 4 },
     "monitoring-queue": { width: 9, height: 6 },
+    "alerts-table": { width: 12, height: 8 },
+    "incidents-table": { width: 12, height: 8 },
+    "operators-summary": { width: 12, height: 3 },
+    "operators-filters": { width: 12, height: 4 },
+    "operators-queue": { width: 12, height: 8 },
+    "history-filters": { width: 12, height: 4 },
+    "history-summary": { width: 12, height: 2 },
+    "history-results": { width: 12, height: 8 },
   },
   wallboard: {
     "operational-summary": { width: 12, height: 3 },
@@ -145,6 +236,14 @@ const TEMPLATE_WIDTHS: Record<OneViewDashboardTemplate, Record<string, Dashboard
     "failed-links": { width: 4, height: 5 },
     "recent-events": { width: 8, height: 5 },
     "monitoring-queue": { width: 8, height: 7 },
+    "alerts-table": { width: 12, height: 8 },
+    "incidents-table": { width: 12, height: 8 },
+    "operators-summary": { width: 12, height: 3 },
+    "operators-filters": { width: 12, height: 5 },
+    "operators-queue": { width: 12, height: 8 },
+    "history-filters": { width: 12, height: 5 },
+    "history-summary": { width: 12, height: 3 },
+    "history-results": { width: 12, height: 8 },
   },
 };
 
@@ -154,6 +253,16 @@ function clampWidth(width: number, widget: OneViewDashboardWidget) {
 
 function clampHeight(height: number, widget: OneViewDashboardWidget) {
   return Math.max(widget.minHeight, Math.min(8, Math.trunc(height) || widget.minHeight));
+}
+
+function clampItemLimit(itemLimit: number | undefined, widget: OneViewDashboardWidget) {
+  const options = widget.itemLimitOptions;
+  if (!options?.length) return undefined;
+  const fallback = widget.defaultItemLimit ?? options[0];
+  const requested = Number.isFinite(itemLimit) ? Math.trunc(itemLimit as number) : fallback;
+  return options.reduce((closest, option) => (
+    Math.abs(option - requested) < Math.abs(closest - requested) ? option : closest
+  ), fallback);
 }
 
 function definitionFor(id: string, widgets: OneViewDashboardWidget[]) {
@@ -189,6 +298,7 @@ export function createOneViewDashboardLayout(
         height: clampHeight(size.height, widget),
         hidden: false,
         pinned: false,
+        itemLimit: clampItemLimit(widget.defaultItemLimit, widget),
       };
     }),
   };
@@ -222,6 +332,7 @@ export function normalizeOneViewDashboardLayout(
       height: clampHeight(saved.height, widget),
       hidden: Boolean(saved.hidden),
       pinned: Boolean(saved.pinned),
+      itemLimit: clampItemLimit(saved.itemLimit, widget),
     };
   }).sort((a, b) => a.order - b.order).map((item, order) => ({ ...item, order }));
 
@@ -237,13 +348,19 @@ export function repairOneViewDashboardLayout(
 ): OneViewDashboardLayout {
   const fallback = createOneViewDashboardLayout(layout.page, layout.template, widgets);
   const byId = new Map(compactOneViewDashboardWidgets(layout.widgets).map((item) => [item.id, item]));
+  // Preserve the user's order. The previous repair loop used the registry index
+  // as `order`, so any resize or visibility change silently put every panel back
+  // into its default position.
+  const prepared = fallback.widgets.map((fallbackItem, fallbackOrder) => {
+    const saved = byId.get(fallbackItem.id);
+    return {
+      item: saved ? { ...fallbackItem, ...saved, id: fallbackItem.id } : fallbackItem,
+      fallbackOrder,
+    };
+  }).sort((left, right) => left.item.order - right.item.order || left.fallbackOrder - right.fallbackOrder);
   const next = {
     ...fallback,
-    widgets: fallback.widgets.map((item, order) => {
-      const saved = byId.get(item.id);
-      if (!saved) return { ...item, order };
-      return { ...saved, id: item.id, order };
-    }),
+    widgets: prepared.map(({ item }, order) => ({ ...item, order })),
   };
   if (next.widgets.some((item) => item && !item.hidden)) return next;
   return {
@@ -279,6 +396,10 @@ export function defaultOneViewDashboardPreferences(): OneViewDashboardPreference
     templates: {
       home: "operational",
       monitoring: "operational",
+      alerts: "operational",
+      incidents: "operational",
+      history: "operational",
+      operators: "operational",
     },
   };
 }
@@ -301,6 +422,18 @@ export function readOneViewDashboardPreferences(actorId?: string | null): OneVie
         monitoring: ONEVIEW_DASHBOARD_TEMPLATES.includes(templates.monitoring as OneViewDashboardTemplate)
           ? templates.monitoring as OneViewDashboardTemplate
           : fallback.templates.monitoring,
+        alerts: ONEVIEW_DASHBOARD_TEMPLATES.includes(templates.alerts as OneViewDashboardTemplate)
+          ? templates.alerts as OneViewDashboardTemplate
+          : fallback.templates.alerts,
+        incidents: ONEVIEW_DASHBOARD_TEMPLATES.includes(templates.incidents as OneViewDashboardTemplate)
+          ? templates.incidents as OneViewDashboardTemplate
+          : fallback.templates.incidents,
+        history: ONEVIEW_DASHBOARD_TEMPLATES.includes(templates.history as OneViewDashboardTemplate)
+          ? templates.history as OneViewDashboardTemplate
+          : fallback.templates.history,
+        operators: ONEVIEW_DASHBOARD_TEMPLATES.includes(templates.operators as OneViewDashboardTemplate)
+          ? templates.operators as OneViewDashboardTemplate
+          : fallback.templates.operators,
       },
     };
   } catch {
@@ -385,7 +518,12 @@ export function applyOneViewDashboardTemplate(
   const prepared = preset.widgets.map((item) => {
     const current = currentById.get(item.id);
     if (current?.pinned) return { ...current };
-    return { ...item, hidden: Boolean(current?.hidden), pinned: false };
+    return {
+      ...item,
+      hidden: Boolean(current?.hidden),
+      pinned: false,
+      itemLimit: current?.itemLimit ?? item.itemLimit,
+    };
   });
   const pinned = prepared.filter((item) => item.pinned).sort((a, b) => a.order - b.order);
   const movable = prepared.filter((item) => !item.pinned);
@@ -406,7 +544,7 @@ export function applyOneViewDashboardTemplate(
 export function updateOneViewDashboardWidget(
   layout: OneViewDashboardLayout,
   id: string,
-  patch: Partial<Pick<OneViewDashboardWidgetLayout, "width" | "height" | "hidden" | "pinned">>,
+  patch: Partial<Pick<OneViewDashboardWidgetLayout, "width" | "height" | "hidden" | "pinned" | "itemLimit">>,
   widgets = dashboardWidgetsForPage(layout.page),
 ) {
   const definition = definitionFor(id, widgets);
@@ -418,6 +556,7 @@ export function updateOneViewDashboardWidget(
       ...patch,
       width: patch.width === undefined ? item.width : clampWidth(patch.width, definition),
       height: patch.height === undefined ? item.height : clampHeight(patch.height, definition),
+      itemLimit: patch.itemLimit === undefined ? item.itemLimit : clampItemLimit(patch.itemLimit, definition),
     }),
   };
   return repairOneViewDashboardLayout(next, widgets);

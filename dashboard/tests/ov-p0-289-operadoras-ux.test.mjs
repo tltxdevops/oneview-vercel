@@ -21,7 +21,10 @@ test("OV-P0-289 open queue sorts by latest_alert_at descending", () => {
 
 test("OV-P0-289 Operadoras keeps the operational table and browser-only columns", async () => {
   const page = await readFile(new URL("../src/pages/Operadoras.tsx", import.meta.url), "utf8");
-  for (const label of ["Link / local", "Situação", "Status INC", "Período", "Último alerta", "Chamado atual", "Acompanhamento", "Colunas", "Resumo operacional", "Detalhes técnicos", "Em falha", "Normalizados", "Recorrentes", "Recorrência", "Sem chamado", "Com chamado", "Mais filtros", "Filtros complementares", "Ver mais", "Lembrete de", "Último responsável"]) assert.match(page, new RegExp(label));
+  const tools = await readFile(new URL("../src/components/oneview/ConfigurableTableTools.tsx", import.meta.url), "utf8");
+  const preferences = await readFile(new URL("../src/lib/oneview-table-preferences.ts", import.meta.url), "utf8");
+  for (const label of ["Link / local", "Situação", "Status INC", "Período", "Último alerta", "Chamado atual", "Acompanhamento", "Resumo operacional", "Detalhes técnicos", "Em falha", "Normalizados", "Recorrentes", "Recorrência", "Sem chamado", "Com chamado", "Ver mais", "Lembrete de", "Último responsável"]) assert.match(page, new RegExp(label));
+  assert.match(tools, /Colunas/);
   assert.match(page, /ClientFilterCombobox/);
   assert.match(page, /clientSelect=/);
   assert.match(page, /Filtros operacionais principais/);
@@ -33,7 +36,8 @@ test("OV-P0-289 Operadoras keeps the operational table and browser-only columns"
   assert.doesNotMatch(page, /Filtros rápidos de cliente/);
   assert.doesNotMatch(page, /Resolvidos hoje/);
   assert.doesNotMatch(page, /\["open", "Em aberto"\]/);
-  assert.match(page, /localStorage/);
+  assert.match(page, /useOneViewTableColumns/);
+  assert.match(preferences, /localStorage/);
   assert.match(page, /Accordion/);
   assert.match(page, /Atualizando/);
   // Reminder history may display the persisted Theo acceptance state, but does not add a sender here.

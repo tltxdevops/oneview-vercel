@@ -34,7 +34,7 @@ test("OV-P0-79/104 toolbar: filtros na FILA; topo sem Cliente/Modo/Severidade/Ja
   const queue = queuePanelSlice(monitoring);
 
   assert.match(header, /PlatformHealthStrip/);
-  assert.match(monitoring, /FullscreenFab|requestFullscreen|toggleFullscreen/);
+  assert.doesNotMatch(monitoring, /FullscreenFab|requestFullscreen|toggleFullscreen/);
   assert.doesNotMatch(header, /ClientFilterCombobox/);
   assert.doesNotMatch(header, /OperationalSegmentedControl/);
   assert.doesNotMatch(header, /HOME_WINDOW_OPTIONS|MONITOR_WINDOW_OPTIONS/);
