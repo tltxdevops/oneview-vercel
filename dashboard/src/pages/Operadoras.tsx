@@ -1124,6 +1124,7 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
   onToggle: () => void;
 }) {
   const [claimedAssignee, setClaimedAssignee] = useState<string | null>(null);
+  const [incidentRefreshVersion, setIncidentRefreshVersion] = useState(0);
   const detailId = `incident-detail-${slotKey}-${incident.sys_id || incident.number || "unknown"}`;
   const canExpand = Boolean(incident.sys_id);
   const terminal = ["6", "7", "8"].includes(String(incident.state || "").trim());
@@ -1145,12 +1146,12 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
       </div>
       <span className="shrink-0 text-xs font-medium text-primary">{expanded ? "Recolher" : "Ver detalhes"}</span>
     </button>
-    {slotKey === "current" ? <IncidentActions incident={incident} onClaimed={(result) => setClaimedAssignee(result.incident.assigned_to_name)} /> : null}
-    {expanded && incident.sys_id ? <div id={detailId}><IncidentDetailPanel incident={incident} /></div> : null}
+    {slotKey === "current" ? <IncidentActions incident={incident} onClaimed={(result) => setClaimedAssignee(result.incident.assigned_to_name)} onWorkNoteAdded={() => setIncidentRefreshVersion((value) => value + 1)} /> : null}
+    {expanded && incident.sys_id ? <div id={detailId}><IncidentDetailPanel incident={incident} refreshVersion={incidentRefreshVersion} /></div> : null}
   </div>;
 }
 
-function IncidentDetailPanel({ incident }: { incident: Pick<CanonicalLinkIncident, "sys_id" | "number"> }) {
+function IncidentDetailPanel({ incident, refreshVersion = 0 }: { incident: Pick<CanonicalLinkIncident, "sys_id" | "number">; refreshVersion?: number }) {
   const [detail, setDetail] = useState<OneViewIncident | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1168,7 +1169,7 @@ function IncidentDetailPanel({ incident }: { incident: Pick<CanonicalLinkInciden
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [attempt, incident.sys_id]);
+  }, [attempt, incident.sys_id, refreshVersion]);
 
   if (loading && !detail) return <div className="mt-3 space-y-2 border-t border-border/60 pt-3"><Skeleton className="h-4 w-40" /><Skeleton className="h-20 w-full" /></div>;
   if (error && !detail) return <div className="mt-3 border-t border-border/60 pt-3"><OperationalErrorBanner message={error} onRetry={() => setAttempt((value) => value + 1)} /></div>;

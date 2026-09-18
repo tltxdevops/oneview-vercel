@@ -187,6 +187,8 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       INCIDENT_ASSIGNED_TO_OTHER: "Este chamado já possui outro responsável.",
       INVALID_CLAIM_REQUEST: "Solicitação para assumir chamado inválida.",
       INCIDENT_NOT_FOUND: "Chamado não encontrado no ServiceNow.",
+      INVALID_WORK_NOTE: "A anotação deve ser um texto não vazio, com no máximo 2000 caracteres.",
+      WORK_NOTE_RESULT_UNCERTAIN: "Não foi possível confirmar se a anotação foi registrada. Atualize o chamado antes de tentar novamente.",
     };
     throw new OneViewApiError(
       messages[errorCode] || `Não foi possível consultar o OneView (${response.status}).`,
@@ -1537,6 +1539,12 @@ export type ServiceNowIncidentClaimResponse = {
   };
 };
 
+export type ServiceNowWorkNoteResponse = {
+  success: true;
+  incident_number: string;
+  result: "added";
+};
+
 export async function fetchServiceNowOperatorIdentity(signal?: AbortSignal): Promise<ServiceNowOperatorIdentity> {
   return fetchApi<ServiceNowOperatorIdentity>("/oneview/servicenow/me", { signal });
 }
@@ -1551,6 +1559,19 @@ export async function requestServiceNowIncidentClaim({
   return fetchApi<ServiceNowIncidentClaimResponse>(
     `/oneview/incidents/${encodeURIComponent(sysId)}/claim`,
     { method: "POST", body: JSON.stringify({ confirm_reassign: confirmReassign }) },
+  );
+}
+
+export async function requestServiceNowIncidentWorkNote({
+  sysId,
+  workNote,
+}: {
+  sysId: string;
+  workNote: string;
+}): Promise<ServiceNowWorkNoteResponse> {
+  return fetchApi<ServiceNowWorkNoteResponse>(
+    `/oneview/incidents/${encodeURIComponent(sysId)}/work-note`,
+    { method: "POST", body: JSON.stringify({ work_note: workNote }) },
   );
 }
 
