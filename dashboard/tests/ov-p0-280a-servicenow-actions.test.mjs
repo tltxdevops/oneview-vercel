@@ -150,14 +150,23 @@ test("OV-P0-280A: config is fail-closed and no Vercel-to-ServiceNow client exist
 });
 
 test("OV-P0-280A: drawer uses only the authenticated OneView BFF and presents all P0 actions", () => {
-  const page = fs.readFileSync(fileURLToPath(new URL("../src/pages/Chamados.tsx", import.meta.url)), "utf8");
-  const api = fs.readFileSync(fileURLToPath(new URL("../src/lib/oneview-api.ts", import.meta.url)), "utf8");
-  assert.match(page, /Assumir/);
-  assert.match(page, /Atribuir grupo/);
-  assert.match(page, /Adicionar nota/);
-  assert.match(page, /Colocar em espera/);
-  assert.match(page, /Solicitação enviada — aguardando Worker/);
-  assert.match(api, /\/oneview\/incidents\/\$\{encodeURIComponent\(sysId\)\}\/actions/);
+  const [chamados, actions, drawer, api] = [
+    fs.readFileSync(fileURLToPath(new URL("../src/pages/Chamados.tsx", import.meta.url)), "utf8"),
+    fs.readFileSync(fileURLToPath(new URL("../src/components/oneview/IncidentActions.tsx", import.meta.url)), "utf8"),
+    fs.readFileSync(fileURLToPath(new URL("../src/components/oneview/IncidentDetailDrawer.tsx", import.meta.url)), "utf8"),
+    fs.readFileSync(fileURLToPath(new URL("../src/lib/oneview-api.ts", import.meta.url)), "utf8"),
+  ];
+  assert.match(chamados, /IncidentDetailDrawer/);
+  assert.match(chamados, /IncidentTableActionsCell/);
+  assert.match(drawer, /IncidentDetailActions/);
+  assert.match(actions, /Assumir chamado/);
+  assert.match(actions, /Adicionar anotação/);
+  assert.match(actions, /Colocar em espera/);
+  assert.match(actions, /Anexar detalhes do alerta/);
+  assert.match(api, /\/oneview\/incidents\/\$\{encodeURIComponent\(sysId\)\}\/claim/);
+  assert.match(api, /\/oneview\/incidents\/\$\{encodeURIComponent\(sysId\)\}\/work-note/);
+  assert.match(api, /\/oneview\/incidents\/\$\{encodeURIComponent\(sysId\)\}\/put-on-hold/);
+  assert.match(api, /alert-attachment/);
   assert.doesNotMatch(api, /service-now\.com|SERVICENOW_(?:USERNAME|PASSWORD)|Basic\s+/i);
 });
 

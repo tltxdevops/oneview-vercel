@@ -141,5 +141,5 @@ test("OV-P0-72 layout: grid cabe em 1366 e 1920 (problema flexível)", async () 
   assert.match(monitoring, /html\.style\.overflow = "hidden"/);
   assert.match(monitoring, /noc-monitor[\s\S]*?overflow-hidden/);
   assert.match(monitoring, /divide-y divide-border overflow-y-auto/);
-  assert.match(monitoring, /SheetContent[\s\S]*overflow-y-auto/);
+  assert.match(monitoring, /IncidentDetailDrawer/);
 });

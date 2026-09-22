@@ -63,7 +63,10 @@ import {
   type HistoryRiskPreset,
 } from "@/lib/historico-query";
 import {
+  augmentCustomerFacetsWithDedicatedDatasources,
   isDatasourceOnlyFilterValue,
+  isDatasourceOnlyQueryToken,
+  mergeOperationalZabbixSourceFilterOptions,
   zabbixSourceDisplayName,
   zabbixSourceKey,
 } from "@/lib/oneview-zabbix-source";
@@ -432,9 +435,9 @@ export default function HistoricoPage() {
     "all",
   ) as HistoryRiskPreset;
   const clienteRaw = searchParams.get("customer") || "all";
-  const cliente = isDatasourceOnlyFilterValue(clienteRaw) ? "all" : clienteRaw;
+  const cliente = isDatasourceOnlyQueryToken(clienteRaw) ? "all" : clienteRaw;
   const fonte = searchParams.get("datasource")
-    || (isDatasourceOnlyFilterValue(clienteRaw) ? zabbixSourceKey(clienteRaw) : "all")
+    || (isDatasourceOnlyQueryToken(clienteRaw) ? zabbixSourceKey(clienteRaw) : "all")
     || "all";
   const severities = parseSeverities(searchParams);
   const alertStatus = queryEnum(
@@ -730,15 +733,22 @@ export default function HistoricoPage() {
     return groups;
   }, [eventItems]);
 
+  const zabbixSourceFilterOptions = useMemo(
+    () => mergeOperationalZabbixSourceFilterOptions(facets?.datasources),
+    [facets?.datasources],
+  );
+
   const customerOptions = useMemo(() => (
-    // OV-P0-102: só facets reais — sem opção artificial de unclassified.
-    (facets?.customers ?? [])
-      .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
-      .map((customer) => ({
-      ...customer,
-      name: facetCustomerDisplayName(customer),
-    }))
-  ), [facets?.customers]);
+    augmentCustomerFacetsWithDedicatedDatasources(
+      (facets?.customers ?? [])
+        .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
+        .map((customer) => ({
+          ...customer,
+          name: facetCustomerDisplayName(customer),
+        })),
+      facets?.datasources,
+    )
+  ), [facets?.customers, facets?.datasources]);
 
   const countLabel = tab === "alertas"
     ? (alertsError || alertTotal === null ? "— alertas registrados" : `${alertTotal.toLocaleString("pt-BR")} alertas registrados`)
@@ -1107,7 +1117,7 @@ export default function HistoricoPage() {
                     <ZabbixSourceFilter
                       id="historico-alertas-fonte"
                       value={fonte}
-                      options={facets?.datasources ?? []}
+                      options={zabbixSourceFilterOptions}
                       onValueChange={(value) => changeFilter("datasource", value)}
                       triggerClassName="ov-control-official w-full"
                     />
@@ -1195,7 +1205,7 @@ export default function HistoricoPage() {
                     <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Risco<Select value={risk} onValueChange={(value) => applyRiskPreset(value as HistoryRiskPreset)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{HISTORY_RISK_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
-                    <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={facets?.datasources ?? []} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
+                    <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={zabbixSourceFilterOptions} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
                     <label className="space-y-1 text-xs text-muted-foreground">Severidade<Select value={severitySelectValue(severities)} onValueChange={(value) => changeFilter("severity", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{SEVERITY_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Estado<Select value={alertStatus} onValueChange={(value) => changeFilter("status", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERT_STATUS_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">ACK<Select value={ackFilter} onValueChange={(value) => changeFilter("acknowledged_source", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ACK_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
@@ -1385,7 +1395,7 @@ export default function HistoricoPage() {
                     <ZabbixSourceFilter
                       id="historico-eventos-fonte"
                       value={fonte}
-                      options={facets?.datasources ?? []}
+                      options={zabbixSourceFilterOptions}
                       onValueChange={(value) => changeFilter("datasource", value)}
                       triggerClassName="ov-control-official w-full"
                     />
@@ -1445,7 +1455,7 @@ export default function HistoricoPage() {
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
-                    <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={facets?.datasources ?? []} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
+                    <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={zabbixSourceFilterOptions} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
                     <label className="space-y-1 text-xs text-muted-foreground">Tipo de evento<Select value={eventType} onValueChange={(value) => changeFilter("event_type", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{EVENT_TYPE_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Ator<Input className="h-9" aria-label="Filtrar por ator" placeholder="Buscar ator" value={actorDraft} onChange={(event) => setActorDraft(event.target.value)} /></label>
                     {period === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={customRange} onSelect={applyCustomRange} /></div> : null}

@@ -1,16 +1,32 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import {
+  buildServiceNowIncidentDeepLink,
   projectServiceNowReferenceFromAlertTags,
   SERVICENOW_PROD_BASE_URL,
 } from "./oneview-inc-correlation.js";
 import { deriveHistoryEventOperationalScope, deriveOperationalScope } from "./oneview-operational-scope.js";
 import { buildAlertRecurrenceReadModel, buildRecurrenceKey, hasRecurrenceIdentity, parseRecurrenceKey } from "./oneview-recurrence.js";
-import { getOperationalDataSourceNames, ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES, splitAlertCustomerFilter } from "./oneview-scope.js";
+import {
+  DEDICATED_DATASOURCE_CUSTOMER_LABELS,
+  getOperationalDataSourceNames,
+  ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES,
+  splitAlertCustomerFilter,
+} from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 import { OPERATOR_TAG_EXISTS_SQL } from "./oneview-operator-tags.js";
 import { getAckRequestConfig } from "./oneview-ack-request.js";
 import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
+import {
+  MAPS_SERVICENOW_COMPANY_WHERE_SQL,
+  matchServiceNowOperationalBridge,
+  mapsServiceNowProblemCorrelationToken,
+  resolveServiceNowCompanyLabelFromRow,
+} from "./oneview-servicenow-customer-bridge.js";
+import {
+  parseColonHostProblemLine,
+  parseZabbixFieldsFromDescription,
+} from "./servicenow-normalize.js";
 import {
   classifyCustomerIntegrity,
   classifyHostRegistry,
@@ -298,15 +314,26 @@ const UNIDENTIFIED_CUSTOMER_SQL = `(
   or lower(coalesce(a.customer_key, '')) = 'unclassified'
 )`;
 
+function dedicatedDatasourceCustomerCaseSql(valueKind) {
+  return Object.entries(DEDICATED_DATASOURCE_CUSTOMER_LABELS)
+    .map(([key, label]) => {
+      const value = valueKind === "key" ? key : String(label).replace(/'/g, "''");
+      return `when lower(btrim(d.name)) = '${key}' and (${UNIDENTIFIED_CUSTOMER_SQL}) then '${value}'`;
+    })
+    .join("\n  ");
+}
+
 // Identidade de cliente é de leitura: nunca reescreve os alertas históricos.
 // A chave só elimina variações seguras de casing/espaços; não faz fuzzy match.
 const SAFE_CUSTOMER_KEY_SQL = `case
+  ${dedicatedDatasourceCustomerCaseSql("key")}
   when ${UNIDENTIFIED_CUSTOMER_SQL} then 'unclassified'
   else lower(btrim(a.customer_name))
 end`;
 
 // Preferências oficiais conhecidas; o fallback mantém capitalização determinística.
 const SAFE_CUSTOMER_NAME_SQL = `case
+  ${dedicatedDatasourceCustomerCaseSql("name")}
   when ${UNIDENTIFIED_CUSTOMER_SQL} then 'Cliente não identificado'
   when lower(btrim(a.customer_name)) = 'ailos' then 'Ailos'
   when lower(btrim(a.customer_name)) = 'jfsc' then 'JFSC'
@@ -820,7 +847,37 @@ export function canonicalCustomerDisplayName(value) {
   return key.replace(/(^|[\s_-])([\p{L}])/gu, (_match, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
 }
 
+export function dedicatedDatasourceCustomerIdentity(alert) {
+  const datasource = canonicalCustomerKey(alert?.datasource_name ?? alert?.data_source_name);
+  const label = DEDICATED_DATASOURCE_CUSTOMER_LABELS[datasource];
+  if (!label) return null;
+  const customerNameOriginal = textValue(alert?.customer_name);
+  const source = textValue(alert?.customer_source).toLowerCase();
+  const key = canonicalCustomerKey(alert?.customer_key);
+  const unidentified = !customerNameOriginal
+    || source === "datasource_fallback"
+    || key === "unclassified"
+    || ["cliente nao classificado", "cliente nao identificado"].includes(normalizedCustomerName(customerNameOriginal));
+  if (!unidentified) return null;
+  return {
+    customerName: label,
+    customerNameOriginal: label,
+    customerKey: datasource,
+    unidentified: false,
+    customerSource: "dedicated_datasource",
+  };
+}
+
 export function safeCustomerIdentity(alert) {
+  const dedicated = dedicatedDatasourceCustomerIdentity(alert);
+  if (dedicated) {
+    return {
+      customerName: dedicated.customerName,
+      customerNameOriginal: dedicated.customerNameOriginal,
+      customerKey: dedicated.customerKey,
+      unidentified: false,
+    };
+  }
   const customerNameOriginal = textValue(alert?.customer_name);
   const normalizedName = normalizedCustomerName(customerNameOriginal);
   const source = textValue(alert?.customer_source).toLowerCase();
@@ -838,6 +895,7 @@ export function safeCustomerIdentity(alert) {
 }
 
 export function classifyAlertEnrichment(alert) {
+  if (dedicatedDatasourceCustomerIdentity(alert)) return "complete";
   const customerName = normalizedCustomerName(alert?.customer_name);
   if (textValue(alert?.customer_source).toLowerCase() === "datasource_fallback") return "unclassified";
   if (["cliente nao classificado", "cliente nao identificado"].includes(customerName)) return "unclassified";
@@ -853,9 +911,16 @@ function mapAlertRows(rows) {
     const temporal = deriveAlertTemporalIntegrity(row);
     const enrichmentState = classifyAlertEnrichment(row);
     const customerIdentity = safeCustomerIdentity(row);
-    // Escopo derivado no BFF (OV-P0-56) — usa evidência do row original; não reescreve customer_name.
+    const scopeCustomer = customerIdentity.unidentified
+      ? row
+      : {
+        ...row,
+        customer_name: customerIdentity.customerNameOriginal,
+        customer_key: customerIdentity.customerKey,
+      };
+    // Escopo derivado no BFF (OV-P0-56) — usa identidade resolvida (ex.: MAPS dedicado).
     const operationalScope = deriveOperationalScope({
-      ...row,
+      ...scopeCustomer,
       host_name: hosts.host_name,
       host_visible_name: hosts.host_visible_name,
       host_technical_name: hosts.host_technical_name,
@@ -1191,9 +1256,12 @@ async function fetchAlertList(req, config, dataSourceNames) {
   const totalItems = integerValue(summaryRow?.total, 0);
   const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize);
 
+  const items = mapAlertRows(itemRows);
+  await enrichMapsServiceNowReferences(items, config);
+
   return {
     generated_at: generatedAt(),
-    items: mapAlertRows(itemRows),
+    items,
     filtered_summary: alertFilteredSummary(summaryRow),
     temporal_counts: alertTemporalCounts(temporalRow),
     pagination: {
@@ -1476,6 +1544,7 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
   }
 
   const item = mapAlertRows([row])[0];
+  await enrichMapsServiceNowReferences([item], config);
   const recurrence = buildAlertRecurrenceReadModel({
     current: row,
     siblings: recurrenceSiblings,
@@ -2897,14 +2966,19 @@ export async function findAlertBySourceEventId(
       a.host_visible_name,
       a.host_technical_name,
       a.customer_name,
+      a.customer_key,
+      a.customer_source,
       a.client_name,
       a.severity,
       a.status_source,
       a.problem_name,
+      a.trigger_description,
       a.created_at,
       a.first_seen_at,
-      a.resolved_at
+      a.resolved_at,
+      d.name::text as datasource_name
     from alerts a
+    left join data_sources d on d.id = a.data_source_id
     where a.source_event_id = $1
        or a.source_problem_id = $1
     order by a.first_seen_at desc nulls last, a.last_seen_at desc nulls last, a.id desc
@@ -2914,7 +2988,10 @@ export async function findAlertBySourceEventId(
   );
 
   if (!row) return null;
+  return mapIncidentRelatedAlertRow(row, { sourceEventId: eventId });
+}
 
+function mapIncidentRelatedAlertRow(row, { sourceEventId = null } = {}) {
   const host = nullableText(
     sanitizeText(
       row.host_visible_name || row.host_technical_name || row.host_name,
@@ -2922,24 +2999,248 @@ export async function findAlertBySourceEventId(
       240,
     ),
   );
-  const customer = nullableText(
-    sanitizeText(row.customer_name || row.client_name, "", 160),
-  );
+  const identity = safeCustomerIdentity({
+    customer_name: row.customer_name,
+    customer_key: row.customer_key,
+    customer_source: row.customer_source,
+    datasource_name: row.datasource_name,
+    client_name: row.client_name,
+  });
+  let customer = identity.customerName
+    || nullableText(sanitizeText(row.customer_name || row.client_name, "", 160));
+  if (textValue(row.datasource_name).toLowerCase() === "maps") {
+    customer = DEDICATED_DATASOURCE_CUSTOMER_LABELS.maps || customer;
+  }
   const statusSource = textValue(row.status_source, row.resolved_at ? "resolved" : "active").toLowerCase();
   const status = statusSource === "resolved" || row.resolved_at ? "resolved" : "active";
 
   return {
     id: textValue(row.id),
     data_source_id: textValue(row.data_source_id),
-    source_event_id: textValue(row.source_event_id, eventId),
+    source_event_id: textValue(row.source_event_id, sourceEventId),
     host: host || "—",
     customer: customer || "—",
-    problem: nullableText(sanitizeText(row.problem_name, "", 700)) || "—",
+    problem: nullableText(sanitizeText(row.problem_name || row.trigger_description, "", 700)) || "—",
     severity: textValue(row.severity, "not_classified"),
     status,
     created_at: isoDate(row.created_at),
     first_seen_at: isoDate(row.first_seen_at),
+    resolved_at: isoDate(row.resolved_at),
   };
+}
+
+/**
+ * OV-MAPS — host explícito em fonte Zabbix dedicada (somente bridges configuradas).
+ */
+export async function findAlertByOperationalDatasourceHost(
+  datasourceName,
+  hostName,
+  config = getOneViewDbConfig(),
+  { problemHint = null } = {},
+) {
+  const datasource = String(datasourceName || "").trim().toLowerCase();
+  const host = String(hostName || "").trim();
+  const problem = textValue(problemHint).slice(0, 200) || null;
+  if (!datasource || !host || host.length > 253) return null;
+  if (datasource !== "maps") return null;
+
+  const alertSelect = `
+    select
+      a.id::text as id,
+      a.data_source_id::text as data_source_id,
+      a.source_event_id,
+      a.host_name,
+      a.host_visible_name,
+      a.host_technical_name,
+      a.customer_name,
+      a.customer_key,
+      a.customer_source,
+      a.client_name,
+      a.severity,
+      a.status_source,
+      a.problem_name,
+      a.trigger_description,
+      a.created_at,
+      a.first_seen_at,
+      a.resolved_at,
+      d.name::text as datasource_name
+    from alerts a
+    join data_sources d on d.id = a.data_source_id
+    where lower(d.name) = lower($1)
+      and (
+        lower(btrim(coalesce(a.host_technical_name, ''))) = lower($2)
+        or lower(btrim(coalesce(a.host_name, ''))) = lower($2)
+        or lower(btrim(coalesce(a.host_visible_name, ''))) = lower($2)
+      )`;
+
+  if (problem) {
+    const exact = await queryRow(
+      config,
+      `${alertSelect}
+        and lower(coalesce(a.problem_name, a.trigger_description, '')) like '%' || lower($3::text) || '%'
+      order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
+      limit 1`,
+      [datasource, host, problem],
+    );
+    if (exact) return mapIncidentRelatedAlertRow(exact);
+  }
+
+  const row = await queryRow(
+    config,
+    `${alertSelect}
+    order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
+    limit 1`,
+    [datasource, host],
+  );
+  if (!row) return null;
+  return mapIncidentRelatedAlertRow(row);
+}
+
+export async function findServiceNowIncidentForMapsAlert(
+  { host, problemName } = {},
+  config = getOneViewDbConfig(),
+) {
+  const hostNorm = textValue(host);
+  const problemNorm = mapsServiceNowProblemCorrelationToken(problemName);
+  if (!hostNorm && !problemNorm) return null;
+
+  const row = await queryRow(
+    config,
+    `
+    select sys_id::text as sys_id, number::text as number
+    from servicenow_incidents
+    where ${MAPS_SERVICENOW_COMPANY_WHERE_SQL}
+      and (
+        $1::text is not null
+        and (
+          lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower($1)
+          or lower(coalesce(description, '')) like '%' || lower($1) || '%'
+        )
+        or (
+          $2::text is not null
+          and length($2::text) >= 12
+          and lower(coalesce(description, '')) like '%' || lower($2::text) || '%'
+        )
+      )
+    order by
+      case
+        when $1::text is not null
+         and (
+           lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower($1)
+           or lower(coalesce(description, '')) like '%' || lower($1) || '%'
+         )
+         and (
+           $2::text is null
+           or lower(coalesce(description, '')) like '%' || lower($2::text) || '%'
+         )
+        then 0
+        when $2::text is not null
+         and lower(coalesce(description, '')) like '%' || lower($2::text) || '%'
+        then 1
+        else 2
+      end,
+      sys_updated_on desc nulls last,
+      sys_id asc
+    limit 1
+    `,
+    [hostNorm || null, problemNorm || null],
+  );
+  if (!row) return null;
+  return {
+    sys_id: textValue(row.sys_id),
+    number: textValue(row.number),
+  };
+}
+
+async function enrichMapsServiceNowReferences(items, config = getOneViewDbConfig()) {
+  const targets = (items || []).filter((item) => {
+    if (item?.servicenow_reference?.number || item?.servicenow_reference?.sys_id) return false;
+    return String(item?.datasource_name || "").trim().toLowerCase() === "maps";
+  });
+  if (!targets.length) return;
+
+  await Promise.all(targets.map(async (item) => {
+    const host = textValue(item.host_technical_name || item.host_name || item.host_visible_name);
+    const problem = textValue(item.problem_name);
+    const incident = await findServiceNowIncidentForMapsAlert({ host, problemName: problem }, config);
+    if (!incident?.number && !incident?.sys_id) return;
+    const url = buildServiceNowIncidentDeepLink(SERVICENOW_PROD_BASE_URL, incident.sys_id);
+    item.servicenow_reference = {
+      number: incident.number || null,
+      sys_id: incident.sys_id || null,
+      url,
+      extra_count: 0,
+    };
+  }));
+}
+
+/**
+ * Lookup reverso incidente → alerta: tags SN, event id e host dedicado (MAPS).
+ */
+export async function findAlertForIncidentReverseLookup(
+  { sysId = null, number = null, zabbixEventId = null } = {},
+  config = getOneViewDbConfig(),
+) {
+  const result = await findAlertByExplicitServiceNowReference({ sysId, number }, config);
+  if (result.alert) return result;
+
+  const eventId = textValue(zabbixEventId);
+  if (eventId) {
+    try {
+      const alert = await findAlertBySourceEventId(eventId, config);
+      if (alert) return { relation_source: "event_id", alert };
+    } catch (error) {
+      if (error?.code !== "invalid_query") throw error;
+    }
+  }
+
+  const normalizedSysId = textValue(sysId).toLowerCase();
+  const normalizedNumber = textValue(number).toUpperCase();
+  let incident = null;
+  const incidentSelect = `
+    select company::text as company, display_values, description, u_hostname_zabbix::text as u_hostname_zabbix
+    from servicenow_incidents`;
+
+  if (/^[a-f0-9]{32}$/.test(normalizedSysId)) {
+    incident = await queryRow(
+      config,
+      `${incidentSelect}
+      where lower(sys_id::text) = $1
+      limit 1`,
+      [normalizedSysId],
+    );
+  } else if (/^INC\d{1,32}$/.test(normalizedNumber)) {
+    incident = await queryRow(
+      config,
+      `${incidentSelect}
+      where upper(number::text) = $1
+      order by sys_updated_on desc nulls last, sys_id asc
+      limit 1`,
+      [normalizedNumber],
+    );
+  } else {
+    return { relation_source: "none", alert: null };
+  }
+  if (!incident) return { relation_source: "none", alert: null };
+
+  const companyLabel = resolveServiceNowCompanyLabelFromRow(incident);
+  const bridge = matchServiceNowOperationalBridge(companyLabel);
+  if (!bridge) return { relation_source: "none", alert: null };
+
+  const colonHead = parseColonHostProblemLine(incident.description);
+  const parsed = parseZabbixFieldsFromDescription(incident.description);
+  const host = textValue(incident.u_hostname_zabbix) || colonHead.host || parsed.zabbix_host;
+  const problemHint = colonHead.problem;
+  if (!host) return { relation_source: "none", alert: null };
+
+  const alert = await findAlertByOperationalDatasourceHost(
+    bridge.datasource,
+    host,
+    config,
+    { problemHint },
+  );
+  if (!alert) return { relation_source: "none", alert: null };
+  return { relation_source: "operational_host", alert };
 }
 
 const RUNTIME_STATUS = Object.freeze({
@@ -3031,9 +3332,7 @@ const REQUIRED_ZABBIX_RUNTIME_SOURCES = Object.freeze([
   "teletex-http", "rhp", "maps", "fraport-for", "fraport-poa", "castrolanda", "zurich",
 ]);
 
-// Maps is a placeholder datasource until its dedicated collector configuration
-// is registered. An encrypted legacy token alone is not activation-ready config.
-const ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG = new Set(["maps"]);
+const ZABBIX_SOURCES_WITH_MISSING_RUNTIME_CONFIG = new Set([]);
 
 const RUNTIME_WORKERS = Object.freeze([
   { workerName: "zabbix_sync", name: "Zabbix Sync", intervalSeconds: 60 },
@@ -3560,6 +3859,8 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config) {
       a.host_visible_name,
       a.host_technical_name,
       a.customer_name,
+      a.customer_key,
+      a.customer_source,
       a.client_name,
       a.problem_name,
       a.trigger_description,
@@ -3567,8 +3868,10 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config) {
       a.status_source,
       a.first_seen_at,
       a.created_at,
-      a.resolved_at
+      a.resolved_at,
+      d.name::text as datasource_name
     from alerts a
+    left join data_sources d on d.id = a.data_source_id
     where (${EXPLICIT_SERVICENOW_TAG_SQL})
     order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
     limit 1
@@ -3577,28 +3880,7 @@ async function findAlertByExplicitServiceNowTag(tagName, value, config) {
   );
 
   if (!row) return null;
-  const host = nullableText(sanitizeText(
-    row.host_visible_name || row.host_technical_name || row.host_name,
-    "",
-    240,
-  ));
-  const customer = nullableText(sanitizeText(row.customer_name || row.client_name, "", 160));
-  const problem = nullableText(sanitizeText(row.problem_name || row.trigger_description, "", 700));
-  const statusSource = textValue(row.status_source, row.resolved_at ? "resolved" : "active").toLowerCase();
-
-  return {
-    id: textValue(row.id),
-    data_source_id: textValue(row.data_source_id),
-    source_event_id: textValue(row.source_event_id),
-    host: host || "—",
-    customer: customer || "—",
-    problem: problem || "—",
-    severity: textValue(row.severity, "not_classified"),
-    status: statusSource === "resolved" || row.resolved_at ? "resolved" : "active",
-    first_seen_at: isoDate(row.first_seen_at),
-    created_at: isoDate(row.created_at),
-    resolved_at: isoDate(row.resolved_at),
-  };
+  return mapIncidentRelatedAlertRow(row);
 }
 
 /**

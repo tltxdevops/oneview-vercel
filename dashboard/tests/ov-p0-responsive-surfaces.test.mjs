@@ -13,10 +13,10 @@ test("cancelable GET requests are never shared across mounted screens", async ()
   assert.match(api, /if \(canShare\) inFlightReads\.delete\(key\)/);
 });
 
-test("Alerts removes Todas as fontes while preserving datasource URL/BFF scope", async () => {
+test("Alerts exposes Fonte Zabbix filter while preserving datasource URL/BFF scope", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
-  assert.doesNotMatch(alerts, /ZabbixSourceFilter/);
-  assert.doesNotMatch(alerts, /alerts-fonte-zabbix/);
+  assert.match(alerts, /ZabbixSourceFilter/);
+  assert.match(alerts, /mergeOperationalZabbixSourceFilterOptions/);
   assert.match(alerts, /datasources: selectedDatasources/);
 });
 

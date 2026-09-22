@@ -23,6 +23,7 @@ import {
   RuntimeHealthResponse,
   fetchRuntimeHealth,
 } from "@/lib/oneview-api";
+import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import {
   RUNTIME_CATEGORY_LABELS,
   operationalToneDotClass,
@@ -83,8 +84,8 @@ function healthToneClass(level: HealthLevel) {
 }
 
 function sourceDisplayName(name: string) {
-  if (String(name || "").toLowerCase() === "teletex-http") return "Teletex";
-  return name || "Fonte";
+  const label = zabbixSourceDisplayName(name);
+  return label || name || "Fonte";
 }
 
 function formatClock(value?: string | null) {

@@ -73,7 +73,7 @@ test("OV-P0-306 work note válida recebe prefixo backend e retorna contrato mín
   assert.equal(patches[0].sysId, INCIDENT_SYS_ID);
   assert.equal(
     patches[0].note,
-    "[OneView • Guilherme Franco • guilherme.franco@teletex.com.br]\nRealizado contato com a operadora.",
+    "[OneView • Guilherme Franco]\nRealizado contato com a operadora.",
   );
   assert.equal(patches[0].options.config.username, "teletex_Integration");
   assert.equal(invalidations, 1);
@@ -102,8 +102,9 @@ test("OV-P0-306 nota vazia, tipo inválido e campos extras são rejeitados sem P
 test("OV-P0-306 autor do browser não substitui ator autenticado", async () => {
   assert.equal(
     buildOneViewWorkNote(ACTOR, "Nota"),
-    "[OneView • Guilherme Franco • guilherme.franco@teletex.com.br]\nNota",
+    "[OneView • Guilherme Franco]\nNota",
   );
+  assert.doesNotMatch(buildOneViewWorkNote(ACTOR, "Nota"), /@/);
   let patches = 0;
   const forged = await request(createHandler({ patch: async () => { patches += 1; } }), {
     work_note: "Nota",
@@ -180,7 +181,13 @@ test("OV-P0-306 usa actor da sessão, UI somente em Links e Monitoring permanece
   assert.match(handler, /Object\.keys\(body\).*key !== "work_note"/s);
   assert.match(route, /oneview-servicenow-work-note/);
   assert.match(component, /Adicionar anotação/);
+  assert.match(component, /Anexar detalhes do alerta/);
   assert.match(component, /requestServiceNowIncidentWorkNote/);
-  assert.match(links, /<IncidentActions incident=\{incident\}/);
-  assert.doesNotMatch(monitoring, /IncidentActions/);
+  assert.match(component, /requestServiceNowIncidentAlertAttachment/);
+  assert.match(links, /IncidentDetailActions/);
+  assert.match(links, /buildAlertArtifactFromCanonicalLink/);
+  assert.match(component, /Mais ações/);
+  assert.match(component, /requestServiceNowIncidentPutOnHold/);
+  assert.match(monitoring, /IncidentDetailDrawer/);
+  assert.doesNotMatch(monitoring, /<IncidentActions/);
 });

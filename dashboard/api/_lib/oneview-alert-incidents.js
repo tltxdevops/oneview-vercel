@@ -12,6 +12,8 @@ import { findReadModelRelatedIncidents } from "./oneview-incidents-read-model.js
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const SAFE_EVENT_ID = /^[A-Za-z0-9._:-]{1,80}$/;
+const SAFE_MAPS_HOST = /^[A-Za-z0-9._:-]{1,253}$/;
+const SAFE_MAPS_PROBLEM = /^[\s\S]{1,240}$/;
 
 function oneQuery(req, key) {
   const value = req?.query?.[key];
@@ -62,6 +64,9 @@ function toDrawerIncident(item) {
     sys_updated_on: item.sys_updated_on,
     zabbix_event_id: item.zabbix_event_id ?? null,
     servicenow_url: item.servicenow_url ?? null,
+    short_description: item.short_description ?? item.shortDescription ?? null,
+    company: item.company ?? item.customer ?? null,
+    company_display: item.company_display ?? null,
   };
 }
 
@@ -94,6 +99,31 @@ export function parseTagIncidentNumberInputs(req) {
 }
 
 /** OV-P0-108 — sys_ids explícitos das tags (__zbx_servicenow_sys_id). */
+/** Ponte MAPS read-only: host/problema do alerta Zabbix dedicado. */
+export function parseMapsOperationalCorrelationInputs(req) {
+  const mapsDatasource = String(oneQuery(req, "maps_datasource") || oneQuery(req, "datasource") || "").trim().toLowerCase();
+  const mapsHost = String(oneQuery(req, "maps_host") || oneQuery(req, "host_name") || "").trim();
+  const mapsProblemName = String(oneQuery(req, "maps_problem") || oneQuery(req, "problem_name") || "").trim();
+  if (mapsHost && !SAFE_MAPS_HOST.test(mapsHost)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
+  if (mapsProblemName && !SAFE_MAPS_PROBLEM.test(mapsProblemName)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
+  if (!mapsHost && !mapsProblemName && !mapsDatasource) {
+    return { mapsDatasource: null, mapsHost: null, mapsProblemName: null };
+  }
+  return {
+    mapsDatasource: mapsDatasource || "maps",
+    mapsHost: mapsHost || null,
+    mapsProblemName: mapsProblemName || null,
+  };
+}
+
 export function parseIncidentSysIdInputs(req) {
   const out = [];
   const seen = new Set();
@@ -143,12 +173,20 @@ export function createRelatedIncidentsHandler({
     let incidentNumbers = [];
     let tagIncidentNumbers = [];
     let incidentSysIds = [];
+    let mapsOperational = { mapsDatasource: null, mapsHost: null, mapsProblemName: null };
     try {
       sourceEventId = parseOptionalZabbixEventId(req);
       incidentNumbers = parseIncidentCorrelationInputs(req);
       tagIncidentNumbers = parseTagIncidentNumberInputs(req);
       incidentSysIds = parseIncidentSysIdInputs(req);
-      if (!sourceEventId && !incidentNumbers.length && !tagIncidentNumbers.length && !incidentSysIds.length) {
+      mapsOperational = parseMapsOperationalCorrelationInputs(req);
+      if (
+        !sourceEventId
+        && !incidentNumbers.length
+        && !tagIncidentNumbers.length
+        && !incidentSysIds.length
+        && !mapsOperational.mapsHost
+      ) {
         // Compat SN-P0-16: exige source_event_id quando não há referência explícita.
         parseZabbixEventId(req);
       }
@@ -171,6 +209,9 @@ export function createRelatedIncidentsHandler({
         incidentNumbers,
         tagIncidentNumbers,
         incidentSysIds,
+        mapsDatasource: mapsOperational.mapsDatasource,
+        mapsHost: mapsOperational.mapsHost,
+        mapsProblemName: mapsOperational.mapsProblemName,
       }, lookupOptions);
       const incidents = (result.incidents || []).map(toDrawerIncident);
       const payload = {

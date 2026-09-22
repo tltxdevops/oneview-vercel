@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { Eye, Loader2, RefreshCcw, ChevronsUpDown, Check } from "lucide-react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TeletexMark } from "@/components/layout/TeletexMark";
@@ -17,13 +17,13 @@ import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { OperationalFilterGroup } from "@/components/oneview/OperationalFilterGroup";
 import { OperationalIncidentsToolbar } from "@/components/oneview/OperationalIncidentsToolbar";
 import { OperationalSegmentedControl } from "@/components/oneview/OperationalSegmentedControl";
 import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
-import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { OneViewSemanticStatusBadge, OneViewSeverityBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { TruncatedText } from "@/components/oneview/TruncatedText";
 import { Badge } from "@/components/ui/badge";
@@ -36,8 +36,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
@@ -49,14 +47,12 @@ import {
   AlertHistoryItem,
   AlertHistoryResponse,
   IncidentAssigneeFacet,
-  IncidentRelatedAlert,
   OneViewAlert,
   OneViewFacetsResponse,
   OneViewIncident,
   OneViewSeverity,
   fetchAlert,
   fetchAlertHistory,
-  fetchIncidentRelatedAlert,
   fetchIncidents,
   formatNullableCount,
   formatOneViewSeverityLabel,
@@ -127,6 +123,8 @@ import {
   customerFilterCountNoun,
   isDatasourceOnlyFilterValue,
   splitLegacyCustomerQuery,
+  augmentCustomerFacetsWithDedicatedDatasources,
+  mergeOperationalZabbixSourceFilterOptions,
   zabbixSourceKey,
 } from "@/lib/oneview-zabbix-source";
 
@@ -163,6 +161,7 @@ type MonitorAlertColumnId = typeof MONITOR_ALERT_COLUMNS[number]["id"];
 
 const MONITOR_INCIDENT_COLUMNS = [
   { id: "number", label: "Número", required: true },
+  { id: "description", label: "Descrição" },
   { id: "client", label: "Cliente" },
   { id: "updated", label: "Atualização" },
   { id: "analyst", label: "Analista" },
@@ -183,7 +182,8 @@ const MONITOR_ALERT_COLUMN_WIDTH: Record<MonitorAlertColumnId, string> = {
 };
 const MONITOR_INCIDENT_COLUMN_WIDTH: Record<MonitorIncidentColumnId, string> = {
   number: "7.5rem",
-  client: "minmax(0,1fr)",
+  description: "minmax(10rem,1.25fr)",
+  client: "minmax(8rem,0.85fr)",
   updated: "6.5rem",
   analyst: "8rem",
   priority: "7rem",
@@ -191,7 +191,7 @@ const MONITOR_INCIDENT_COLUMN_WIDTH: Record<MonitorIncidentColumnId, string> = {
 };
 
 const MONITOR_ALERT_TABLE_MIN_WIDTH = "64rem";
-const MONITOR_INCIDENT_TABLE_MIN_WIDTH = "40rem";
+const MONITOR_INCIDENT_TABLE_MIN_WIDTH = "52rem";
 
 function monitorColumnAlign(column: string) {
   if (column === "started" || column === "duration" || column === "updated") return "justify-self-end text-right";
@@ -225,12 +225,6 @@ function formatCompactFirstSeen(value?: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function formatDateTime(value?: string | null) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("pt-BR");
 }
 
 function formatUpdatedAgo(value?: string | null) {
@@ -272,26 +266,6 @@ function historyEventLabel(eventType: string) {
   if (value === "suppressed") return "Supressão";
   if (value === "unsuppressed") return "Fim da supressão";
   return "Evento operacional";
-}
-
-function alertSeverityLabel(value: string | null | undefined) {
-  return displayIncidentField(value);
-}
-
-function alertStatusLabel(value: string | null | undefined) {
-  const key = String(value || "").trim().toLowerCase();
-  if (key === "active") return "Ativo";
-  if (key === "resolved") return "Resolvido";
-  return displayIncidentField(value);
-}
-
-function DetailField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="space-y-1">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="whitespace-pre-wrap break-words text-sm text-foreground">{value}</p>
-    </div>
-  );
 }
 
 function incidentKey(item: OneViewIncident) {
@@ -382,8 +356,10 @@ function MonitorUnassignedRow({
 }) {
   const number = displayIncidentField(item.number);
   const analyst = displayIncidentField(item.assigned_to_display, item.assigned_to);
+  const incidentDescription = displayIncidentField(item.short_description, item.description);
   const cells: Record<MonitorIncidentColumnId, ReactNode> = {
     number: <span key="number" className="block truncate text-[13px] font-semibold text-foreground" title={number}>{number}</span>,
+    description: <span key="description" className="block truncate text-[11px] text-foreground/85" title={incidentDescription}>{incidentDescription}</span>,
     client: <span key="client" className="block truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>{displayIncidentField(item.company_display, item.company)}</span>,
     updated: <span key="updated" className="block truncate text-[11px] tabular-nums text-muted-foreground" title={formatUpdatedAgo(item.sys_updated_on)}>{formatUpdatedAgo(item.sys_updated_on)}</span>,
     analyst: <span key="analyst" className="block truncate text-[10px] text-muted-foreground" title={analyst}>{showAnalyst ? analyst : "—"}</span>,
@@ -543,11 +519,7 @@ export default function MonitoringPage() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<OneViewIncident | null>(null);
-  const [relatedAlert, setRelatedAlert] = useState<IncidentRelatedAlert | null>(null);
-  const [relatedAlertLoading, setRelatedAlertLoading] = useState(false);
-  const [relatedAlertChecked, setRelatedAlertChecked] = useState(false);
   const detailRequest = useRef<AbortController | null>(null);
-  const relatedAlertRequest = useRef<AbortController | null>(null);
   const [navOpen, setNavOpen] = useState(() => {
     try {
       const raw = sessionStorage.getItem("oneview-monitor-sidebar-open");
@@ -715,18 +687,27 @@ export default function MonitoringPage() {
     };
   }, []);
 
+  const zabbixSourceFilterOptions = useMemo(
+    () => mergeOperationalZabbixSourceFilterOptions(facets?.datasources),
+    [facets?.datasources],
+  );
+
   const customerCards = useMemo(() => {
-    return [
-      { key: "all", name: "Todos" },
-      ...(facets?.customers ?? [])
+    const customers = augmentCustomerFacetsWithDedicatedDatasources(
+      (facets?.customers ?? [])
         .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
         .map((customer) => ({
           ...customer,
           name: facetCustomerDisplayName(customer),
           alerts_count: null,
         })),
+      facets?.datasources,
+    );
+    return [
+      { key: "all", name: "Todos" },
+      ...customers,
     ];
-  }, [facets?.customers]);
+  }, [facets?.customers, facets?.datasources]);
 
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
@@ -1050,7 +1031,7 @@ export default function MonitoringPage() {
   ].some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(normalizedAlertSearch)));
   const normalizedIncidentSearch = incidentSearch.trim().toLocaleLowerCase("pt-BR");
   const displayUnassignedIncidents = mergedUnassignedIncidents.filter((item) => !normalizedIncidentSearch || [
-    item.number, item.company_display, item.company, item.assigned_to_display, item.assigned_to, item.priority_display, item.state_display,
+    item.number, item.short_description, item.description, item.company_display, item.company, item.assigned_to_display, item.assigned_to, item.priority_display, item.state_display,
   ].some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(normalizedIncidentSearch)));
   const monitorAlertColumnIds = monitorAlertColumns.visibleColumns.map((column) => column.id);
   const monitorAlertGrid = monitorAlertColumnIds.map((column) => MONITOR_ALERT_COLUMN_WIDTH[column]).join(" ");
@@ -1142,11 +1123,7 @@ export default function MonitoringPage() {
   }, [searchParams, setSearchParams]);
 
   const closeIncident = useCallback(() => {
-    relatedAlertRequest.current?.abort();
     setSelectedIncident(null);
-    setRelatedAlert(null);
-    setRelatedAlertLoading(false);
-    setRelatedAlertChecked(false);
     if (searchParams.has("incident")) {
       const next = new URLSearchParams(searchParams);
       next.delete("incident");
@@ -1155,10 +1132,7 @@ export default function MonitoringPage() {
   }, [searchParams, setSearchParams]);
 
   const openAlert = useCallback((alert: OneViewAlert) => {
-    relatedAlertRequest.current?.abort();
     setSelectedIncident(null);
-    setRelatedAlert(null);
-    setRelatedAlertChecked(false);
     setSelectedAlertId(alert.id);
     setSelectedPreview(alert);
     void loadSelectedAlert(alert.id);
@@ -1234,11 +1208,7 @@ export default function MonitoringPage() {
   useEffect(() => {
     if (!requestedIncidentId) {
       if (selectedIncident) {
-        relatedAlertRequest.current?.abort();
         setSelectedIncident(null);
-        setRelatedAlert(null);
-        setRelatedAlertLoading(false);
-        setRelatedAlertChecked(false);
       }
       return;
     }
@@ -1259,58 +1229,14 @@ export default function MonitoringPage() {
     return () => controller.abort();
   }, [requestedIncidentId, resolveIncidentFromId, selectedIncident]);
 
-  useEffect(() => {
-    if (!selectedIncident) {
-      relatedAlertRequest.current?.abort();
-      setRelatedAlert(null);
-      setRelatedAlertLoading(false);
-      setRelatedAlertChecked(false);
-      return;
-    }
-    const sysId = String(selectedIncident.sys_id || "").trim();
-    const number = String(selectedIncident.number || "").trim();
-    if (!sysId && !number) {
-      setRelatedAlert(null);
-      setRelatedAlertLoading(false);
-      setRelatedAlertChecked(true);
-      return;
-    }
-    const controller = new AbortController();
-    relatedAlertRequest.current = controller;
-    setRelatedAlert(null);
-    setRelatedAlertLoading(true);
-    setRelatedAlertChecked(false);
-    fetchIncidentRelatedAlert({ sysId, number }, controller.signal)
-      .then((response) => {
-        if (controller.signal.aborted) return;
-        setRelatedAlert(response.matched && response.alert ? response.alert : null);
-        setRelatedAlertChecked(true);
-      })
-      .catch(() => {
-        if (controller.signal.aborted) return;
-        setRelatedAlert(null);
-        setRelatedAlertChecked(true);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setRelatedAlertLoading(false);
-      });
-    return () => controller.abort();
-  }, [selectedIncident]);
-
   useEffect(() => () => {
     detailRequest.current?.abort();
-    relatedAlertRequest.current?.abort();
   }, []);
 
   const selectedAlert = detail?.item ?? selectedPreview;
   const historyItems = (history?.items ?? []).filter(
     (item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal",
   );
-  const descriptionText = selectedIncident
-    ? displayIncidentField(selectedIncident.description, selectedIncident.short_description)
-    : "—";
-  const hasZabbixHost = Boolean(String(selectedIncident?.u_hostname_zabbix || "").trim());
-  const hasZabbixIp = Boolean(String(selectedIncident?.u_ip_zabbix || "").trim());
   const alertsHref = alertMode === MONITOR_ALERT_MODE.prioritary ? "/alertas?view=priority" : "/alertas?view=open";
   const chamadosHref = buildMonitoringChamadosHref({ mode: incidentsMode, assignedTo: incidentsAssignedTo });
 
@@ -1368,7 +1294,7 @@ export default function MonitoringPage() {
             <OperationalFilterGroup label="Fonte" showDivider>
               <ZabbixSourceFilter
                 value={selectedDatasources[0] || "all"}
-                options={facets?.datasources ?? []}
+                options={zabbixSourceFilterOptions}
                 onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])}
                 triggerClassName="h-9"
               />
@@ -1491,7 +1417,7 @@ export default function MonitoringPage() {
               filters={(
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerCards} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={toggleCustomer} triggerClassName="h-9 w-full" countNoun={customerFilterCountNoun(alertMode === MONITOR_ALERT_MODE.prioritary ? "prioritary" : "filter")} /></div>
-                  <div className="space-y-1 text-xs text-muted-foreground">Fonte<ZabbixSourceFilter value={selectedDatasources[0] || "all"} options={facets?.datasources ?? []} onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])} triggerClassName="h-9 w-full" /></div>
+                  <div className="space-y-1 text-xs text-muted-foreground">Fonte<ZabbixSourceFilter value={selectedDatasources[0] || "all"} options={zabbixSourceFilterOptions} onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])} triggerClassName="h-9 w-full" /></div>
                   <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={homeWindow} onValueChange={(value) => setMonitorWindow(parseMonitorWindow(value))}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{MONITOR_WINDOW_OPTIONS.map((preset) => <SelectItem key={preset} value={preset}>{preset}</SelectItem>)}</SelectContent></Select></label>
                   <label className="space-y-1 text-xs text-muted-foreground">Fila<Select value={alertMode} onValueChange={(value) => setAlertMode(parseMonitorAlertMode(value))}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value={MONITOR_ALERT_MODE.prioritary}>Prioritários</SelectItem><SelectItem value={MONITOR_ALERT_MODE.all}>Todos</SelectItem></SelectContent></Select></label>
                   <label className="space-y-1 text-xs text-muted-foreground">Ordenação<Select value={queueSort} onValueChange={(value) => setQueueSort(parseMonitorQueueSort(value))}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{MONITOR_QUEUE_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label>
@@ -1626,84 +1552,11 @@ export default function MonitoringPage() {
         description="Consulta rápida sem sair do Monitoramento."
       />
 
-      <Sheet open={selectedIncident !== null} onOpenChange={(open) => { if (!open) closeIncident(); }}>
-        <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-xl">
-          {selectedIncident ? (
-            <div className="flex h-full flex-col">
-              <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
-                <SheetTitle className="font-mono text-lg">{displayIncidentField(selectedIncident.number)}</SheetTitle>
-                <SheetDescription>{displayIncidentField(selectedIncident.company_display, selectedIncident.company)}</SheetDescription>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <Badge variant="outline">{displayIncidentField(selectedIncident.state_display, selectedIncident.state)}</Badge>
-                  <Badge variant="secondary">{displayIncidentField(selectedIncident.priority_display, selectedIncident.priority)}</Badge>
-                </div>
-              </SheetHeader>
-
-              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-                <DetailField label="Descrição" value={descriptionText} />
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <DetailField label="Grupo" value={displayIncidentField(selectedIncident.assignment_group_display, selectedIncident.assignment_group)} />
-                  <DetailField label="Responsável" value={displayIncidentField(selectedIncident.assigned_to_display, selectedIncident.assigned_to)} />
-                  <DetailField label="Abertura" value={formatDateTime(selectedIncident.opened_at)} />
-                  <DetailField label="Atualização" value={formatDateTime(selectedIncident.sys_updated_on)} />
-                  <DetailField label="Encerramento" value={formatDateTime(selectedIncident.closed_at || selectedIncident.resolved_at)} />
-                  <DetailField label="Caller" value={displayIncidentField(selectedIncident.caller_id_display, selectedIncident.caller_id)} />
-                  <DetailField label="Canal" value={displayIncidentField(selectedIncident.contact_type_display, selectedIncident.contact_type)} />
-                </div>
-
-                {hasZabbixHost || hasZabbixIp ? (
-                  <section aria-label="Dados Zabbix" className="space-y-3 rounded-md border border-border/70 p-3">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Zabbix</p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {hasZabbixHost ? <DetailField label="Hostname Zabbix" value={displayIncidentField(selectedIncident.u_hostname_zabbix)} /> : null}
-                      {hasZabbixIp ? <DetailField label="IP Zabbix" value={displayIncidentField(selectedIncident.u_ip_zabbix)} /> : null}
-                    </div>
-                  </section>
-                ) : null}
-
-                <section aria-label="Alerta relacionado" className="space-y-3 rounded-md border border-border/70 p-3">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Alerta relacionado</p>
-                  {relatedAlertLoading ? (
-                    <div className="space-y-2">
-                      <Skeleton className="h-4 w-2/3" />
-                      <Skeleton className="h-4 w-1/2" />
-                      <Skeleton className="h-4 w-1/3" />
-                    </div>
-                  ) : relatedAlertChecked && relatedAlert ? (
-                    <div className="space-y-3">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <DetailField label="Cliente" value={displayIncidentField(relatedAlert.customer)} />
-                        <DetailField label="Host" value={displayIncidentField(relatedAlert.host)} />
-                        <DetailField label="Problema" value={displayIncidentField(relatedAlert.problem)} />
-                        <DetailField label="Severidade" value={alertSeverityLabel(relatedAlert.severity)} />
-                        <DetailField label="Início" value={formatDateTime(relatedAlert.first_seen_at)} />
-                        <DetailField label="Estado" value={alertStatusLabel(relatedAlert.status)} />
-                      </div>
-                      <Button type="button" variant="secondary" size="sm" className="w-full sm:w-auto" asChild>
-                        <Link to={`/alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
-                          Ver alerta
-                        </Link>
-                      </Button>
-                    </div>
-                  ) : relatedAlertChecked ? (
-                    <p className="text-sm text-muted-foreground">Alerta relacionado não localizado</p>
-                  ) : null}
-                </section>
-              </div>
-
-              <div className="border-t border-border/70 px-6 py-4">
-                {selectedIncident.sys_id ? (
-                  <ServiceNowDevLink href={selectedIncident.servicenow_url} sysId={selectedIncident.sys_id} fullWidth />
-                ) : (
-                  <p className="text-center text-xs text-muted-foreground">
-                    Link do ServiceNow indisponível para este incidente.
-                  </p>
-                )}
-              </div>
-            </div>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+      <IncidentDetailDrawer
+        incident={selectedIncident}
+        onOpenChange={(open) => { if (!open) closeIncident(); }}
+        description="Consulta rápida sem sair do Monitoramento."
+      />
     </div>
   );
 }

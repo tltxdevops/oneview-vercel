@@ -5,7 +5,10 @@ import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
-import { IncidentActions } from "@/components/oneview/IncidentActions";
+import { IncidentDetailActions } from "@/components/oneview/IncidentDetailActions";
+import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
+import { buildAlertArtifactFromCanonicalLink } from "@/lib/oneview-alert-artifact";
+import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
@@ -1090,21 +1093,57 @@ export default function OperadorasPage() {
 
 function QueueLinkDrawer({ link, detail, loading, error, reminderRequest, onClose, onRetry }: { link: CanonicalLink | null; detail: CanonicalLinkDetail | null; loading: boolean; error: string | null; reminderRequest: string | null; onClose: () => void; onRetry: () => void }) {
   const [expandedIncidentKey, setExpandedIncidentKey] = useState<string | null>(null);
+  const [claimedAssignee, setClaimedAssignee] = useState<string | null>(null);
+  const [incidentRefreshVersion, setIncidentRefreshVersion] = useState(0);
+  const [incidentStateOverride, setIncidentStateOverride] = useState<{ state: string | null; state_display?: string | null } | null>(null);
   const view = detail || link;
   const currentIncident = detail?.current_incident || link?.current_incident;
   const latestIncident = detail?.latest_incident || link?.latest_incident;
   const currentAlert = detail?.current_alert || link?.current_alert;
-  return <Sheet open={Boolean(link)} onOpenChange={(open) => { if (!open) onClose(); }}><SheetContent side="right" className="inset-y-0 h-dvh w-full max-w-none overflow-y-auto p-0 sm:h-full sm:max-w-xl">{view ? <>
-    <SheetHeader className="border-b border-border/60 px-5 py-5 pr-12 text-left"><div className="flex flex-wrap items-center gap-2"><StateBadge state={view.state} />{view.max_severity ? <SeverityBadge severity={view.max_severity} /> : null}</div><SheetTitle className="break-words text-base">{linkLabel(view)}</SheetTitle><SheetDescription>{view.customer_name} · {localLabel(view)}</SheetDescription></SheetHeader>
-    <div className="space-y-5 px-5 py-5">
+  const badgeState = incidentStateOverride?.state ?? currentIncident?.state ?? null;
+  const badgeDisplay = incidentStateOverride?.state_display ?? currentIncident?.state_display ?? null;
+  const linkArtifact = view && currentAlert && currentIncident
+    ? buildAlertArtifactFromCanonicalLink(view, currentAlert, currentIncident)
+    : null;
+
+  useEffect(() => {
+    setClaimedAssignee(null);
+    setIncidentRefreshVersion(0);
+    setIncidentStateOverride(null);
+  }, [currentIncident?.sys_id, currentIncident?.number]);
+
+  return <Sheet open={Boolean(link)} onOpenChange={(open) => { if (!open) onClose(); }}><SheetContent side="right" className="inset-y-0 flex h-dvh w-full max-w-none flex-col overflow-hidden p-0 sm:h-full sm:max-w-xl">{view ? <>
+    <SheetHeader className="shrink-0 border-b border-border/60 px-5 py-5 pr-12 text-left"><div className="flex flex-wrap items-center gap-2"><StateBadge state={view.state} />{view.max_severity ? <SeverityBadge severity={view.max_severity} /> : null}</div><SheetTitle className="break-words text-base">{linkLabel(view)}</SheetTitle><SheetDescription>{view.customer_name} · {localLabel(view)}</SheetDescription></SheetHeader>
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
       <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Monitoramento" value={view.active_alerts ? `Em falha há ${failureDuration(view)}` : "Normalizado"} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /><Field label="Divergência" value={divergenceLabel(view)} /></div></section>
       <CircuitReminderPanel link={view} requestOpen={reminderRequest} />
       <RecurrencePanel link={view} />
-      <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>
+      <section><h3 className="mb-2 text-sm font-semibold">Chamado atual</h3>{currentIncident ? <IncidentSummaryCard claimedAssignee={claimedAssignee} badgeState={badgeState} badgeDisplay={badgeDisplay} incident={currentIncident} slotKey="current" expanded={expandedIncidentKey === `current:${currentIncident.sys_id || currentIncident.number}`} refreshVersion={incidentRefreshVersion} onToggle={() => { const key = `current:${currentIncident.sys_id || currentIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /> : <p className="text-sm text-muted-foreground">Nenhum chamado aberto</p>}{latestIncident && latestIncident.number !== currentIncident?.number ? <div className="mt-3"><p className="mb-2 text-xs text-muted-foreground">Último chamado relacionado</p><IncidentSummaryCard incident={latestIncident} slotKey="latest" expanded={expandedIncidentKey === `latest:${latestIncident.sys_id || latestIncident.number}`} onToggle={() => { const key = `latest:${latestIncident.sys_id || latestIncident.number}`; setExpandedIncidentKey((value) => value === key ? null : key); }} /></div> : null}</section>
       <section><h3 className="mb-2 text-sm font-semibold">Alerta atual</h3>{currentAlert ? <div className="rounded-lg border border-border/60 p-3 text-sm"><p className="font-medium">{text(currentAlert.problem_name || currentAlert.trigger_description, "Alerta sem título")}</p><p className="mt-1 text-xs text-muted-foreground">{text(currentAlert.severity)} · Início: {timestampLabel(currentAlert.started_at)} · Último alerta: {timestampLabel(currentAlert.last_seen_at || view.latest_alert_at)}</p></div> : <p className="text-sm text-muted-foreground">Sem alerta ativo</p>}</section>
       {detail ? <Accordion type="single" collapsible className="rounded-lg border border-border/60 px-3"><AccordionItem value="technical" className="border-b-0"><AccordionTrigger className="py-3 text-sm">Detalhes técnicos</AccordionTrigger><AccordionContent><div className="grid gap-3 sm:grid-cols-2"><Field label="Circuit key" value={text(detail.technical.circuit_key || detail.service_name)} /><Field label="Host Zabbix" value={`${text(detail.technical.host_name)} · ID ${text(detail.technical.source_host_id)}`} /><Field label="Trigger(s)" value={detail.technical.trigger_ids.length ? detail.technical.trigger_ids.join(", ") : "Não informado"} /><Field label="Member / uplink" value={text(detail.technical.member_key || detail.technical.uplink_key)} /><Field label="Health-check" value={text(detail.technical.healthcheck_key)} /><Field label="IP" value={text(detail.technical.endpoint_ip)} /><Field label="Fonte" value={`${zabbixSourceDisplayName(detail.technical.source)} · ${text(detail.technical.strategy)}`} /><Field label="Confiança" value={text(detail.technical.confidence)} /></div></AccordionContent></AccordionItem></Accordion> : null}
     </div>
+    {currentIncident?.sys_id && currentIncident.number ? (
+      <div className="sticky bottom-0 shrink-0 space-y-3 border-t border-border/70 bg-background/95 px-5 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <IncidentDetailActions
+          incident={{ sys_id: currentIncident.sys_id, number: currentIncident.number, state: badgeState }}
+          alertArtifact={linkArtifact}
+          placement="drawer-footer"
+          onClaimed={(result) => setClaimedAssignee(result.incident.assigned_to_name)}
+          onWorkNoteAdded={() => setIncidentRefreshVersion((value) => value + 1)}
+          onAttachmentAdded={() => setIncidentRefreshVersion((value) => value + 1)}
+          onPutOnHold={(result) => {
+            setIncidentStateOverride({ state: result.incident.state, state_display: "Em espera" });
+            setIncidentRefreshVersion((value) => value + 1);
+          }}
+        />
+        <ServiceNowDevLink
+          href={currentIncident.servicenow_url || buildProductionServiceNowIncidentLink(currentIncident.sys_id)}
+          sysId={currentIncident.sys_id}
+          fullWidth
+        />
+      </div>
+    ) : null}
   </> : null}</SheetContent></Sheet>;
 }
 
@@ -1117,17 +1156,21 @@ function incidentDateTime(value: string | null | undefined) {
   }).format(date);
 }
 
-function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
+function IncidentSummaryCard({ incident, slotKey, expanded, onToggle, claimedAssignee = null, badgeState, badgeDisplay, refreshVersion = 0 }: {
   incident: CanonicalLinkIncident;
   slotKey: "current" | "history" | "latest";
   expanded: boolean;
   onToggle: () => void;
+  claimedAssignee?: string | null;
+  badgeState?: string | null;
+  badgeDisplay?: string | null;
+  refreshVersion?: number;
 }) {
-  const [claimedAssignee, setClaimedAssignee] = useState<string | null>(null);
-  const [incidentRefreshVersion, setIncidentRefreshVersion] = useState(0);
   const detailId = `incident-detail-${slotKey}-${incident.sys_id || incident.number || "unknown"}`;
   const canExpand = Boolean(incident.sys_id);
-  const terminal = ["6", "7", "8"].includes(String(incident.state || "").trim());
+  const resolvedBadgeState = badgeState ?? incident.state;
+  const resolvedBadgeDisplay = badgeDisplay ?? incident.state_display;
+  const terminal = ["6", "7", "8"].includes(String(resolvedBadgeState || "").trim());
   const assigneeLabel = terminal ? "Último responsável" : "Responsável";
   return <div className="rounded-lg border border-border/60 p-3 text-sm">
     <button
@@ -1139,15 +1182,14 @@ function IncidentSummaryCard({ incident, slotKey, expanded, onToggle }: {
       onClick={onToggle}
     >
       <div className="min-w-0">
-        <p className="flex flex-wrap items-center gap-1.5"><b>{incident.number || "INC"}</b><OneViewIncidentStatusBadge state={incident.state} display={incident.state_display} /></p>
+        <p className="flex flex-wrap items-center gap-1.5"><b>{incident.number || "INC"}</b><OneViewIncidentStatusBadge state={resolvedBadgeState} display={resolvedBadgeDisplay} /></p>
         <p className="mt-1 text-xs text-muted-foreground">Aberto {timestampLabel(incident.opened_at)} · Atualizado {timestampLabel(incident.updated_at)}</p>
         <p className="mt-1 text-xs font-medium text-foreground/80">{assigneeLabel}: {claimedAssignee || incidentAssignee(incident)}</p>
         {incident.short_description ? <p className="mt-1 text-xs text-muted-foreground">{incident.short_description}</p> : null}
       </div>
       <span className="shrink-0 text-xs font-medium text-primary">{expanded ? "Recolher" : "Ver detalhes"}</span>
     </button>
-    {slotKey === "current" ? <IncidentActions incident={incident} onClaimed={(result) => setClaimedAssignee(result.incident.assigned_to_name)} onWorkNoteAdded={() => setIncidentRefreshVersion((value) => value + 1)} /> : null}
-    {expanded && incident.sys_id ? <div id={detailId}><IncidentDetailPanel incident={incident} refreshVersion={incidentRefreshVersion} /></div> : null}
+    {expanded && incident.sys_id ? <div id={detailId}><IncidentDetailPanel incident={incident} refreshVersion={refreshVersion} /></div> : null}
   </div>;
 }
 

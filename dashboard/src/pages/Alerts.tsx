@@ -26,9 +26,11 @@ import {
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
+import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { PageHeader } from "@/components/oneview/PageHeader";
@@ -72,6 +74,7 @@ import {
   normalizeOneViewSeverity,
   requestAlertAcknowledgement,
 } from "@/lib/oneview-api";
+import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
 import { ONEVIEW_SEVERITY_UI } from "@/lib/oneview-severity-visual";
 import {
   ALERTS_DATE_FIELD_OPTIONS,
@@ -92,8 +95,10 @@ import {
   type AlertsSortKey,
 } from "@/lib/alerts-query";
 import {
+  augmentCustomerFacetsWithDedicatedDatasources,
   customerFilterCountNoun,
   isDatasourceOnlyFilterValue,
+  mergeOperationalZabbixSourceFilterOptions,
   splitLegacyCustomerQuery,
   zabbixSourceKey,
 } from "@/lib/oneview-zabbix-source";
@@ -868,6 +873,7 @@ export default function AlertsPage() {
     if (initialQuery.get("updated") && initialQuery.get("updated") !== "all") return "last_seen";
     if (initialQuery.get("resolved") && initialQuery.get("resolved") !== "all") return "resolved";
     if (initialQuery.get("ack") && initialQuery.get("ack") !== "all") return "acknowledged";
+    if (initialView === "recent") return "first_seen";
     return "first_seen";
   });
   const [datePreset, setDatePreset] = useState<AlertsDatePreset>(() => {
@@ -1249,15 +1255,23 @@ export default function AlertsPage() {
     return "neutral";
   };
 
+  const zabbixSourceFilterOptions = useMemo(
+    () => mergeOperationalZabbixSourceFilterOptions(facets?.datasources),
+    [facets?.datasources],
+  );
+
   const customerCards = useMemo(() => {
     const allCount = hasTemporalFilter ? null : (metrics?.active_total ?? health?.counts.active_alerts ?? null);
-    const customers = (facets?.customers ?? [])
-      .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
-      .map((customer) => ({
-        ...customer,
-        name: facetCustomerDisplayName(customer),
-        alerts_count: hasTemporalFilter ? null : customer.alerts_count,
-      }));
+    const customers = augmentCustomerFacetsWithDedicatedDatasources(
+      (facets?.customers ?? [])
+        .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
+        .map((customer) => ({
+          ...customer,
+          name: facetCustomerDisplayName(customer),
+          alerts_count: hasTemporalFilter ? null : customer.alerts_count,
+        })),
+      facets?.datasources,
+    );
     return [
       {
         key: "all",
@@ -1267,7 +1281,7 @@ export default function AlertsPage() {
       },
       ...customers,
     ];
-  }, [facets?.customers, hasTemporalFilter, health?.counts.active_alerts, metrics?.active_total]);
+  }, [facets?.customers, facets?.datasources, hasTemporalFilter, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
     if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
@@ -1387,7 +1401,7 @@ export default function AlertsPage() {
     setSourceAckFilter("all");
     setDateRange(undefined);
     if (view === "recent") {
-      setStatusFilter("active");
+      setStatusFilter("all");
       setSelectedSeverities([]);
       setDateField("first_seen");
       setDatePreset("24h");
@@ -1717,6 +1731,14 @@ export default function AlertsPage() {
           filters={(
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label className="space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
+              <label className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix
+                <ZabbixSourceFilter
+                  value={selectedDatasources[0] || "all"}
+                  options={zabbixSourceFilterOptions}
+                  onValueChange={(value) => { setSelectedDatasources(value === "all" ? [] : [value]); setPage(1); }}
+                  triggerClassName="h-9 w-full"
+                />
+              </label>
               <label className="space-y-1 text-xs text-muted-foreground">Estado
                 <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Ativos</SelectItem><SelectItem value="resolved">Resolvidos</SelectItem><SelectItem value="all">Todos</SelectItem></SelectContent></Select>
               </label>
@@ -1834,7 +1856,23 @@ export default function AlertsPage() {
                   incident: <TableCell key="incident" className="text-left"><AlertServiceNowReferenceCell reference={alert.servicenow_reference} /></TableCell>,
                   status: <TableCell key="status" className="text-left"><OneViewSemanticStatusBadge status={isActive ? "monitoring-down" : "monitoring-normalized"} label={isActive ? "Ativo" : "Resolvido"} /></TableCell>,
                   actions: (
-                    <TableCell key="actions" className="text-center"><div className="flex items-center justify-center gap-1 whitespace-nowrap"><Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-8 min-h-8 w-8 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip></div></TableCell>
+                    <TableCell key="actions" className="px-2 py-2 align-middle text-right" onClick={(event) => event.stopPropagation()}>
+                      <div className="flex flex-nowrap items-center justify-end gap-0.5">
+                        {alert.servicenow_reference?.sys_id && alert.servicenow_reference?.number ? (
+                          <IncidentTableActionsCell
+                            incident={{
+                              sys_id: alert.servicenow_reference.sys_id,
+                              number: alert.servicenow_reference.number,
+                            }}
+                            alertArtifact={buildAlertArtifactFromOneViewAlert(alert, {
+                              number: alert.servicenow_reference.number,
+                            })}
+                            onActionComplete={() => void loadAlerts({ quiet: true })}
+                          />
+                        ) : null}
+                        <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
+                      </div>
+                    </TableCell>
                   ),
                 };
                 return (

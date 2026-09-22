@@ -86,6 +86,24 @@ function firstMatch(text, patterns) {
  *   ...tr_events.php?triggerid=...&eventid=<eventid>
  *   IP: <addr> / IP address: <addr> (quando existir; nunca o IP do servidor Zabbix do link)
  */
+/**
+ * Formato observado em integrações MAPS / compactas: `fqdn.host: texto do problema`.
+ */
+export function parseColonHostProblemLine(description) {
+  const firstLine = String(description || "").trim().split(/\n/)[0]?.trim() || "";
+  const colon = firstLine.indexOf(":");
+  if (colon <= 0) return { host: null, problem: null };
+  const host = firstLine.slice(0, colon).trim();
+  const problem = firstLine.slice(colon + 1).trim();
+  if (!host || host.length > 253) return { host: null, problem: problem || null };
+  if (!host.includes(".") && host.length < 5) return { host: null, problem: problem || null };
+  return { host, problem: problem || null };
+}
+
+export function parseZabbixHostFromColonDescription(description) {
+  return parseColonHostProblemLine(description).host;
+}
+
 export function parseZabbixFieldsFromDescription(description) {
   const text = String(description || "").replace(/\r\n/g, "\n");
   if (!text.trim()) {
@@ -96,10 +114,14 @@ export function parseZabbixFieldsFromDescription(description) {
     };
   }
 
-  const zabbix_host = firstMatch(text, [
+  let zabbix_host = firstMatch(text, [
     /^Host:\s*(.+)$/im,
     /\nHost:\s*(.+)$/im,
   ]);
+
+  if (!zabbix_host) {
+    zabbix_host = parseZabbixHostFromColonDescription(text);
+  }
 
   const zabbix_event_id = firstMatch(text, [
     /^ID original do problema:\s*(\d+)\s*$/im,

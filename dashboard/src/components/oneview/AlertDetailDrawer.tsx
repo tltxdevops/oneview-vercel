@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Eye, History, Info } from "lucide-react";
 import {
   CLASSIFICATION_PENDING_LABEL,
@@ -14,9 +14,14 @@ import {
   interfaceFromAlertTags,
   safeHostIp,
 } from "@/components/oneview/AlertOperationalSummary";
+import { AlertOperationalShareActions } from "@/components/oneview/AlertOperationalShareActions";
 import { AlertRecurrenceSignal } from "@/components/oneview/AlertRecurrenceSignal";
 import { AlertRecurrenceInvestigation } from "@/components/oneview/AlertRecurrenceInvestigation";
-import { AlertRelatedIncidentsSection } from "@/components/oneview/AlertRelatedIncidentsSection";
+import {
+  AlertRelatedIncidentsSection,
+  relatedIncidentToOneViewIncident,
+} from "@/components/oneview/AlertRelatedIncidentsSection";
+import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
@@ -30,8 +35,10 @@ import { cn } from "@/lib/utils";
 import {
   AlertHistoryItem,
   OneViewAlert,
+  OneViewIncident,
   formatOneViewSeverityLabel,
 } from "@/lib/oneview-api";
+import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
 import { filterOperationalAlertTags } from "@/lib/oneview-inc-correlation";
 import { buildAlertOperationalTimeline } from "@/lib/oneview-alert-timeline";
 import { primaryPersistedOperatorTag } from "@/lib/oneview-operator-display";
@@ -146,6 +153,15 @@ export function AlertDetailDrawer({
   const [activeTab, setActiveTab] = useState<AlertDetailDrawerTab>(
     ["summary", "history", "technical"].includes(defaultTab) ? defaultTab : "summary",
   );
+  const [nestedIncident, setNestedIncident] = useState<OneViewIncident | null>(null);
+  const summaryCaptureRef = useRef<HTMLDivElement>(null);
+
+  async function prepareSummaryCapture() {
+    setActiveTab("summary");
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  }
 
   useEffect(() => {
     const next: AlertDetailDrawerTab = ["summary", "history", "technical"].includes(defaultTab)
@@ -153,6 +169,14 @@ export function AlertDetailDrawer({
       : "summary";
     setActiveTab(next);
   }, [alert?.id, defaultTab]);
+
+  useEffect(() => {
+    if (!open) setNestedIncident(null);
+  }, [open]);
+
+  useEffect(() => {
+    setNestedIncident(null);
+  }, [alert?.id]);
 
   const customer = alert
     ? {
@@ -181,6 +205,10 @@ export function AlertDetailDrawer({
   const publicIp = alert ? safeHostIp(alert.host_ip) : null;
   const iface = alert ? interfaceFromAlertTags(alert) : null;
   const tags = alert ? collectOperationalTags(alert) : [];
+  const nestedAlertArtifact = useMemo(() => {
+    if (!alert || !nestedIncident) return null;
+    return buildAlertArtifactFromOneViewAlert(alert, nestedIncident);
+  }, [alert, nestedIncident]);
   const ackAt = alert ? (alert.acknowledged_source_at || alert.acknowledged_at) : null;
   const ackBy = alert
     ? safeActorName(alert.acknowledged_source_by || alert.acknowledged_by)
@@ -193,6 +221,7 @@ export function AlertDetailDrawer({
   const historyLoading = isLoading && !timeline.length;
 
   return (
+    <>
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-2xl">
         {!alert ? (
@@ -215,6 +244,15 @@ export function AlertDetailDrawer({
             <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
               <SheetTitle className="text-xl">Detalhe do alerta</SheetTitle>
               <SheetDescription>{description}</SheetDescription>
+              <div className="pt-1">
+                <AlertOperationalShareActions
+                  alert={alert}
+                  historyItems={historyItems}
+                  historyReady={!historyLoading}
+                  captureTargetRef={summaryCaptureRef}
+                  onPrepareCapture={prepareSummaryCapture}
+                />
+              </div>
             </SheetHeader>
 
             <Tabs
@@ -232,6 +270,11 @@ export function AlertDetailDrawer({
 
               <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
                 <TabsContent value="summary" className="mt-4 space-y-4">
+                  <div
+                    ref={summaryCaptureRef}
+                    className="space-y-4 rounded-lg bg-background p-1"
+                    aria-label="Resumo operacional para print"
+                  >
                   <div className="flex min-w-0 items-start gap-3" aria-label="Cabeçalho do alerta">
                     <ClientIdentity
                       customer={customer}
@@ -309,6 +352,7 @@ export function AlertDetailDrawer({
                     severity={alert.severity}
                     historyItems={historyItems}
                     alert={alert}
+                    onOpenIncidentDetail={(item) => setNestedIncident(relatedIncidentToOneViewIncident(item))}
                   />
 
                   {operatorTag ? (
@@ -321,6 +365,7 @@ export function AlertDetailDrawer({
                       </dl>
                     </section>
                   ) : null}
+                  </div>
 
                   <Accordion type="single" collapsible className="rounded-md border border-border/60 px-3">
                     <AccordionItem value="audit" className="border-0">
@@ -488,5 +533,13 @@ export function AlertDetailDrawer({
         )}
       </SheetContent>
     </Sheet>
+    <IncidentDetailDrawer
+      incident={nestedIncident}
+      stacked
+      alertArtifact={nestedAlertArtifact}
+      onOpenChange={(next) => { if (!next) setNestedIncident(null); }}
+      description="Consulta rápida sem sair do alerta."
+    />
+    </>
   );
 }

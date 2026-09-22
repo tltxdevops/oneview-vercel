@@ -14,18 +14,25 @@ import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
-import { IncidentQuickSheet } from "@/components/oneview/IncidentQuickSheet";
+import { ConfigurableTableColumns, ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { OperationalFilterGroup } from "@/components/oneview/OperationalFilterGroup";
 import { OperationalIncidentsToolbar } from "@/components/oneview/OperationalIncidentsToolbar";
-import { OperationalIncidentsQueueList, operationalIncidentKey } from "@/components/oneview/OperationalIncidentsQueueList";
+import {
+  OPERATIONAL_INCIDENT_QUEUE_COLUMNS,
+  OPERATIONAL_INCIDENT_QUEUE_COLUMN_WIDTH,
+  OperationalIncidentsQueueList,
+  operationalIncidentKey,
+  type OperationalIncidentQueueColumnId,
+} from "@/components/oneview/OperationalIncidentsQueueList";
 import { OperationalSegmentedControl } from "@/components/oneview/OperationalSegmentedControl";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
-import { OneViewSeverityBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
+import { OneViewSemanticStatusBadge, OneViewSeverityBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { TruncatedText } from "@/components/oneview/TruncatedText";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -106,6 +113,7 @@ import {
 import { toast } from "sonner";
 import {
   customerFilterCountNoun,
+  augmentCustomerFacetsWithDedicatedDatasources,
   isDatasourceOnlyFilterValue,
 } from "@/lib/oneview-zabbix-source";
 
@@ -120,6 +128,74 @@ const HOME_EVENT_COLUMNS = [
   { id: "severity", label: "Severidade" },
   { id: "time", label: "Horário" },
 ] as const;
+
+const HOME_ALERT_COLUMNS = [
+  { id: "client", label: "Cliente" },
+  { id: "host", label: "Host" },
+  { id: "problem", label: "Problema", required: true },
+  { id: "severity", label: "Severidade" },
+  { id: "ack", label: "ACK" },
+  { id: "started", label: "Início" },
+  { id: "duration", label: "Duração" },
+  { id: "action", label: "Ação" },
+] as const;
+type HomeAlertColumnId = typeof HOME_ALERT_COLUMNS[number]["id"];
+
+const HOME_OPERATOR_COLUMNS = [
+  { id: "customer", label: "Cliente", required: true },
+  { id: "operator", label: "Operadora" },
+  { id: "host", label: "Host" },
+  { id: "problem", label: "Problema" },
+  { id: "incident", label: "Chamado" },
+  { id: "analyst", label: "Responsável" },
+  { id: "updated", label: "Atualização" },
+  { id: "severity", label: "Severidade", defaultVisible: false },
+  { id: "state", label: "Estado INC", defaultVisible: false },
+] as const;
+type HomeOperatorColumnId = typeof HOME_OPERATOR_COLUMNS[number]["id"];
+
+const HOME_ALERT_COLUMN_WIDTH: Record<HomeAlertColumnId, string> = {
+  client: "11rem",
+  host: "12rem",
+  problem: "minmax(0,1fr)",
+  severity: "8rem",
+  ack: "7rem",
+  started: "6.5rem",
+  duration: "5.75rem",
+  action: "4rem",
+};
+const HOME_OPERATOR_COLUMN_WIDTH: Record<HomeOperatorColumnId, string> = {
+  customer: "minmax(9rem,1fr)",
+  operator: "8rem",
+  host: "9rem",
+  problem: "minmax(10rem,1.2fr)",
+  incident: "7rem",
+  analyst: "8rem",
+  updated: "6.5rem",
+  severity: "7.5rem",
+  state: "7rem",
+};
+
+const HOME_ALERT_TABLE_MIN_WIDTH = "64rem";
+const HOME_OPERATOR_TABLE_MIN_WIDTH = "48rem";
+
+function homeColumnAlign(column: string) {
+  if (column === "started" || column === "duration" || column === "updated") return "justify-self-end text-right";
+  if (column === "action") return "justify-self-center text-center";
+  return "justify-self-start text-left";
+}
+
+function formatCompactFirstSeen(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 /** Ordem visual Home OV-P0-42A (sem Not classified — chip no mesmo bloco). */
 const HOME_VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_classified">> = [
@@ -295,83 +371,94 @@ function HomePanelCount({ value }: { value: number }) {
   return <span className={HOME_PANEL_COUNT}>{formatMetricCount(value)}</span>;
 }
 
-/** OV-P0-73 / OV-P0-111: cliente > host > problema > severidade + horário + duração. */
 function HomeAlertRow({
   alert,
   onOpen,
+  columns,
+  gridTemplate,
+  selected = false,
 }: {
   alert: OneViewAlert;
   onOpen: (alert: OneViewAlert) => void;
+  columns: readonly HomeAlertColumnId[];
+  gridTemplate: string;
+  selected?: boolean;
 }) {
-  const startedAt = alert.first_seen_at || alert.started_at;
+  const acked = Boolean(alert.acknowledged_source);
+  const clientLabel = operationalClientLabel({
+    key: alert.customer_key,
+    name: alert.customer_name,
+    source: alert.customer_source,
+    operational_scope: alert.operational_scope,
+    operational_scope_label: alert.operational_scope_label,
+  });
+  const clientTitle = normalizeOperationalScope(alert.operational_scope) === "unknown"
+    ? `${clientLabel} · ${CLASSIFICATION_PENDING_LABEL}`
+    : clientLabel;
+  const cells: Record<HomeAlertColumnId, ReactNode> = {
+    client: (
+      <span key="client" className="flex min-w-0 items-center gap-2" title={clientTitle}>
+        <ClientIdentity customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source }} operationalScope={alert.operational_scope} operationalScopeLabel={alert.operational_scope_label} size="xs" className="shrink-0" />
+        <TruncatedText className="text-sm font-semibold text-foreground" title={clientTitle}>{clientLabel}</TruncatedText>
+      </span>
+    ),
+    host: <TruncatedText key="host" className="text-xs text-foreground/85">{canonicalHostName(alert)}</TruncatedText>,
+    problem: <TruncatedText key="problem" className="text-xs text-muted-foreground">{alert.problem_name}</TruncatedText>,
+    severity: <span key="severity"><OneViewSeverityBadge severity={alert.severity} showDot={false} /></span>,
+    ack: <span key="ack"><OneViewSemanticStatusBadge status={acked ? "monitoring-normalized" : "classification-pending"} label={acked ? "Com ACK" : "Sem ACK"} showDot={false} /></span>,
+    started: <span key="started" className="block truncate text-xs tabular-nums text-muted-foreground">{formatCompactFirstSeen(alert.first_seen_at || alert.started_at)}</span>,
+    duration: <span key="duration" className="block truncate text-xs tabular-nums text-muted-foreground">{formatDurationSeconds(alert.duration_seconds)}</span>,
+    action: <span key="action" className="inline-flex h-7 items-center justify-center gap-1 text-xs font-medium text-primary">Abrir<Eye className="h-3 w-3" aria-hidden="true" /></span>,
+  };
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2 py-1.5 text-left transition-colors hover:bg-muted/30"
       onClick={() => onOpen(alert)}
-      aria-label={`Abrir resumo de ${alert.problem_name || "alerta"}`}
+      aria-current={selected ? "true" : undefined}
+      className={cn(
+        "ov-monitoring-table-grid grid w-full min-h-12 items-center gap-x-3 border-b border-border/50 px-1 py-2 text-left transition-colors hover:bg-muted/50 last:border-b-0",
+        selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
+      )}
+      style={{ gridTemplateColumns: gridTemplate }}
+      aria-label={`Abrir alerta ${alert.problem_name || alert.id}`}
     >
-      <ClientIdentity
-        customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source }}
-        operationalScope={alert.operational_scope}
-        operationalScopeLabel={alert.operational_scope_label}
-        size="sm"
-        className="shrink-0"
-      />
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <TruncatedText className="text-[13px] font-semibold leading-tight text-foreground">
-          {operationalClientLabel({
-            key: alert.customer_key,
-            name: alert.customer_name,
-            source: alert.customer_source,
-            operational_scope: alert.operational_scope,
-            operational_scope_label: alert.operational_scope_label,
-          })}
-        </TruncatedText>
-        <TruncatedText className="text-xs leading-tight text-foreground/80">{canonicalHostName(alert)}</TruncatedText>
-        {normalizeOperationalScope(alert.operational_scope) === "unknown" ? (
-          <TruncatedText className="text-[10px] leading-tight text-muted-foreground">{CLASSIFICATION_PENDING_LABEL}</TruncatedText>
-        ) : null}
-        <TruncatedText className="text-xs leading-tight text-muted-foreground">{alert.problem_name}</TruncatedText>
-        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-          <OneViewSeverityBadge severity={alert.severity} showDot={false} />
-          <span
-            className="text-xs font-medium tabular-nums text-foreground/80"
-            title={startedAt ? `Início: ${formatDateTime(startedAt)}` : "Horário de início indisponível"}
-          >
-            {formatClock(startedAt)}
-          </span>
-          <span
-            className="text-xs text-muted-foreground"
-            title="Duração: há quanto tempo o alerta está ativo"
-          >
-            · {formatDurationSeconds(alert.duration_seconds)}
-          </span>
-        </div>
-      </div>
-      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center self-center text-muted-foreground" aria-hidden="true">
-        <Eye className="h-3.5 w-3.5" />
-      </span>
+      {columns.map((column) => <span key={column} className={cn("min-w-0 overflow-hidden", homeColumnAlign(column))}>{cells[column]}</span>)}
     </button>
   );
 }
 
-function HomeOperatorRow({ item }: { item: OperatorQueueItem }) {
-  const content = (
-    <div className="min-w-0 space-y-0.5 py-1.5">
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <TruncatedText className="text-[11px] font-semibold text-foreground">{displayIncidentField(item.customer_name)}</TruncatedText>
-        <span className="shrink-0 text-[10px] text-muted-foreground">{item.updated_ago_label || "Atualização indisponível"}</span>
-      </div>
-      <TruncatedText className="text-[10px] text-muted-foreground">{displayIncidentField(item.operator_tag)}</TruncatedText>
-      <p className="truncate text-[10px] text-muted-foreground">
-        {item.incident_number || "Sem INC"} · {item.analyst_label || "Sem responsável"}
-      </p>
-    </div>
+function HomeOperatorRow({
+  item,
+  columns,
+  gridTemplate,
+}: {
+  item: OperatorQueueItem;
+  columns: readonly HomeOperatorColumnId[];
+  gridTemplate: string;
+}) {
+  const severity = String(item.severity || "").trim() as OneViewSeverity;
+  const cells: Record<HomeOperatorColumnId, ReactNode> = {
+    customer: <TruncatedText key="customer" className="text-xs font-semibold text-foreground">{displayIncidentField(item.customer_name)}</TruncatedText>,
+    operator: <TruncatedText key="operator" className="text-[11px] text-muted-foreground">{displayIncidentField(item.operator_tag)}</TruncatedText>,
+    host: <TruncatedText key="host" className="text-[11px] text-foreground/85">{displayIncidentField(item.host_name)}</TruncatedText>,
+    problem: <TruncatedText key="problem" className="text-[11px] text-muted-foreground">{displayIncidentField(item.problem_name)}</TruncatedText>,
+    incident: <span key="incident" className="text-[11px] font-medium text-foreground">{displayIncidentField(item.incident_number, "Sem INC")}</span>,
+    analyst: <TruncatedText key="analyst" className="text-[10px] text-muted-foreground">{item.analyst_label || "Sem responsável"}</TruncatedText>,
+    updated: <span key="updated" className="block truncate text-[10px] tabular-nums text-muted-foreground">{item.updated_ago_label || "—"}</span>,
+    severity: severity ? <span key="severity"><OneViewSeverityBadge severity={severity} showDot={false} /></span> : <span key="severity" className="text-[10px] text-muted-foreground">—</span>,
+    state: <span key="state"><Badge variant="outline" className="h-5 max-w-full truncate px-1.5 text-[10px]">{displayIncidentField(item.incident_state_display, item.incident_state)}</Badge></span>,
+  };
+  const rowClass = cn(
+    "ov-monitoring-table-grid grid w-full min-h-10 items-center gap-x-3 border-b border-border/50 px-1 py-1.5 last:border-b-0 transition-colors hover:bg-muted/40",
   );
+  const inner = columns.map((column) => <span key={column} className={cn("min-w-0 overflow-hidden", homeColumnAlign(column))}>{cells[column]}</span>);
   return item.oneview_link ? (
-    <Link to={item.oneview_link} className="block rounded-sm px-1 transition-colors hover:bg-muted/40">{content}</Link>
-  ) : <div className="px-1">{content}</div>;
+    <Link to={item.oneview_link} className={rowClass} style={{ gridTemplateColumns: gridTemplate }} aria-label={`Abrir alerta de operadora ${displayIncidentField(item.customer_name)}`}>
+      {inner}
+    </Link>
+  ) : (
+    <div className={rowClass} style={{ gridTemplateColumns: gridTemplate }}>{inner}</div>
+  );
 }
 
 export default function Index() {
@@ -382,6 +469,9 @@ export default function Index() {
     widgets: HOME_DASHBOARD_WIDGETS,
   });
   const homeEventColumns = useOneViewTableColumns({ tableId: "home-events", actorId: user?.id || user?.email, definitions: HOME_EVENT_COLUMNS });
+  const homeAlertColumns = useOneViewTableColumns({ tableId: "home-alerts", actorId: user?.id || user?.email, definitions: HOME_ALERT_COLUMNS });
+  const homeIncidentColumns = useOneViewTableColumns({ tableId: "home-incidents", actorId: user?.id || user?.email, definitions: OPERATIONAL_INCIDENT_QUEUE_COLUMNS });
+  const homeOperatorColumns = useOneViewTableColumns({ tableId: "home-operators", actorId: user?.id || user?.email, definitions: HOME_OPERATOR_COLUMNS });
   const alertItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "recent-alerts", HOME_ALERTS_PAGE_SIZE);
   const incidentItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "incidents", 7);
   const operatorItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "failed-links", 3);
@@ -555,16 +645,23 @@ export default function Index() {
       }
 
       if (facetsResult.status === "fulfilled") {
-        const customers = facetsResult.value.customers ?? [];
-        setCustomerOptions([
-          { key: "all", name: "Todos" },
-          ...customers
+        const customers = augmentCustomerFacetsWithDedicatedDatasources(
+          (facetsResult.value.customers ?? [])
             .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
             .map((customer) => ({
               key: customer.key,
               name: facetCustomerDisplayName(customer),
-              alerts_count: null,
+              alerts_count: customer.alerts_count ?? null,
             })),
+          facetsResult.value.datasources,
+        );
+        setCustomerOptions([
+          { key: "all", name: "Todos" },
+          ...customers.map((customer) => ({
+            key: customer.key,
+            name: customer.name,
+            alerts_count: null,
+          })),
         ]);
         nextMetas.push({
           source: facetsResult.value.data_source as OneViewDataSourceKind | undefined,
@@ -918,6 +1015,30 @@ export default function Index() {
   const visibleHomeAlerts = homeAlerts.slice(0, alertItemLimit);
   const visibleHomeIncidents = homeIncidents.slice(0, incidentItemLimit);
   const operatorItems = (operatorQueue?.items ?? []).slice(0, operatorItemLimit);
+  const homeAlertColumnIds = useMemo(
+    () => homeAlertColumns.visibleColumns.map((column) => column.id as HomeAlertColumnId),
+    [homeAlertColumns.visibleColumns],
+  );
+  const homeAlertGrid = useMemo(
+    () => homeAlertColumnIds.map((column) => HOME_ALERT_COLUMN_WIDTH[column]).join(" "),
+    [homeAlertColumnIds],
+  );
+  const homeIncidentColumnIds = useMemo(
+    () => homeIncidentColumns.visibleColumns.map((column) => column.id as OperationalIncidentQueueColumnId),
+    [homeIncidentColumns.visibleColumns],
+  );
+  const homeIncidentGrid = useMemo(
+    () => homeIncidentColumnIds.map((column) => OPERATIONAL_INCIDENT_QUEUE_COLUMN_WIDTH[column]).join(" "),
+    [homeIncidentColumnIds],
+  );
+  const homeOperatorColumnIds = useMemo(
+    () => homeOperatorColumns.visibleColumns.map((column) => column.id as HomeOperatorColumnId),
+    [homeOperatorColumns.visibleColumns],
+  );
+  const homeOperatorGrid = useMemo(
+    () => homeOperatorColumnIds.map((column) => HOME_OPERATOR_COLUMN_WIDTH[column]).join(" "),
+    [homeOperatorColumnIds],
+  );
   const normalizedEventSearch = eventSearch.trim().toLocaleLowerCase("pt-BR");
   const visibleRecentEvents = recentEvents
     .filter((item) => !normalizedEventSearch || [item.customer_name, canonicalHostName(item), item.problem_name, item.severity]
@@ -1092,7 +1213,12 @@ export default function Index() {
                 </Select>
               </OperationalFilterGroup>
             </div> : null}
-            <div className={cn(HOME_LIST_DIVIDE, "min-h-0 flex-1 overflow-y-auto")}>
+            {!dashboard.isWallboard ? (
+              <div className="flex justify-end border-b border-border/60 py-1">
+                <ConfigurableTableColumns controller={homeAlertColumns} />
+              </div>
+            ) : null}
+            <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
               <SectionState
                 loading={isListsLoading && !homeAlerts.length}
                 error={sectionErrors.alerts ?? null}
@@ -1100,9 +1226,27 @@ export default function Index() {
                 emptyMessage="Nenhum alerta recente na fila operacional com os filtros atuais."
                 onRetry={() => void loadLists("manual")}
               >
-                {visibleHomeAlerts.map((alert) => (
-                  <HomeAlertRow key={alert.id} alert={alert} onOpen={openAlert} />
-                ))}
+                <div style={{ minWidth: HOME_ALERT_TABLE_MIN_WIDTH }}>
+                  <div
+                    className="ov-monitoring-table-grid sticky top-0 z-[1] grid gap-x-3 border-b border-border/70 bg-card px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                    style={{ gridTemplateColumns: homeAlertGrid }}
+                    aria-hidden="true"
+                  >
+                    {homeAlertColumns.visibleColumns.map((column) => (
+                      <span key={column.id} className={cn("min-w-0 truncate", homeColumnAlign(column.id))}>{column.label}</span>
+                    ))}
+                  </div>
+                  {visibleHomeAlerts.map((alert) => (
+                    <HomeAlertRow
+                      key={alert.id}
+                      alert={alert}
+                      onOpen={openAlert}
+                      columns={homeAlertColumnIds}
+                      gridTemplate={homeAlertGrid}
+                      selected={selectedAlertId === alert.id}
+                    />
+                  ))}
+                </div>
               </SectionState>
             </div>
             {queueOverflowLabel(alertsTotal, visibleHomeAlerts.length) ? (
@@ -1126,13 +1270,16 @@ export default function Index() {
               </div>
             )}
             toolbar={dashboard.isWallboard ? null : (
-              <OperationalIncidentsToolbar
-                mode={incidentsMode}
-                onModeChange={changeIncidentsMode}
-                assignedTo={incidentsAssignedTo}
-                onAssignedToChange={changeIncidentsAssignedTo}
-                analysts={incidentAssignees}
-              />
+              <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                <OperationalIncidentsToolbar
+                  mode={incidentsMode}
+                  onModeChange={changeIncidentsMode}
+                  assignedTo={incidentsAssignedTo}
+                  onAssignedToChange={changeIncidentsAssignedTo}
+                  analysts={incidentAssignees}
+                />
+                <ConfigurableTableColumns controller={homeIncidentColumns} />
+              </div>
             )}
             toolbarClassName="px-4 py-2"
             bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-3 pt-2"
@@ -1147,6 +1294,9 @@ export default function Index() {
               <OperationalIncidentsQueueList
                 items={visibleHomeIncidents}
                 onOpen={openIncident}
+                columnIds={homeIncidentColumnIds}
+                gridTemplate={homeIncidentGrid}
+                columnLabels={homeIncidentColumns.visibleColumns}
                 selectedKey={selectedIncidentKey}
                 showAnalyst={showIncidentAnalysts}
                 loading={isListsLoading && !homeIncidents.length}
@@ -1158,6 +1308,7 @@ export default function Index() {
                       ? "Nenhum chamado na janela."
                       : "Nenhum chamado monitoring sem responsável."
                 }
+                onActionComplete={() => void loadLists("manual")}
               />
             )}
           </SectionPanel>
@@ -1175,6 +1326,11 @@ export default function Index() {
             <div><p className="text-base font-semibold tabular-nums">{formatMetricCount(operatorCounts?.unassigned)}</p><p className="text-[10px] text-muted-foreground">Sem responsável</p></div>
             <div><p className="text-base font-semibold tabular-nums">{formatMetricCount(operatorCounts?.following)}</p><p className="text-[10px] text-muted-foreground">Em acompanhamento</p></div>
           </div>
+          {!dashboard.isWallboard ? (
+            <div className="flex justify-end border-b border-border/60 py-1">
+              <ConfigurableTableColumns controller={homeOperatorColumns} />
+            </div>
+          ) : null}
           <SectionState
             loading={isListsLoading && !operatorQueue && !sectionErrors.operators}
             error={sectionErrors.operators ?? null}
@@ -1183,7 +1339,27 @@ export default function Index() {
             emptyClassName="py-3"
             onRetry={() => void loadLists("manual")}
           >
-            <div className={HOME_LIST_DIVIDE}>{operatorItems.map((item) => <HomeOperatorRow key={item.alert_id || `${item.incident_number}-${item.operator_tag}`} item={item} />)}</div>
+            <div className="overflow-x-auto">
+              <div style={{ minWidth: HOME_OPERATOR_TABLE_MIN_WIDTH }}>
+                <div
+                  className="ov-monitoring-table-grid grid gap-x-3 border-b border-border/70 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                  style={{ gridTemplateColumns: homeOperatorGrid }}
+                  aria-hidden="true"
+                >
+                  {homeOperatorColumns.visibleColumns.map((column) => (
+                    <span key={column.id} className={cn("min-w-0 truncate", homeColumnAlign(column.id))}>{column.label}</span>
+                  ))}
+                </div>
+                {operatorItems.map((item) => (
+                  <HomeOperatorRow
+                    key={item.alert_id || `${item.incident_number}-${item.operator_tag}`}
+                    item={item}
+                    columns={homeOperatorColumnIds}
+                    gridTemplate={homeOperatorGrid}
+                  />
+                ))}
+              </div>
+            </div>
           </SectionState>
         </SectionPanel>
         </ConfigurableDashboardWidget>
@@ -1257,9 +1433,10 @@ export default function Index() {
         </ConfigurableDashboardWidget>
       </ConfigurableDashboard>
 
-      <IncidentQuickSheet
+      <IncidentDetailDrawer
         incident={selectedIncident}
         onOpenChange={(open) => { if (!open) closeIncident(); }}
+        description="Consulta rápida sem sair da Home."
       />
 
       <AlertDetailDrawer

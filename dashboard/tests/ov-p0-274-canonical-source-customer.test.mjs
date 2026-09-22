@@ -10,10 +10,14 @@ import { fileURLToPath } from "node:url";
 import { buildAlertListQuery } from "../api/_lib/oneview-db.js";
 import { splitAlertCustomerFilter } from "../api/_lib/oneview-scope.js";
 import {
+  augmentCustomerFacetsWithDedicatedDatasources,
   customerFilterCountNoun,
   isDatasourceOnlyFilterValue,
+  isDatasourceOnlyQueryToken,
+  mergeOperationalZabbixSourceFilterOptions,
   splitLegacyCustomerQuery,
   zabbixSourceDisplayName,
+  zabbixSourceKey,
 } from "../src/lib/oneview-zabbix-source.ts";
 import { extractPersistedOperatorTags } from "../src/lib/oneview-operator-display.ts";
 
@@ -42,8 +46,20 @@ const CRITICAL_CUSTOMERS = [
   { key: "berneck", name: "Berneck", source: "teletex-http" },
 ];
 
+test("OV-P0-274: MAPS appears in operational filter options", () => {
+  assert.equal(isDatasourceOnlyQueryToken("maps"), true);
+  const sources = mergeOperationalZabbixSourceFilterOptions([{ name: "zurich", alerts_count: 3 }]);
+  assert.ok(sources.some((row) => zabbixSourceKey(row.name) === "maps"));
+  const customers = augmentCustomerFacetsWithDedicatedDatasources([], [{ name: "maps", alerts_count: 12 }]);
+  assert.equal(customers.length, 1);
+  assert.equal(customers[0].key, "maps");
+  assert.equal(customers[0].name, "MAPS");
+});
+
 test("OV-P0-274: datasource is not customer", async () => {
   assert.equal(isDatasourceOnlyFilterValue("teletex-http"), true);
+  assert.equal(isDatasourceOnlyFilterValue("maps"), false);
+  assert.equal(zabbixSourceDisplayName("maps"), "MAPS");
   assert.equal(isDatasourceOnlyFilterValue("zurich"), false);
   assert.equal(isDatasourceOnlyFilterValue("castrolanda"), false);
   assert.equal(isDatasourceOnlyFilterValue("j.macedo"), false);
@@ -196,7 +212,7 @@ test("OV-P0-274: cross-surface Fonte Zabbix + canonical Cliente", async () => {
   assert.doesNotMatch(home, /label="Fonte Zabbix"/);
   const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /datasources: selectedDatasources/);
-  assert.doesNotMatch(alerts, /ZabbixSourceFilter/);
+  assert.match(alerts, /ZabbixSourceFilter/);
   const monitoring = await read("src/pages/Monitoring.tsx");
   assert.match(monitoring, /REFRESH_MS = 10_000/);
   assert.match(monitoring, /oneview-live-transition/);

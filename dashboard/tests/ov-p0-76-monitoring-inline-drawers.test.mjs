@@ -50,9 +50,8 @@ test("OV-P0-76 Monitoring: chamado não atribuído abre drawer inline com ?incid
   assert.match(monitoring, /searchParams\.get\("incident"\)/);
   assert.match(monitoring, /next\.set\("incident", id\)/);
   assert.match(monitoring, /next\.delete\("incident"\)/);
-  assert.match(monitoring, /open=\{selectedIncident !== null\}/);
-  assert.match(monitoring, /fetchIncidentRelatedAlert/);
-  assert.match(monitoring, /ServiceNowDevLink/);
+  assert.match(monitoring, /incident=\{selectedIncident\}/);
+  assert.match(monitoring, /IncidentDetailDrawer/);
   assert.match(monitoring, /resolveIncidentFromId/);
 });
 

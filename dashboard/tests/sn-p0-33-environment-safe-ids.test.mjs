@@ -138,28 +138,33 @@ test("SN-P0-33 fetchIncidentsBySourceEventId exige caller env", async () => {
   assert.match(seenQuery, new RegExp(`caller_id=${FIXTURE_CALLER}`));
 });
 
-test("SN-P0-33 related-incidents: falta de caller não quebra lookup por número", async () => {
+test("SN-P0-33 related-incidents: lookup por número não depende de caller Zabbix", async () => {
   const handler = createRelatedIncidentsHandler({
     authorize: async () => ({ id: "u1" }),
     featureFlagProvider: () => true,
-    configProvider: () => ({ ...snConfig, zabbixMonitoringCallerId: "" }),
     logger: () => undefined,
-    lookupByNumber: async () => ({
-      incidents: [{
-        sys_id: "sys-n",
-        number: "INC0001001",
-        state: "2",
-        priority: "3",
-        assignment_group: "g1",
-        assigned_to: "u1",
-        sys_updated_on: "2026-08-07 12:00:00",
-        zabbix_event_id: null,
-        servicenow_url: "https://example.service-now.com/incident.do?sys_id=sys-n",
-      }],
-      checked_at: new Date().toISOString(),
-    }),
-    lookup: async () => {
-      throw new ServiceNowClientError("servicenow_caller_not_configured");
+    lookup: async ({ incidentNumbers, sourceEventId }) => {
+      if (incidentNumbers?.includes("INC0001001")) {
+        return {
+          matched: true,
+          relation_source: "zabbix_inc_reference",
+          incidents: [{
+            sys_id: "sys-n",
+            number: "INC0001001",
+            state: "2",
+            priority: "3",
+            assignment_group: "g1",
+            assigned_to: "u1",
+            sys_updated_on: "2026-08-07T12:00:00.000Z",
+            zabbix_event_id: null,
+            servicenow_url: "https://example.service-now.com/incident.do?sys_id=sys-n",
+          }],
+        };
+      }
+      if (sourceEventId) {
+        throw new ServiceNowClientError("servicenow_caller_not_configured");
+      }
+      return { matched: false, relation_source: "none", incidents: [] };
     },
   });
 
@@ -172,7 +177,7 @@ test("SN-P0-33 related-incidents: falta de caller não quebra lookup por número
   const byEvent = responseMock();
   await handler(requestMock({ source_event_id: "327191633" }), byEvent);
   assert.equal(byEvent.statusCode, 503);
-  assert.equal(byEvent.body.error, "servicenow_caller_not_configured");
+  assert.equal(byEvent.body.error, "database_unavailable");
   assert.equal(byEvent.body.matched, false);
 });
 
@@ -191,51 +196,49 @@ test("SN-P0-33 /chamados lista sem caller env (não quebra)", async () => {
   const handler = createIncidentsHandler({
     authorize: async () => ({ id: "u1" }),
     featureFlagProvider: () => true,
-    configProvider: () => ({ ...snConfig, zabbixMonitoringCallerId: "", callerFilterSeeds: [] }),
     logger: () => undefined,
-    getPage: async () => ({
-      table: "incident",
-      records: [{
+    readModelPage: async (filters) => ({
+      items: [{
         sys_id: "sys-1",
         number: "INC0001",
         short_description: "Host down",
         description: "eventid=1",
-        state: { value: "2", display_value: "Em andamento" },
-        priority: { value: "3", display_value: "3 - Moderada" },
-        caller_id: { value: FIXTURE_CALLER, display_value: "zabbix monitoring" },
-        contact_type: { value: "monitoring", display_value: "Monitoramento" },
-        assignment_group: { value: "g1", display_value: "NOC" },
-        assigned_to: { value: "u1", display_value: "Operador" },
-        company: { value: "c1", display_value: "Cliente" },
-        opened_at: "2026-08-01 10:00:00",
-        sys_updated_on: "2026-08-07 12:00:00",
+        state: "2",
+        state_display: "Em andamento",
+        priority: "3",
+        priority_display: "3 - Moderada",
+        caller_id: FIXTURE_CALLER,
+        caller_id_display: "zabbix monitoring",
+        contact_type: "monitoring",
+        contact_type_display: "Monitoramento",
+        assignment_group: "g1",
+        assignment_group_display: "NOC",
+        assigned_to: "u1",
+        assigned_to_display: "Operador",
+        company: "c1",
+        company_display: "Cliente",
+        opened_at: "2026-08-01T10:00:00.000Z",
+        sys_updated_on: "2026-08-07T12:00:00.000Z",
       }],
-      count: 1,
-      offset: 0,
-      limit: 25,
-      totalCount: 1,
+      pagination: {
+        page: filters.page,
+        page_size: filters.page_size,
+        total_items: 1,
+        total_pages: 1,
+        has_next: false,
+        has_previous: false,
+      },
+      filters,
+      counts: { total: 1, open: 0, in_progress: 1, on_hold: 0, resolved: 0, closed: 0, unassigned: 0 },
+      facets: {
+        callers: [{ value: FIXTURE_CALLER, label: "zabbix monitoring", count: 1 }],
+        companies: [],
+        assignment_groups: [],
+      },
+      data_source: "postgresql",
+      checked_at: new Date().toISOString(),
+      freshness: { last_success_at: null, watermark_sys_updated_on: null },
     }),
-    getStats: async (_table, options) => {
-      if (options.sysparm_group_by === "caller_id") {
-        return {
-          table: "incident",
-          rows: [{
-            stats: { count: "1" },
-            groupby_fields: [{ field: "caller_id", value: FIXTURE_CALLER }],
-          }],
-          count: 1,
-          total: null,
-          groupBy: "caller_id",
-        };
-      }
-      return {
-        table: "incident",
-        rows: [{ stats: { count: "1" } }],
-        count: 1,
-        total: 1,
-        groupBy: null,
-      };
-    },
   });
 
   const res = responseMock();

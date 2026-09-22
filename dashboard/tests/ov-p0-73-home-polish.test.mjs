@@ -22,21 +22,21 @@ test("OV-P0-73 oneview-home: máximos visuais 7", async () => {
 test("OV-P0-73 Home: Alertas header título+count+Ver todos; filtros na 2ª linha", async () => {
   const index = await read("src/pages/Index.tsx");
 
-  assert.match(index, /title="Alertas Recentes"/);
+  assert.match(index, /aria-label="Alertas recentes"|Alertas recentes/);
   assert.match(index, /HomePanelCount value=\{alertsTotal\}/);
   assert.match(index, /Ver todos/);
   assert.match(index, /HOME_FILTER_ROW|Prioritários/);
   assert.match(index, /ClientFilterCombobox/);
   assert.match(index, /Filtrar por severidade/);
-  assert.match(index, /queueOverflowLabel\(alertsTotal, homeAlerts\.length\)/);
+  assert.match(index, /queueOverflowLabel\(alertsTotal, visibleHomeAlerts\.length\)/);
   assert.match(index, /\+ N na fila|queueOverflowLabel/);
 
-  // Arquitetura preservada
-  assert.match(index, /lg:grid-cols-5/);
-  assert.match(index, /lg:col-span-3/);
-  assert.match(index, /lg:col-span-2/);
-  assert.match(index, /title="Resumo operacional"|aria-label="Resumo operacional"/);
-  assert.match(index, /title="Eventos recentes"/);
+  // Arquitetura preservada (dashboard configurável)
+  assert.match(index, /ConfigurableDashboard/);
+  assert.match(index, /ConfigurableDashboardWidget id="recent-alerts"/);
+  assert.match(index, /ConfigurableDashboardWidget id="incidents"/);
+  assert.match(index, /Resumo operacional/);
+  assert.match(index, /title="Eventos recentes"|Eventos recentes/);
 });
 
 test("OV-P0-73 Home: Chamados iguais ao Monitoramento, coluna própria, lista rolável", async () => {
@@ -45,18 +45,21 @@ test("OV-P0-73 Home: Chamados iguais ao Monitoramento, coluna própria, lista ro
     read("src/components/oneview/OperationalIncidentsQueueList.tsx"),
   ]);
 
-  assert.match(index, /title=\{incidentsPanelTitle\}/);
+  assert.match(index, /description=\{incidentsPanelTitle\}/);
   assert.match(index, /OperationalIncidentsToolbar/);
   assert.match(index, /OperationalIncidentsQueueList/);
   assert.match(index, /buildOperationalChamadosHref/);
   assert.match(index, /Ver todos em Chamados/);
   assert.match(index, /HOME_PANEL_HEADER_ASIDE/);
-  assert.match(index, /items-stretch/);
-  assert.match(index, /lg:col-span-2/);
-  assert.match(list, /Número · Cliente/);
-  assert.match(list, /Atualização · Prioridade · Estado/);
-  assert.match(list, /overflow-y-auto/);
-  assert.match(index, /IncidentQuickSheet/);
+  assert.match(list, /OPERATIONAL_INCIDENT_QUEUE_COLUMNS/);
+  assert.match(list, /description/);
+  assert.match(list, /overflow-x-auto overflow-y-auto/);
+  assert.match(index, /tableId: "home-alerts"/);
+  assert.match(index, /tableId: "home-incidents"/);
+  assert.match(index, /tableId: "home-operators"/);
+  assert.match(index, /ConfigurableTableColumns controller=\{homeAlertColumns\}/);
+  assert.match(index, /ConfigurableTableColumns controller=\{homeIncidentColumns\}/);
+  assert.match(index, /IncidentDetailDrawer/);
 });
 
 test("OV-P0-73 Home: Eventos Cliente|Host|Problema|Severidade|Horário + Abrir histórico", async () => {
@@ -67,20 +70,18 @@ test("OV-P0-73 Home: Eventos Cliente|Host|Problema|Severidade|Horário + Abrir h
   assert.match(index, /HomePanelCount value=\{eventsTotal\}/);
   assert.match(index, /max-h-\[18rem\]|max-h-\[20rem\]/);
 
-  const eventsBlock = index.slice(
-    index.indexOf('title="Eventos recentes"'),
-    index.indexOf("<IncidentQuickSheet"),
+  assert.match(index, /HOME_EVENT_COLUMNS/);
+  const eventColumnBlock = index.slice(
+    index.indexOf("const HOME_EVENT_COLUMNS"),
+    index.indexOf("const HOME_ALERT_COLUMNS"),
   );
-  assert.match(eventsBlock, />Cliente</);
-  assert.match(eventsBlock, />Host</);
-  assert.match(eventsBlock, />Problema</);
-  assert.match(eventsBlock, />Severidade</);
-  assert.match(eventsBlock, />Horário</);
-  assert.doesNotMatch(eventsBlock, /><th[^>]*>Tipo<\/th>/);
-  assert.ok(eventsBlock.indexOf(">Cliente<") < eventsBlock.indexOf(">Host<"));
-  assert.ok(eventsBlock.indexOf(">Host<") < eventsBlock.indexOf(">Problema<"));
-  assert.ok(eventsBlock.indexOf(">Problema<") < eventsBlock.indexOf(">Severidade<"));
-  assert.ok(eventsBlock.indexOf(">Severidade<") < eventsBlock.indexOf(">Horário<"));
+  assert.match(eventColumnBlock, /label: "Cliente"/);
+  assert.match(eventColumnBlock, /label: "Host"/);
+  assert.match(eventColumnBlock, /label: "Problema"/);
+  assert.match(eventColumnBlock, /label: "Severidade"/);
+  assert.match(eventColumnBlock, /label: "Horário"/);
+  assert.match(index, /tableId: "home-events"/);
+  assert.doesNotMatch(eventColumnBlock, /label: "Tipo"/);
 });
 
 test("OV-P0-73 Home: drawer e filtros preservados", async () => {
@@ -92,8 +93,9 @@ test("OV-P0-73 Home: drawer e filtros preservados", async () => {
   assert.match(index, /ClientFilterCombobox/);
   assert.match(index, /HOME_SEVERITY_FILTER_OPTIONS/);
   assert.match(index, /HOME_OPERATIONAL_WINDOW_OPTIONS/);
-  // OV-P0-111 — linha de alerta: horário de início + duração explícita.
-  assert.match(index, /formatClock\(startedAt\)/);
+  // OV-P0-111 — linha tabular de alerta: início compacto + duração + colunas configuráveis.
+  assert.match(index, /formatCompactFirstSeen\(alert\.first_seen_at \|\| alert\.started_at\)/);
   assert.match(index, /formatDurationSeconds\(alert\.duration_seconds\)/);
-  assert.match(index, /Duração: há quanto tempo o alerta está ativo/);
+  assert.match(index, /ov-monitoring-table-grid/);
+  assert.match(index, /HOME_ALERT_COLUMNS/);
 });

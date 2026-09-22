@@ -15,6 +15,17 @@ test("OV-P0-172 merges only trim/casing variants and keeps a deterministic displ
   assert.notEqual(canonicalCustomerKey("Ailos"), canonicalCustomerKey("Ailos Sistemas"));
 });
 
+test("OV-P0-172 resolves MAPS from dedicated datasource when customer_key is absent", () => {
+  const identity = safeCustomerIdentity({
+    customer_name: null,
+    customer_key: null,
+    datasource_name: "maps",
+  });
+  assert.equal(identity.customerKey, "maps");
+  assert.equal(identity.customerName, "MAPS");
+  assert.equal(identity.unidentified, false);
+});
+
 test("OV-P0-172 aggregates the canonical key without losing source identity", () => {
   const rows = [
     { customer_name: "Ailos", customer_key: "Ailos", data_source_id: "source-a", count: 12 },
@@ -38,7 +49,7 @@ test("OV-P0-172 applies the canonical read model to facets, filters and all oper
   const db = read("api/_lib/oneview-db.js");
   const identity = read("src/components/oneview/ClientIdentity.tsx");
   for (const page of ["src/pages/Index.tsx", "src/pages/Monitoring.tsx", "src/pages/Alerts.tsx", "src/pages/Historico.tsx"]) {
-    assert.match(read(page), /fetchOneViewFacets|fetchClientsTopSummary|canonicalClientName/);
+    assert.match(read(page), /fetchOneViewFacets|getOneViewFacets|fetchClientsTopSummary|canonicalClientName|operationalClientLabel/);
   }
   assert.match(db, /lower\(btrim\(a\.customer_name\)\)/);
   assert.match(db, /client_name_original/);

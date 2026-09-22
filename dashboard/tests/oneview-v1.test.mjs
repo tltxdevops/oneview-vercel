@@ -485,6 +485,7 @@ test("snapshot aplica paginação, filtros e informa cobertura parcial", async (
   assert.ok(first.items.every((item) => [
     "teletex-http",
     "rhp",
+    "maps",
     "castrolanda",
     "zurich",
     "fraport-for",

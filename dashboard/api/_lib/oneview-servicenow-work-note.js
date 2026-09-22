@@ -32,8 +32,7 @@ function actorLabel(value, fallback) {
 
 export function buildOneViewWorkNote(actor, workNote) {
   const name = actorLabel(actor?.actor_name, "Usuário OneView");
-  const username = actorLabel(actor?.actor_username, "identidade não informada");
-  return `[OneView • ${name} • ${username}]\n${workNote}`;
+  return `[OneView • ${name}]\n${workNote}`;
 }
 
 function parseWorkNoteBody(req) {

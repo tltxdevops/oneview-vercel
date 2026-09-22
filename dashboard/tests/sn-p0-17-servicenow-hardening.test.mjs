@@ -184,30 +184,29 @@ test("SN-P0-17 retry somente GET e limitado; 401 sem retry", async () => {
   );
 });
 
-test("SN-P0-17 related-incidents: erro SN não inventa match e códigos distintos", async () => {
+test("SN-P0-17 related-incidents: falha do read model não inventa match", async () => {
   const cases = [
-    ["servicenow_authentication_failed", 401, 502],
-    ["servicenow_access_forbidden", 403, 502],
-    ["servicenow_rate_limited", 429, 429],
-    ["servicenow_unavailable", 503, 502],
-    ["servicenow_timeout", 504, 504],
+    ["servicenow_authentication_failed", 401],
+    ["servicenow_access_forbidden", 403],
+    ["servicenow_rate_limited", 429],
+    ["servicenow_unavailable", 503],
+    ["servicenow_timeout", 504],
   ];
 
-  for (const [code, snStatus, httpStatus] of cases) {
+  for (const [code, snStatus] of cases) {
     const logs = [];
     const handler = createRelatedIncidentsHandler({
       authorize: async () => ({ id: "u1" }),
       featureFlagProvider: () => true,
-      configProvider: () => snConfig,
       logger: (entry) => logs.push(entry),
-      getPage: async () => {
+      lookup: async () => {
         throw new ServiceNowClientError(code, { status: snStatus });
       },
     });
     const res = responseMock();
     await handler(requestMock({ source_event_id: "327191633" }), res);
-    assert.equal(res.statusCode, httpStatus, code);
-    assert.equal(res.body.error, code, code);
+    assert.equal(res.statusCode, 503, code);
+    assert.equal(res.body.error, "database_unavailable", code);
     assert.equal(res.body.matched, false);
     assert.deepEqual(res.body.incidents, []);
     const serialized = JSON.stringify({ body: res.body, logs });
@@ -217,23 +216,19 @@ test("SN-P0-17 related-incidents: erro SN não inventa match e códigos distinto
   }
 });
 
-test("SN-P0-17 incidents list: 403 SN ≠ feature flag off", async () => {
-  const snForbidden = createIncidentsHandler({
+test("SN-P0-17 incidents list: falha read model ≠ feature flag off", async () => {
+  const readModelFailure = createIncidentsHandler({
     authorize: async () => ({ id: "u1" }),
     featureFlagProvider: () => true,
-    configProvider: () => snConfig,
     logger: () => undefined,
-    getPage: async () => {
-      throw new ServiceNowClientError("servicenow_access_forbidden", { status: 403 });
-    },
-    getStats: async () => {
+    readModelPage: async () => {
       throw new ServiceNowClientError("servicenow_access_forbidden", { status: 403 });
     },
   });
   const resSn = responseMock();
-  await snForbidden(requestMock({}), resSn);
-  assert.equal(resSn.statusCode, 502);
-  assert.equal(resSn.body.error, "servicenow_access_forbidden");
+  await readModelFailure(requestMock({}), resSn);
+  assert.equal(resSn.statusCode, 503);
+  assert.equal(resSn.body.error, "database_unavailable");
 
   const flagOff = createIncidentsHandler({
     authorize: async () => ({ id: "u1" }),

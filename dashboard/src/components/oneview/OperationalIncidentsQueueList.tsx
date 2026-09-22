@@ -1,4 +1,6 @@
+import { type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
+import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { cn } from "@/lib/utils";
 import type { OneViewIncident } from "@/lib/oneview-api";
 
@@ -34,74 +36,137 @@ export function operationalIncidentKey(item: OneViewIncident) {
   return String(item.sys_id || item.number || "").trim();
 }
 
+export const OPERATIONAL_INCIDENT_QUEUE_COLUMNS = [
+  { id: "number", label: "Número", required: true },
+  { id: "description", label: "Descrição" },
+  { id: "client", label: "Cliente" },
+  { id: "updated", label: "Atualização" },
+  { id: "analyst", label: "Analista" },
+  { id: "priority", label: "Prioridade" },
+  { id: "state", label: "Estado" },
+  { id: "actions", label: "Ações", required: true },
+] as const;
+
+export type OperationalIncidentQueueColumnId = typeof OPERATIONAL_INCIDENT_QUEUE_COLUMNS[number]["id"];
+
+export const OPERATIONAL_INCIDENT_QUEUE_COLUMN_WIDTH: Record<OperationalIncidentQueueColumnId, string> = {
+  number: "7.5rem",
+  description: "minmax(10rem,1.25fr)",
+  client: "minmax(8rem,0.85fr)",
+  updated: "6.5rem",
+  analyst: "8rem",
+  priority: "7rem",
+  state: "7.5rem",
+  actions: "minmax(12rem, 1.1fr)",
+};
+
+export const OPERATIONAL_INCIDENT_QUEUE_TABLE_MIN_WIDTH = "64rem";
+
+export function operationalIncidentColumnAlign(column: string) {
+  if (column === "updated") return "justify-self-end text-right";
+  if (column === "actions") return "justify-self-start text-left";
+  return "justify-self-start text-left";
+}
+
 function OperationalIncidentQueueRow({
   item,
   onOpen,
+  columns,
+  gridTemplate,
   selected = false,
   showAnalyst = false,
+  onActionComplete,
 }: {
   item: OneViewIncident;
   onOpen: (item: OneViewIncident) => void;
+  columns: readonly OperationalIncidentQueueColumnId[];
+  gridTemplate: string;
   selected?: boolean;
   showAnalyst?: boolean;
+  onActionComplete?: () => void;
 }) {
   const number = displayIncidentField(item.number);
   const analyst = displayIncidentField(item.assigned_to_display, item.assigned_to);
+  const incidentDescription = displayIncidentField(item.short_description, item.description);
+  const cells: Record<OperationalIncidentQueueColumnId, ReactNode> = {
+    number: <span key="number" className="block truncate text-[13px] font-semibold text-foreground" title={number}>{number}</span>,
+    description: <span key="description" className="block truncate text-[11px] text-foreground/85" title={incidentDescription}>{incidentDescription}</span>,
+    client: <span key="client" className="block truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>{displayIncidentField(item.company_display, item.company)}</span>,
+    updated: <span key="updated" className="block truncate text-[11px] tabular-nums text-muted-foreground" title={formatUpdatedAgo(item.sys_updated_on)}>{formatUpdatedAgo(item.sys_updated_on)}</span>,
+    analyst: <span key="analyst" className="block truncate text-[10px] text-muted-foreground" title={analyst}>{showAnalyst ? analyst : "—"}</span>,
+    priority: <span key="priority"><Badge variant="secondary" className="h-5 max-w-full truncate px-1.5 text-[10px]">{displayIncidentField(item.priority_display, item.priority)}</Badge></span>,
+    state: <span key="state"><Badge variant="outline" className="h-5 max-w-full truncate px-1.5 text-[10px]">{displayIncidentField(item.state_display, item.state)}</Badge></span>,
+    actions: (
+      <IncidentTableActionsCell
+        key="actions"
+        incident={item}
+        onActionComplete={onActionComplete}
+      />
+    ),
+  };
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(item)}
-      aria-current={selected ? "true" : undefined}
+    <div
       className={cn(
-        "grid w-full grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] gap-x-2 gap-y-0.5 border-b border-border/50 py-1.5 text-left last:border-b-0 transition-colors hover:bg-muted/40",
+        "ov-monitoring-table-grid grid w-full min-h-10 items-center gap-x-3 border-b border-border/50 px-1 py-1.5 text-left last:border-b-0 transition-colors",
         selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
       )}
-      aria-label={`Abrir chamado ${number}`}
+      style={{ gridTemplateColumns: gridTemplate }}
+      role="row"
     >
-      <p className="truncate text-[13px] font-semibold text-foreground" title={number}>{number}</p>
-      <p className="truncate text-right text-[11px] text-muted-foreground" title={formatUpdatedAgo(item.sys_updated_on)}>
-        {formatUpdatedAgo(item.sys_updated_on)}
-      </p>
-      <p className="truncate text-[11px] text-foreground/80" title={displayIncidentField(item.company_display, item.company)}>
-        {displayIncidentField(item.company_display, item.company)}
-      </p>
-      <div className="flex flex-wrap items-center justify-end gap-1">
-        {showAnalyst ? (
-          <span className="max-w-[8rem] truncate text-[10px] text-muted-foreground" title={analyst}>
-            {analyst}
-          </span>
-        ) : null}
-        <Badge variant="secondary" className="h-5 max-w-[7rem] truncate px-1.5 text-[10px]">
-          {displayIncidentField(item.priority_display, item.priority)}
-        </Badge>
-        <Badge variant="outline" className="h-5 max-w-[7rem] truncate px-1.5 text-[10px]">
-          {displayIncidentField(item.state_display, item.state)}
-        </Badge>
-      </div>
-    </button>
+      {columns.map((column) => (
+        <div
+          key={column}
+          className={cn(
+            "min-w-0 overflow-hidden",
+            operationalIncidentColumnAlign(column),
+            column !== "actions" && "cursor-pointer hover:opacity-90",
+          )}
+          onClick={column === "actions" ? undefined : () => onOpen(item)}
+          onKeyDown={column === "actions" ? undefined : (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onOpen(item);
+            }
+          }}
+          role={column === "actions" ? undefined : "button"}
+          tabIndex={column === "actions" ? undefined : 0}
+          aria-label={column === "actions" ? undefined : `Abrir chamado ${number}`}
+        >
+          {cells[column]}
+        </div>
+      ))}
+    </div>
   );
 }
 
 type OperationalIncidentsQueueListProps = {
   items: OneViewIncident[];
   onOpen: (item: OneViewIncident) => void;
+  columnIds: readonly OperationalIncidentQueueColumnId[];
+  gridTemplate: string;
+  columnLabels: ReadonlyArray<{ id: string; label: string }>;
   selectedKey?: string | null;
   showAnalyst?: boolean;
   loading?: boolean;
   empty?: boolean;
   emptyMessage?: string;
   className?: string;
+  onActionComplete?: () => void;
 };
 
 export function OperationalIncidentsQueueList({
   items,
   onOpen,
+  columnIds,
+  gridTemplate,
+  columnLabels,
   selectedKey = null,
   showAnalyst = false,
   loading = false,
   empty = false,
   emptyMessage = "Nenhum chamado monitoring sem responsável.",
   className,
+  onActionComplete,
 }: OperationalIncidentsQueueListProps) {
   if (loading) {
     return <p className="py-2 text-center text-sm text-muted-foreground">Carregando…</p>;
@@ -112,25 +177,32 @@ export function OperationalIncidentsQueueList({
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
-      <div
-        className="grid shrink-0 grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] gap-x-2 border-b border-border/70 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
-        aria-hidden="true"
-      >
-        <span>Número · Cliente</span>
-        <span className="text-right">
-          {showAnalyst ? "Atualização · Analista · Prioridade · Estado" : "Atualização · Prioridade · Estado"}
-        </span>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {items.map((item) => (
-          <OperationalIncidentQueueRow
-            key={item.sys_id || item.number || String(item.sys_updated_on)}
-            item={item}
-            onOpen={onOpen}
-            selected={selectedKey === operationalIncidentKey(item)}
-            showAnalyst={showAnalyst}
-          />
-        ))}
+      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
+        <div style={{ minWidth: OPERATIONAL_INCIDENT_QUEUE_TABLE_MIN_WIDTH }}>
+          <div
+            className="ov-monitoring-table-grid grid shrink-0 gap-x-3 border-b border-border/70 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+            style={{ gridTemplateColumns: gridTemplate }}
+            aria-hidden="true"
+          >
+            {columnLabels.map((column) => (
+              <span key={column.id} className={cn("min-w-0 truncate", operationalIncidentColumnAlign(column.id))}>
+                {column.label}
+              </span>
+            ))}
+          </div>
+          {items.map((item) => (
+            <OperationalIncidentQueueRow
+              key={item.sys_id || item.number || String(item.sys_updated_on)}
+              item={item}
+              onOpen={onOpen}
+              columns={columnIds}
+              gridTemplate={gridTemplate}
+              selected={selectedKey === operationalIncidentKey(item)}
+              showAnalyst={showAnalyst}
+              onActionComplete={onActionComplete}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );

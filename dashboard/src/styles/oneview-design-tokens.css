@@ -282,6 +282,19 @@
   .ov-operational-table th, .ov-operational-table td { padding-inline: var(--ov-space-16); vertical-align: middle; }
   .ov-operational-table tbody tr:hover { background: hsl(var(--ov-color-surface-muted) / 0.45); }
 
+  .ov-operational-table.ov-operational-table--dense thead tr {
+    height: auto;
+    min-height: 2rem;
+  }
+  .ov-operational-table.ov-operational-table--dense tbody tr {
+    height: auto;
+    min-height: 2.25rem;
+  }
+  .ov-operational-table.ov-operational-table--dense th,
+  .ov-operational-table.ov-operational-table--dense td {
+    padding-block: var(--ov-space-8);
+  }
+
   .ov-surface {
     border: 1px solid hsl(var(--ov-color-border));
     border-radius: var(--ov-radius-lg);

@@ -25,6 +25,9 @@ test("OV-TABLES: shared tools persist visibility and draggable order per actor",
 test("OV-TABLES: every operational data surface exposes direct search and columns", () => {
   const expectations = [
     ["src/pages/Index.tsx", "home-events"],
+    ["src/pages/Index.tsx", "home-alerts"],
+    ["src/pages/Index.tsx", "home-incidents"],
+    ["src/pages/Index.tsx", "home-operators"],
     ["src/pages/Monitoring.tsx", "monitor-alerts"],
     ["src/pages/Monitoring.tsx", "monitor-incidents"],
     ["src/pages/Alerts.tsx", "alerts"],

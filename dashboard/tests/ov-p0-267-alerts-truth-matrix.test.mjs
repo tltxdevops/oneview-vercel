@@ -24,14 +24,14 @@ test("OV-P0-267: operational teletex-http customer values remap to datasource na
   assert.deepEqual(split.datasources, ["teletex-http"]);
   assert.deepEqual(split.customers, []);
   const mixed = splitAlertCustomerFilter(["Zurich", "berneck", "unclassified", "maps", "teletex-http"]);
-  assert.deepEqual(mixed.datasources, ["teletex-http"]);
-  assert.deepEqual(mixed.customers, ["zurich", "berneck", "unclassified", "maps"]);
+  assert.deepEqual([...mixed.datasources].sort(), ["maps", "teletex-http"].sort());
+  assert.deepEqual(mixed.customers, ["zurich", "berneck", "unclassified"]);
 });
 
-test("OV-P0-267: Maps cannot enter the operational customer remap", () => {
+test("OV-P0-267: Maps remaps to datasource (no customer_key in DB)", () => {
   const split = splitAlertCustomerFilter(["maps", "MAPS"]);
-  assert.deepEqual(split.datasources, []);
-  assert.deepEqual(split.customers, ["maps"]);
+  assert.deepEqual(split.datasources, ["maps"]);
+  assert.deepEqual(split.customers, []);
 });
 
 test("OV-P0-267: /alerts customer=teletex-http scopes d.name, not customer_name identity", () => {
@@ -58,21 +58,22 @@ test("OV-P0-267: real company customer filter stays on identity key", () => {
   assert.match(query.whereSql, /lower\(btrim\(a\.customer_name\)\)/);
 });
 
-test("OV-P0-267: six operational sources stay in the allowlist; Maps stays out", () => {
+test("OV-P0-267: seven operational sources stay in the allowlist including Maps", () => {
   assert.deepEqual([...OPERATIONAL].sort(), [
     "castrolanda",
     "fraport-for",
     "fraport-poa",
+    "maps",
     "rhp",
     "teletex-http",
     "zurich",
   ].sort());
-  assert.equal(OPERATIONAL.includes("maps"), false);
+  assert.equal(OPERATIONAL.includes("maps"), true);
 });
 
 test("OV-P0-267: Alerts keeps datasource scope in the BFF contract without the header selector", async () => {
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
-  assert.doesNotMatch(alerts, /ZabbixSourceFilter/);
+  assert.match(alerts, /ZabbixSourceFilter/);
   assert.match(alerts, /datasources: selectedDatasources/);
   assert.doesNotMatch(alerts, /datasourceCards/);
   assert.doesNotMatch(alerts, /FRAPORT|Zurich|Castrolanda/);
@@ -107,7 +108,7 @@ test("OV-P0-267B: Home, Monitoramento and Alertas share explicit datasource quer
   assert.match(monitoring, /customers: params\.customers/);
   assert.match(monitoring, /datasources: params\.datasources/);
   assert.match(monitoring, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
-  assert.doesNotMatch(alerts, /ZabbixSourceFilter/);
+  assert.match(alerts, /ZabbixSourceFilter/);
   assert.match(alerts, /datasources: selectedDatasources/);
 
   for (const datasource of OPERATIONAL) {
@@ -243,6 +244,7 @@ test("OV-P0-267: KPI summary high aggregates critical legado; disaster stays sep
 test("OV-P0-267: Alerts tabs apply only the documented filters", async () => {
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
   assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDatePreset\("24h"\)/);
+  assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDateField\("last_seen"\)/);
   assert.match(alerts, /if \(view === "open"\) \{[\s\S]*setDatePreset\("all"\)/);
   assert.match(alerts, /if \(view === "priority"\) \{[\s\S]*setSelectedSeverities\(\["disaster", "high"\]\)/);
   assert.match(alerts, /if \(view === "forgotten"\) \{[\s\S]*setSourceAckFilter\("unacknowledged"\)/);

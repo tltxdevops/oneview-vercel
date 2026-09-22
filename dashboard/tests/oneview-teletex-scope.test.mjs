@@ -7,9 +7,9 @@ import { buildAlertListQuery } from "../api/_lib/oneview-db.js";
 import { getOperationalDataSourceNames } from "../api/_lib/oneview-scope.js";
 
 const request = (query = {}) => ({ method: "GET", query, headers: {} });
-const operationalSources = ["teletex-http", "rhp", "castrolanda", "zurich", "fraport-for", "fraport-poa"];
+const operationalSources = ["teletex-http", "rhp", "maps", "castrolanda", "zurich", "fraport-for", "fraport-poa"];
 
-test("OV-P0-257C central scope contains exactly the six operational datasources", () => {
+test("OV-P0-257C central scope contains exactly the seven operational datasources", () => {
   assert.deepEqual(getOperationalDataSourceNames(), operationalSources);
   assert.deepEqual(getOneViewConfig({}).operationalDataSourceNames, operationalSources);
 });

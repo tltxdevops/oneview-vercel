@@ -410,8 +410,9 @@ test("Home filtra eventos técnicos e preserva dados no refresh parcial", async 
 });
 
 test("página de chamados lista incidents do BFF read-only", async () => {
-  const [chamados, api, incidentsBff, app, index, sidebar] = await Promise.all([
+  const [chamados, drawer, api, incidentsBff, app, index, sidebar] = await Promise.all([
     read("src/pages/Chamados.tsx"),
+    read("src/components/oneview/IncidentDetailDrawer.tsx"),
     read("src/lib/oneview-api.ts"),
     read("api/_lib/oneview-incidents.js"),
     read("src/App.tsx"),
@@ -443,17 +444,16 @@ test("página de chamados lista incidents do BFF read-only", async () => {
   assert.match(chamados, /ServiceNow/);
   assert.doesNotMatch(chamados, /ServiceNow DEV/);
   assert.match(chamados, /Nenhum chamado encontrado/);
-  assert.match(chamados, /ServiceNow indisponível/);
+  assert.match(`${chamados}\n${drawer}`, /ServiceNow indisponível/);
   assert.match(chamados, /Não foi possível carregar os chamados/);
   assert.match(chamados, /safeCount/);
   assert.doesNotMatch(chamados, /showHealthStrip=\{false\}/);
   assert.match(chamados, /Sheet|drawer/i);
   assert.match(chamados, /ServiceNowDevLink/);
   assert.match(chamados, /cursor-pointer/);
-  assert.match(chamados, /Alerta relacionado/);
-  assert.match(chamados, /Nenhum alerta relacionado localizado/);
+  assert.match(chamados, /IncidentDetailDrawer/);
+  assert.match(chamados, /IncidentOperationalActions/);
   assert.match(chamados, /Abrir alerta/);
-  assert.match(chamados, /fetchIncidentRelatedAlert/);
   assert.doesNotMatch(chamados, /fallback.*host|host.*fallback/i);
   assert.doesNotMatch(
     chamados,
@@ -1041,7 +1041,8 @@ test("alertas possui visualizações Recentes, Em aberto, Prioritários, Esqueci
 
   const recentBlock = alerts.match(/if \(view === "recent"\) \{[\s\S]*?return;\s*\}/);
   assert.ok(recentBlock);
-  assert.match(recentBlock[0], /setStatusFilter\("active"\)/);
+  assert.match(recentBlock[0], /setStatusFilter\("all"\)/);
+  assert.match(recentBlock[0], /setDateField\("first_seen"\)/);
   assert.match(recentBlock[0], /setSortField\("first_seen_at"\)/);
   assert.match(recentBlock[0], /setSortOrder\("desc"\)/);
 

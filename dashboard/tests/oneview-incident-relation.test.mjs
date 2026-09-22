@@ -68,7 +68,7 @@ test("OV-P0-137 prioriza sys_id e aceita number explícito", () => {
 
 test("OV-P0-137 lookup reverso usa sys_id antes de number e inclui alerta resolvido", async () => {
   const handler = enabledHandler({
-    findAlertByReference: async (reference) => {
+    findAlertForIncident: async (reference) => {
       assert.equal(reference.sysId, "536247c097f24750e580f137f053af8d");
       assert.equal(reference.number, "INC0068879");
       return {
@@ -80,7 +80,6 @@ test("OV-P0-137 lookup reverso usa sys_id antes de number e inclui alerta resolv
         },
       };
     },
-    findAlert: async () => { throw new Error("event fallback must not run"); },
   });
   const res = responseMock();
   await handler(requestMock({ sys_id: "536247c097f24750e580f137f053af8d", number: "INC0068879" }), res);
@@ -93,7 +92,7 @@ test("OV-P0-137 lookup reverso usa sys_id antes de number e inclui alerta resolv
 
 test("OV-P0-137 lookup reverso por number quando sys_id não existe", async () => {
   const handler = enabledHandler({
-    findAlertByReference: async (reference) => {
+    findAlertForIncident: async (reference) => {
       assert.equal(reference.sysId, null);
       assert.equal(reference.number, "INC0068879");
       return { relation_source: "number", alert: { id: "alert-1", host: "h", customer: "c", problem: "p", severity: "average", status: "active" } };
@@ -129,7 +128,7 @@ test("OV-P0-190/197 resolves RHP and Protege incidents by sys_id", async () => {
 
   for (const expected of cases) {
     const handler = enabledHandler({
-      findAlertByReference: async ({ sysId, number }) => {
+      findAlertForIncident: async ({ sysId, number }) => {
         assert.equal(sysId, expected.sys_id);
         assert.equal(number, expected.number);
         return {
@@ -141,7 +140,6 @@ test("OV-P0-190/197 resolves RHP and Protege incidents by sys_id", async () => {
           },
         };
       },
-      findAlert: async () => { throw new Error("event fallback must not run"); },
     });
     const res = responseMock();
     await handler(requestMock({ sys_id: expected.sys_id, number: expected.number }), res);
@@ -155,10 +153,11 @@ test("OV-P0-190/197 resolves RHP and Protege incidents by sys_id", async () => {
 
 test("OV-P0-190 uses number after sys_id miss and never hostname", async () => {
   const handler = enabledHandler({
-    findAlertByReference: async (reference) => {
+    findAlertForIncident: async (reference) => {
       assert.deepEqual(reference, {
         sysId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         number: "INC0074397",
+        zabbixEventId: null,
       });
       return {
         relation_source: "number",
@@ -183,10 +182,11 @@ test("OV-P0-190 uses number after sys_id miss and never hostname", async () => {
 
 test("OV-P0-190 returns no match without hostname fallback", async () => {
   const handler = enabledHandler({
-    findAlertByReference: async (reference) => {
+    findAlertForIncident: async (reference) => {
       assert.deepEqual(reference, {
         sysId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         number: "INC9999999",
+        zabbixEventId: null,
       });
       return { relation_source: "none", alert: null };
     },
@@ -205,19 +205,21 @@ test("OV-P0-190 returns no match without hostname fallback", async () => {
 
 test("OV-P0-231 uses an explicit original Zabbix problem ID after tag misses", async () => {
   const handler = enabledHandler({
-    findAlertByReference: async () => ({ relation_source: "none", alert: null }),
-    findAlert: async (eventId) => {
-      assert.equal(eventId, "341462744");
+    findAlertForIncident: async (reference) => {
+      assert.equal(reference.zabbixEventId, "341462744");
       return {
-        id: "683a3bf9-5ea6-496f-853e-0ad32d451af4",
-        data_source_id: "20511025-a4a7-466b-80d3-08db08dfa90c",
-        source_event_id: "341462744",
-        host: "TJRS - UMBRELLA-1",
-        customer: "TJRS",
-        problem: "Upload WAN acima de 20 Mbps",
-        severity: "average",
-        status: "active",
-        first_seen_at: "2026-08-27T13:31:34.000Z",
+        relation_source: "event_id",
+        alert: {
+          id: "683a3bf9-5ea6-496f-853e-0ad32d451af4",
+          data_source_id: "20511025-a4a7-466b-80d3-08db08dfa90c",
+          source_event_id: "341462744",
+          host: "TJRS - UMBRELLA-1",
+          customer: "TJRS",
+          problem: "Upload WAN acima de 20 Mbps",
+          severity: "average",
+          status: "active",
+          first_seen_at: "2026-08-27T13:31:34.000Z",
+        },
       };
     },
   });
@@ -238,15 +240,18 @@ test("OV-P0-231 uses an explicit original Zabbix problem ID after tag misses", a
 
 test("related-alert retorna alerta quando source_event_id casa", async () => {
   const handler = enabledHandler({
-    findAlert: async (eventId) => {
-      assert.equal(eventId, "327191633");
+    findAlertForIncident: async (reference) => {
+      assert.equal(reference.zabbixEventId, "327191633");
       return {
-        id: "alert-1",
-        source_event_id: "327191633",
-        host: "host-a",
-        customer: "Cliente X",
-        severity: "high",
-        status: "active",
+        relation_source: "event_id",
+        alert: {
+          id: "alert-1",
+          source_event_id: "327191633",
+          host: "host-a",
+          customer: "Cliente X",
+          severity: "high",
+          status: "active",
+        },
       };
     },
   });
@@ -268,7 +273,7 @@ test("related-alert retorna alerta quando source_event_id casa", async () => {
 
 test("related-alert retorna matched=false sem inventar fallback", async () => {
   const handler = enabledHandler({
-    findAlert: async () => null,
+    findAlertForIncident: async () => ({ relation_source: "none", alert: null }),
   });
 
   const res = responseMock();
@@ -282,7 +287,7 @@ test("related-alert retorna matched=false sem inventar fallback", async () => {
 
 test("related-alert rejeita método não-GET", async () => {
   const handler = enabledHandler({
-    findAlert: async () => {
+    findAlertForIncident: async () => {
       throw new Error("should not query");
     },
   });
@@ -293,7 +298,7 @@ test("related-alert rejeita método não-GET", async () => {
 
 test("related-alert retorna 400 sem zabbix_event_id", async () => {
   const handler = enabledHandler({
-    findAlert: async () => {
+    findAlertForIncident: async () => {
       throw new Error("should not query");
     },
   });
@@ -309,7 +314,7 @@ test("related-alert respeita feature flag desligada", async () => {
     authorize: async () => ({ id: "u1" }),
     featureFlagProvider: () => false,
     logger: () => undefined,
-    findAlert: async () => {
+    findAlertForIncident: async () => {
       throw new Error("should not query");
     },
   });
@@ -327,9 +332,9 @@ test("related-alert em snapshot mode não consulta DB", async () => {
       snapshotMode: true,
       primaryDataSourceName: "teletex-http",
     }),
-    findAlert: async () => {
+    findAlertForIncident: async () => {
       queried = true;
-      return { id: "x" };
+      return { relation_source: "event_id", alert: { id: "x" } };
     },
   });
   const res = responseMock();
@@ -342,7 +347,7 @@ test("related-alert em snapshot mode não consulta DB", async () => {
 
 test("related-alert propaga database_unavailable", async () => {
   const handler = enabledHandler({
-    findAlert: async () => {
+    findAlertForIncident: async () => {
       throw new Error("connection refused");
     },
   });

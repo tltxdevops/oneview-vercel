@@ -189,6 +189,8 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       INCIDENT_NOT_FOUND: "Chamado não encontrado no ServiceNow.",
       INVALID_WORK_NOTE: "A anotação deve ser um texto não vazio, com no máximo 2000 caracteres.",
       WORK_NOTE_RESULT_UNCERTAIN: "Não foi possível confirmar se a anotação foi registrada. Atualize o chamado antes de tentar novamente.",
+      INVALID_PUT_ON_HOLD_REQUEST: "Selecione um fornecedor homologado para colocar o chamado em espera.",
+      PUT_ON_HOLD_RESULT_UNCERTAIN: "Não foi possível confirmar se o chamado entrou em espera. Atualize o chamado antes de tentar novamente.",
     };
     throw new OneViewApiError(
       messages[errorCode] || `Não foi possível consultar o OneView (${response.status}).`,
@@ -1545,6 +1547,50 @@ export type ServiceNowWorkNoteResponse = {
   result: "added";
 };
 
+export type ServiceNowAlertAttachmentResponse = {
+  success: true;
+  incident_number: string;
+  file_name: string;
+  result: "attached";
+};
+
+export type ServiceNowPutOnHoldOptions = {
+  external_vendors: string[];
+  vendor_source: string;
+  hold_reason_label: string;
+};
+
+export type ServiceNowPutOnHoldResponse = {
+  success: true;
+  already_on_hold: boolean;
+  incident: {
+    incident_number: string | null;
+    state: string | null;
+    hold_reason: string | null;
+    external_vendor: string | null;
+    assigned_to_name: string | null;
+    assignment_group_name: string | null;
+    updated_on: string | null;
+  };
+};
+
+export async function fetchServiceNowPutOnHoldOptions(signal?: AbortSignal): Promise<ServiceNowPutOnHoldOptions> {
+  return fetchApi<ServiceNowPutOnHoldOptions>("/oneview/servicenow/put-on-hold-options", { signal });
+}
+
+export async function requestServiceNowIncidentPutOnHold({
+  sysId,
+  externalVendor,
+}: {
+  sysId: string;
+  externalVendor: string;
+}): Promise<ServiceNowPutOnHoldResponse> {
+  return fetchApi<ServiceNowPutOnHoldResponse>(
+    `/oneview/incidents/${encodeURIComponent(sysId)}/put-on-hold`,
+    { method: "POST", body: JSON.stringify({ external_vendor: externalVendor }) },
+  );
+}
+
 export async function fetchServiceNowOperatorIdentity(signal?: AbortSignal): Promise<ServiceNowOperatorIdentity> {
   return fetchApi<ServiceNowOperatorIdentity>("/oneview/servicenow/me", { signal });
 }
@@ -1573,6 +1619,49 @@ export async function requestServiceNowIncidentWorkNote({
     `/oneview/incidents/${encodeURIComponent(sysId)}/work-note`,
     { method: "POST", body: JSON.stringify({ work_note: workNote }) },
   );
+}
+
+export async function requestServiceNowIncidentAlertAttachment({
+  sysId,
+  fileName,
+  pngBody,
+}: {
+  sysId: string;
+  fileName: string;
+  pngBody: Blob;
+}): Promise<ServiceNowAlertAttachmentResponse> {
+  const authorization = await authHeaders();
+  const params = new URLSearchParams({ file_name: fileName });
+  const response = await fetch(
+    `${API_BASE_URL}/oneview/incidents/${encodeURIComponent(sysId)}/alert-attachment?${params.toString()}`,
+    {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "image/png",
+        ...authorization,
+      },
+      body: pngBody,
+    },
+  );
+  if (!response.ok) {
+    let errorCode = "request_failed";
+    try {
+      const errorBody = await response.json() as { error?: unknown };
+      if (typeof errorBody?.error === "string" && /^[a-z0-9_]+$/i.test(errorBody.error)) errorCode = errorBody.error;
+    } catch {
+      // ignore
+    }
+    throw new OneViewApiError(
+      errorCode === "ATTACHMENT_RESULT_UNCERTAIN"
+        ? "Não foi possível confirmar o anexo. Verifique o chamado antes de tentar novamente."
+        : "Não foi possível anexar os detalhes do alerta.",
+      response.status,
+      errorCode,
+    );
+  }
+  return response.json() as Promise<ServiceNowAlertAttachmentResponse>;
 }
 
 export async function fetchServiceNowIncidentActionOptions(sysId: string, signal?: AbortSignal): Promise<ServiceNowIncidentActionOptions> {
@@ -1970,6 +2059,9 @@ export type AlertRelatedIncident = {
   sys_updated_on: string | null;
   zabbix_event_id?: string | null;
   servicenow_url?: string | null;
+  short_description?: string | null;
+  company?: string | null;
+  company_display?: string | null;
 };
 
 export type AlertRelatedIncidentsRelationSource =
@@ -1977,6 +2069,7 @@ export type AlertRelatedIncidentsRelationSource =
   | "zabbix_servicenow_number"
   | "zabbix_inc_reference"
   | "zabbix_event_id"
+  | "operational_host"
   | "none";
 
 export type AlertRelatedIncidentsResponse = OneViewResponseMeta & {
@@ -1999,6 +2092,10 @@ export type FetchAlertRelatedIncidentsParams = {
   incidentSysIds?: string[] | null;
   /** Corpus textual opcional (comentários/ACK/timeline) — BFF extrai INC. */
   texts?: string[] | null;
+  /** Ponte MAPS: host/problema do alerta dedicado. */
+  mapsDatasource?: string | null;
+  mapsHost?: string | null;
+  mapsProblemName?: string | null;
 };
 
 export async function fetchAlertRelatedIncidents(
@@ -2027,6 +2124,12 @@ export async function fetchAlertRelatedIncidents(
     const value = String(text || "").trim();
     if (value) search.append("text", value);
   }
+  const mapsHost = String(params.mapsHost || "").trim();
+  const mapsProblem = String(params.mapsProblemName || "").trim();
+  const mapsDatasource = String(params.mapsDatasource || "").trim();
+  if (mapsHost) search.set("maps_host", mapsHost);
+  if (mapsProblem) search.set("maps_problem", mapsProblem);
+  if (mapsDatasource) search.set("maps_datasource", mapsDatasource);
   return fetchApi<AlertRelatedIncidentsResponse>(
     `/oneview/alerts/related-incidents?${search.toString()}`,
     { signal },

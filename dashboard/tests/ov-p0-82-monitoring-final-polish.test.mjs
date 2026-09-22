@@ -58,6 +58,6 @@ test("OV-P0-82 painel N sem responsável com scroll interno e drawer inline", as
   assert.match(monitoring, /unassignedPanelTitle/);
   assert.match(monitoring, /overflow-y-auto/);
   assert.match(monitoring, /AlertDetailDrawer/);
-  assert.match(monitoring, /Sheet open=\{selectedIncident !== null\}/);
+  assert.match(monitoring, /IncidentDetailDrawer/);
   assert.match(monitoring, /MonitorUnassignedRow/);
 });

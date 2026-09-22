@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   normalizeServiceNowIncident,
+  parseColonHostProblemLine,
   parseZabbixFieldsFromDescription,
 } from "../api/_lib/servicenow-normalize.js";
 
@@ -62,6 +63,23 @@ test("normalize: inclui campos parseados sem relacionar", () => {
   assert.equal(normalized.zabbix_event_id, "327191633");
   assert.equal(normalized.zabbix_ip, null);
   assert.equal(normalized.description.includes("Host:"), true);
+});
+
+test("parser: parseColonHostProblemLine separa host e problema", () => {
+  const line = "45548763.ibmmq.rsfn-prd.mapsip.cloud.maps.intranet: MAPS IP 45548763 receiver channel 01 BACEN has WARNING status";
+  const parsed = parseColonHostProblemLine(line);
+  assert.equal(parsed.host, "45548763.ibmmq.rsfn-prd.mapsip.cloud.maps.intranet");
+  assert.match(parsed.problem || "", /BACEN/);
+});
+
+test("parser: extrai host do formato MAPS hostname: problema", () => {
+  const description = "45548763.ibmmq.rsfn-prd.mapsip.cloud.maps.intranet: MAPS IP 45548763 receiver channel 01 BACEN has WARNING status";
+  const parsed = parseZabbixFieldsFromDescription(description);
+  assert.equal(
+    parsed.zabbix_host,
+    "45548763.ibmmq.rsfn-prd.mapsip.cloud.maps.intranet",
+  );
+  assert.equal(parsed.zabbix_event_id, null);
 });
 
 test("parser: description vazia retorna nulls", () => {

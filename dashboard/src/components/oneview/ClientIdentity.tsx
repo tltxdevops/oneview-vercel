@@ -31,6 +31,7 @@ const CANONICAL_CLIENT_DISPLAY_NAMES: Record<string, string> = {
   "saque e pague": "Saque e Pague",
   "fraport-for": "Fraport FOR",
   "fraport-poa": "Fraport POA",
+  maps: "MAPS",
 };
 
 /** Chave segura de cliente: somente trim + case-insensitive; sem fuzzy matching. */

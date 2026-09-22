@@ -11,11 +11,12 @@ import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyStat
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
 import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
+import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
+import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -36,19 +37,11 @@ import {
 } from "@/components/ui/table";
 import {
   fetchIncidentDuplicates,
-  fetchIncidentRelatedAlert,
   fetchIncidents,
-  fetchServiceNowIncidentActionOptions,
-  fetchServiceNowIncidentActionStatus,
-  requestServiceNowIncidentAction,
   type DuplicateIncidentGroup,
   type IncidentDuplicatesResponse,
   type IncidentListResponse,
-  type IncidentRelatedAlert,
   type OneViewIncident,
-  type ServiceNowIncidentAction,
-  type ServiceNowIncidentActionOptions,
-  type ServiceNowIncidentActionStatus,
 } from "@/lib/oneview-api";
 import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
@@ -91,6 +84,7 @@ const INCIDENT_COLUMN_OPTIONS = [
   { id: "group", label: COLUMNS[5] },
   { id: "assignee", label: COLUMNS[6] },
   { id: "updated", label: COLUMNS[7] },
+  { id: "actions", label: "Ações", required: true },
 ] as const;
 
 type IncidentColumnId = typeof INCIDENT_COLUMN_OPTIONS[number]["id"];
@@ -99,12 +93,13 @@ type IncidentColumnId = typeof INCIDENT_COLUMN_OPTIONS[number]["id"];
 const INCIDENT_COLUMN_WIDTH: Record<IncidentColumnId, string> = {
   number: "8%",
   client: "12%",
-  description: "28%",
+  description: "35%",
   state: "10%",
   priority: "9%",
   group: "12%",
-  assignee: "12%",
-  updated: "9%",
+  assignee: "10%",
+  updated: "8%",
+  actions: "11%",
 };
 
 const STATE_OPTIONS = [
@@ -190,26 +185,6 @@ function periodBounds(period: string): { openedFrom?: string; openedTo?: string 
   return { openedFrom: from, openedTo: to };
 }
 
-function DetailField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="space-y-1">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="whitespace-pre-wrap break-words text-sm text-foreground">{value}</p>
-    </div>
-  );
-}
-
-function alertSeverityLabel(value: string | null | undefined) {
-  return displayValue(value);
-}
-
-function alertStatusLabel(value: string | null | undefined) {
-  const key = String(value || "").trim().toLowerCase();
-  if (key === "active") return "Ativo";
-  if (key === "resolved") return "Resolvido";
-  return displayValue(value);
-}
-
 export default function ChamadosPage() {
   const { user } = useAuthContext();
   const actorId = user?.id || user?.email || "anonymous";
@@ -238,9 +213,6 @@ export default function ChamadosPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<OneViewIncident | null>(null);
-  const [relatedAlert, setRelatedAlert] = useState<IncidentRelatedAlert | null>(null);
-  const [relatedAlertLoading, setRelatedAlertLoading] = useState(false);
-  const [relatedAlertChecked, setRelatedAlertChecked] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "duplicates">("list");
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [duplicatesError, setDuplicatesError] = useState<string | null>(null);
@@ -351,48 +323,6 @@ export default function ChamadosPage() {
       });
     return () => controller.abort();
   }, [applied, refreshVersion]);
-
-  useEffect(() => {
-    if (!selected) {
-      setRelatedAlert(null);
-      setRelatedAlertLoading(false);
-      setRelatedAlertChecked(false);
-      return;
-    }
-
-    const sysId = String(selected.sys_id || "").trim();
-    const number = String(selected.number || "").trim();
-    const sourceEventId = String(selected.zabbix_event_id || "").trim();
-    if (!sysId && !number && !sourceEventId) {
-      setRelatedAlert(null);
-      setRelatedAlertLoading(false);
-      setRelatedAlertChecked(true);
-      return;
-    }
-
-    const controller = new AbortController();
-    setRelatedAlert(null);
-    setRelatedAlertLoading(true);
-    setRelatedAlertChecked(false);
-
-    fetchIncidentRelatedAlert({ sysId, number, sourceEventId }, controller.signal)
-      .then((response) => {
-        if (controller.signal.aborted) return;
-        setRelatedAlert(response.matched && response.alert ? response.alert : null);
-        setRelatedAlertChecked(true);
-      })
-      .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
-        setRelatedAlert(null);
-        setRelatedAlertChecked(true);
-        void err;
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setRelatedAlertLoading(false);
-      });
-
-    return () => controller.abort();
-  }, [selected]);
 
   const items = payload?.items ?? [];
   const pagination = payload?.pagination;
@@ -519,12 +449,6 @@ export default function ChamadosPage() {
     setDraft(next);
     applyFilters(next);
   }
-
-  const descriptionText = selected
-    ? displayValue(selected.description, selected.short_description)
-    : "—";
-  const hasZabbixHost = Boolean(String(selected?.u_hostname_zabbix || "").trim());
-  const hasZabbixIp = Boolean(String(selected?.u_ip_zabbix || "").trim());
 
   return (
     <AppLayout
@@ -886,7 +810,7 @@ export default function ChamadosPage() {
           )}
         >
           <Table className={cn(
-            "ov-operational-table w-full table-fixed",
+            "ov-operational-table ov-operational-table--dense w-full table-fixed",
             visibleColumnCount >= 7 ? "min-w-[72rem]" : visibleColumnCount >= 5 ? "min-w-[56rem]" : "min-w-[40rem]",
           )}>
             <colgroup>
@@ -897,7 +821,7 @@ export default function ChamadosPage() {
             <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
               <TableRow className="hover:bg-transparent">
                 {incidentColumns.visibleColumns.map((column) => (
-                  <TableHead key={column.id} className="ov-type-caption px-3 font-semibold uppercase tracking-wide text-muted-foreground">
+                  <TableHead key={column.id} className="ov-type-caption px-3 py-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
                     {column.label}
                   </TableHead>
                 ))}
@@ -942,14 +866,28 @@ export default function ChamadosPage() {
                     }}
                   >
                     {visibleColumnIds.map((column) => {
-                      if (column === "number") return <TableCell key={column} className="whitespace-nowrap px-3 font-mono text-xs">{displayValue(item.number)}</TableCell>;
-                      if (column === "client") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.company_display, item.company)}>{displayValue(item.company_display, item.company)}</TableCell>;
-                      if (column === "description") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.short_description)}>{displayValue(item.short_description)}</TableCell>;
-                      if (column === "state") return <TableCell key={column} className="whitespace-nowrap px-3 text-sm">{displayValue(item.state_display, item.state)}</TableCell>;
-                      if (column === "priority") return <TableCell key={column} className="whitespace-nowrap px-3 text-sm">{displayValue(item.priority_display, item.priority)}</TableCell>;
-                      if (column === "group") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.assignment_group_display, item.assignment_group)}>{displayValue(item.assignment_group_display, item.assignment_group)}</TableCell>;
-                      if (column === "assignee") return <TableCell key={column} className="max-w-0 truncate px-3 text-sm" title={displayValue(item.assigned_to_display, item.assigned_to)}>{displayValue(item.assigned_to_display, item.assigned_to)}</TableCell>;
-                      return <TableCell key={column} className="whitespace-nowrap px-3 text-xs tabular-nums text-muted-foreground">{formatDateTime(item.sys_updated_on)}</TableCell>;
+                      if (column === "actions") {
+                        return (
+                          <TableCell
+                            key={column}
+                            className="px-2 py-1.5 align-middle"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <IncidentTableActionsCell
+                              incident={item}
+                              onActionComplete={() => setRefreshVersion((value) => value + 1)}
+                            />
+                          </TableCell>
+                        );
+                      }
+                      if (column === "number") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 font-mono text-xs">{displayValue(item.number)}</TableCell>;
+                      if (column === "client") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.company_display, item.company)}>{displayValue(item.company_display, item.company)}</TableCell>;
+                      if (column === "description") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.short_description)}>{displayValue(item.short_description)}</TableCell>;
+                      if (column === "state") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-sm">{displayValue(item.state_display, item.state)}</TableCell>;
+                      if (column === "priority") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-sm">{displayValue(item.priority_display, item.priority)}</TableCell>;
+                      if (column === "group") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.assignment_group_display, item.assignment_group)}>{displayValue(item.assignment_group_display, item.assignment_group)}</TableCell>;
+                      if (column === "assignee") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.assigned_to_display, item.assigned_to)}>{displayValue(item.assigned_to_display, item.assigned_to)}</TableCell>;
+                      return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums text-muted-foreground">{formatDateTime(item.sys_updated_on)}</TableCell>;
                     })}
                   </TableRow>
                 ))
@@ -985,161 +923,11 @@ export default function ChamadosPage() {
         </ConfigurableDashboardWidget>
       </ConfigurableDashboard>
 
-      <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }}>
-        <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-xl">
-          {selected ? (
-            <div className="flex h-full flex-col">
-              <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
-                <SheetTitle className="font-mono text-lg">{displayValue(selected.number)}</SheetTitle>
-                <SheetDescription>{displayValue(selected.company_display, selected.company)}</SheetDescription>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <Badge variant="outline">{displayValue(selected.state_display, selected.state)}</Badge>
-                  <Badge variant="secondary">{displayValue(selected.priority_display, selected.priority)}</Badge>
-                </div>
-              </SheetHeader>
-
-              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-                <DetailField label="Descrição" value={descriptionText} />
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <DetailField label="Grupo" value={displayValue(selected.assignment_group_display, selected.assignment_group)} />
-                  <DetailField label="Responsável" value={displayValue(selected.assigned_to_display, selected.assigned_to)} />
-                  <DetailField label="Abertura" value={formatDateTime(selected.opened_at)} />
-                  <DetailField label="Atualização" value={formatDateTime(selected.sys_updated_on)} />
-                  <DetailField label="Encerramento" value={formatDateTime(selected.closed_at || selected.resolved_at)} />
-                  <DetailField label="Caller" value={displayValue(selected.caller_id_display, selected.caller_id)} />
-                  <DetailField label="Canal" value={displayValue(selected.contact_type_display, selected.contact_type)} />
-                </div>
-
-                {hasZabbixHost || hasZabbixIp ? (
-                  <section aria-label="Dados Zabbix" className="space-y-3 rounded-md border border-border/70 p-3">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Zabbix</p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {hasZabbixHost ? <DetailField label="Hostname Zabbix" value={displayValue(selected.u_hostname_zabbix)} /> : null}
-                      {hasZabbixIp ? <DetailField label="IP Zabbix" value={displayValue(selected.u_ip_zabbix)} /> : null}
-                    </div>
-                  </section>
-                ) : null}
-
-                <section aria-label="Alerta relacionado" className="space-y-3 rounded-md border border-border/70 p-3">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Alerta relacionado</p>
-                  {relatedAlertLoading ? (
-                    <div className="space-y-2">
-                      <Skeleton className="h-4 w-2/3" />
-                      <Skeleton className="h-4 w-1/2" />
-                      <Skeleton className="h-4 w-1/3" />
-                    </div>
-                  ) : relatedAlertChecked && relatedAlert ? (
-                    <div className="space-y-3">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <DetailField label="Cliente" value={displayValue(relatedAlert.customer)} />
-                        <DetailField label="Host" value={displayValue(relatedAlert.host)} />
-                        <DetailField label="Problema" value={displayValue(relatedAlert.problem)} />
-                        <DetailField label="Severidade" value={alertSeverityLabel(relatedAlert.severity)} />
-                        <DetailField label="Data/Hora" value={formatDateTime(relatedAlert.created_at || relatedAlert.first_seen_at)} />
-                        <DetailField label="Estado" value={alertStatusLabel(relatedAlert.status)} />
-                      </div>
-                      <Button type="button" variant="secondary" size="sm" className="w-full sm:w-auto" asChild>
-                        <Link to={relatedAlert.oneview_link || `/alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
-                          Abrir alerta no OneView
-                        </Link>
-                      </Button>
-                    </div>
-                  ) : relatedAlertChecked ? (
-                    <p className="text-sm text-muted-foreground">Nenhum alerta relacionado localizado</p>
-                  ) : null}
-                </section>
-
-                <IncidentOperationalActions incident={selected} />
-              </div>
-
-              <div className="border-t border-border/70 px-6 py-4">
-                {selected.sys_id ? (
-                  <ServiceNowDevLink href={selected.servicenow_url} sysId={selected.sys_id} fullWidth />
-                ) : (
-                  <p className="text-center text-xs text-muted-foreground">
-                    Link do ServiceNow indisponível para este incidente.
-                  </p>
-                )}
-              </div>
-            </div>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+      <IncidentDetailDrawer
+        incident={selected}
+        onOpenChange={(open) => { if (!open) setSelected(null); }}
+        description="Consulta operacional do chamado."
+      />
     </AppLayout>
-  );
-}
-
-function actionIdempotencyKey(action: ServiceNowIncidentAction) {
-  const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `sn-action:${action}:${nonce}`;
-}
-
-function IncidentOperationalActions({ incident }: { incident: OneViewIncident }) {
-  const [options, setOptions] = useState<ServiceNowIncidentActionOptions | null>(null);
-  const [optionsError, setOptionsError] = useState<string | null>(null);
-  const [targetGroup, setTargetGroup] = useState("");
-  const [workNote, setWorkNote] = useState("");
-  const [holdReason, setHoldReason] = useState("");
-  const [submitting, setSubmitting] = useState<ServiceNowIncidentAction | null>(null);
-  const [result, setResult] = useState<ServiceNowIncidentActionStatus | null>(null);
-  const [resultError, setResultError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setOptions(null); setOptionsError(null); setResult(null); setResultError(null);
-    setTargetGroup(""); setWorkNote(""); setHoldReason("");
-    fetchServiceNowIncidentActionOptions(incident.sys_id, controller.signal)
-      .then(setOptions)
-      .catch((error: unknown) => { if (!controller.signal.aborted) setOptionsError(error instanceof Error ? error.message : "Ações indisponíveis."); });
-    return () => controller.abort();
-  }, [incident.sys_id]);
-
-  useEffect(() => {
-    if (!result?.action_id || !["pending", "processing"].includes(result.status)) return undefined;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      fetchServiceNowIncidentActionStatus(incident.sys_id, result.action_id, controller.signal).then(setResult).catch(() => undefined);
-    }, 5_000);
-    return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [incident.sys_id, result?.action_id, result?.status]);
-
-  async function submit(action: ServiceNowIncidentAction, payload: Record<string, string>, confirmation?: string) {
-    if (!incident.sys_id || !incident.number || submitting) return;
-    if (confirmation && !window.confirm(confirmation)) return;
-    setSubmitting(action); setResultError(null);
-    try {
-      const response = await requestServiceNowIncidentAction({ sysId: incident.sys_id, incidentNumber: incident.number, action, payload, idempotencyKey: actionIdempotencyKey(action) });
-      setResult(response);
-      if (action === "servicenow.work_note") setWorkNote("");
-    } catch (error) {
-      setResultError(error instanceof Error ? error.message : "Não foi possível enviar a solicitação.");
-    } finally { setSubmitting(null); }
-  }
-
-  const enabled = Boolean(options?.enabled && incident.sys_id && incident.number);
-  const busy = submitting !== null;
-  const resultLabel = result?.status === "succeeded" ? "Aplicada" : result?.status === "failed" ? "Falhou" : result ? "Solicitação enviada — aguardando Worker" : null;
-
-  return (
-    <section aria-label="Ações operacionais ServiceNow" className="space-y-3 rounded-md border border-border/70 p-3">
-      <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Ações operacionais</p><p className="text-xs text-muted-foreground">A solicitação é registrada no OneView; o incidente só muda após confirmação do Worker.</p></div>
-      {optionsError ? <p className="text-xs text-muted-foreground">{optionsError}</p> : null}
-      {!optionsError && !options ? <Skeleton className="h-20 w-full" /> : null}
-      {options && !options.enabled ? <p className="text-xs text-muted-foreground">Solicitações ServiceNow indisponíveis neste ambiente.</p> : null}
-      {options?.enabled ? <div className="space-y-3">
-        <Button type="button" size="sm" variant="secondary" disabled={!enabled || busy} onClick={() => void submit("servicenow.assume_self", {}, "Enviar solicitação para assumir este chamado?")}>Assumir</Button>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Select value={targetGroup} onValueChange={setTargetGroup} disabled={!enabled || busy || !options.assignable_groups.length}><SelectTrigger aria-label="Grupo de destino" className="flex-1"><SelectValue placeholder={options.assignable_groups.length ? "Selecionar grupo" : "Nenhum grupo homologado"} /></SelectTrigger><SelectContent>{options.assignable_groups.map((group) => <SelectItem key={group} value={group}>{group}</SelectItem>)}</SelectContent></Select>
-          <Button type="button" size="sm" variant="outline" disabled={!enabled || busy || !targetGroup} onClick={() => void submit("servicenow.assign_group", { target_group: targetGroup }, "Enviar solicitação para atribuir este grupo?")}>Atribuir grupo</Button>
-        </div>
-        <div className="space-y-2"><Textarea aria-label="Nota de trabalho" value={workNote} maxLength={2000} onChange={(event) => setWorkNote(event.target.value)} disabled={!enabled || busy} placeholder="Adicionar nota de trabalho" /><Button type="button" size="sm" variant="outline" disabled={!enabled || busy || !workNote.trim()} onClick={() => void submit("servicenow.work_note", { work_note: workNote })}>Adicionar nota</Button></div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Select value={holdReason} onValueChange={setHoldReason} disabled={!enabled || busy || !options.hold_reasons.length}><SelectTrigger aria-label="Motivo de espera" className="flex-1"><SelectValue placeholder={options.hold_reasons.length ? "Motivo homologado" : "Nenhum motivo homologado"} /></SelectTrigger><SelectContent>{options.hold_reasons.map((reason) => <SelectItem key={reason} value={reason}>{reason}</SelectItem>)}</SelectContent></Select>
-          <Button type="button" size="sm" variant="outline" disabled={!enabled || busy || !holdReason} onClick={() => void submit("servicenow.hold", { hold_reason: holdReason }, "Enviar solicitação para colocar este chamado em espera?")}>Colocar em espera</Button>
-        </div>
-      </div> : null}
-      {resultLabel ? <p className={result?.status === "failed" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>{resultLabel}{result?.error_code ? ` (${result.error_code})` : ""}</p> : null}
-      {resultError ? <p className="text-xs text-destructive">{resultError}</p> : null}
-    </section>
   );
 }

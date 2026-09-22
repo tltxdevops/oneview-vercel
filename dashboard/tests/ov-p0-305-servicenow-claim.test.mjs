@@ -233,6 +233,6 @@ test("OV-P0-305 rota e IncidentActions funcionam no drawer de Operadoras sem nav
   assert.match(component, /requestServiceNowIncidentClaim/);
   assert.match(component, /INCIDENT_ASSIGNED_TO_OTHER/);
   assert.match(component, /Seu usuário não pertence ao grupo N1 - Serviços - NOC no ServiceNow/);
-  assert.match(operadoras, /<IncidentActions incident=\{incident\} onClaimed=/);
+  assert.match(operadoras, /IncidentDetailActions[\s\S]*onClaimed=/);
   assert.doesNotMatch(component, /work_note|assignment_group.*payload|assigned_to.*payload/);
 });

@@ -49,14 +49,22 @@ test("SN-P0-10 Chamados: tabela sem Abertura e com Atualização", async () => {
 });
 
 test("SN-P0-10 Chamados: drawer completo + alerta + ServiceNow", async () => {
-  const chamados = await read("src/pages/Chamados.tsx");
-  assert.match(chamados, /SheetContent/);
-  assert.match(chamados, /DetailField label="Descrição"/);
-  assert.match(chamados, /DetailField label="Abertura"/);
-  assert.match(chamados, /Alerta relacionado/);
-  assert.match(chamados, /fetchIncidentRelatedAlert/);
-  assert.match(chamados, /ServiceNowDevLink/);
-  assert.match(chamados, /servicenow_url/);
+  const [chamados, drawer, related] = await Promise.all([
+    read("src/pages/Chamados.tsx"),
+    read("src/components/oneview/IncidentDetailDrawer.tsx"),
+    read("src/components/oneview/IncidentRelatedAlertSection.tsx"),
+  ]);
+  assert.match(chamados, /IncidentDetailDrawer/);
+  assert.match(chamados, /IncidentTableActionsCell/);
+  assert.doesNotMatch(chamados, /IncidentOperationalActions/);
+  assert.match(drawer, /IncidentDetailActions/);
+  assert.match(drawer, /TabsTrigger value="summary"/);
+  assert.match(drawer, /TabsTrigger value="alert"/);
+  assert.match(drawer, /TabsTrigger value="technical"/);
+  assert.match(drawer, /ServiceNowDevLink/);
+  assert.match(drawer, /fetchIncidentDetail/);
+  assert.match(related, /Alerta relacionado/);
+  assert.match(related, /fetchIncidentRelatedAlert/);
   const link = await read("src/components/oneview/ServiceNowDevLink.tsx");
   assert.match(link, /Abrir no ServiceNow/);
   assert.match(link, /Requer acesso ao ServiceNow/);
@@ -64,9 +72,12 @@ test("SN-P0-10 Chamados: drawer completo + alerta + ServiceNow", async () => {
 });
 
 test("SN-P0-10 Chamados: erro != lista vazia e sem NaN/undefined", async () => {
-  const chamados = await read("src/pages/Chamados.tsx");
+  const [chamados, drawer] = await Promise.all([
+    read("src/pages/Chamados.tsx"),
+    read("src/components/oneview/IncidentDetailDrawer.tsx"),
+  ]);
   assert.match(chamados, /OperationalErrorBanner/);
-  assert.match(chamados, /ServiceNow indisponível/);
+  assert.match(`${chamados}\n${drawer}`, /ServiceNow indisponível/);
   assert.match(chamados, /Não foi possível carregar os chamados/);
   assert.match(chamados, /error \?[\s\S]*Não foi possível carregar[\s\S]*items\.length === 0/s);
   assert.match(chamados, /function safeCount/);

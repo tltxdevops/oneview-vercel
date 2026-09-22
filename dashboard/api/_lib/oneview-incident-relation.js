@@ -7,8 +7,7 @@ import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewConfig } from "./oneview-config.js";
 import {
-  findAlertByExplicitServiceNowReference,
-  findAlertBySourceEventId,
+  findAlertForIncidentReverseLookup,
   getOneViewDbConfig,
 } from "./oneview-db.js";
 import { isServiceNowIncidentsEnabled } from "./oneview-incidents.js";
@@ -66,8 +65,7 @@ export function createRelatedAlertHandler({
   authorize = (req, res) => requireOneViewAuth(req, res, "viewer"),
   featureFlagProvider = isServiceNowIncidentsEnabled,
   configProvider = getOneViewConfig,
-  findAlertByReference = findAlertByExplicitServiceNowReference,
-  findAlert = findAlertBySourceEventId,
+  findAlertForIncident = findAlertForIncidentReverseLookup,
   logger = (entry) => console.info(JSON.stringify(entry)),
 } = {}) {
   return async function relatedAlertHandler(req, res) {
@@ -117,21 +115,11 @@ export function createRelatedAlertHandler({
       }
 
       const dbConfig = config.dbConfig || getOneViewDbConfig();
-      let result = reference.sys_id || reference.number
-        ? await findAlertByReference({
-          sysId: reference.sys_id,
-          number: reference.number,
-        }, dbConfig)
-        : {
-          relation_source: "event_id",
-          alert: await findAlert(reference.zabbix_event_id, dbConfig),
-        };
-      if (!result.alert && reference.zabbix_event_id) {
-        result = {
-          relation_source: "event_id",
-          alert: await findAlert(reference.zabbix_event_id, dbConfig),
-        };
-      }
+      const result = await findAlertForIncident({
+        sysId: reference.sys_id,
+        number: reference.number,
+        zabbixEventId: reference.zabbix_event_id,
+      }, dbConfig);
       const alert = result.alert;
 
       const payload = {

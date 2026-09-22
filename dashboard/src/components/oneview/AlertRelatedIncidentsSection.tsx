@@ -5,6 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
@@ -14,6 +15,7 @@ import {
   AlertRelatedIncident,
   AlertRelatedIncidentsRelationSource,
   OneViewAlert,
+  OneViewIncident,
   fetchAlertRelatedIncidents,
 } from "@/lib/oneview-api";
 import {
@@ -60,18 +62,50 @@ function relationSourceLabel(source?: AlertRelatedIncidentsRelationSource | null
   if (source === "zabbix_servicenow_number") return "Referência INC Zabbix";
   if (source === "zabbix_inc_reference") return "Referência INC no histórico";
   if (source === "zabbix_event_id") return "Event ID Zabbix";
+  if (source === "operational_host") return "Host MAPS (ServiceNow)";
   return null;
+}
+
+export function relatedIncidentToOneViewIncident(item: AlertRelatedIncident): OneViewIncident {
+  return {
+    sys_id: item.sys_id,
+    number: item.number,
+    short_description: item.short_description ?? null,
+    state: item.state,
+    priority: item.priority,
+    caller_id: null,
+    contact_type: null,
+    assignment_group: item.assignment_group,
+    assigned_to: item.assigned_to,
+    company: item.company ?? null,
+    opened_at: null,
+    resolved_at: null,
+    closed_at: null,
+    sys_created_on: null,
+    sys_updated_on: item.sys_updated_on,
+    correlation_id: null,
+    state_display: item.state_display,
+    priority_display: item.priority_display,
+    assignment_group_display: item.assignment_group_display,
+    assigned_to_display: item.assigned_to_display,
+    company_display: item.company_display,
+    zabbix_event_id: item.zabbix_event_id,
+    servicenow_url: item.servicenow_url,
+  } as OneViewIncident;
 }
 
 function IncidentCard({
   item,
   extraCount = 0,
+  onOpenIncidentDetail,
 }: {
   item: AlertRelatedIncident;
   extraCount?: number;
+  onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
 }) {
   const url = buildProductionServiceNowIncidentLink(item.sys_id);
   const number = displayValue(item.number);
+  const description = String(item.short_description || "").trim();
   return (
     <article className="space-y-3 rounded-md border border-border/70 p-3" aria-label="Chamado relacionado">
       <div className="flex flex-wrap items-center gap-2">
@@ -96,28 +130,45 @@ function IncidentCard({
         <Badge variant="outline">{displayValue(item.state_display, item.state)}</Badge>
         <Badge variant="secondary">{displayValue(item.priority_display, item.priority)}</Badge>
       </div>
+      {description ? (
+        <p className="truncate text-sm font-semibold" title={description}>{description}</p>
+      ) : null}
       <dl className="grid gap-2 text-sm sm:grid-cols-2">
         <div>
           <dt className="text-xs text-muted-foreground">Estado</dt>
-          <dd className="font-medium">{displayValue(item.state_display, item.state)}</dd>
+          <dd className="mt-0.5 font-semibold">{displayValue(item.state_display, item.state)}</dd>
         </div>
         <div>
           <dt className="text-xs text-muted-foreground">Prioridade</dt>
-          <dd className="font-medium">{displayValue(item.priority_display, item.priority)}</dd>
+          <dd className="mt-0.5 font-semibold">{displayValue(item.priority_display, item.priority)}</dd>
         </div>
         <div>
           <dt className="text-xs text-muted-foreground">Analista</dt>
-          <dd className="font-medium">{displayValue(item.assigned_to_display, item.assigned_to)}</dd>
+          <dd className="mt-0.5 font-semibold">{displayValue(item.assigned_to_display, item.assigned_to)}</dd>
         </div>
         <div>
           <dt className="text-xs text-muted-foreground">Grupo</dt>
-          <dd className="font-medium">{displayValue(item.assignment_group_display, item.assignment_group)}</dd>
+          <dd className="mt-0.5 font-semibold">{displayValue(item.assignment_group_display, item.assignment_group)}</dd>
         </div>
         <div className="sm:col-span-2">
           <dt className="text-xs text-muted-foreground">Última atualização</dt>
-          <dd>{formatDateTime(item.sys_updated_on)}</dd>
+          <dd className="mt-0.5 font-semibold">{formatDateTime(item.sys_updated_on)}</dd>
         </div>
       </dl>
+      {onOpenIncidentDetail ? (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="w-full sm:w-auto"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenIncidentDetail(item);
+          }}
+        >
+          Ver detalhe no OneView
+        </Button>
+      ) : null}
       {url ? (
         <ServiceNowDevLink sysId={item.sys_id} size="sm" className="sm:w-auto" fullWidth />
       ) : (
@@ -165,7 +216,13 @@ type AlertRelatedIncidentsSectionProps = {
     | "trigger_tags"
     | "host_tags"
     | "servicenow_reference"
+    | "datasource_name"
+    | "host_technical_name"
+    | "host_name"
+    | "host_visible_name"
+    | "problem_name"
   > | null;
+  onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
 };
 
 export function AlertRelatedIncidentsSection({
@@ -173,6 +230,7 @@ export function AlertRelatedIncidentsSection({
   severity,
   historyItems = [],
   alert = null,
+  onOpenIncidentDetail,
 }: AlertRelatedIncidentsSectionProps) {
   const eligible = isIncidentEligibleSeverity(severity);
   const [loading, setLoading] = useState(false);
@@ -192,16 +250,35 @@ export function AlertRelatedIncidentsSection({
       .filter((number) => !tagRefs.numbers.includes(number));
   }, [alert, historyItems, tagRefs.numbers]);
 
+  const mapsBridge = useMemo(() => {
+    const datasource = String(alert?.datasource_name || "").trim().toLowerCase();
+    if (datasource !== "maps") return null;
+    const host = String(
+      alert?.host_technical_name || alert?.host_name || alert?.host_visible_name || "",
+    ).trim();
+    const problem = String(alert?.problem_name || "").trim();
+    if (!host) return null;
+    return { mapsDatasource: "maps", mapsHost: host, mapsProblemName: problem || null };
+  }, [alert]);
+
   const correlationKey = [
     String(sourceEventId || "").trim(),
     tagRefs.sysIds.join(","),
     tagRefs.numbers.join(","),
     historyNumbers.join(","),
+    mapsBridge?.mapsHost || "",
+    mapsBridge?.mapsProblemName || "",
   ].join("|");
 
   useEffect(() => {
     const eventId = String(sourceEventId || "").trim();
-    if (!eventId && !tagRefs.sysIds.length && !tagRefs.numbers.length && !historyNumbers.length) {
+    if (
+      !eventId
+      && !tagRefs.sysIds.length
+      && !tagRefs.numbers.length
+      && !historyNumbers.length
+      && !mapsBridge?.mapsHost
+    ) {
       setLoading(false);
       setChecked(true);
       setIncidents([]);
@@ -228,6 +305,9 @@ export function AlertRelatedIncidentsSection({
         incidentNumbers: historyNumbers,
         tagIncidentNumbers: tagRefs.numbers,
         incidentSysIds: tagRefs.sysIds,
+        mapsDatasource: mapsBridge?.mapsDatasource || null,
+        mapsHost: mapsBridge?.mapsHost || null,
+        mapsProblemName: mapsBridge?.mapsProblemName || null,
       },
       controller.signal,
     )
@@ -279,6 +359,7 @@ export function AlertRelatedIncidentsSection({
               key={item.sys_id || item.number || JSON.stringify(item)}
               item={item}
               extraCount={index === 0 ? extraCount : 0}
+              onOpenIncidentDetail={onOpenIncidentDetail}
             />
           ))}
           {loading ? <p className="text-[11px] text-muted-foreground">Atualizando…</p> : null}

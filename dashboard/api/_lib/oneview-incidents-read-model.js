@@ -4,7 +4,13 @@
  */
 import { getOneViewDbPool } from "./oneview-db.js";
 import { SERVICENOW_PROD_BASE_URL } from "./oneview-inc-correlation.js";
-import { parseZabbixFieldsFromDescription } from "./servicenow-normalize.js";
+import { parseColonHostProblemLine, parseZabbixFieldsFromDescription } from "./servicenow-normalize.js";
+import { MAPS_SERVICENOW_COMPANY_WHERE_SQL } from "./oneview-servicenow-customer-bridge.js";
+import {
+  expandServiceNowCompanyFilterToken,
+  matchServiceNowOperationalBridge,
+  resolveServiceNowIncidentCustomerLabel,
+} from "./oneview-servicenow-customer-bridge.js";
 
 const OPERATIONAL_STATES = ["1", "2", "3"];
 
@@ -27,6 +33,10 @@ function displayBag(value) {
 function display(row, key) {
   const values = displayBag(row.display_values);
   return text(values[`${key}_display`]) || text(values[key]) || text(row[`${key}_display`]) || text(row[key]);
+}
+
+function matchServiceNowOperationalBridgeFromRow(row) {
+  return matchServiceNowOperationalBridge(display(row, "company") || row.company);
 }
 
 const READ_MODEL_INCIDENT_SELECT = `
@@ -128,7 +138,7 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
     assignmentGroup: display(row, "assignment_group") || assignmentGroup,
     assignedTo: display(row, "assigned_to") || null,
     assignedToId: assignedTo,
-    customer: display(row, "company") || customer,
+    customer: resolveServiceNowIncidentCustomerLabel(customer, display(row, "company")),
     shortDescription: text(row.short_description),
     openedAt: row.opened_at ? new Date(row.opened_at).toISOString() : null,
     updatedAt: row.sys_updated_on ? new Date(row.sys_updated_on).toISOString() : null,
@@ -198,9 +208,13 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
   if (filters.sys_id) clauses.push(`lower(sys_id::text) = ${addParam(values, filters.sys_id.toLowerCase())}`);
   if (filters.priority) clauses.push(`priority::text = ${addParam(values, filters.priority)}`);
   if (filters.company) {
-    const term = `%${filters.company}%`;
-    const param = addParam(values, term);
-    clauses.push(`(company::text ilike ${param} or coalesce(display_values::text, '') ilike ${param})`);
+    const { terms } = expandServiceNowCompanyFilterToken(filters.company);
+    const companyClauses = terms.map((term) => {
+      const param = addParam(values, `%${term}%`);
+      return `(company::text ilike ${param} or coalesce(display_values::text, '') ilike ${param})`;
+    });
+    if (companyClauses.length === 1) clauses.push(companyClauses[0]);
+    else if (companyClauses.length > 1) clauses.push(`(${companyClauses.join(" or ")})`);
   }
   if (filters.opened_from) clauses.push(`opened_at >= ${addParam(values, `${filters.opened_from}T00:00:00.000Z`)}`);
   if (filters.opened_to) clauses.push(`opened_at < (${addParam(values, `${filters.opened_to}T00:00:00.000Z`)}::timestamptz + interval '1 day')`);
@@ -309,23 +323,34 @@ function explicitTagMatchSql(tagName, reference) {
 /**
  * Resolves one page in one SQL query — not an alert lookup per incident.
  * Priority remains explicit sys_id, then INC number, then original Zabbix
- * event parsed from the persisted description. No host/title/customer clause.
+ * event parsed from the persisted description, then host dedicado (MAPS).
  */
 export async function findReadModelRelatedAlerts(rows, { pool = getOneViewDbPool() } = {}) {
-  const references = (rows || []).map((row) => ({
-    sys_id: text(row.sys_id)?.toLowerCase() || null,
-    number: text(row.number)?.toUpperCase() || null,
-    zabbix_event_id: parseZabbixFieldsFromDescription(row.description).zabbix_event_id,
-  })).filter((row) => row.sys_id);
+  const references = (rows || []).map((row) => {
+    const parsed = parseZabbixFieldsFromDescription(row.description);
+    const colonHead = parseColonHostProblemLine(row.description);
+    const bridge = matchServiceNowOperationalBridgeFromRow(row);
+    return {
+      sys_id: text(row.sys_id)?.toLowerCase() || null,
+      number: text(row.number)?.toUpperCase() || null,
+      zabbix_event_id: parsed.zabbix_event_id,
+      zabbix_host: text(row.u_hostname_zabbix) || colonHead.host || parsed.zabbix_host,
+      zabbix_problem: text(colonHead.problem)?.slice(0, 200) || null,
+      bridge_datasource: bridge?.datasource || null,
+    };
+  }).filter((row) => row.sys_id);
   if (!references.length) return new Map();
 
   const result = await pool.query(`
     with incident_refs as (
       select lower(btrim(sys_id)) as sys_id,
              upper(btrim(number)) as number,
-             nullif(btrim(zabbix_event_id), '') as zabbix_event_id
+             nullif(btrim(zabbix_event_id), '') as zabbix_event_id,
+             nullif(btrim(zabbix_host), '') as zabbix_host,
+             nullif(btrim(bridge_datasource), '') as bridge_datasource,
+             nullif(btrim(zabbix_problem), '') as zabbix_problem
         from jsonb_to_recordset($1::jsonb)
-          as ref(sys_id text, number text, zabbix_event_id text)
+          as ref(sys_id text, number text, zabbix_event_id text, zabbix_host text, bridge_datasource text, zabbix_problem text)
     ), candidates as (
       select r.sys_id as incident_sys_id, 1 as precedence,
              a.id::text as id, d.name::text as datasource, a.severity,
@@ -365,6 +390,29 @@ export async function findReadModelRelatedAlerts(rows, { pool = getOneViewDbPool
         join alerts a on r.zabbix_event_id is not null
                    and (a.source_event_id::text = r.zabbix_event_id or a.source_problem_id::text = r.zabbix_event_id)
         left join data_sources d on d.id = a.data_source_id
+      union all
+      select r.sys_id as incident_sys_id, 4 as precedence,
+             a.id::text as id, d.name::text as datasource, a.severity,
+             coalesce(a.host_visible_name, a.host_technical_name, a.host_name)::text as host,
+             coalesce(a.customer_name, a.client_name)::text as customer,
+             coalesce(a.problem_name, a.trigger_description)::text as problem,
+             a.source_event_id::text as source_event_id,
+             coalesce(a.status_source, case when a.resolved_at is null then 'active' else 'resolved' end)::text as status,
+             a.last_seen_at, a.updated_at
+        from incident_refs r
+        join data_sources d on r.bridge_datasource is not null
+                         and lower(d.name) = lower(r.bridge_datasource)
+        join alerts a on r.zabbix_host is not null
+                     and (
+                       lower(btrim(coalesce(a.host_technical_name, ''))) = lower(r.zabbix_host)
+                       or lower(btrim(coalesce(a.host_name, ''))) = lower(r.zabbix_host)
+                       or lower(btrim(coalesce(a.host_visible_name, ''))) = lower(r.zabbix_host)
+                     )
+                     and a.data_source_id = d.id
+                     and (
+                       r.zabbix_problem is null
+                       or lower(coalesce(a.problem_name, a.trigger_description, '')) like '%' || lower(r.zabbix_problem) || '%'
+                     )
     ), ranked as (
       select distinct on (incident_sys_id) *
         from candidates
@@ -380,11 +428,11 @@ export async function findReadModelRelatedAlerts(rows, { pool = getOneViewDbPool
       datasource: text(row.datasource),
       severity: text(row.severity),
       host: text(row.host),
-      customer: text(row.customer),
+      customer: text(row.datasource) === "maps" ? "MAPS" : text(row.customer),
       problem: text(row.problem),
       source_event_id: text(row.source_event_id),
       status: text(row.status),
-      relation_source: ["sys_id", "number", "source_event"][Number(row.precedence) - 1] || null,
+      relation_source: ["sys_id", "number", "source_event", "operational_host"][Number(row.precedence) - 1] || null,
     },
   ]));
 }
@@ -453,8 +501,42 @@ async function findBy(pool, where, values) {
   return result.rows.map((row) => mapReadModelIncident(row));
 }
 
+async function findMapsIncidentsByOperationalAlert(
+  { hostName, problemName } = {},
+  { pool = getOneViewDbPool() } = {},
+) {
+  const host = text(hostName);
+  const problem = text(problemName)?.slice(0, 200) || null;
+  if (!host) return [];
+  const result = await pool.query(
+    `
+    select ${READ_MODEL_INCIDENT_SELECT}
+      from servicenow_incidents
+     where ${MAPS_SERVICENOW_COMPANY_WHERE_SQL}
+       and (
+         lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower($1)
+         or lower(coalesce(description, '')) like '%' || lower($1) || '%'
+       )
+       and (
+         $2::text is null
+         or lower(coalesce(description, '')) like '%' || lower($2::text) || '%'
+       )
+     order by sys_updated_on desc nulls last, sys_id asc
+     limit 10
+    `,
+    [host, problem],
+  );
+  return (result.rows || []).map((row) => mapReadModelIncident(row));
+}
+
 export async function findReadModelRelatedIncidents({
-  incidentSysIds = [], tagIncidentNumbers = [], incidentNumbers = [], sourceEventId = null,
+  incidentSysIds = [],
+  tagIncidentNumbers = [],
+  incidentNumbers = [],
+  sourceEventId = null,
+  mapsDatasource = null,
+  mapsHost = null,
+  mapsProblemName = null,
 } = {}, { pool = getOneViewDbPool() } = {}) {
   const sysIds = [...new Set(incidentSysIds.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))];
   const tagNumbers = [...new Set(tagIncidentNumbers.map((value) => String(value || "").trim().toUpperCase()).filter(Boolean))];
@@ -469,6 +551,15 @@ export async function findReadModelRelatedIncidents({
     if (!values[0] || (Array.isArray(values[0]) && !values[0].length)) continue;
     const incidents = await findBy(pool, where, values);
     if (incidents.length) return { matched: true, relation_source: relationSource, incidents };
+  }
+  if (String(mapsDatasource || "").trim().toLowerCase() === "maps") {
+    const incidents = await findMapsIncidentsByOperationalAlert(
+      { hostName: mapsHost, problemName: mapsProblemName },
+      { pool },
+    );
+    if (incidents.length) {
+      return { matched: true, relation_source: "operational_host", incidents };
+    }
   }
   return { matched: false, relation_source: "none", incidents: [] };
 }

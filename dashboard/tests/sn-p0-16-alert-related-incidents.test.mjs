@@ -205,7 +205,9 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
 
   assert.match(api, /export async function fetchAlertRelatedIncidents/);
   assert.match(api, /\/oneview\/alerts\/related-incidents/);
-  assert.doesNotMatch(api.slice(api.indexOf("fetchAlertRelatedIncidents")), /sysparm_|host_name|host fallback/i);
+  const relatedIncidentsApi = api.slice(api.indexOf("fetchAlertRelatedIncidents"));
+  assert.doesNotMatch(relatedIncidentsApi, /sysparm_|host fallback/i);
+  assert.match(relatedIncidentsApi, /maps_host/);
 
   assert.match(section, /ServiceNowDevLink|Abrir no ServiceNow/);
   assert.doesNotMatch(section, /Abrir no ServiceNow DEV/);
@@ -213,7 +215,8 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
   assert.match(section, /Analista/);
   assert.match(section, /Última atualização|Atualização/);
   assert.match(section, /fetchAlertRelatedIncidents/);
-  assert.doesNotMatch(section, /host_name|method:\s*["']POST["']/i);
+  assert.match(section, /maps_host|operational_host/);
+  assert.doesNotMatch(section, /method:\s*["']POST["']/i);
   assert.doesNotMatch(section, /u_hostname_zabbix|cmdb_ci/);
 
   assert.match(drawer, /AlertRelatedIncidentsSection/);
