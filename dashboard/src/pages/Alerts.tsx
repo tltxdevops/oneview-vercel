@@ -61,6 +61,7 @@ import {
   fetchAlert,
   fetchAlertHistory,
   fetchAlertMetrics,
+  fetchAlertSearchSuggestions,
   fetchAlerts,
   fetchDataSourcesWithMeta,
   fetchOneViewHealth,
@@ -938,7 +939,7 @@ export default function AlertsPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDebouncedSearch(searchQuery.trim());
-    }, 300);
+    }, 200);
     return () => window.clearTimeout(timer);
   }, [searchQuery]);
 
@@ -1294,6 +1295,19 @@ export default function AlertsPage() {
     const selected = customerCards.find((customer) => customer.key === selectedCustomerKeys[0]);
     return safeDisplayText(selected?.name, "cliente selecionado");
   }, [customerCards, selectedCustomerKeys]);
+
+  const fetchAlertTableSuggestions = useCallback((q: string, signal: AbortSignal) => (
+    fetchAlertSearchSuggestions({
+      q,
+      limit: 10,
+      customers: selectedCustomerKeys,
+      datasources: selectedDatasources,
+      severities: selectedSeverities,
+      status: statusFilter,
+      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      signal,
+    }).then((response) => response.suggestions ?? [])
+  ), [selectedCustomerKeys, selectedDatasources, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const activeFilterChips = [
     selectedCustomerKeys.length ? { label: `${selectedCustomerKeys.length} cliente(s)`, remove: () => setSelectedCustomerKeys([]) } : null,
@@ -1722,6 +1736,8 @@ export default function AlertsPage() {
         <ConfigurableTableToolbar
           search={searchQuery}
           onSearchChange={(value) => { setSearchQuery(value); setPage(1); }}
+          fetchSearchSuggestions={fetchAlertTableSuggestions}
+          onSearchPick={(value) => { setSearchQuery(value); setPage(1); }}
           searchPlaceholder="Buscar alerta, host ou cliente…"
           searchLabel="Buscar na tabela de alertas"
           columns={alertTableColumns}

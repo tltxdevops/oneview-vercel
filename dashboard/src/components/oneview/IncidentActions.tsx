@@ -51,6 +51,7 @@ type ClaimableIncident = {
   sys_id: string | null;
   number: string | null;
   state?: string | null;
+  identity_conflict?: boolean;
 };
 
 type Props = {
@@ -101,6 +102,11 @@ export function IncidentActions({
   const [holdError, setHoldError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (incident.identity_conflict) {
+      setIdentity(null);
+      setIdentityError(null);
+      return undefined;
+    }
     const controller = new AbortController();
     setIdentity(null);
     setIdentityError(null);
@@ -134,7 +140,7 @@ export function IncidentActions({
         }
       });
     return () => controller.abort();
-  }, [incident.sys_id]);
+  }, [incident.identity_conflict, incident.sys_id]);
 
   async function claim(confirmReassign = false) {
     if (!incident.sys_id || submitting) return;
@@ -277,7 +283,7 @@ export function IncidentActions({
   const terminalState = ["6", "7", "8"].includes(String(incident.state || "").trim());
   const disabledReason = identityUnavailableMessage(identity, identityError);
   const attachDisabledReason = !alertArtifact
-    ? "Não há alerta relacionado disponível."
+    ? "Não há alerta relacionado a este chamado."
     : disabledReason;
   const holdDisabledReason = terminalState
     ? "Chamado encerrado — não é possível colocar em espera."
@@ -290,6 +296,13 @@ export function IncidentActions({
   const holdMenuDisabled = !canPutOnHold || submitting || onHoldAlready || terminalState;
 
   if (!incident.sys_id || !incident.number) return null;
+  if (incident.identity_conflict) {
+    return (
+      <p className="text-xs text-destructive">
+        Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.
+      </p>
+    );
+  }
   if (!identity && !identityError) {
     return (
       <Skeleton

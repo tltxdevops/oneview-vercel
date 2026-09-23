@@ -1,9 +1,11 @@
 import { useState, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronUp, Columns3, GripVertical, Loader2, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { OneViewTableSearchField } from "@/components/oneview/OneViewTableSearchField";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import type { OneViewSearchSuggestion } from "@/lib/oneview-api";
 import type { OneViewTableColumnDefinition } from "@/lib/oneview-table-preferences";
 import { cn } from "@/lib/utils";
 
@@ -113,6 +115,9 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   scopeHint,
   trailing,
   className,
+  fetchSearchSuggestions,
+  onSearchPick,
+  normalizeIncSearch = true,
 }: {
   search: string;
   onSearchChange: (value: string) => void;
@@ -126,14 +131,29 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   scopeHint?: string;
   trailing?: ReactNode;
   className?: string;
+  fetchSearchSuggestions?: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
+  onSearchPick?: (value: string) => void;
+  normalizeIncSearch?: boolean;
 }) {
   return (
     <div className={cn("border-b border-border/60 bg-background/75 px-3 py-2", className)}>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <label className="relative min-w-[15rem] flex-1">
-          <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="h-9 pl-9" aria-label={searchLabel} />
-        </label>
+        {fetchSearchSuggestions ? (
+          <OneViewTableSearchField
+            value={search}
+            onChange={onSearchChange}
+            onSelect={onSearchPick}
+            fetchSuggestions={fetchSearchSuggestions}
+            placeholder={searchPlaceholder}
+            ariaLabel={searchLabel}
+            normalizeInc={normalizeIncSearch}
+          />
+        ) : (
+          <label className="relative min-w-[15rem] flex-1">
+            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="h-9 pl-9" aria-label={searchLabel} />
+          </label>
+        )}
         {filters ? (
           <Popover>
             <PopoverTrigger asChild>

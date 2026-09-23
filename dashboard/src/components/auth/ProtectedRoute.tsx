@@ -4,6 +4,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { authReturnToFromLocation } from "@/lib/auth/return-url";
 import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
+import { OperatorReminderInboxProvider } from "@/providers/OperatorReminderInboxProvider";
 
 interface ProtectedRouteProps {
   children?: ReactNode;
@@ -31,5 +32,9 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     return <Navigate to="/login" state={{ from: authReturnToFromLocation(location) }} replace />;
   }
 
-  return children ? <>{children}</> : <Outlet />;
+  return (
+    <OperatorReminderInboxProvider>
+      {children ? <>{children}</> : <Outlet />}
+    </OperatorReminderInboxProvider>
+  );
 }

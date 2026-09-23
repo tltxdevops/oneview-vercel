@@ -15,6 +15,14 @@ test("OV-P0-172 merges only trim/casing variants and keeps a deterministic displ
   assert.notEqual(canonicalCustomerKey("Ailos"), canonicalCustomerKey("Ailos Sistemas"));
 });
 
+test("OV-P0-172 maps SolarWinds aliases only at display level", () => {
+  assert.equal(canonicalCustomerKey("SolarWinds"), "solarwinds");
+  assert.equal(canonicalCustomerKey("SollarWinds"), "sollarwinds");
+  assert.equal(canonicalCustomerDisplayName("SolarWinds"), "Congás");
+  assert.equal(canonicalCustomerDisplayName("SollarWinds"), "Congás");
+  assert.notEqual(canonicalCustomerKey("SolarWinds"), canonicalCustomerKey("SollarWinds"));
+});
+
 test("OV-P0-172 resolves MAPS from dedicated datasource when customer_key is absent", () => {
   const identity = safeCustomerIdentity({
     customer_name: null,
@@ -57,4 +65,6 @@ test("OV-P0-172 applies the canonical read model to facets, filters and all oper
   assert.match(db, /SAFE_CUSTOMER_KEY_SQL\} = any/);
   assert.match(identity, /canonicalClientKey/);
   assert.match(identity, /ailos: "Ailos"/);
+  assert.match(identity, /solarwinds: "Congás"/);
+  assert.match(db, /solarwinds', 'sollarwinds'\) then 'Congás'/);
 });

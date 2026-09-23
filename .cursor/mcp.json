@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "jira": {
+      "command": "cmd.exe",
+      "args": [
+        "/c",
+        "C:\\Users\\guilherme.franco\\OneDrive - TELETEX COMPUTADORES E SISTEMAS\\Área de Trabalho\\MCP JIRA\\.cursor\\run-jira-mcp.cmd"
+      ]
+    }
+  }
+}

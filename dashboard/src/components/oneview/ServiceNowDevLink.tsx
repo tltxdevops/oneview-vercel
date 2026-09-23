@@ -26,6 +26,7 @@ type ServiceNowDevLinkProps = {
   className?: string;
   size?: "default" | "sm" | "lg" | "icon";
   fullWidth?: boolean;
+  identityConflict?: boolean;
 };
 
 export function ServiceNowDevLink({
@@ -34,7 +35,9 @@ export function ServiceNowDevLink({
   className,
   size = "default",
   fullWidth = false,
+  identityConflict = false,
 }: ServiceNowDevLinkProps) {
+  if (identityConflict) return null;
   const url = buildProductionServiceNowIncidentLink(sysId)
     || canonicalizeServiceNowIncidentLink(href);
   if (!url) return null;

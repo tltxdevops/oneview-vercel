@@ -44,7 +44,7 @@ function fakeDatabase({ incident = { sys_id: SYS_ID, number: NUMBER } } = {}) {
       const normalized = sql.replace(/\s+/g, " ").trim().toLowerCase();
       state.queries.push({ normalized, values });
       if (normalized.includes("pg_advisory_xact_lock")) return { rows: [] };
-      if (normalized.startsWith("select sys_id, number from servicenow_incidents")) return { rows: incident ? [incident] : [] };
+      if (normalized.includes("from servicenow_incidents i") && normalized.includes("identity_conflict")) return { rows: incident ? [incident] : [] };
       if (normalized.startsWith("select id, action_type, status, created_at") && normalized.includes("idempotency_key")) {
         return { rows: state.outboxes.filter((row) => row.idempotency_key === values[0]) };
       }
@@ -172,4 +172,14 @@ test("OV-P0-280A: drawer uses only the authenticated OneView BFF and presents al
 
 test("OV-P0-280A: Vercel dynamic route resolves the action handler", () => {
   assert.equal(typeof routeHandler, "function");
+});
+
+test("OV-P0-315: identity conflict blocks action before outbox", async () => {
+  const database = fakeDatabase({ incident: { sys_id: SYS_ID, number: NUMBER, identity_conflict: true } });
+  const res = response();
+  await handler(database)(request(), res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, "incident_identity_conflict");
+  assert.equal(database.state.outboxes.length, 0);
+  assert.equal(database.state.audits.length, 0);
 });

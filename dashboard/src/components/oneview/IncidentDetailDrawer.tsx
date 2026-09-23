@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { Eye, Info, Siren } from "lucide-react";
 import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentStatusBadge";
 import { IncidentDetailActions } from "@/components/oneview/IncidentDetailActions";
-import { IncidentDetailField, IncidentRelatedAlertSection, useIncidentRelatedAlert } from "@/components/oneview/IncidentRelatedAlertSection";
+import { IncidentDetailField, IncidentRelatedAlertContent, useIncidentRelatedAlert } from "@/components/oneview/IncidentRelatedAlertSection";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { displayIncidentField } from "@/components/oneview/OperationalIncidentsQueueList";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
@@ -88,7 +88,10 @@ export function IncidentDetailDrawer({
     };
   }, [incident?.sys_id, actionRefresh]);
 
-  const baseResolved = detail ?? incident;
+  // Não reutiliza o detalhe do chamado anterior enquanto o próximo carrega.
+  // O item da lista mantém o drawer responsivo e evita lookup correlato com sys_id antigo.
+  const detailForSelectedIncident = detail?.sys_id === incident?.sys_id ? detail : null;
+  const baseResolved = detailForSelectedIncident ?? incident;
   const resolved = useMemo(() => {
     if (!baseResolved) return null;
     return {
@@ -100,8 +103,11 @@ export function IncidentDetailDrawer({
     };
   }, [baseResolved, liveAssignee, liveState]);
 
+  // Uma única relação inicia ao abrir o drawer e atende a aba Alerta e o
+  // artefato usado pelas ações, evitando duas consultas idênticas ao BFF.
+  const relatedAlertState = useIncidentRelatedAlert(resolved);
   const autoResolveArtifact = alertArtifactProp === undefined;
-  const { relatedAlert } = useIncidentRelatedAlert(autoResolveArtifact ? resolved : null);
+  const { relatedAlert } = relatedAlertState;
   const alertArtifact = useMemo(() => {
     if (alertArtifactProp !== undefined) return alertArtifactProp;
     if (!resolved || !relatedAlert) return null;
@@ -117,7 +123,8 @@ export function IncidentDetailDrawer({
     : "—";
   const company = resolved ? displayIncidentField(resolved.company_display, resolved.company) : "—";
   const number = resolved ? displayIncidentField(resolved.number) : "—";
-  const snUrl = resolved ? buildProductionServiceNowIncidentLink(resolved.sys_id) : null;
+  const identityConflict = Boolean(resolved?.identity_conflict);
+  const snUrl = resolved && !identityConflict ? buildProductionServiceNowIncidentLink(resolved.sys_id) : null;
   const extraFooter = resolved
     ? (typeof footerContent === "function" ? footerContent(resolved) : footerContent)
     : null;
@@ -186,7 +193,7 @@ export function IncidentDetailDrawer({
                     </div>
                   </div>
 
-                  {detailLoading && !detail ? <Skeleton className="h-16 w-full" /> : null}
+                  {detailLoading && !detailForSelectedIncident ? <Skeleton className="h-16 w-full" /> : null}
 
                   <section aria-label="Descrição" className="space-y-2">
                     <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Descrição</h3>
@@ -215,7 +222,7 @@ export function IncidentDetailDrawer({
                 </TabsContent>
 
                 <TabsContent value="alert" className="mt-4 space-y-4">
-                  <IncidentRelatedAlertSection incident={resolved} />
+                  <IncidentRelatedAlertContent {...relatedAlertState} />
                 </TabsContent>
 
                 <TabsContent value="technical" className="mt-4 space-y-4">
@@ -261,12 +268,18 @@ export function IncidentDetailDrawer({
 
             <div className="sticky bottom-0 shrink-0 space-y-3 border-t border-border/70 bg-background/95 px-6 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
               {extraFooter}
-              {showActions && resolved.sys_id && resolved.number ? (
+              {identityConflict ? (
+                <p className="text-sm text-destructive">
+                  Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.
+                </p>
+              ) : null}
+              {showActions && !identityConflict && resolved.sys_id && resolved.number ? (
                 <IncidentDetailActions
                   incident={{
                     sys_id: resolved.sys_id,
                     number: resolved.number,
                     state: resolved.state,
+                    identity_conflict: identityConflict,
                   }}
                   alertArtifact={alertArtifact}
                   placement="drawer-footer"
@@ -282,7 +295,7 @@ export function IncidentDetailDrawer({
                   }}
                 />
               ) : null}
-              {resolved.sys_id ? (
+              {resolved.sys_id && !identityConflict ? (
                 <ServiceNowDevLink href={resolved.servicenow_url} sysId={resolved.sys_id} fullWidth />
               ) : (
                 <p className="text-center text-xs text-muted-foreground">

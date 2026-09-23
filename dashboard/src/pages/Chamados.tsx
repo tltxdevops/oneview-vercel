@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { format, subDays } from "date-fns";
-import { Loader2, Search, SlidersHorizontal } from "lucide-react";
+import { Loader2, SlidersHorizontal } from "lucide-react";
+import { ChamadosSearchField } from "@/components/chamados/ChamadosSearchField";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -41,26 +42,15 @@ import {
   type DuplicateIncidentGroup,
   type IncidentDuplicatesResponse,
   type IncidentListResponse,
+  type FetchIncidentSearchSuggestionsParams,
   type OneViewIncident,
 } from "@/lib/oneview-api";
+import { resolveIncidentSearch } from "@/lib/oneview-chamados-search";
 import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
-
-/** SN-P0-28 — busca ^INC\d+$ → number exato no BFF. */
-const INCIDENT_EXACT_NUMBER_SEARCH_RE = /^INC\d+$/i;
-
-function resolveIncidentSearch(search: string): { search?: string; number?: string } {
-  const trimmed = search.trim();
-  if (!trimmed) return {};
-  if (INCIDENT_EXACT_NUMBER_SEARCH_RE.test(trimmed)) {
-    return { number: trimmed.toUpperCase() };
-  }
-  return { search: trimmed };
-}
-
 
 const PAGE_SIZE = 25;
 
@@ -213,7 +203,7 @@ export default function ChamadosPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<OneViewIncident | null>(null);
-  const [viewMode, setViewMode] = useState<"list" | "duplicates">("list");
+  const [viewMode, setViewMode] = useState<"list" | "manual" | "duplicates">("list");
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [duplicatesError, setDuplicatesError] = useState<string | null>(null);
   const [duplicatesPayload, setDuplicatesPayload] = useState<IncidentDuplicatesResponse | null>(null);
@@ -224,7 +214,7 @@ export default function ChamadosPage() {
   }, [incidentTablePageSize]);
 
   useEffect(() => {
-    if (viewMode !== "list") return;
+    if (viewMode === "duplicates") return;
     const refresh = () => {
       if (document.visibilityState === "visible") setRefreshVersion((current) => current + 1);
     };
@@ -242,12 +232,12 @@ export default function ChamadosPage() {
       if (search === applied.search) return;
       setPage(1);
       setApplied((current) => ({ ...current, search }));
-    }, 350);
+    }, 250);
     return () => window.clearTimeout(timer);
   }, [applied.search, draft.search]);
 
   useEffect(() => {
-    if (viewMode !== "list") return;
+    if (viewMode === "duplicates") return;
     const controller = new AbortController();
     if (payloadRef.current) setRefreshing(true);
     else setLoading(true);
@@ -270,6 +260,7 @@ export default function ChamadosPage() {
       // OV-P0-265: caller e canal opcionais; "Todos" preserva o universo do read-model.
       callerId: applied.callerId !== "all" ? applied.callerId : undefined,
       contactType: applied.contactType !== "all" ? applied.contactType : undefined,
+      manual: viewMode === "manual",
       unassigned: applied.unassigned || undefined,
       updatedFrom: period.openedFrom,
       updatedTo: period.openedTo,
@@ -296,6 +287,7 @@ export default function ChamadosPage() {
   }, [applied, incidentTablePageSize, page, refreshVersion, viewMode]);
 
   useEffect(() => {
+    if (viewMode !== "duplicates") return;
     const controller = new AbortController();
     setDuplicatesLoading(true);
     setDuplicatesError(null);
@@ -322,7 +314,7 @@ export default function ChamadosPage() {
         if (!controller.signal.aborted) setDuplicatesLoading(false);
       });
     return () => controller.abort();
-  }, [applied, refreshVersion]);
+  }, [applied, refreshVersion, viewMode]);
 
   const items = payload?.items ?? [];
   const pagination = payload?.pagination;
@@ -408,6 +400,24 @@ export default function ChamadosPage() {
     return [...map.values()];
   }, [payload?.facets?.assignees, applied.assignedTo]);
 
+  const searchSuggestScope = useMemo((): Omit<FetchIncidentSearchSuggestionsParams, "q" | "limit" | "signal"> => {
+    const period = periodBounds(applied.period);
+    return {
+      company: applied.company.trim() || undefined,
+      state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
+      priority: applied.priority !== "all" ? applied.priority : undefined,
+      assignedTo: applied.unassigned
+        ? undefined
+        : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
+      callerId: applied.callerId !== "all" ? applied.callerId : undefined,
+      contactType: applied.contactType !== "all" ? applied.contactType : undefined,
+      manual: viewMode === "manual",
+      unassigned: applied.unassigned || undefined,
+      updatedFrom: period.openedFrom,
+      updatedTo: period.openedTo,
+    };
+  }, [applied, viewMode]);
+
   function applyFilters(next: DraftFilters = draft) {
     setPage(1);
     setApplied({
@@ -423,11 +433,20 @@ export default function ChamadosPage() {
     setPage(1);
   }
 
-  function selectMetric(kind: "total" | "open" | "in_progress" | "resolved" | "closed" | "unassigned" | "duplicates") {
+  function selectMetric(kind: "total" | "open" | "in_progress" | "resolved" | "closed" | "unassigned" | "manual" | "duplicates") {
     if (kind === "duplicates") {
       setViewMode("duplicates");
       setSelected(null);
       setSelectedDuplicateGroup(null);
+      return;
+    }
+    if (kind === "manual") {
+      setViewMode("manual");
+      setSelected(null);
+      setSelectedDuplicateGroup(null);
+      const next = { ...draft, state: "all", unassigned: false };
+      setDraft(next);
+      applyFilters(next);
       return;
     }
     setViewMode("list");
@@ -519,6 +538,15 @@ export default function ChamadosPage() {
               onClick: () => selectMetric("unassigned"),
             },
             {
+              key: "manual",
+              label: "Manuais",
+              value: viewMode === "manual" ? (error ? "—" : safeCount(pagination?.total_items)) : "—",
+              tone: "info",
+              loading: viewMode === "manual" && loading,
+              selected: viewMode === "manual",
+              onClick: () => selectMetric("manual"),
+            },
+            {
               key: "duplicates",
               label: "Duplicados",
               value: duplicatesError
@@ -537,18 +565,17 @@ export default function ChamadosPage() {
 
         <FilterBar aria-label="Ferramentas da tabela de chamados" className="mb-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <label className="relative min-w-[16rem] flex-1">
-              <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                id="chamados-search"
-                value={draft.search}
-                onChange={(event) => setDraft((prev) => ({ ...prev, search: event.target.value }))}
-                onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
-                placeholder="Buscar na tabela por INC, cliente ou descrição…"
-                className="ov-filter-control h-9 pl-9"
-                aria-label="Buscar na tabela de chamados"
-              />
-            </label>
+            <ChamadosSearchField
+              value={draft.search}
+              onChange={(search) => setDraft((prev) => ({ ...prev, search }))}
+              onSubmit={() => applyFilters()}
+              onSelect={(search) => {
+                const next = { ...draft, search };
+                setDraft(next);
+                applyFilters(next);
+              }}
+              scope={searchSuggestScope}
+            />
 
             <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
               <PopoverTrigger asChild>
@@ -626,6 +653,7 @@ export default function ChamadosPage() {
             <ConfigurableTableColumns controller={incidentColumns} />
 
             {activeFilterCount > 0 ? <Button type="button" size="sm" variant="ghost" className="h-9" onClick={clearFilters}>Limpar filtros</Button> : null}
+            {viewMode === "manual" ? <Badge variant="secondary">Manuais: Novo, Em andamento e Em espera</Badge> : null}
             {refreshing ? <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Atualizando</span> : null}
           </div>
         </FilterBar>
@@ -703,6 +731,7 @@ export default function ChamadosPage() {
                               <ServiceNowDevLink
                                 href={primary?.servicenowUrl}
                                 sysId={primary?.sysId}
+                                identityConflict={primary?.identityConflict}
                                 size="sm"
                               />
                               {primary?.relatedAlert?.link ? (
@@ -726,6 +755,7 @@ export default function ChamadosPage() {
                                   <ServiceNowDevLink
                                     href={item.servicenowUrl}
                                     sysId={item.sysId}
+                                    identityConflict={item.identityConflict}
                                     size="sm"
                                   />
                                 </div>
@@ -799,10 +829,10 @@ export default function ChamadosPage() {
         <SectionPanel
           className="min-w-0"
           bodyClassName="min-w-0 p-0"
-          title="Incidentes"
+          title={viewMode === "manual" ? "Chamados manuais abertos" : "Incidentes"}
           aside={(
             <p className="text-xs leading-snug text-muted-foreground">
-              {loading ? "Carregando…" : totalLabel}
+              {loading ? "Carregando…" : viewMode === "manual" ? `${safeCount(pagination?.total_items)} manual(is) aberto(s)` : totalLabel}
               {!error && pagination
                 ? ` · página ${safeCount(pagination.page)} de ${safeCount(Math.max(Number(pagination.total_pages) || 0, 1))}`
                 : ""}

@@ -173,6 +173,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       authenticated_actions_disabled: "Seu usuário não possui permissão para solicitar esta ação.",
       servicenow_actions_disabled: "As solicitações ServiceNow ainda não estão habilitadas.",
       incident_not_found: "Chamado não encontrado.",
+      incident_identity_conflict: "Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.",
       incident_number_mismatch: "O número do chamado não corresponde ao incidente selecionado.",
       invalid_target_group: "Selecione um grupo permitido.",
       invalid_work_note: "A nota deve ser texto simples, não vazio, com no máximo 2000 caracteres.",
@@ -187,6 +188,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
       INCIDENT_ASSIGNED_TO_OTHER: "Este chamado já possui outro responsável.",
       INVALID_CLAIM_REQUEST: "Solicitação para assumir chamado inválida.",
       INCIDENT_NOT_FOUND: "Chamado não encontrado no ServiceNow.",
+      INCIDENT_IDENTITY_CONFLICT: "Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.",
       INVALID_WORK_NOTE: "A anotação deve ser um texto não vazio, com no máximo 2000 caracteres.",
       WORK_NOTE_RESULT_UNCERTAIN: "Não foi possível confirmar se a anotação foi registrada. Atualize o chamado antes de tentar novamente.",
       INVALID_PUT_ON_HOLD_REQUEST: "Selecione um fornecedor homologado para colocar o chamado em espera.",
@@ -1110,6 +1112,8 @@ export async function fetchGlobalHistory(params?: {
 
 export type OneViewIncident = {
   sys_id: string | null;
+  /** Read-model has more than one sys_id for this incident number. Never actionable. */
+  identity_conflict?: boolean;
   id?: string | null;
   sysId?: string | null;
   number: string | null;
@@ -1242,6 +1246,7 @@ export type IncidentListResponse = {
     updated_from?: string | null;
     updated_to?: string | null;
     include_related_alert?: boolean;
+    manual?: boolean;
     unassigned: boolean;
     assignment_group?: string | null;
     search: string | null;
@@ -1287,6 +1292,7 @@ export type FetchIncidentsParams = {
   updatedFrom?: string;
   updatedTo?: string;
   includeRelatedAlert?: boolean;
+  manual?: boolean;
   unassigned?: boolean;
   assignmentGroup?: string;
   search?: string;
@@ -1312,6 +1318,7 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   if (params?.updatedFrom) search.set("updated_from", params.updatedFrom);
   if (params?.updatedTo) search.set("updated_to", params.updatedTo);
   if (params?.includeRelatedAlert) search.set("include_related_alert", "true");
+  if (params?.manual) search.set("manual", "true");
   if (params?.unassigned) search.set("unassigned", "true");
   if (params?.hasAssignee) search.set("has_assignee", "true");
   if (params?.includeUnassigned) search.set("include_unassigned", "true");
@@ -1327,9 +1334,188 @@ export async function fetchIncidents(params?: FetchIncidentsParams): Promise<Inc
   return fetchApi<IncidentListResponse>(oneViewIncidentsPath(params), { signal: params?.signal });
 }
 
+export type OneViewSearchSuggestionKind =
+  | "number"
+  | "company"
+  | "description"
+  | "host"
+  | "problem"
+  | "customer"
+  | "actor"
+  | "link"
+  | "event";
+
+export type OneViewSearchSuggestion = {
+  kind: OneViewSearchSuggestionKind | string;
+  value: string;
+  label: string;
+  number?: string | null;
+  company?: string | null;
+  hint?: string | null;
+};
+
+/** @deprecated use OneViewSearchSuggestion */
+export type IncidentSearchSuggestionKind = "number" | "company" | "description";
+/** @deprecated use OneViewSearchSuggestion */
+export type IncidentSearchSuggestion = OneViewSearchSuggestion;
+
+export type FetchIncidentSearchSuggestionsParams = Omit<
+  FetchIncidentsParams,
+  "page" | "pageSize" | "search" | "number" | "sysId" | "includeRelatedAlert"
+> & {
+  q: string;
+  limit?: number;
+};
+
+export type IncidentSearchSuggestionsResponse = {
+  suggestions: IncidentSearchSuggestion[];
+  q?: string;
+  data_source?: string;
+  checked_at?: string;
+};
+
+function appendIncidentScopeQueryParams(search: URLSearchParams, params?: FetchIncidentsParams) {
+  if (params?.callerId) search.set("caller_id", params.callerId);
+  if (params?.contactType) search.set("contact_type", params.contactType);
+  if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
+  if (params?.sysId) search.set("sys_id", params.sysId);
+  if (params?.state) search.set("state", params.state);
+  if (params?.priority) search.set("priority", params.priority);
+  if (params?.company) search.set("company", params.company);
+  if (params?.openedFrom) search.set("opened_from", params.openedFrom);
+  if (params?.openedTo) search.set("opened_to", params.openedTo);
+  if (params?.updatedFrom) search.set("updated_from", params.updatedFrom);
+  if (params?.updatedTo) search.set("updated_to", params.updatedTo);
+  if (params?.unassigned) search.set("unassigned", "true");
+  if (params?.hasAssignee) search.set("has_assignee", "true");
+  if (params?.includeUnassigned) search.set("include_unassigned", "true");
+  if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
+  if (params?.manual) search.set("manual", "true");
+}
+
+export function oneViewIncidentSearchSuggestPath(params: FetchIncidentSearchSuggestionsParams): string {
+  const search = new URLSearchParams();
+  search.set("q", params.q.trim());
+  if (params.limit != null) search.set("limit", String(Math.min(Math.max(params.limit, 1), 15)));
+  appendIncidentScopeQueryParams(search, params);
+  return `/oneview/incidents/search-suggest?${search.toString()}`;
+}
+
+export async function fetchIncidentSearchSuggestions(
+  params: FetchIncidentSearchSuggestionsParams,
+): Promise<IncidentSearchSuggestionsResponse> {
+  return fetchApi<IncidentSearchSuggestionsResponse>(oneViewIncidentSearchSuggestPath(params), {
+    signal: params.signal,
+  });
+}
+
+function appendAlertScopeQueryParams(search: URLSearchParams, params?: FetchAlertsParams) {
+  for (const client of params?.clients ?? []) search.append("client", client);
+  for (const customer of params?.customers ?? []) search.append("customer", customer);
+  for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
+  for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
+  for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
+  if (params?.status) search.set("status", params.status);
+  if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
+  if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
+  if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
+  if (params?.dateFrom) search.set("date_from", params.dateFrom);
+  if (params?.dateTo) search.set("date_to", params.dateTo);
+  if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);
+  if (params?.firstSeenTo) search.set("first_seen_to", params.firstSeenTo);
+  if (params?.lastSeenFrom) search.set("last_seen_from", params.lastSeenFrom);
+  if (params?.lastSeenTo) search.set("last_seen_to", params.lastSeenTo);
+  if (params?.resolvedFrom) search.set("resolved_from", params.resolvedFrom);
+  if (params?.resolvedTo) search.set("resolved_to", params.resolvedTo);
+  if (params?.acknowledgedFrom) search.set("acknowledged_from", params.acknowledgedFrom);
+  if (params?.acknowledgedTo) search.set("acknowledged_to", params.acknowledgedTo);
+  if (params?.recurrenceKey) search.set("recurrence_key", params.recurrenceKey);
+  if (params?.excludeOperator) search.set("exclude_operator", "true");
+}
+
+export type FetchAlertSearchSuggestionsParams = Omit<
+  FetchAlertsParams,
+  "page" | "pageSize" | "search" | "searchField" | "hostSearch" | "problemSearch"
+> & {
+  q: string;
+  limit?: number;
+};
+
+export function oneViewAlertSearchSuggestPath(params: FetchAlertSearchSuggestionsParams): string {
+  const search = new URLSearchParams();
+  search.set("q", params.q.trim());
+  if (params.limit != null) search.set("limit", String(Math.min(Math.max(params.limit, 1), 15)));
+  appendAlertScopeQueryParams(search, params);
+  return `/oneview/alerts/search-suggest?${search.toString()}`;
+}
+
+export async function fetchAlertSearchSuggestions(
+  params: FetchAlertSearchSuggestionsParams,
+): Promise<IncidentSearchSuggestionsResponse> {
+  return fetchApi<IncidentSearchSuggestionsResponse>(oneViewAlertSearchSuggestPath(params), {
+    signal: params.signal,
+  });
+}
+
+export type FetchHistorySearchSuggestionsParams = {
+  q: string;
+  limit?: number;
+  customers?: string[];
+  datasources?: string[];
+  eventType?: string;
+  occurredFrom?: string;
+  occurredTo?: string;
+  signal?: AbortSignal;
+};
+
+export function oneViewHistorySearchSuggestPath(params: FetchHistorySearchSuggestionsParams): string {
+  const search = new URLSearchParams();
+  search.set("q", params.q.trim());
+  if (params.limit != null) search.set("limit", String(Math.min(Math.max(params.limit, 1), 15)));
+  for (const customer of params.customers ?? []) search.append("customer", customer);
+  for (const datasource of params.datasources ?? []) search.append("datasource", datasource);
+  if (params.eventType && params.eventType !== "all") search.set("event_type", params.eventType);
+  if (params.occurredFrom) search.set("occurred_from", params.occurredFrom);
+  if (params.occurredTo) search.set("occurred_to", params.occurredTo);
+  return `/oneview/history/search-suggest?${search.toString()}`;
+}
+
+export async function fetchHistorySearchSuggestions(
+  params: FetchHistorySearchSuggestionsParams,
+): Promise<IncidentSearchSuggestionsResponse> {
+  return fetchApi<IncidentSearchSuggestionsResponse>(oneViewHistorySearchSuggestPath(params), {
+    signal: params.signal,
+  });
+}
+
+export type FetchLinkSearchSuggestionsParams = CanonicalLinksQuery & {
+  q: string;
+  limit?: number;
+};
+
+export function oneViewLinkSearchSuggestPath(params: FetchLinkSearchSuggestionsParams): string {
+  const search = new URLSearchParams();
+  search.set("q", params.q.trim());
+  if (params.limit != null) search.set("limit", String(Math.min(Math.max(params.limit, 1), 15)));
+  for (const [key, value] of Object.entries(params)) {
+    if (key === "q" || key === "limit" || key === "signal") continue;
+    if (value !== undefined && value !== "" && value !== "all") search.set(key, String(value));
+  }
+  return `/oneview/links/search-suggest?${search.toString()}`;
+}
+
+export async function fetchLinkSearchSuggestions(
+  params: FetchLinkSearchSuggestionsParams,
+): Promise<IncidentSearchSuggestionsResponse> {
+  return fetchApi<IncidentSearchSuggestionsResponse>(oneViewLinkSearchSuggestPath(params), {
+    signal: params.signal,
+  });
+}
+
 /** OV-P0-262A — possible duplicate groups (Snow Notifier-compatible, read-only). */
 export type DuplicateIncidentCard = {
   sysId: string | null;
+  identityConflict?: boolean;
   number: string | null;
   shortDescription: string | null;
   customer: string | null;
@@ -1995,6 +2181,43 @@ export function operatorReminderIdentity(item: Pick<OperatorReminderFeedItem, "s
   };
 }
 
+export type OperatorReminderInboxLink = {
+  circuit_key: string | null;
+  data_source_id: string;
+  source_host_id: string | null;
+  subject_type: OperatorReminder["subject_type"];
+  subject_key: string | null;
+  source_trigger_id: string | null;
+};
+
+export type OperatorReminderInboxItem = {
+  id: string;
+  phase: "fired" | "delivered";
+  occurred_at: string;
+  title: string;
+  body: string;
+  link: OperatorReminderInboxLink;
+  severity?: string | null;
+};
+
+export type OperatorReminderInboxResponse = {
+  items: OperatorReminderInboxItem[];
+  data_source?: string;
+  checked_at?: string;
+};
+
+export async function fetchOperatorReminderInbox(options: {
+  since: string;
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<OperatorReminderInboxResponse> {
+  const search = new URLSearchParams({ since: options.since });
+  if (options.limit) search.set("limit", String(options.limit));
+  return fetchApi<OperatorReminderInboxResponse>(`/oneview/reminders/inbox?${search.toString()}`, {
+    signal: options.signal,
+  });
+}
+
 export async function fetchOperatorReminderFeed(options: OperatorReminderFeedFilters & { signal?: AbortSignal; force?: boolean } = {}): Promise<OperatorReminderFeed> {
   const search = new URLSearchParams();
   if (options.status?.length) search.set("status", options.status.join(","));
@@ -2047,6 +2270,7 @@ export async function fetchIncidentRelatedAlert(
 /** SN-P0-16 / SN-P0-27 — incidentes SN relacionados ao alerta. Sem fallback por host. */
 export type AlertRelatedIncident = {
   sys_id: string | null;
+  identity_conflict?: boolean;
   number: string | null;
   state: string | null;
   state_display?: string | null;

@@ -63,6 +63,7 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "caller_id",
   "assigned_to",
   "contact_type",
+  "manual",
   "number",
   "sys_id",
   "state",
@@ -80,7 +81,12 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "include_unassigned",
   "assignment_group",
   "search",
+  "q",
+  "limit",
 ]);
+
+/** Query params extras só para GET /oneview/incidents/search-suggest. */
+export const INCIDENT_SUGGEST_QUERY_KEYS = Object.freeze(["q", "limit"]);
 
 const ALLOWED_QUERY_KEY_SET = new Set(INCIDENT_ALLOWED_QUERY_KEYS);
 
@@ -222,6 +228,7 @@ export function parseIncidentFilters(req) {
   const hasAssignee = booleanFlag(oneQuery(req, "has_assignee"), false);
   const includeUnassigned = booleanFlag(oneQuery(req, "include_unassigned"), false);
   const includeRelatedAlert = booleanFlag(oneQuery(req, "include_related_alert"), false);
+  const manual = booleanFlag(oneQuery(req, "manual"), false);
 
   let numberRaw = cleanOptional(oneQuery(req, "number"));
   const sysIdRaw = cleanOptional(oneQuery(req, "sys_id"));
@@ -256,7 +263,9 @@ export function parseIncidentFilters(req) {
     contact_type: contactType,
     number,
     sys_id: sysId,
-    state,
+    // OV-P0-317: aba Manuais é estritamente operacional; não permite estado
+    // resolvido/encerrado mesmo se a URL for alterada manualmente.
+    state: manual ? "1,2,3" : state,
     priority,
     company,
     opened_from: openedFrom,
@@ -267,6 +276,7 @@ export function parseIncidentFilters(req) {
     has_assignee: unassigned ? false : hasAssignee,
     include_unassigned: unassigned ? false : includeUnassigned,
     include_related_alert: includeRelatedAlert,
+    manual,
     assignment_group: assignmentGroup,
     search,
   };

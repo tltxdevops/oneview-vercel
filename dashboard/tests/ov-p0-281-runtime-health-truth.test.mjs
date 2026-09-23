@@ -7,6 +7,7 @@ import {
   classifyActiveTruth,
   classifyCustomerIntegrity,
   classifyHostRegistry,
+  classifyIncidentIdentityIntegrity,
   classifyLinkHealth,
   classifyServiceNowWriteReadiness,
   classifyWriteReadiness,
@@ -227,6 +228,16 @@ test("OV-P0-281 customer integrity / host registry / links gates", () => {
   assert.match(String(links.warning), /Carrier metadata unavailable/i);
 });
 
+test("OV-P0-315 duplicate incident numbers degrade runtime integrity health", () => {
+  const healthy = classifyIncidentIdentityIntegrity({ duplicateIncidentNumbers: 0 });
+  assert.equal(healthy.status, "HEALTHY");
+  assert.equal(healthy.metrics.duplicate_incident_numbers, 0);
+  const degraded = classifyIncidentIdentityIntegrity({ duplicateIncidentNumbers: 2 });
+  assert.equal(degraded.status, "DEGRADED");
+  assert.equal(degraded.metrics.duplicate_incident_numbers, 2);
+  assert.match(degraded.detail, /identidade ServiceNow/i);
+});
+
 test("OV-P0-281 wire-up keeps runtime-health as single frontend source", () => {
   const db = read("api/_lib/oneview-db.js");
   const settings = read("src/pages/Settings.tsx");
@@ -235,6 +246,8 @@ test("OV-P0-281 wire-up keeps runtime-health as single frontend source", () => {
   assert.match(db, /fraportProbeForSource/);
   assert.match(db, /zabbix-ack/);
   assert.match(db, /servicenow-write/);
+  assert.match(db, /servicenow-incident-identity-integrity/);
+  assert.match(db, /duplicate_incident_numbers/);
   assert.match(db, /host-registry/);
   assert.match(db, /link-inventory/);
   assert.match(db, /READY_DISABLED/);

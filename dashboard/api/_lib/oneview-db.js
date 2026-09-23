@@ -29,6 +29,7 @@ import {
 } from "./servicenow-normalize.js";
 import {
   classifyCustomerIntegrity,
+  classifyIncidentIdentityIntegrity,
   classifyHostRegistry,
   classifyLinkHealth,
   classifyServiceNowWriteReadiness,
@@ -337,6 +338,7 @@ const SAFE_CUSTOMER_NAME_SQL = `case
   when ${UNIDENTIFIED_CUSTOMER_SQL} then 'Cliente não identificado'
   when lower(btrim(a.customer_name)) = 'ailos' then 'Ailos'
   when lower(btrim(a.customer_name)) = 'jfsc' then 'JFSC'
+  when lower(btrim(a.customer_name)) in ('solarwinds', 'sollarwinds') then 'Congás'
   else initcap(lower(btrim(a.customer_name)))
 end`;
 
@@ -739,7 +741,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       push("coalesce(a.source_event_id, a.id::text, '') ilike ?", `%${search}%`);
     } else {
       push(
-        "(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ? or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, a.client_name, '') ilike $CURRENT or coalesce(a.source_event_id, a.id::text, '') ilike $CURRENT)",
+        "(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike $CURRENT or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, a.client_name, '') ilike $CURRENT or coalesce(a.source_event_id, a.id::text, '') ilike $CURRENT or ${SAFE_CUSTOMER_NAME_SQL} ilike $CURRENT or lower(d.name) ilike $CURRENT)",
         `%${search}%`,
       );
       const current = `$${params.length}`;
@@ -833,6 +835,8 @@ function normalizedCustomerName(value) {
 const CANONICAL_CUSTOMER_DISPLAY_NAMES = Object.freeze({
   ailos: "Ailos",
   jfsc: "JFSC",
+  solarwinds: "Congás",
+  sollarwinds: "Congás",
 });
 
 export function canonicalCustomerKey(value) {
@@ -2641,9 +2645,7 @@ export const GLOBAL_HISTORY_EVENT_TYPES = Object.freeze({
   update: ["problem_seen", "status_changed", "reopened", "problem_created", "created_from_zabbix"],
 });
 
-async function fetchGlobalHistoryPayload(req, config, dataSourceNames = getOperationalDataSourceNames()) {
-  const page = positiveInteger(oneQueryValue(req, "page"), 1);
-  const pageSize = positiveInteger(oneQueryValue(req, "page_size"), DEFAULT_ALERT_PAGE_SIZE, { maximum: MAX_ALERT_PAGE_SIZE });
+export function buildGlobalHistoryScopeClauses(req, dataSourceNames = getOperationalDataSourceNames()) {
   const customers = queryValues(req, "customer").map((value) => value.slice(0, 160));
   const datasources = queryValues(req, "datasource").map((value) => value.slice(0, 160));
   const eventType = oneQueryValue(req, "event_type").toLowerCase();
@@ -2702,6 +2704,14 @@ async function fetchGlobalHistoryPayload(req, config, dataSourceNames = getOpera
       or coalesce(d.name, '') ilike $${idx}
     )`);
   }
+
+  return { clauses, params };
+}
+
+async function fetchGlobalHistoryPayload(req, config, dataSourceNames = getOperationalDataSourceNames()) {
+  const page = positiveInteger(oneQueryValue(req, "page"), 1);
+  const pageSize = positiveInteger(oneQueryValue(req, "page_size"), DEFAULT_ALERT_PAGE_SIZE, { maximum: MAX_ALERT_PAGE_SIZE });
+  const { clauses, params } = buildGlobalHistoryScopeClauses(req, dataSourceNames);
 
   const whereSql = clauses.length ? `where ${clauses.join(" and ")}` : "";
   const fromSql = `
@@ -3040,7 +3050,9 @@ export async function findAlertByOperationalDatasourceHost(
 ) {
   const datasource = String(datasourceName || "").trim().toLowerCase();
   const host = String(hostName || "").trim();
-  const problem = textValue(problemHint).slice(0, 200) || null;
+  const problem = mapsServiceNowProblemCorrelationToken(problemHint)
+    || textValue(problemHint).slice(0, 200)
+    || null;
   if (!datasource || !host || host.length > 253) return null;
   if (datasource !== "maps") return null;
 
@@ -3369,6 +3381,7 @@ async function fetchRuntimeHealthPayload(config) {
     theoSignals,
     sourceFacts,
     customerIntegrityRow,
+    incidentIdentityIntegrityRow,
     linkInventoryRow,
     hostRegistryRow,
     outboxTotals,
@@ -3446,6 +3459,16 @@ async function fetchRuntimeHealthPayload(config) {
         )::int as db_classified_host_but_alert_unclassified
       from alerts a
     `).catch(() => ({ active_classifiable_but_unclassified: 0, db_classified_host_but_alert_unclassified: 0 })),
+    queryRow(config, `
+      select count(*)::int as duplicate_incident_numbers
+        from (
+          select number
+            from servicenow_incidents
+           where nullif(btrim(number::text), '') is not null
+           group by number
+          having count(distinct sys_id) > 1
+        ) conflicts
+    `).catch(() => ({ duplicate_incident_numbers: null })),
     queryRow(config, `
       select
         count(*)::int as total_links,
@@ -3707,6 +3730,22 @@ async function fetchRuntimeHealthPayload(config) {
     auth: "not_applicable",
     detail: customerIntegrity.detail,
     metrics: customerIntegrity.metrics,
+    checked_at: checkedAt,
+  }));
+
+  const incidentIdentityIntegrity = classifyIncidentIdentityIntegrity({
+    duplicateIncidentNumbers: incidentIdentityIntegrityRow?.duplicate_incident_numbers,
+    checkedAt,
+  });
+  components.push(runtimeComponent({
+    id: "servicenow-incident-identity-integrity",
+    category: "SERVICENOW",
+    name: "ServiceNow Incident Identity Integrity",
+    status: incidentIdentityIntegrity.status,
+    connectivity: "not_applicable",
+    auth: "not_applicable",
+    detail: incidentIdentityIntegrity.detail,
+    metrics: incidentIdentityIntegrity.metrics,
     checked_at: checkedAt,
   }));
 
@@ -4004,3 +4043,5 @@ export async function findTheoProducedAlert(
     [normalizedId, normalizedDataSourceId, normalizedSourceEventId],
   );
 }
+
+export { SAFE_CUSTOMER_NAME_SQL };

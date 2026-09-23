@@ -7,6 +7,7 @@ import { insertAuditLog } from "./audit.js";
 import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { withOneViewActionsQuery } from "./oneview-actions-db.js";
+import { assertIncidentIdentitySafe, INCIDENT_IDENTITY_CONFLICT_ERROR } from "./oneview-incident-identity-guard.js";
 import { fetchServiceNowWorkNoteIncident } from "./oneview-servicenow-work-note.js";
 import { serviceNowPostIncidentAttachment } from "./servicenow-actions-client.js";
 import { getServiceNowConfig, normalizeServiceNowSysId } from "./servicenow-client.js";
@@ -14,6 +15,7 @@ import { getServiceNowConfig, normalizeServiceNowSysId } from "./servicenow-clie
 export const ATTACHMENT_ERROR = Object.freeze({
   INVALID: "INVALID_ATTACHMENT",
   INCIDENT_NOT_FOUND: "INCIDENT_NOT_FOUND",
+  IDENTITY_CONFLICT: INCIDENT_IDENTITY_CONFLICT_ERROR,
   RESULT_UNCERTAIN: "ATTACHMENT_RESULT_UNCERTAIN",
   TOO_LARGE: "ATTACHMENT_TOO_LARGE",
   UNAVAILABLE: "SERVICENOW_UNAVAILABLE",
@@ -121,6 +123,7 @@ function publicStatus(code) {
   if (code === ATTACHMENT_ERROR.INVALID) return 400;
   if (code === ATTACHMENT_ERROR.TOO_LARGE) return 413;
   if (code === ATTACHMENT_ERROR.INCIDENT_NOT_FOUND) return 404;
+  if (code === ATTACHMENT_ERROR.IDENTITY_CONFLICT) return 409;
   if (code === ATTACHMENT_ERROR.RESULT_UNCERTAIN) return 504;
   return 503;
 }
@@ -132,6 +135,7 @@ export function createServiceNowAttachmentHandler({
   readIncident = fetchServiceNowWorkNoteIncident,
   postAttachment = serviceNowPostIncidentAttachment,
   audit = persistAttachmentAudit,
+  identityGuard = assertIncidentIdentitySafe,
   logger = (entry) => console.info(JSON.stringify(entry)),
   now = () => Date.now(),
 } = {}) {
@@ -154,6 +158,7 @@ export function createServiceNowAttachmentHandler({
       if (!contentTypeIsPng(req)) throw new Error(ATTACHMENT_ERROR.INVALID);
       const incidentSysId = incidentSysIdFromRequest(req);
       if (!incidentSysId) throw new Error(ATTACHMENT_ERROR.INVALID);
+      await identityGuard(incidentSysId);
 
       const config = configProvider();
       if (!config.configured) throw new Error(ATTACHMENT_ERROR.UNAVAILABLE);

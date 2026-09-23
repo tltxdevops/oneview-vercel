@@ -1,4 +1,5 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -23,7 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchLinkSearchSuggestions, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
@@ -533,6 +534,8 @@ function MobileLinkCard({ item, reminder, onOpen }: { item: CanonicalLink; remin
 }
 
 export default function OperadorasPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const reminderDeepLinkRef = useRef(false);
   const { user } = useAuthContext();
   const dashboard = useOneViewDashboardLayout({
     page: "operators",
@@ -727,6 +730,41 @@ export default function OperadorasPage() {
   }, [openLink]);
 
   useEffect(() => {
+    if (reminderDeepLinkRef.current) return;
+    const ds = searchParams.get("ds")?.trim();
+    const host = searchParams.get("host")?.trim();
+    if (!ds || !host) return;
+    reminderDeepLinkRef.current = true;
+    const circuit = searchParams.get("circuit")?.trim() || null;
+    const subjectType = searchParams.get("subject_type")?.trim();
+    const subjectKey = searchParams.get("subject_key")?.trim() || null;
+    const trigger = searchParams.get("trigger")?.trim() || null;
+    const operationalSubject = subjectType === "circuit" || subjectType === "alert_subject"
+      ? {
+        subject_type: subjectType,
+        subject_key: subjectKey || "",
+        circuit_key: circuit,
+        data_source_id: ds,
+        source_host_id: host,
+        source_trigger_id: trigger,
+      }
+      : undefined;
+    const link = {
+      id: circuit || host,
+      circuit_key: circuit,
+      data_source_id: ds,
+      source_host_id: host,
+      operational_subject: operationalSubject,
+    } as CanonicalLink;
+    openLink(link);
+    const next = new URLSearchParams(searchParams);
+    for (const key of ["ds", "host", "circuit", "subject_type", "subject_key", "trigger", "reminder_link"]) {
+      next.delete(key);
+    }
+    setSearchParams(next, { replace: true });
+  }, [openLink, searchParams, setSearchParams]);
+
+  useEffect(() => {
     void load();
     return () => { requestVersion.current += 1; request.current?.abort(); };
   }, [load]);
@@ -770,6 +808,30 @@ export default function OperadorasPage() {
   };
   const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
     .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
+  const linkSuggestScope = useMemo(() => ({
+    customer: customer === ALL ? undefined : customer,
+    datasource: datasource === ALL ? undefined : datasource,
+    classification: classification === ALL ? undefined : classification,
+    state: state === ALL ? undefined : state,
+    ack: ack === ALL ? undefined : ack,
+    severity: severity === ALL ? undefined : severity,
+    incident: incident === ALL ? undefined : incident,
+    incident_state: incidentState === ALL ? undefined : incidentState,
+    carrier: carrier === ALL ? undefined : carrier,
+    tab,
+    resolved_window: resolvedWindow,
+    sort,
+    divergence: divergence || undefined,
+    recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
+    operational_situation: operationalSituation === ALL ? undefined : operationalSituation,
+    activity_period: activityPeriod === ALL ? undefined : activityPeriod,
+    page: 1,
+    page_size: operatorQueuePageSize,
+  }), [activityPeriod, ack, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, operatorQueuePageSize, recurrence, resolvedWindow, severity, sort, state, tab]);
+  const fetchLinkTableSuggestions = useCallback(
+    (q: string, signal: AbortSignal) => fetchLinkSearchSuggestions({ ...linkSuggestScope, q, limit: 10, signal }).then((response) => response.suggestions ?? []),
+    [linkSuggestScope],
+  );
   const panelFilterCount = [state, ack]
     .filter((value) => value !== ALL).length;
   const topbarRightSection = useMemo(() => {
@@ -990,6 +1052,8 @@ export default function OperadorasPage() {
           <ConfigurableTableToolbar
             search={search}
             onSearchChange={(value) => { setSearch(value); setPage(1); }}
+            fetchSearchSuggestions={fetchLinkTableSuggestions}
+            onSearchPick={(value) => { setSearch(value); setPage(1); }}
             searchPlaceholder="Buscar link, host ou cliente…"
             searchLabel="Buscar na tabela de links"
             columns={linkTableColumns}

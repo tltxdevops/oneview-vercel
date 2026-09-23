@@ -61,6 +61,7 @@ function toDrawerIncident(item) {
     assignment_group_display: item.assignment_group_display ?? null,
     assigned_to: item.assigned_to,
     assigned_to_display: item.assigned_to_display ?? null,
+    identity_conflict: Boolean(item.identity_conflict),
     sys_updated_on: item.sys_updated_on,
     zabbix_event_id: item.zabbix_event_id ?? null,
     servicenow_url: item.servicenow_url ?? null,

@@ -462,6 +462,22 @@ export function classifyCustomerIntegrity({
   };
 }
 
+/** ServiceNow number must identify exactly one local sys_id. */
+export function classifyIncidentIdentityIntegrity({
+  duplicateIncidentNumbers = 0,
+  checkedAt = null,
+} = {}) {
+  const duplicates = Math.max(0, Number(duplicateIncidentNumbers) || 0);
+  return {
+    status: duplicates > 0 ? RUNTIME_TRUTH_STATUS.DEGRADED : RUNTIME_TRUTH_STATUS.HEALTHY,
+    metrics: { duplicate_incident_numbers: duplicates },
+    detail: duplicates > 0
+      ? "Inconsistência de identidade ServiceNow: incident.number possui mais de um sys_id"
+      : "Meta duplicate_incident_numbers = 0 atendida",
+    checked_at: isoOrNull(checkedAt) || new Date().toISOString(),
+  };
+}
+
 export function classifyHostRegistry({
   total = null,
   classified = null,

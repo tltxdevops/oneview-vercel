@@ -10,6 +10,7 @@ type IncidentRef = {
   sys_id: string | null;
   number: string | null;
   state?: string | null;
+  identity_conflict?: boolean;
 };
 
 type Props = {

@@ -47,6 +47,7 @@ function createHandler({
   patch = async () => ({}),
   audit = async () => undefined,
   invalidate = async () => undefined,
+  identityGuard = async () => null,
 } = {}) {
   let readIndex = 0;
   return createServiceNowClaimHandler({
@@ -58,6 +59,7 @@ function createHandler({
     patchIncident: patch,
     audit,
     invalidateIncidentCache: invalidate,
+    identityGuard,
     logger: () => undefined,
   });
 }
@@ -135,6 +137,7 @@ test("OV-P0-305 NOC ausente e usuário ServiceNow ausente falham sem leitura/PAT
     claimConfigProvider: () => ({ enabled: true, nocAssignmentGroupSysId: GROUP_SYS_ID }),
     readIncident: async () => { reads += 1; return null; },
     patchIncident: async () => { patches += 1; },
+    identityGuard: async () => null,
     logger: () => undefined,
   });
   const userRes = await request(noUser);
@@ -235,4 +238,15 @@ test("OV-P0-305 rota e IncidentActions funcionam no drawer de Operadoras sem nav
   assert.match(component, /Seu usuário não pertence ao grupo N1 - Serviços - NOC no ServiceNow/);
   assert.match(operadoras, /IncidentDetailActions[\s\S]*onClaimed=/);
   assert.doesNotMatch(component, /work_note|assignment_group.*payload|assigned_to.*payload/);
+});
+
+test("OV-P0-315 claim blocks an identity conflict before PATCH", async () => {
+  let patches = 0;
+  const res = await request(createHandler({
+    identityGuard: async () => { throw { code: SERVICENOW_CLAIM_ERROR.IDENTITY_CONFLICT }; },
+    patch: async () => { patches += 1; },
+  }));
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.error, SERVICENOW_CLAIM_ERROR.IDENTITY_CONFLICT);
+  assert.equal(patches, 0);
 });

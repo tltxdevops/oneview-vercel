@@ -233,6 +233,7 @@ test("OV-P0-262A route + API client + Chamados wiring (no write actions)", async
 
   assert.match(chamados, /Duplicados/);
   assert.match(chamados, /fetchIncidentDuplicates/);
+  assert.match(chamados, /if \(viewMode !== "duplicates"\) return;/);
   assert.match(chamados, /Duplicidade sugerida/);
   assert.doesNotMatch(chamados, /Encerrar dups|Resolver todos|parent_incident/i);
 });

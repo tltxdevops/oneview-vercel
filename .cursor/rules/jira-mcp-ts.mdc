@@ -1,0 +1,59 @@
+---
+description: Defaults do Jira MCP (projeto TS) — assignee, sprint, time e estimativa
+alwaysApply: true
+---
+
+# Jira MCP — projeto TS (Teletex)
+
+Usar MCP `user-jira` / `jira`. Estado das issues fica no Jira; não espelhar em markdown local.
+
+## Identidade padrão
+
+- **Assignee e reporter**: Guilherme Franco — `guilherme.franco@teletex.com.br`, accountId `712020:043316dc-b626-4782-8015-731b061eb8c2`.
+- Só outra pessoa se o usuário **nomear** explicitamente (assignee; reporter só se pedir).
+
+## Projeto, time e hierarquia
+
+- Projeto **TS**, board **34**: https://teamteletex.atlassian.net/jira/software/projects/TS/boards/34
+- **Team** (obrigatório): **Desenvolvimento** — `customfield_10001`: `4dd7d136-11fe-4387-9a45-d9e736974750`
+- Epic → Task/Story. Subtask só se o usuário pedir.
+- **OneView**: resumo com prefixo `[Oneview] - `; épico pai padrão **TS-10** (`parentKey: TS-10`) quando for entrega OneView.
+
+## Sprint ativa (sempre)
+
+Antes de cada criação:
+
+1. `jira_get_sprints` — `boardId: 34`, `state: active` (última sprint **aberta**, não future/backlog).
+2. Após criar: `jira_move_issues_to_sprint` com o `sprintId` retornado, se a issue não estiver na sprint.
+3. **Due date**: último dia útil da sprint ativa (`endDate` da sprint, formato `YYYY-MM-DD`).
+
+Sprint ativa de referência (atualizar via API a cada sessão): consultar sempre a API; não fixar ID no chat.
+
+## Estimativa original (obrigatória)
+
+Sempre enviar `originalEstimate` em `jira_create_issue`. Formato Jira: `30m`, `1h`, `2h`, `3h`, `4h`, `1d`, `2d`. Escolher pelo esforço real da tarefa (não valor genérico):
+
+| Estimativa | Quando usar |
+|------------|-------------|
+| `30m`–`1h` | sync, config pontual, doc curta |
+| `2h`–`3h` | bug médio, investigação leve, ajuste integração |
+| `4h`–`1d` | vários bugs, feature pequena/média, VMs/integrações |
+| `2d`+ | mudança estrutural, spike grande |
+
+Informar a estimativa ao confirmar a criação (ex.: “estimativa: 1d”).
+
+## Payload mínimo em `jira_create_issue`
+
+- `projectKey`: `TS`
+- `assignee` + `reporter`: accountId do Guilherme (salvo exceção)
+- `originalEstimate`: conforme tabela
+- `customFields`: `{ "customfield_10001": "4dd7d136-11fe-4387-9a45-d9e736974750", "customfield_10467": { "id": "10351" } }` (Origem do Escopo: Escopo inicial)
+- `parentKey`, `dueDate`, `description` conforme pedido
+- Depois: mover para sprint ativa se necessário
+
+## Cuidados
+
+- Confirmar épico/título quando ambíguo. Confirmação explícita para ações destrutivas ou em massa.
+- Não publicar tokens em comentários.
+
+Referência completa: repo `MCP JIRA` — `.cursor/rules/jira.mdc` e `docs/docs/convencoes-jira.md`.

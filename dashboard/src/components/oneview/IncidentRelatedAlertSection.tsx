@@ -48,32 +48,38 @@ export function useIncidentRelatedAlert(incident: OneViewIncident | null) {
       setChecked(hasIncident);
       return;
     }
-    const controller = new AbortController();
+    // Sem signal: GETs idênticos entram no cache/in-flight compartilhado de 8 s.
+    let active = true;
     setRelatedAlert(null);
     setLoading(true);
     setChecked(false);
-    fetchIncidentRelatedAlert({ sysId, number, sourceEventId }, controller.signal)
+    fetchIncidentRelatedAlert({ sysId, number, sourceEventId })
       .then((response) => {
-        if (controller.signal.aborted) return;
+        if (!active) return;
         setRelatedAlert(response.matched && response.alert ? response.alert : null);
         setChecked(true);
       })
       .catch(() => {
-        if (controller.signal.aborted) return;
+        if (!active) return;
         setRelatedAlert(null);
         setChecked(true);
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (active) setLoading(false);
       });
-    return () => controller.abort();
+    return () => { active = false; };
   }, [hasIncident, sysId, number, sourceEventId]);
 
   return { relatedAlert, loading, checked };
 }
 
-export function IncidentRelatedAlertSection({ incident }: { incident: OneViewIncident }) {
-  const { relatedAlert, loading, checked } = useIncidentRelatedAlert(incident);
+export type IncidentRelatedAlertState = ReturnType<typeof useIncidentRelatedAlert>;
+
+export function IncidentRelatedAlertContent({
+  relatedAlert,
+  loading,
+  checked,
+}: IncidentRelatedAlertState) {
 
   return (
     <section aria-label="Alerta relacionado" className="space-y-2">
@@ -101,10 +107,17 @@ export function IncidentRelatedAlertSection({ incident }: { incident: OneViewInc
           </Button>
         </div>
       ) : checked ? (
-        <p className="text-sm text-muted-foreground">Alerta relacionado não localizado</p>
+        <div className="space-y-1 rounded-md border border-border/70 p-3 text-sm text-muted-foreground">
+          <p className="font-medium text-foreground">Sem alerta relacionado</p>
+          <p>Este chamado não possui correlação com um alerta do OneView.</p>
+        </div>
       ) : null}
     </section>
   );
+}
+
+export function IncidentRelatedAlertSection({ incident }: { incident: OneViewIncident }) {
+  return <IncidentRelatedAlertContent {...useIncidentRelatedAlert(incident)} />;
 }
 
 export function IncidentDetailField({

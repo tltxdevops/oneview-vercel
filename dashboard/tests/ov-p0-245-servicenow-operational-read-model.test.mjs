@@ -200,6 +200,7 @@ function eventDatabase({ existingUpdatedAt = null } = {}) {
         state.queries.push({ sql, values });
         const normalized = sql.replace(/\s+/g, " ").trim().toLowerCase();
         if (normalized.includes("pg_advisory_xact_lock")) return { rows: [] };
+        if (normalized.startsWith("select sys_id, number from servicenow_incidents where number::text")) return { rows: [] };
         if (normalized.startsWith("select sys_id, sys_updated_on")) {
           return { rows: state.existingUpdatedAt ? [{ sys_id: SYS_ID, sys_updated_on: state.existingUpdatedAt }] : [] };
         }

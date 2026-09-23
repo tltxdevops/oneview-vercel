@@ -40,6 +40,7 @@ function createHandler({
   audit = async () => undefined,
   readIncident = async () => ({ sys_id: INCIDENT_SYS_ID, number: "INC0081234" }),
   invalidate = async () => undefined,
+  identityGuard = async () => null,
 } = {}) {
   return createServiceNowWorkNoteHandler({
     authorize: async () => true,
@@ -49,6 +50,7 @@ function createHandler({
     patchIncident: patch,
     audit,
     invalidateIncidentCache: invalidate,
+    identityGuard,
     logger: () => undefined,
   });
 }
@@ -190,4 +192,15 @@ test("OV-P0-306 usa actor da sessão, UI somente em Links e Monitoring permanece
   assert.match(component, /requestServiceNowIncidentPutOnHold/);
   assert.match(monitoring, /IncidentDetailDrawer/);
   assert.doesNotMatch(monitoring, /<IncidentActions/);
+});
+
+test("OV-P0-315 work note blocks an identity conflict before PATCH", async () => {
+  let patches = 0;
+  const res = await request(createHandler({
+    identityGuard: async () => { throw { code: WORK_NOTE_ERROR.IDENTITY_CONFLICT }; },
+    patch: async () => { patches += 1; },
+  }), { work_note: "Nota operacional" });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.error, WORK_NOTE_ERROR.IDENTITY_CONFLICT);
+  assert.equal(patches, 0);
 });

@@ -7,6 +7,7 @@ import { insertAuditLog } from "./audit.js";
 import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { withOneViewActionsQuery } from "./oneview-actions-db.js";
+import { assertIncidentIdentitySafe, INCIDENT_IDENTITY_CONFLICT_ERROR } from "./oneview-incident-identity-guard.js";
 import {
   getServiceNowExternalVendorsConfig,
   resolveExternalVendor,
@@ -22,6 +23,7 @@ import { extractServiceNowDisplay, extractServiceNowValue } from "./servicenow-n
 export const PUT_ON_HOLD_ERROR = Object.freeze({
   INVALID: "INVALID_PUT_ON_HOLD_REQUEST",
   INCIDENT_NOT_FOUND: "INCIDENT_NOT_FOUND",
+  IDENTITY_CONFLICT: INCIDENT_IDENTITY_CONFLICT_ERROR,
   RESULT_UNCERTAIN: "PUT_ON_HOLD_RESULT_UNCERTAIN",
   UNAVAILABLE: "SERVICENOW_UNAVAILABLE",
 });
@@ -173,6 +175,7 @@ async function persistPutOnHoldAudit({
 function publicStatus(code) {
   if (code === PUT_ON_HOLD_ERROR.INVALID) return 400;
   if (code === PUT_ON_HOLD_ERROR.INCIDENT_NOT_FOUND) return 404;
+  if (code === PUT_ON_HOLD_ERROR.IDENTITY_CONFLICT) return 409;
   if (code === PUT_ON_HOLD_ERROR.RESULT_UNCERTAIN) return 504;
   return 503;
 }
@@ -186,6 +189,7 @@ export function createServiceNowPutOnHoldHandler({
   patchIncident = serviceNowPatchIncidentPutOnHold,
   audit = persistPutOnHoldAudit,
   invalidateIncidentCache = async () => undefined,
+  identityGuard = assertIncidentIdentitySafe,
   logger = (entry) => console.info(JSON.stringify(entry)),
   now = () => Date.now(),
 } = {}) {
@@ -212,6 +216,7 @@ export function createServiceNowPutOnHoldHandler({
 
       const incidentSysId = incidentSysIdFromRequest(req);
       if (!incidentSysId) throw new Error(PUT_ON_HOLD_ERROR.INVALID);
+      await identityGuard(incidentSysId);
 
       const config = configProvider();
       if (!config.configured) throw new Error(PUT_ON_HOLD_ERROR.UNAVAILABLE);

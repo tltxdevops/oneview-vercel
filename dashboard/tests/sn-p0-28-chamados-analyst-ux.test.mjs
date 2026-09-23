@@ -282,7 +282,8 @@ test("SN-P0-28 FE: toolbar + Mais filtros + busca INC + assignedTo", async () =>
   assert.match(chamados, /Mais filtros/);
   assert.match(chamados, /chamados-caller/);
   assert.doesNotMatch(chamados, /chamados-number/);
-  assert.match(chamados, /INCIDENT_EXACT_NUMBER_SEARCH_RE|resolveIncidentSearch/);
+  assert.match(chamados, /resolveIncidentSearch/);
+  assert.match(chamados, /oneview-chamados-search/);
   assert.match(chamados, /assignedTo/);
   assert.match(chamados, /facets\?\.assignees/);
   assert.match(chamados, /callerId:\s*"all"/);

@@ -16,9 +16,10 @@ async function read(relativePath) {
 }
 
 test("OV-P0-308: IncidentDetailDrawer único com Resumo / Alerta / Técnico", async () => {
-  const [drawer, related, alias] = await Promise.all([
+  const [drawer, related, relatedIncidents, alias] = await Promise.all([
     read("src/components/oneview/IncidentDetailDrawer.tsx"),
     read("src/components/oneview/IncidentRelatedAlertSection.tsx"),
+    read("src/components/oneview/AlertRelatedIncidentsSection.tsx"),
     read("src/components/oneview/IncidentQuickSheet.tsx"),
   ]);
 
@@ -36,12 +37,21 @@ test("OV-P0-308: IncidentDetailDrawer único com Resumo / Alerta / Técnico", as
   assert.match(drawer, /sticky bottom-0/);
   assert.match(drawer, /ServiceNowDevLink/);
   assert.match(drawer, /fetchIncidentDetail/);
-  assert.match(drawer, /IncidentRelatedAlertSection/);
+  assert.match(drawer, /IncidentRelatedAlertContent/);
+  assert.match(drawer, /const relatedAlertState = useIncidentRelatedAlert\(resolved\)/);
+  assert.doesNotMatch(drawer, /<IncidentRelatedAlertSection/);
   assert.match(drawer, /Detalhes adicionais/);
   assert.match(related, /export function useIncidentRelatedAlert/);
+  assert.match(related, /export function IncidentRelatedAlertContent/);
+  assert.match(related, /cache\/in-flight compartilhado de 8 s/);
   assert.match(related, /fetchIncidentRelatedAlert/);
   assert.match(related, /sourceEventId/);
   assert.match(related, /Alerta relacionado/);
+  assert.match(related, /Sem alerta relacionado/);
+  assert.match(related, /Este chamado não possui correlação com um alerta do OneView\./);
+  assert.doesNotMatch(related, /new AbortController\(\)/);
+  assert.doesNotMatch(relatedIncidents, /new AbortController\(\)/);
+  assert.match(relatedIncidents, /in-flight\/cache curto do/);
   assert.match(alias, /IncidentDetailDrawer as IncidentQuickSheet/);
 });
 

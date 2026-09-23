@@ -32,6 +32,8 @@ const CANONICAL_CLIENT_DISPLAY_NAMES: Record<string, string> = {
   "fraport-for": "Fraport FOR",
   "fraport-poa": "Fraport POA",
   maps: "MAPS",
+  solarwinds: "Congás",
+  sollarwinds: "Congás",
 };
 
 /** Chave segura de cliente: somente trim + case-insensitive; sem fuzzy matching. */

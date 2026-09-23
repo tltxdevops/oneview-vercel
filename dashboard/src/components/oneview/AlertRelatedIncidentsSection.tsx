@@ -69,6 +69,7 @@ function relationSourceLabel(source?: AlertRelatedIncidentsRelationSource | null
 export function relatedIncidentToOneViewIncident(item: AlertRelatedIncident): OneViewIncident {
   return {
     sys_id: item.sys_id,
+    identity_conflict: Boolean(item.identity_conflict),
     number: item.number,
     short_description: item.short_description ?? null,
     state: item.state,
@@ -103,7 +104,8 @@ function IncidentCard({
   extraCount?: number;
   onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
 }) {
-  const url = buildProductionServiceNowIncidentLink(item.sys_id);
+  const identityConflict = Boolean(item.identity_conflict);
+  const url = identityConflict ? null : buildProductionServiceNowIncidentLink(item.sys_id);
   const number = displayValue(item.number);
   const description = String(item.short_description || "").trim();
   return (
@@ -155,6 +157,9 @@ function IncidentCard({
           <dd className="mt-0.5 font-semibold">{formatDateTime(item.sys_updated_on)}</dd>
         </div>
       </dl>
+      {identityConflict ? (
+        <p className="text-xs text-destructive">Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.</p>
+      ) : null}
       {onOpenIncidentDetail ? (
         <Button
           type="button"
@@ -295,7 +300,9 @@ export function AlertRelatedIncidentsSection({
       requestKeyRef.current = correlationKey;
     }
 
-    const controller = new AbortController();
+    // Sem signal: GETs idênticos compartilham o in-flight/cache curto do
+    // cliente, deixando reabertura do alerta e drawer aninhado mais fluidos.
+    let active = true;
     setLoading(true);
     setError(null);
 
@@ -309,26 +316,25 @@ export function AlertRelatedIncidentsSection({
         mapsHost: mapsBridge?.mapsHost || null,
         mapsProblemName: mapsBridge?.mapsProblemName || null,
       },
-      controller.signal,
     )
       .then((response) => {
-        if (controller.signal.aborted) return;
+        if (!active) return;
         setIncidents(Array.isArray(response.incidents) ? response.incidents : []);
         setRelationSource(response.relation_source || (response.matched ? "zabbix_event_id" : "none"));
         setChecked(true);
       })
       .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
+        if (!active) return;
         setRelationSource("none");
         setChecked(true);
         setError("ServiceNow indisponível");
         void err;
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (active) setLoading(false);
       });
 
-    return () => controller.abort();
+    return () => { active = false; };
   }, [sourceEventId, correlationKey, tagRefs.sysIds, tagRefs.numbers, historyNumbers]);
 
   const projected = alert?.servicenow_reference

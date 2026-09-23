@@ -9,6 +9,7 @@ import { insertAuditLog } from "./audit.js";
 import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { withOneViewActionsQuery } from "./oneview-actions-db.js";
+import { assertIncidentIdentitySafe, INCIDENT_IDENTITY_CONFLICT_ERROR } from "./oneview-incident-identity-guard.js";
 import {
   SERVICENOW_IDENTITY_ERROR,
   createServiceNowIdentityResolver,
@@ -20,6 +21,7 @@ import { extractServiceNowDisplay, extractServiceNowValue } from "./servicenow-n
 export const SERVICENOW_CLAIM_ERROR = Object.freeze({
   CLAIM_DISABLED: "SERVICENOW_CLAIM_DISABLED",
   INCIDENT_NOT_FOUND: "INCIDENT_NOT_FOUND",
+  IDENTITY_CONFLICT: INCIDENT_IDENTITY_CONFLICT_ERROR,
   ASSIGNED_TO_OTHER: "INCIDENT_ASSIGNED_TO_OTHER",
   INVALID_REQUEST: "INVALID_CLAIM_REQUEST",
   UNAVAILABLE: "SERVICENOW_UNAVAILABLE",
@@ -114,6 +116,7 @@ function publicClaimError(error) {
 function publicClaimStatus(code) {
   if (code === SERVICENOW_CLAIM_ERROR.CLAIM_DISABLED) return 403;
   if (code === SERVICENOW_CLAIM_ERROR.INCIDENT_NOT_FOUND) return 404;
+  if (code === SERVICENOW_CLAIM_ERROR.IDENTITY_CONFLICT) return 409;
   if (code === SERVICENOW_CLAIM_ERROR.ASSIGNED_TO_OTHER) return 409;
   if (code === SERVICENOW_CLAIM_ERROR.INVALID_REQUEST) return 400;
   if (code === SERVICENOW_IDENTITY_ERROR.NOC_MEMBERSHIP_REQUIRED || code === SERVICENOW_IDENTITY_ERROR.USER_INACTIVE) return 403;
@@ -165,6 +168,7 @@ export function createServiceNowClaimHandler({
   patchIncident = serviceNowPatchIncidentClaim,
   audit = persistClaimAudit,
   invalidateIncidentCache = async () => undefined,
+  identityGuard = assertIncidentIdentitySafe,
   logger = (entry) => console.info(JSON.stringify(entry)),
   now = () => Date.now(),
 } = {}) {
@@ -184,6 +188,7 @@ export function createServiceNowClaimHandler({
       const body = claimRequestBody(req);
       const incidentSysId = incidentSysIdFromRequest(req);
       if (!incidentSysId) throw new Error(SERVICENOW_CLAIM_ERROR.INVALID_REQUEST);
+      await identityGuard(incidentSysId);
       const actor = actorProvider(req);
       if (!actor?.actor_id || !actor?.actor_username) throw new Error("authentication_required");
 

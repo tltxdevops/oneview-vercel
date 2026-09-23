@@ -46,7 +46,7 @@ test("OV-P0-310: Home, Monitoring, Chamados e Alertas usam drawer compartilhado"
 test("OV-P0-310: IncidentActions expõe Mais ações e mensagem sem alerta relacionado", async () => {
   const actions = await read("src/components/oneview/IncidentActions.tsx");
   assert.match(actions, /Mais ações/);
-  assert.match(actions, /Não há alerta relacionado disponível/);
+  assert.match(actions, /Não há alerta relacionado a este chamado\./);
   assert.match(actions, /placement/);
 });
 

@@ -7,12 +7,14 @@ import { insertAuditLog } from "./audit.js";
 import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { withOneViewActionsQuery } from "./oneview-actions-db.js";
+import { assertIncidentIdentitySafe, INCIDENT_IDENTITY_CONFLICT_ERROR } from "./oneview-incident-identity-guard.js";
 import { serviceNowPatchIncidentWorkNote } from "./servicenow-actions-client.js";
 import { getServiceNowConfig, normalizeServiceNowSysId, serviceNowGet } from "./servicenow-client.js";
 
 export const WORK_NOTE_ERROR = Object.freeze({
   INVALID: "INVALID_WORK_NOTE",
   INCIDENT_NOT_FOUND: "INCIDENT_NOT_FOUND",
+  IDENTITY_CONFLICT: INCIDENT_IDENTITY_CONFLICT_ERROR,
   RESULT_UNCERTAIN: "WORK_NOTE_RESULT_UNCERTAIN",
   UNAVAILABLE: "SERVICENOW_UNAVAILABLE",
 });
@@ -112,6 +114,7 @@ async function persistWorkNoteAudit({
 function publicStatus(code) {
   if (code === WORK_NOTE_ERROR.INVALID) return 400;
   if (code === WORK_NOTE_ERROR.INCIDENT_NOT_FOUND) return 404;
+  if (code === WORK_NOTE_ERROR.IDENTITY_CONFLICT) return 409;
   if (code === WORK_NOTE_ERROR.RESULT_UNCERTAIN) return 504;
   return 503;
 }
@@ -124,6 +127,7 @@ export function createServiceNowWorkNoteHandler({
   patchIncident = serviceNowPatchIncidentWorkNote,
   audit = persistWorkNoteAudit,
   invalidateIncidentCache = async () => undefined,
+  identityGuard = assertIncidentIdentitySafe,
   logger = (entry) => console.info(JSON.stringify(entry)),
   now = () => Date.now(),
 } = {}) {
@@ -146,6 +150,7 @@ export function createServiceNowWorkNoteHandler({
       workNoteLength = workNote.length;
       const incidentSysId = incidentSysIdFromRequest(req);
       if (!incidentSysId) throw new Error(WORK_NOTE_ERROR.INVALID);
+      await identityGuard(incidentSysId);
 
       const config = configProvider();
       if (!config.configured) throw new Error(WORK_NOTE_ERROR.UNAVAILABLE);

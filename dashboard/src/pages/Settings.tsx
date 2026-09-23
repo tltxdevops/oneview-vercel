@@ -51,6 +51,13 @@ import {
   type OneViewDashboardPage,
   type OneViewDashboardTemplate,
 } from "@/lib/oneview-dashboard-layout";
+import { Switch } from "@/components/ui/switch";
+import {
+  readOneViewNotificationPreferences,
+  setOneViewReminderLinkSound,
+  type OneViewNotificationPreferences,
+} from "@/lib/oneview-notification-preferences";
+import { playReminderLinkSound } from "@/lib/oneview-operator-reminder-notification";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -121,10 +128,17 @@ export default function SettingsPage() {
   const [dashboardPreferences, setDashboardPreferences] = useState<OneViewDashboardPreferences>(
     () => readOneViewDashboardPreferences(actorId),
   );
+  const [notificationPreferences, setNotificationPreferences] = useState<OneViewNotificationPreferences>(
+    () => readOneViewNotificationPreferences(actorId),
+  );
   const loadRequestRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     setDashboardPreferences(readOneViewDashboardPreferences(actorId));
+  }, [actorId]);
+
+  useEffect(() => {
+    setNotificationPreferences(readOneViewNotificationPreferences(actorId));
   }, [actorId]);
 
   const setDashboardTemplate = useCallback((page: OneViewDashboardPage, template: OneViewDashboardTemplate) => {
@@ -334,6 +348,38 @@ export default function SettingsPage() {
               <dd className="text-sm font-medium text-foreground">{recoveryLabel(teletexLevel, failureCount)}</dd>
             </div>
           </dl>
+        </SectionPanel>
+
+        <SectionPanel
+          title="Notificações"
+          description="Pop-ups de lembrete de link aparecem em qualquer tela enquanto você estiver logado. O som é opcional."
+          bodyClassName="space-y-4 p-4"
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">Som nos lembretes de link</p>
+              <p className="text-xs text-muted-foreground">
+                O aviso na tela continua mesmo com o som desligado.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Switch
+                checked={notificationPreferences.reminderLinkSound}
+                onCheckedChange={(checked) => {
+                  setNotificationPreferences(setOneViewReminderLinkSound(checked, actorId));
+                }}
+                aria-label="Ativar som nos lembretes de link"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => playReminderLinkSound(actorId, { force: true })}
+              >
+                Testar som
+              </Button>
+            </div>
+          </div>
         </SectionPanel>
 
         <SectionPanel

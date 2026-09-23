@@ -6,13 +6,12 @@ import { lazy, Suspense, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
-import SettingsPage from "@/pages/Settings";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import SsoCallback from "@/pages/SsoCallback";
 import { getBrowserRouterBase } from "@/lib/basePath";
 
 const queryClient = new QueryClient();
-const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const HistoricoPage = lazy(() => import("@/pages/Historico")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras"));
+const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const HistoricoPage = lazy(() => import("@/pages/Historico")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras")); const SettingsPage = lazy(() => import("@/pages/Settings"));
 const UiKitPage = lazy(() => import("@/pages/UiKit"));
 const routeFallback = (
   <div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">

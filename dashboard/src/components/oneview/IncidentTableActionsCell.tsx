@@ -18,6 +18,7 @@ export type IncidentTableActionsIncident = Pick<OneViewIncident, "sys_id" | "num
       | "assignment_group_display"
       | "assigned_to"
       | "assigned_to_display"
+      | "identity_conflict"
     >
   >;
 
@@ -39,7 +40,7 @@ export function IncidentTableActionsCell({
   const hasIncident = Boolean(incident.sys_id && incident.number);
   const autoResolveArtifact = alertArtifact === undefined;
   const { relatedAlert } = useIncidentRelatedAlert(
-    hasIncident && autoResolveArtifact ? (incident as OneViewIncident) : null,
+    hasIncident && !incident.identity_conflict && autoResolveArtifact ? (incident as OneViewIncident) : null,
   );
   const resolvedArtifact = useMemo(() => {
     if (!hasIncident) return null;
@@ -50,6 +51,10 @@ export function IncidentTableActionsCell({
 
   if (!hasIncident) {
     return <span className="text-[10px] text-muted-foreground">—</span>;
+  }
+
+  if (incident.identity_conflict) {
+    return <span className="text-[10px] text-destructive">Inconsistência de identidade</span>;
   }
 
   return (

@@ -38,7 +38,12 @@ const DUPLICATE_INCIDENT_SELECT = `
   coalesce(raw_payload->'subcategory'->>'display_value', nullif(raw_payload->>'subcategory_display', '')) as subcategory_display,
   coalesce(raw_payload->'close_code'->>'value', nullif(raw_payload->>'close_code', '')) as close_code,
   coalesce(raw_payload->'close_notes'->>'value', nullif(raw_payload->>'close_notes', '')) as close_notes,
-  coalesce(raw_payload->'contract'->>'value', nullif(raw_payload->>'contract', '')) as contract
+  coalesce(raw_payload->'contract'->>'value', nullif(raw_payload->>'contract', '')) as contract,
+  exists (
+    select 1 from servicenow_incidents duplicate
+     where duplicate.number::text = servicenow_incidents.number::text
+       and duplicate.sys_id::text <> servicenow_incidents.sys_id::text
+  ) as identity_conflict
 `;
 
 function text(value) {
@@ -113,6 +118,7 @@ function toDuplicateIncidentCard(mapped, { createdAt = null } = {}) {
         }
       : null,
     servicenowUrl: mapped?.servicenow_url || null,
+    identityConflict: Boolean(mapped?.identity_conflict),
   };
 }
 

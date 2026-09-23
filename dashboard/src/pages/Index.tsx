@@ -531,6 +531,7 @@ export default function Index() {
   const summaryInFlight = useRef<Promise<void> | null>(null);
   const listsRequest = useRef<AbortController | null>(null);
   const criticalAlertsRequest = useRef<AbortController | null>(null);
+  const reuseCriticalAlertsForInitialListsRef = useRef(false);
   const listsRequestIdRef = useRef(0);
   const hasSummaryRef = useRef(Boolean(warmedFacets.peekHit));
   const hasListsRef = useRef(Boolean(warmedHomeAlerts.peekHit));
@@ -716,6 +717,7 @@ export default function Index() {
       });
       setSectionError("alerts", null);
       hasListsRef.current = true;
+      reuseCriticalAlertsForInitialListsRef.current = true;
     } catch {
       if (!controller.signal.aborted && criticalAlertsRequest.current === controller) {
         setSectionError("alerts", "Falha ao carregar alertas.");
@@ -736,6 +738,8 @@ export default function Index() {
     const requestId = ++listsRequestIdRef.current;
     listsRequest.current = controller;
     const isInitial = mode === "initial" || !hasListsRef.current;
+    const reuseCriticalAlerts = reuseCriticalAlertsForInitialListsRef.current;
+    reuseCriticalAlertsForInitialListsRef.current = false;
     const beganQuiet = !isInitial && mode === "quiet";
     if (isInitial) setIsListsLoading(true);
     else if (beganQuiet) beginQuietUpdate();
@@ -743,16 +747,18 @@ export default function Index() {
     try {
       const now = bucketOneViewReadNow();
       const tasks: Array<Promise<unknown>> = [
-        fetchHomeAlerts({
-          mode: alertMode,
-          severity: severityFilter,
-          customers: selectedCustomerKeys,
-          status: alertStatus,
-          limit: alertItemLimit,
-          windowMs,
-          signal: controller.signal,
-          now,
-        }),
+        reuseCriticalAlerts
+          ? Promise.resolve(null)
+          : fetchHomeAlerts({
+            mode: alertMode,
+            severity: severityFilter,
+            customers: selectedCustomerKeys,
+            status: alertStatus,
+            limit: alertItemLimit,
+            windowMs,
+            signal: controller.signal,
+            now,
+          }),
         fetchRecentOperationalEvents({
           limit: eventItemLimit,
           customers: selectedCustomerKeys,
@@ -782,7 +788,10 @@ export default function Index() {
       const [alertsResult, historyResult, incidentsResult, operatorsResult] = results;
       let anySuccess = false;
 
-      if (alertsResult.status === "fulfilled") {
+      if (reuseCriticalAlerts) {
+        setSectionError("alerts", null);
+        anySuccess = true;
+      } else if (alertsResult.status === "fulfilled") {
         const payload = alertsResult.value as Awaited<ReturnType<typeof fetchHomeAlerts>>;
         setHomeAlerts(payload.items);
         setAlertsTotal(payload.total);

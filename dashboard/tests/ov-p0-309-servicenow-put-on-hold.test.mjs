@@ -75,6 +75,7 @@ function createHandler({
   audit = async () => undefined,
   invalidate = async () => undefined,
   vendorEnv = {},
+  identityGuard = async () => null,
 } = {}) {
   let readIndex = 0;
   return createServiceNowPutOnHoldHandler({
@@ -86,6 +87,7 @@ function createHandler({
     patchIncident: patch,
     audit,
     invalidateIncidentCache: invalidate,
+    identityGuard,
     logger: () => undefined,
   });
 }
@@ -254,4 +256,15 @@ test("OV-P0-309 confirmação exige passo explícito antes do PATCH", async () =
   assert.match(component, /proceedHoldConfirmation/);
   assert.match(component, /setHoldConfirmOpen\(true\)/);
   assert.match(component, /AlertDialogAction[\s\S]*void putOnHold\(\)/);
+});
+
+test("OV-P0-315 put on hold blocks an identity conflict before PATCH", async () => {
+  let patches = 0;
+  const res = await request(createHandler({
+    identityGuard: async () => { throw { code: PUT_ON_HOLD_ERROR.IDENTITY_CONFLICT }; },
+    patch: async () => { patches += 1; },
+  }));
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.error, PUT_ON_HOLD_ERROR.IDENTITY_CONFLICT);
+  assert.equal(patches, 0);
 });

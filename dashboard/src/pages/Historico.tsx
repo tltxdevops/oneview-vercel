@@ -74,8 +74,10 @@ import {
   AlertHistoryItem,
   fetchAlert,
   fetchAlertHistory,
+  fetchAlertSearchSuggestions,
   fetchAlerts,
   fetchGlobalHistory,
+  fetchHistorySearchSuggestions,
   fetchOneViewFacets,
   formatOneViewSeverityLabel,
   GlobalHistoryItem,
@@ -514,7 +516,7 @@ export default function HistoricoPage() {
       const trimmed = searchDraft.trim();
       if (trimmed === search) return;
       patchParams({ search: trimmed || null }, { resetPage: true });
-    }, 300);
+    }, 220);
     return () => window.clearTimeout(timer);
   }, [patchParams, search, searchDraft]);
 
@@ -876,6 +878,37 @@ export default function HistoricoPage() {
 
   const showRiskSummary = tab === "alertas" && isRiskSummaryPreset(risk) && !alertsError;
 
+  const fetchHistoricoSearchSuggestions = useCallback((q: string, signal: AbortSignal) => {
+    const bounds = periodBounds(period, customRange);
+    if (tab === "eventos") {
+      return fetchHistorySearchSuggestions({
+        q,
+        limit: 10,
+        customers: cliente === "all" ? [] : [cliente],
+        datasources: fonte === "all" ? [] : [fonte],
+        eventType,
+        occurredFrom: bounds.from,
+        occurredTo: bounds.to,
+        signal,
+      }).then((response) => response.suggestions ?? []);
+    }
+    return fetchAlertSearchSuggestions({
+      q,
+      limit: 10,
+      customers: cliente === "all" ? [] : [cliente],
+      datasources: fonte === "all" ? [] : [fonte],
+      severities,
+      status: alertStatus,
+      acknowledgedSource: ackFilter === "all" ? undefined : ackFilter === "true",
+      signal,
+    }).then((response) => response.suggestions ?? []);
+  }, [ackFilter, alertStatus, cliente, customRange, eventType, fonte, period, severities, tab]);
+
+  const pickHistoricoSearch = useCallback((value: string) => {
+    setSearchDraft(value);
+    patchParams({ search: value.trim() || null }, { resetPage: true });
+  }, [patchParams]);
+
   const activeFilterChips: Array<{ key: string; label: string; onClear: () => void }> = [];
   if (cliente !== "all") {
     const customerLabel = customerOptions.find((customer) => customer.key === cliente)?.name || cliente;
@@ -1194,6 +1227,8 @@ export default function HistoricoPage() {
               <ConfigurableTableToolbar
                 search={searchDraft}
                 onSearchChange={setSearchDraft}
+                fetchSearchSuggestions={fetchHistoricoSearchSuggestions}
+                onSearchPick={pickHistoricoSearch}
                 searchPlaceholder="Buscar host, problema ou cliente…"
                 searchLabel="Buscar na tabela do histórico de alertas"
                 columns={historyAlertColumns}
@@ -1445,6 +1480,8 @@ export default function HistoricoPage() {
               <ConfigurableTableToolbar
                 search={searchDraft}
                 onSearchChange={setSearchDraft}
+                fetchSearchSuggestions={fetchHistoricoSearchSuggestions}
+                onSearchPick={pickHistoricoSearch}
                 searchPlaceholder="Buscar evento, host, cliente ou ator…"
                 searchLabel="Buscar na tabela do histórico de eventos"
                 columns={historyEventColumns}

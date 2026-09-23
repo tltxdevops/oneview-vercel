@@ -205,11 +205,20 @@ export function createServiceNowIncidentActionsHandler({
       const result = await transaction(async (client) => {
         await client.query("select pg_advisory_xact_lock(hashtext($1))", [idempotencyKey]);
         const incidentResult = await client.query(
-          "select sys_id, number from servicenow_incidents where lower(sys_id::text) = $1 limit 1 for share",
+          `select i.sys_id, i.number,
+                  exists (
+                    select 1 from servicenow_incidents duplicate
+                     where duplicate.number::text = i.number::text
+                       and duplicate.sys_id::text <> i.sys_id::text
+                  ) as identity_conflict
+             from servicenow_incidents i
+            where lower(i.sys_id::text) = $1
+            limit 1 for share`,
           [incidentSysId],
         );
         const incident = incidentResult.rows[0];
         if (!incident) return { error: "incident_not_found", status: 404 };
+        if (incident.identity_conflict) return { error: "incident_identity_conflict", status: 409 };
         if (text(incident.number).toUpperCase() !== incidentNumber) return { error: "incident_number_mismatch", status: 409 };
 
         const existingResult = await client.query(

@@ -40,6 +40,7 @@ function responseRecorder() {
 function createHandler({
   postAttachment = async () => ({}),
   audit = async () => undefined,
+  identityGuard = async () => null,
 } = {}) {
   return createServiceNowAttachmentHandler({
     authorize: async () => true,
@@ -48,6 +49,7 @@ function createHandler({
     readIncident: async () => ({ sys_id: INCIDENT_SYS_ID, number: "INC0081234" }),
     postAttachment,
     audit,
+    identityGuard,
     logger: () => undefined,
   });
 }
@@ -176,4 +178,19 @@ test("OV-P0-308 Links exibe 4 ações via Mais ações e Monitoring permanece se
   assert.match(links, /buildAlertArtifactFromCanonicalLink/);
   assert.doesNotMatch(monitoring, /<IncidentActions/);
   assert.match(route, /oneview-servicenow-attachment/);
+});
+
+test("OV-P0-315 attachment blocks an identity conflict before POST", async () => {
+  let posts = 0;
+  const res = responseRecorder();
+  await createHandler({
+    identityGuard: async () => { throw { code: ATTACHMENT_ERROR.IDENTITY_CONFLICT }; },
+    postAttachment: async () => { posts += 1; },
+  })({
+    method: "POST", query: { sysId: INCIDENT_SYS_ID, file_name: "oneview-alerta-inc0081234.png" },
+    headers: { "content-type": "image/png" }, body: PNG,
+  }, res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.error, ATTACHMENT_ERROR.IDENTITY_CONFLICT);
+  assert.equal(posts, 0);
 });

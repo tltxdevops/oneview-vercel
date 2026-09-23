@@ -7,6 +7,7 @@ import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
 import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
 import { attachOperationalRecurrence, OPERATIONAL_RECENT_DETAIL_LIMIT, OPERATIONAL_RECENT_PREVIEW_LIMIT } from "./oneview-operational-recurrence.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
+import { mergeRankedSuggestions, matchRank } from "./oneview-search-suggest-rank.js";
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const SAFE = /^[\p{L}\p{N}._:@/| -]{1,240}$/u;
@@ -831,6 +832,77 @@ export function buildLinksPayload(rows, filters, now = Date.now(), integrationSt
   };
   return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:integrationStatus.servicenow === "degraded" ? null : base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, integration_status:integrationStatus, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
 }
+const LINKS_SUGGEST_CACHE_MS = 30_000;
+const LINK_SEARCH_FIELDS = ["service_name", "customer_name", "source_host_id", "host_name", "site_name", "link_type", "carrier_name", "circuit_key"];
+let linksSuggestCache = { rows: null, at: 0 };
+
+export async function searchLinkSuggestions(req, { list = fetchCanonicalLinks, now = () => Date.now() } = {}) {
+  const q = text(oneQuery(req, "q"));
+  if (!q || q.length < 2 || !SAFE.test(q)) throw invalidQuery();
+  const limit = pageInt(oneQuery(req, "limit"), 8, 15);
+  const scopeQuery = { ...req.query, search: undefined, q: undefined, limit: undefined };
+  const filters = parseLinkFilters({ query: scopeQuery });
+
+  let rows = linksSuggestCache.rows;
+  if (!rows || now() - linksSuggestCache.at > LINKS_SUGGEST_CACHE_MS) {
+    const result = await list();
+    rows = Array.isArray(result) ? result : result.rows;
+    linksSuggestCache = { rows, at: now() };
+  }
+
+  const scoped = filteredBase(rows, { ...filters, search: null });
+  const needle = q.toLowerCase();
+  const raw = [];
+
+  if (/^INC\d*$/i.test(q)) {
+    for (const row of scoped) {
+      const incidents = [...(row.incidents || []), row.current_incident, row.latest_incident].filter(Boolean);
+      for (const incident of incidents) {
+        const number = String(incident?.number || "").trim().toUpperCase();
+        if (!number.startsWith(q.toUpperCase())) continue;
+        raw.push({ kind: "number", value: number, label: number, hint: "Filtrar por chamado" });
+      }
+    }
+    return { suggestions: mergeRankedSuggestions(raw, q, limit) };
+  }
+
+  for (const row of scoped) {
+    if (matchRank(row.customer_name, q) <= 1) {
+      const label = String(row.customer_name || "").trim();
+      if (label) raw.push({ kind: "customer", value: label, label, hint: row.host_name ? `Cliente · host ${row.host_name}` : "Filtrar por cliente" });
+    }
+    if (matchRank(row.host_name, q) <= 1 || matchRank(row.source_host_id, q) <= 1) {
+      const label = String(row.host_name || row.source_host_id || "").trim();
+      if (label) raw.push({ kind: "host", value: label, label, hint: row.customer_name ? `Host · ${row.customer_name}` : "Filtrar por host" });
+    }
+    for (const field of ["service_name", "site_name", "circuit_key", "carrier_name"]) {
+      const label = String(row[field] || "").trim();
+      if (!label || !label.toLowerCase().includes(needle)) continue;
+      raw.push({ kind: "link", value: label, label, hint: `Link · ${row.customer_name || "circuito"}` });
+    }
+  }
+  return { suggestions: mergeRankedSuggestions(raw, q, limit) };
+}
+
+export function createLinksSearchSuggestHandler({
+  authorize = (req, res) => requireOneViewAuth(req, res, "viewer"),
+  suggest = searchLinkSuggestions,
+} = {}) {
+  return async (req, res) => {
+    res.setHeader("Cache-Control", NO_CACHE);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
+    if (!(await authorize(req, res))) return;
+    try {
+      const payload = await suggest(req);
+      return sendJson(res, 200, { ...payload, data_source: "database", checked_at: new Date().toISOString() });
+    } catch (error) {
+      if (error?.code === "invalid_query") return sendJson(res, 400, { error: "invalid_query", data_source: "database" });
+      return sendJson(res, 503, { error: "database_unavailable", data_source: "database" });
+    }
+  };
+}
+
 export function createLinksHandler({ authorize=(req,res)=>requireOneViewAuth(req,res,"viewer"), list=fetchCanonicalLinks, now=()=>Date.now() }={}) { return async (req,res) => { const startedAt=Date.now(); let status=500; res.setHeader("Cache-Control",NO_CACHE); res.setHeader("X-Content-Type-Options","nosniff"); try { if(req.method!=="GET") { status=405; return methodNotAllowed(res,["GET"]); } if(!await authorize(req,res)) { status=res.statusCode||401; return; } const filters=parseLinkFilters(req); const result=await list(); const rows=Array.isArray(result)?result:result.rows; const integrationStatus=result?.integration_status||{servicenow:"available"}; const payload=buildLinksPayload(rows,filters,now(),integrationStatus); res.setHeader("X-OneView-Data-Source","database"); status=200; return sendJson(res,200,payload); } catch (error) { status=error?.code==="invalid_query"?400:503; return sendJson(res,status,{error:error?.code==="invalid_query"?"invalid_query":"database_unavailable",data_source:"database"}); } finally { logLinksTiming({ route:"/api/oneview/links", request_total_ms:elapsedMs(startedAt), status }); } }; }
 export function createLinkDetailHandler({ authorize=(req,res)=>requireOneViewAuth(req,res,"viewer"), detail=fetchCanonicalLinkDetail }={}) { return async (req,res) => { const startedAt=Date.now(); let status=500; res.setHeader("Cache-Control",NO_CACHE); res.setHeader("X-Content-Type-Options","nosniff"); try { if(req.method!=="GET") { status=405; return methodNotAllowed(res,["GET"]); } if(!await authorize(req,res)) { status=res.statusCode||401; return; } const id=text(getId(req,"id")); const dataSourceId=text(oneQuery(req,"data_source_id")); const sourceHostId=text(oneQuery(req,"source_host_id")); if(!id||!dataSourceId||!sourceHostId||![id,dataSourceId,sourceHostId].every((value)=>SAFE.test(value))) { status=400; return sendJson(res,400,{error:"invalid_query",data_source:"database"}); } const payload=await detail({id,dataSourceId,sourceHostId}); if(!payload) { status=404; return sendJson(res,404,{error:"not_found",data_source:"database"}); } res.setHeader("X-OneView-Data-Source","database"); status=200; return sendJson(res,200,{...payload,data_source:"database",fallback_code:null}); } catch { status=503; return sendJson(res,503,{error:"database_unavailable",data_source:"database"}); } finally { logLinksTiming({route:"/api/oneview/links/:id",detail_request_total_ms:elapsedMs(startedAt),status}); } }; }
 export default createLinksHandler();

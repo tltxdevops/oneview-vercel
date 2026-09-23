@@ -11,8 +11,12 @@ import {
   matchServiceNowOperationalBridge,
   resolveServiceNowIncidentCustomerLabel,
 } from "./oneview-servicenow-customer-bridge.js";
+import { mergeRankedSuggestions } from "./oneview-search-suggest-rank.js";
 
 const OPERATIONAL_STATES = ["1", "2", "3"];
+// Manual = caller_id diferente do emissor técnico Zabbix; NULL também é manual.
+// Não usa contact_type, alerta ou correlação como critério.
+export const ZABBIX_MONITORING_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
 
 function text(value) {
   const output = String(value ?? "").trim();
@@ -37,6 +41,18 @@ function display(row, key) {
 
 function matchServiceNowOperationalBridgeFromRow(row) {
   return matchServiceNowOperationalBridge(display(row, "company") || row.company);
+}
+
+// `number` is normalized to uppercase at ingress. Equality keeps the existing
+// number index usable and flags every duplicated local identity without trying
+// to select a winner at the BFF layer.
+function identityConflictSelect(alias = "servicenow_incidents") {
+  return `exists (
+    select 1
+      from servicenow_incidents duplicate
+     where duplicate.number::text = ${alias}.number::text
+       and duplicate.sys_id::text <> ${alias}.sys_id::text
+  ) as identity_conflict`;
 }
 
 const READ_MODEL_INCIDENT_SELECT = `
@@ -83,8 +99,9 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
   const priority = text(row.priority);
   const contactType = text(row.contact_type);
   let servicenowUrl = null;
+  const identityConflict = Boolean(row.identity_conflict);
   try {
-    if (baseUrl && sysId) {
+    if (baseUrl && sysId && !identityConflict) {
       const url = new URL("/incident.do", `${String(baseUrl).replace(/\/+$/, "")}/`);
       url.searchParams.set("sys_id", sysId);
       servicenowUrl = url.toString();
@@ -145,6 +162,7 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
     resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : null,
     closedAt: row.closed_at ? new Date(row.closed_at).toISOString() : null,
     channel: display(row, "contact_type") || contactType,
+    identity_conflict: identityConflict,
     relatedAlert: normalizeRelatedAlert(relatedAlert),
     servicenow_url: servicenowUrl,
   };
@@ -158,7 +176,7 @@ export async function fetchReadModelIncidentDetail(sysId, { pool = getOneViewDbP
     throw error;
   }
   const result = await pool.query({
-    text: `select ${READ_MODEL_INCIDENT_SELECT}
+    text: `select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
       from servicenow_incidents
       where lower(sys_id::text) = $1
       limit 1`,
@@ -186,6 +204,9 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
     clauses.push("coalesce(btrim(contact_type::text), '') = ''");
   } else if (filters.contact_type) {
     clauses.push(`lower(coalesce(contact_type::text, '')) = lower(${addParam(values, filters.contact_type)})`);
+  }
+  if (filters.manual) {
+    clauses.push(`(caller_id is null or lower(btrim(caller_id::text)) <> ${addParam(values, ZABBIX_MONITORING_CALLER_ID)})`);
   }
   if (filters.caller_id) clauses.push(`caller_id::text = ${addParam(values, filters.caller_id)}`);
   const assigneeIds = assignedToIds(filters.assigned_to);
@@ -242,12 +263,13 @@ async function fetchFacets(pool, filters) {
   const values = [];
   const where = buildWhere({
     ...filters,
+    state: filters.manual ? OPERATIONAL_STATES.join(",") : null,
     caller_id: null,
     assigned_to: null,
     has_assignee: false,
     include_unassigned: false,
   }, values, {
-    includeState: false,
+    includeState: Boolean(filters.manual),
     includeUnassigned: false,
   });
   const specs = [
@@ -275,8 +297,12 @@ async function fetchFacets(pool, filters) {
 
 async function fetchCounts(pool, filters) {
   const values = [];
-  const where = buildWhere({ ...filters, state: null, unassigned: false }, values, {
-    includeState: false,
+  const where = buildWhere({
+    ...filters,
+    state: filters.manual ? OPERATIONAL_STATES.join(",") : null,
+    unassigned: false,
+  }, values, {
+    includeState: Boolean(filters.manual),
     includeUnassigned: false,
   });
   const result = await pool.query(`
@@ -437,51 +463,189 @@ export async function findReadModelRelatedAlerts(rows, { pool = getOneViewDbPool
   ]));
 }
 
+const INCIDENT_SUGGEST_INC_PREFIX_RE = /^INC\d*$/i;
+
+function truncateLabel(value, max = 120) {
+  const output = text(value);
+  if (!output) return "";
+  return output.length <= max ? output : `${output.slice(0, max - 1)}…`;
+}
+
+/**
+ * Sugestões de busca na fila de chamados (read model PostgreSQL, read-only).
+ * Respeita filtros da tela exceto search/number.
+ */
+export async function searchReadModelIncidentSuggestions(filters, {
+  q,
+  limit = 8,
+  pool = getOneViewDbPool(),
+} = {}) {
+  const query = String(q || "").trim();
+  if (query.length < 2) return { suggestions: [] };
+  const cap = Math.min(Math.max(Number(limit) || 8, 1), 15);
+  const scopeFilters = { ...filters, search: null, number: null, sys_id: null };
+  const suggestions = [];
+
+  if (INCIDENT_SUGGEST_INC_PREFIX_RE.test(query)) {
+    const values = [];
+    const where = buildWhere(scopeFilters, values);
+    const prefixParam = addParam(values, `${query.toUpperCase()}%`);
+    const result = await pool.query(`
+      select number::text as number,
+             coalesce(display_values->>'company_display', display_values->>'company', company::text) as company_label,
+             coalesce(short_description, '') as short_description
+        from servicenow_incidents
+       where ${where}
+         and upper(number::text) like ${prefixParam}
+       order by sys_updated_on desc nulls last, number asc
+       limit $${values.length + 1}`, [...values, cap]);
+    for (const row of result.rows) {
+      const number = text(row.number);
+      if (!number) continue;
+      suggestions.push({
+        kind: "number",
+        value: number,
+        label: number,
+        number,
+        company: text(row.company_label),
+      });
+    }
+    return { suggestions };
+  }
+
+  const values = [];
+  const where = buildWhere(scopeFilters, values);
+  const likeParam = addParam(values, `%${query}%`);
+  const incidentLimit = Math.min(5, cap);
+  const companyLimit = Math.min(6, cap);
+  const descriptionLimit = Math.min(4, cap);
+  const hostLimit = Math.min(5, cap);
+
+  const [incidentRows, companyRows, descriptionRows, hostRows] = await Promise.all([
+    pool.query(`
+      select number::text as number,
+             coalesce(display_values->>'company_display', display_values->>'company', company::text) as company_label,
+             coalesce(short_description, '') as short_description
+        from servicenow_incidents
+       where ${where}
+         and (number::text ilike ${likeParam} or coalesce(short_description, '') ilike ${likeParam})
+       order by sys_updated_on desc nulls last, number asc
+       limit $${values.length + 1}`, [...values, incidentLimit]),
+    pool.query(`
+      select distinct coalesce(display_values->>'company_display', display_values->>'company', company::text) as company_label
+        from servicenow_incidents
+       where ${where}
+         and coalesce(display_values->>'company_display', display_values->>'company', company::text) ilike ${likeParam}
+       order by company_label asc
+       limit $${values.length + 1}`, [...values, companyLimit]),
+    pool.query(`
+      select distinct on (left(coalesce(short_description, ''), 120))
+             number::text as number,
+             coalesce(short_description, '') as short_description
+        from servicenow_incidents
+       where ${where}
+         and coalesce(short_description, '') ilike ${likeParam}
+       order by left(coalesce(short_description, ''), 120), sys_updated_on desc nulls last
+       limit $${values.length + 1}`, [...values, descriptionLimit]),
+    pool.query(`
+      select distinct coalesce(u_hostname_zabbix::text, '') as host_label
+        from servicenow_incidents
+       where ${where}
+         and coalesce(u_hostname_zabbix::text, '') ilike ${likeParam}
+       order by host_label asc
+       limit $${values.length + 1}`, [...values, hostLimit]),
+  ]);
+
+  const raw = [];
+  for (const row of companyRows.rows) {
+    const company = text(row.company_label);
+    if (!company) continue;
+    raw.push({ kind: "company", value: company, label: company, company, hint: "Filtrar por cliente" });
+  }
+  for (const row of hostRows.rows) {
+    const host = text(row.host_label);
+    if (!host) continue;
+    raw.push({ kind: "host", value: host, label: host, hint: "Filtrar por host Zabbix" });
+  }
+  for (const row of incidentRows.rows) {
+    const number = text(row.number);
+    if (!number) continue;
+    const company = text(row.company_label);
+    raw.push({
+      kind: "number",
+      value: number,
+      label: number,
+      number,
+      company,
+      hint: company ? `Chamado · ${company}` : "Filtrar por número INC",
+    });
+  }
+  for (const row of descriptionRows.rows) {
+    const description = truncateLabel(row.short_description, 120);
+    if (!description) continue;
+    raw.push({
+      kind: "description",
+      value: description,
+      label: description,
+      number: text(row.number),
+      hint: text(row.number) ? `Descrição · ${text(row.number)}` : "Filtrar por descrição",
+    });
+  }
+
+  return { suggestions: mergeRankedSuggestions(raw, query, cap) };
+}
+
 export async function fetchReadModelIncidentsPage(filters, {
   pool = getOneViewDbPool(),
   relatedAlertResolver = findReadModelRelatedAlerts,
 } = {}) {
+  // Keep the invariant at the read-model boundary too. The public BFF already
+  // normalizes this, but callers of this helper must never widen Manuais to a
+  // historical state by passing a different `state` value.
+  const effectiveFilters = filters?.manual
+    ? { ...filters, state: OPERATIONAL_STATES.join(",") }
+    : filters;
   const values = [];
-  const where = buildWhere(filters, values);
-  const exactLookup = Boolean(filters.number || filters.sys_id);
-  const offset = exactLookup ? 0 : (filters.page - 1) * filters.page_size;
+  const where = buildWhere(effectiveFilters, values);
+  const exactLookup = Boolean(effectiveFilters.number || effectiveFilters.sys_id);
+  const offset = exactLookup ? 0 : (effectiveFilters.page - 1) * effectiveFilters.page_size;
   const [pageResult, countResult, counts, facets, syncResult] = await Promise.all([
     pool.query(`
-      select ${READ_MODEL_INCIDENT_SELECT}
+      select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
         from servicenow_incidents
        where ${where}
        order by sys_updated_on desc nulls last, sys_id asc
        limit $${values.length + 1} offset $${values.length + 2}`,
-    [...values, filters.page_size, offset]),
+    [...values, effectiveFilters.page_size, offset]),
     pool.query(`select count(*)::int as total from servicenow_incidents where ${where}`, values),
-    fetchCounts(pool, filters),
-    fetchFacets(pool, filters),
+    fetchCounts(pool, effectiveFilters),
+    fetchFacets(pool, effectiveFilters),
     pool.query("select last_success_at, watermark_sys_updated_on from servicenow_sync_state where sync_key = 'incident' limit 1"),
   ]);
   // Tag correlation is intentionally a detail lookup: the current alerts
   // schema has no index for ServiceNow tag JSON. Running it for every recent
   // incident would turn the operational queue into a slow scan. Exact GETs
   // may opt in and still execute one bounded batch, never one query per row.
-  const shouldResolveRelatedAlerts = Boolean(filters.include_related_alert && exactLookup);
+  const shouldResolveRelatedAlerts = Boolean(effectiveFilters.include_related_alert && exactLookup);
   const relatedAlerts = shouldResolveRelatedAlerts
     ? await relatedAlertResolver(pageResult.rows, { pool })
     : new Map();
   const totalItems = Number(countResult.rows?.[0]?.total || 0);
-  const totalPages = totalItems ? Math.ceil(totalItems / filters.page_size) : 0;
-  const effectivePage = exactLookup ? 1 : filters.page;
+  const totalPages = totalItems ? Math.ceil(totalItems / effectiveFilters.page_size) : 0;
+  const effectivePage = exactLookup ? 1 : effectiveFilters.page;
   return {
     items: pageResult.rows.map((row) => mapReadModelIncident(row, {
       relatedAlert: relatedAlerts.get(String(row.sys_id || "").toLowerCase()) || null,
     })),
     pagination: {
       page: effectivePage,
-      page_size: filters.page_size,
+      page_size: effectiveFilters.page_size,
       total_items: totalItems,
       total_pages: totalPages,
       has_next: effectivePage < totalPages,
       has_previous: effectivePage > 1 && totalPages > 0,
     },
-    filters,
+    filters: effectiveFilters,
     counts: Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, Number(value) || 0])),
     facets,
     data_source: "postgresql",
@@ -495,7 +659,7 @@ export async function fetchReadModelIncidentsPage(filters, {
 
 async function findBy(pool, where, values) {
   const result = await pool.query(`
-    select ${READ_MODEL_INCIDENT_SELECT}
+    select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
       from servicenow_incidents where ${where}
      order by sys_updated_on desc nulls last, sys_id asc limit 50`, values);
   return result.rows.map((row) => mapReadModelIncident(row));
@@ -510,7 +674,7 @@ async function findMapsIncidentsByOperationalAlert(
   if (!host) return [];
   const result = await pool.query(
     `
-    select ${READ_MODEL_INCIDENT_SELECT}
+    select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
       from servicenow_incidents
      where ${MAPS_SERVICENOW_COMPANY_WHERE_SQL}
        and (
