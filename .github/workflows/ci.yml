@@ -1,0 +1,13 @@
+name: Pipeline
+on:
+    pull_request:
+        branches: [ main, staging ]
+    push:
+        branches: [ main, staging ]
+        
+jobs:
+    shared-ci:
+        uses: tltxdevops/pipelines/.github/workflows/node-ci.yml@main
+        with:
+            node-version: 24
+            working-directory: dashboard

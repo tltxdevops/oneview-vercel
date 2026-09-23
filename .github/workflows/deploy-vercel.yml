@@ -3,6 +3,8 @@ name: Deploy na Vercel
 
 on:
   push:
+    branches-ignore:
+      - staging
   workflow_dispatch:
 
 jobs:
