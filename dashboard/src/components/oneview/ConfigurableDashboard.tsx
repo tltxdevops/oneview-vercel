@@ -8,7 +8,9 @@ import {
   ONEVIEW_DASHBOARD_TEMPLATES,
   type OneViewDashboardWidget,
 } from "@/lib/oneview-dashboard-layout";
+import { ConfigurableMetricStripPanel } from "@/components/oneview/ConfigurableMetricStripPanel";
 import { type OneViewDashboardController } from "@/lib/oneview-dashboard-controller";
+import type { OneViewMetricStripController } from "@/lib/oneview-metric-strip-preferences";
 import { cn } from "@/lib/utils";
 
 export type OneViewDashboardSlot = {
@@ -40,7 +42,13 @@ function layoutItem(controller: OneViewDashboardController, id: string) {
   return compactOneViewDashboardWidgets(controller.layout.widgets).find((candidate) => candidate.id === id) ?? null;
 }
 
-function DashboardToolbar({ controller }: { controller: OneViewDashboardController }) {
+function DashboardToolbar({
+  controller,
+  metricStrip,
+}: {
+  controller: OneViewDashboardController;
+  metricStrip?: OneViewMetricStripController<string>;
+}) {
   const { layout, widgets, isEditing, isWallboard } = controller;
   const [open, setOpen] = useState(false);
   const visibleItems = compactOneViewDashboardWidgets(layout.widgets).filter((item) => !item.hidden);
@@ -110,7 +118,7 @@ function DashboardToolbar({ controller }: { controller: OneViewDashboardControll
             <Settings2 className="h-4 w-4" aria-hidden="true" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" sideOffset={8} className="w-[min(20rem,calc(100vw-2rem))] space-y-3 p-3">
+        <PopoverContent align="end" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3">
           <div className="space-y-1.5">
             <p className="ov-typography-caption uppercase text-muted-foreground">Disposição</p>
             <div className="ov-segmented-control" role="group" aria-label="Template do painel">
@@ -197,6 +205,7 @@ function DashboardToolbar({ controller }: { controller: OneViewDashboardControll
               );
             })}
           </div>
+          {metricStrip ? <ConfigurableMetricStripPanel controller={metricStrip} /> : null}
         </PopoverContent>
       </Popover>
     </div>
@@ -455,10 +464,12 @@ export function ConfigurableDashboard({
   controller,
   children,
   className,
+  metricStrip,
 }: {
   controller: OneViewDashboardController;
   children: ReactNode;
   className?: string;
+  metricStrip?: OneViewMetricStripController<string>;
 }) {
   return (
     <OneViewDashboardContext.Provider value={controller}>
@@ -467,7 +478,7 @@ export function ConfigurableDashboard({
         data-dashboard-page={controller.layout.page}
         data-dashboard-template={controller.layout.template}
       >
-        <DashboardToolbar controller={controller} />
+        <DashboardToolbar controller={controller} metricStrip={metricStrip} />
         <div className="ov-dashboard-grid">{children}</div>
       </section>
     </OneViewDashboardContext.Provider>

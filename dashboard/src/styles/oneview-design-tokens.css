@@ -262,6 +262,41 @@
     padding-block: var(--ov-space-8);
   }
 
+  .ov-metric-strip-grid {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: var(--ov-space-12);
+    align-items: stretch;
+  }
+  .ov-metric-strip-cell {
+    grid-column: span var(--ov-metric-span, 1);
+  }
+  @media (max-width: 767px) {
+    .ov-metric-strip-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .ov-metric-strip-cell { grid-column: span min(var(--ov-metric-span, 1), 4); }
+  }
+  @media (min-width: 768px) and (max-width: 1279px) {
+    .ov-metric-strip-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+    .ov-metric-strip-cell { grid-column: span min(var(--ov-metric-span, 1), 4); }
+  }
+  .ov-metric-strip-density-compact .ov-live-metric {
+    min-height: 3.75rem;
+    padding-block: var(--ov-space-8);
+    padding-inline: var(--ov-space-12);
+  }
+  .ov-metric-strip-density-compact .ov-live-metric-value { font-size: 1rem; line-height: 1.25rem; }
+  .ov-metric-strip-density-default .ov-live-metric {
+    min-height: 4.75rem;
+    padding-block: var(--ov-space-8);
+    padding-inline: var(--ov-space-12);
+  }
+  .ov-metric-strip-density-comfortable .ov-live-metric {
+    min-height: 6rem;
+    padding-block: var(--ov-space-12);
+    padding-inline: var(--ov-space-16);
+  }
+  .ov-metric-strip-density-comfortable .ov-live-metric-value { font-size: 1.375rem; line-height: 1.75rem; }
+
   .ov-live-metric {
     min-height: 5.5rem;
     border: 1px solid hsl(var(--ov-color-border));
