@@ -17,6 +17,12 @@ const OPERATIONAL_STATES = ["1", "2", "3"];
 // Manual = caller_id diferente do emissor técnico Zabbix; NULL também é manual.
 // Não usa contact_type, alerta ou correlação como critério.
 export const ZABBIX_MONITORING_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
+export const TENABLE_INTEGRATION_CALLER_ID = "150f6c0887cf8b10d5fd84c30cbb354c";
+export const EXCLUDED_ASSIGNMENT_GROUP_IDS = Object.freeze([
+  "fa5a17eb47fa47106b618ca2036d43b0", // N2 - Sustentação - Redes/Triagem
+  "9f0a34be47622610082e3d02e26d43ab", // N1 - Infraestrutura
+  "fa7a932f47fa47106b618ca2036d43b1", // N1 - Sustentação - Infra
+]);
 
 function text(value) {
   const output = String(value ?? "").trim();
@@ -200,6 +206,9 @@ function assignedToIds(value) {
 function buildWhere(filters, values, { includeState = true, includeUnassigned = true } = {}) {
   // Mantém WHERE sintaticamente válido quando nenhum filtro é explícito.
   const clauses = ["true"];
+  clauses.push(`(caller_id is null or lower(btrim(caller_id::text)) <> ${addParam(values, TENABLE_INTEGRATION_CALLER_ID)})`);
+  const excludedGroups = addParam(values, EXCLUDED_ASSIGNMENT_GROUP_IDS);
+  clauses.push(`(assignment_group is null or lower(btrim(assignment_group::text)) <> all(${excludedGroups}::text[]))`);
   if (filters.contact_type === "__blank") {
     clauses.push("coalesce(btrim(contact_type::text), '') = ''");
   } else if (filters.contact_type) {
@@ -314,6 +323,34 @@ async function fetchCounts(pool, filters) {
       count(*) filter (where coalesce(btrim(assigned_to::text), '') = '' and state::text = any($${values.length + 1}::text[]))::int as unassigned
     from servicenow_incidents where ${where}`, [...values, OPERATIONAL_STATES]);
   return result.rows[0] || { total: 0, open: 0, in_progress: 0, resolved: 0, closed: 0, unassigned: 0 };
+}
+
+async function fetchGlobalCounts(pool) {
+  const values = [];
+  const where = buildWhere({}, values, { includeState: false, includeUnassigned: false });
+  const operationalStates = addParam(values, OPERATIONAL_STATES);
+  const zabbixCaller = addParam(values, ZABBIX_MONITORING_CALLER_ID);
+  const result = await pool.query(`
+    select count(*)::int as total,
+      count(*) filter (where state::text = '1')::int as open,
+      count(*) filter (where state::text = '2')::int as in_progress,
+      count(*) filter (where state::text = '6')::int as resolved,
+      count(*) filter (where state::text = '7')::int as closed,
+      count(*) filter (where coalesce(btrim(assigned_to::text), '') = '' and state::text = any(${operationalStates}::text[]))::int as unassigned,
+      count(*) filter (
+        where state::text = any(${operationalStates}::text[])
+          and (caller_id is null or btrim(caller_id::text) = '' or lower(btrim(caller_id::text)) <> ${zabbixCaller})
+      )::int as manual
+    from servicenow_incidents where ${where}`, values);
+  return result.rows[0] || {
+    total: 0,
+    open: 0,
+    in_progress: 0,
+    resolved: 0,
+    closed: 0,
+    unassigned: 0,
+    manual: 0,
+  };
 }
 
 const TAG_ARRAY_MATCH_SQL = (column, tagName, reference) => `
@@ -609,7 +646,7 @@ export async function fetchReadModelIncidentsPage(filters, {
   const where = buildWhere(effectiveFilters, values);
   const exactLookup = Boolean(effectiveFilters.number || effectiveFilters.sys_id);
   const offset = exactLookup ? 0 : (effectiveFilters.page - 1) * effectiveFilters.page_size;
-  const [pageResult, countResult, counts, facets, syncResult] = await Promise.all([
+  const [pageResult, countResult, counts, globalCounts, facets, syncResult] = await Promise.all([
     pool.query(`
       select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
         from servicenow_incidents
@@ -618,8 +655,9 @@ export async function fetchReadModelIncidentsPage(filters, {
        limit $${values.length + 1} offset $${values.length + 2}`,
     [...values, effectiveFilters.page_size, offset]),
     pool.query(`select count(*)::int as total from servicenow_incidents where ${where}`, values),
-    fetchCounts(pool, effectiveFilters),
-    fetchFacets(pool, effectiveFilters),
+    effectiveFilters.include_counts === false ? Promise.resolve(null) : fetchCounts(pool, effectiveFilters),
+    effectiveFilters.include_global_counts === false ? Promise.resolve(null) : fetchGlobalCounts(pool),
+    effectiveFilters.include_facets === false ? Promise.resolve(null) : fetchFacets(pool, effectiveFilters),
     pool.query("select last_success_at, watermark_sys_updated_on from servicenow_sync_state where sync_key = 'incident' limit 1"),
   ]);
   // Tag correlation is intentionally a detail lookup: the current alerts
@@ -646,8 +684,9 @@ export async function fetchReadModelIncidentsPage(filters, {
       has_previous: effectivePage > 1 && totalPages > 0,
     },
     filters: effectiveFilters,
-    counts: Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, Number(value) || 0])),
-    facets,
+    ...(counts ? { counts: Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, Number(value) || 0])) } : {}),
+    ...(globalCounts ? { global_counts: Object.fromEntries(Object.entries(globalCounts).map(([key, value]) => [key, Number(value) || 0])) } : {}),
+    ...(facets ? { facets } : {}),
     data_source: "postgresql",
     checked_at: new Date().toISOString(),
     freshness: {

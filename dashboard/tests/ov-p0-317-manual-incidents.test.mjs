@@ -3,7 +3,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createIncidentsHandler, parseIncidentFilters } from "../api/_lib/oneview-incidents.js";
-import { ZABBIX_MONITORING_CALLER_ID } from "../api/_lib/oneview-incidents-read-model.js";
+import {
+  EXCLUDED_ASSIGNMENT_GROUP_IDS,
+  TENABLE_INTEGRATION_CALLER_ID,
+  ZABBIX_MONITORING_CALLER_ID,
+  fetchReadModelIncidentsPage,
+} from "../api/_lib/oneview-incidents-read-model.js";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
 const request = (query) => ({ query });
@@ -48,6 +53,32 @@ test("OV-P0-317: assigned_to não altera a classificação manual", async () => 
   assert.doesNotMatch(manualClause, /assigned_to/);
 });
 
+test("OV-P0-317: Chamados exclui Tenable e grupos antes de lista, filtros e totais", async () => {
+  const [source, duplicates, page] = await Promise.all([
+    read("api/_lib/oneview-incidents-read-model.js"),
+    read("api/_lib/oneview-incident-duplicates.js"),
+    read("src/pages/Chamados.tsx"),
+  ]);
+  assert.equal(TENABLE_INTEGRATION_CALLER_ID, "150f6c0887cf8b10d5fd84c30cbb354c");
+  assert.deepEqual(EXCLUDED_ASSIGNMENT_GROUP_IDS, [
+    "fa5a17eb47fa47106b618ca2036d43b0",
+    "9f0a34be47622610082e3d02e26d43ab",
+    "fa7a932f47fa47106b618ca2036d43b1",
+  ]);
+  assert.match(source, /caller_id is null or lower\(btrim\(caller_id::text\)\) <> \$\{addParam\(values, TENABLE_INTEGRATION_CALLER_ID\)\}/);
+  assert.match(source, /EXCLUDED_ASSIGNMENT_GROUP_IDS/);
+  assert.match(source, /fetchCounts\(pool, effectiveFilters\)/);
+  assert.match(source, /fetchFacets\(pool, effectiveFilters\)/);
+  assert.match(source, /fetchGlobalCounts\(pool\)/);
+  assert.match(source, /global_counts:/);
+  assert.match(duplicates, /TENABLE_INTEGRATION_CALLER_ID/);
+  assert.match(duplicates, /EXCLUDED_ASSIGNMENT_GROUP_IDS/);
+  assert.match(duplicates, /caller_id is null or lower\(btrim\(caller_id::text\)\) <>/);
+  assert.match(page, /const globalCounts = payload\?\.global_counts/);
+  assert.match(page, /safeCount\(globalCounts\?\.manual\)/);
+  assert.match(page, /setViewMode\("list"\);/);
+});
+
 test("OV-P0-317: BFF encaminha manual ao read-model sem chamada ServiceNow", async () => {
   let received = null;
   const handler = createIncidentsHandler({
@@ -68,6 +99,41 @@ test("OV-P0-317: BFF encaminha manual ao read-model sem chamada ServiceNow", asy
   await handler({ method: "GET", query: { manual: "true" } }, res);
   assert.equal(res.statusCode, 200);
   assert.deepEqual([received.manual, received.state], [true, "1,2,3"]);
+});
+
+test("OV-P0-317: clique de KPI preserva regra manual e pula somente metadados redundantes", async () => {
+  const filters = parseIncidentFilters(request({
+    manual: "true",
+    include_counts: "false",
+    include_global_counts: "false",
+    include_facets: "false",
+  }));
+  assert.deepEqual(
+    [filters.manual, filters.state, filters.include_counts, filters.include_global_counts, filters.include_facets],
+    [true, "1,2,3", false, false, false],
+  );
+
+  const queries = [];
+  const pool = {
+    async query(sql) {
+      queries.push(sql);
+      if (sql.includes("servicenow_sync_state")) return { rows: [] };
+      if (sql.includes("select count(*)::int as total")) return { rows: [{ total: 0 }] };
+      if (sql.includes("from servicenow_incidents")) return { rows: [] };
+      throw new Error("unexpected query");
+    },
+  };
+  const page = await fetchReadModelIncidentsPage(filters, { pool });
+  assert.equal(page.pagination.total_items, 0);
+  assert.equal("counts" in page, false);
+  assert.equal("global_counts" in page, false);
+  assert.equal("facets" in page, false);
+  assert.equal(queries.some((sql) => sql.includes("count(*) filter") || sql.includes("group by")), false);
+
+  const source = await read("src/pages/Chamados.tsx");
+  assert.match(source, /includeGlobalCounts: includeMetadata/);
+  assert.match(source, /applyFilters\(next, "metric"\)/);
+  assert.match(source, /global_counts: response\.global_counts \?\? previous\?\.global_counts/);
 });
 
 test("OV-P0-317: aba Manuais usa somente o BFF read-model e preserva ações do chamado", async () => {

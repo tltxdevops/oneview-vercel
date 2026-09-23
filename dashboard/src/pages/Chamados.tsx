@@ -48,6 +48,7 @@ import {
 import { resolveIncidentSearch } from "@/lib/oneview-chamados-search";
 import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
@@ -64,6 +65,19 @@ const COLUMNS = [
   "Responsável",
   "Atualização",
 ] as const;
+
+const CHAMADOS_METRIC_OPTIONS = [
+  { id: "total", label: "Total", required: true },
+  { id: "open", label: "Abertos" },
+  { id: "in_progress", label: "Em andamento" },
+  { id: "resolved", label: "Resolvidos" },
+  { id: "closed", label: "Encerrados" },
+  { id: "unassigned", label: "Sem responsável" },
+  { id: "manual", label: "Manuais" },
+  { id: "duplicates", label: "Duplicados" },
+] as const;
+
+type ChamadosMetricId = typeof CHAMADOS_METRIC_OPTIONS[number]["id"];
 
 const INCIDENT_COLUMN_OPTIONS = [
   { id: "number", label: COLUMNS[0], required: true },
@@ -179,6 +193,7 @@ export default function ChamadosPage() {
   const { user } = useAuthContext();
   const actorId = user?.id || user?.email || "anonymous";
   const dashboard = useOneViewDashboardLayout({ page: "incidents", actorId });
+  const chamadosMetrics = useOneViewMetricStrip({ stripId: "incidents-summary", actorId, definitions: CHAMADOS_METRIC_OPTIONS });
   const incidentTablePageSize = dashboard.layout.widgets.find((item) => item.id === "incidents-table")?.itemLimit ?? PAGE_SIZE;
   const incidentColumns = useOneViewTableColumns({ tableId: "incidents", actorId, definitions: INCIDENT_COLUMN_OPTIONS });
   const [searchParams] = useSearchParams();
@@ -199,7 +214,9 @@ export default function ChamadosPage() {
   const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<IncidentListResponse | null>(null);
   const payloadRef = useRef<IncidentListResponse | null>(null);
+  const metadataRefreshRef = useRef(-1);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [tableRequestMode, setTableRequestMode] = useState<"full" | "metric">("full");
   const [refreshing, setRefreshing] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<OneViewIncident | null>(null);
@@ -231,6 +248,7 @@ export default function ChamadosPage() {
       const search = draft.search.trim();
       if (search === applied.search) return;
       setPage(1);
+      setTableRequestMode("full");
       setApplied((current) => ({ ...current, search }));
     }, 250);
     return () => window.clearTimeout(timer);
@@ -244,6 +262,8 @@ export default function ChamadosPage() {
     setError(null);
     const period = periodBounds(applied.period);
     const searchParams = resolveIncidentSearch(applied.search);
+    const refreshMetadata = !payloadRef.current || metadataRefreshRef.current !== refreshVersion;
+    const includeMetadata = tableRequestMode === "full" || refreshMetadata;
 
     fetchIncidents({
       page,
@@ -264,12 +284,25 @@ export default function ChamadosPage() {
       unassigned: applied.unassigned || undefined,
       updatedFrom: period.openedFrom,
       updatedTo: period.openedTo,
+      // KPI clicks always filter server-side. Reuse the already-rendered
+      // global KPIs/facets, which are unrelated to the selected table filter.
+      includeCounts: includeMetadata,
+      includeGlobalCounts: includeMetadata,
+      includeFacets: includeMetadata,
       signal: controller.signal,
     })
       .then((response) => {
         if (controller.signal.aborted) return;
-        payloadRef.current = response;
-        setPayload(response);
+        const previous = payloadRef.current;
+        const next = {
+          ...response,
+          counts: response.counts ?? previous?.counts,
+          global_counts: response.global_counts ?? previous?.global_counts,
+          facets: response.facets ?? previous?.facets,
+        };
+        if (includeMetadata) metadataRefreshRef.current = refreshVersion;
+        payloadRef.current = next;
+        setPayload(next);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
@@ -284,7 +317,7 @@ export default function ChamadosPage() {
       });
 
     return () => controller.abort();
-  }, [applied, incidentTablePageSize, page, refreshVersion, viewMode]);
+  }, [applied, incidentTablePageSize, page, refreshVersion, tableRequestMode, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "duplicates") return;
@@ -318,7 +351,7 @@ export default function ChamadosPage() {
 
   const items = payload?.items ?? [];
   const pagination = payload?.pagination;
-  const counts = payload?.counts;
+  const globalCounts = payload?.global_counts;
   const visibleColumnIds = incidentColumns.visibleColumns.map((column) => column.id);
   const visibleColumnCount = visibleColumnIds.length;
   const activeFilterCount = Number(Boolean(draft.company.trim()))
@@ -418,8 +451,9 @@ export default function ChamadosPage() {
     };
   }, [applied, viewMode]);
 
-  function applyFilters(next: DraftFilters = draft) {
+  function applyFilters(next: DraftFilters = draft, requestMode: "full" | "metric" = "full") {
     setPage(1);
+    setTableRequestMode(requestMode);
     setApplied({
       ...next,
       search: next.search.trim(),
@@ -431,6 +465,8 @@ export default function ChamadosPage() {
     setDraft(EMPTY_DRAFT);
     setApplied(EMPTY_DRAFT);
     setPage(1);
+    setTableRequestMode("full");
+    setViewMode("list");
   }
 
   function selectMetric(kind: "total" | "open" | "in_progress" | "resolved" | "closed" | "unassigned" | "manual" | "duplicates") {
@@ -446,7 +482,7 @@ export default function ChamadosPage() {
       setSelectedDuplicateGroup(null);
       const next = { ...draft, state: "all", unassigned: false };
       setDraft(next);
-      applyFilters(next);
+      applyFilters(next, "metric");
       return;
     }
     setViewMode("list");
@@ -466,8 +502,107 @@ export default function ChamadosPage() {
               : "all",
     };
     setDraft(next);
-    applyFilters(next);
+    applyFilters(next, "metric");
   }
+
+  const chamadosMetricItemsById = useMemo(() => ({
+    total: {
+      key: "total",
+      label: "Total",
+      value: error ? "—" : safeCount(globalCounts?.total),
+      tone: "info" as const,
+      loading,
+      selected: viewMode === "list" && applied.state === "all" && !applied.unassigned,
+      onClick: () => selectMetric("total"),
+    },
+    open: {
+      key: "open",
+      label: "Abertos",
+      value: error ? "—" : safeCount(globalCounts?.open),
+      tone: "info" as const,
+      loading: viewMode === "list" && loading,
+      selected: viewMode === "list" && applied.state === "1" && !applied.unassigned,
+      onClick: () => selectMetric("open"),
+    },
+    in_progress: {
+      key: "in_progress",
+      label: "Em andamento",
+      value: error ? "—" : safeCount(globalCounts?.in_progress),
+      tone: "warning" as const,
+      loading: viewMode === "list" && loading,
+      selected: viewMode === "list" && applied.state === "2" && !applied.unassigned,
+      onClick: () => selectMetric("in_progress"),
+    },
+    resolved: {
+      key: "resolved",
+      label: "Resolvidos",
+      value: error ? "—" : safeCount(globalCounts?.resolved),
+      tone: "success" as const,
+      loading: viewMode === "list" && loading,
+      selected: viewMode === "list" && applied.state === "6" && !applied.unassigned,
+      onClick: () => selectMetric("resolved"),
+    },
+    closed: {
+      key: "closed",
+      label: "Encerrados",
+      value: error ? "—" : safeCount(globalCounts?.closed),
+      tone: "neutral" as const,
+      loading: viewMode === "list" && loading,
+      selected: viewMode === "list" && applied.state === "7" && !applied.unassigned,
+      onClick: () => selectMetric("closed"),
+    },
+    unassigned: {
+      key: "unassigned",
+      label: "Sem responsável",
+      value: error ? "—" : safeCount(globalCounts?.unassigned),
+      tone: "danger" as const,
+      loading: viewMode === "list" && loading,
+      selected: viewMode === "list" && applied.unassigned,
+      onClick: () => selectMetric("unassigned"),
+    },
+    manual: {
+      key: "manual",
+      label: "Manuais",
+      value: error ? "—" : safeCount(globalCounts?.manual),
+      tone: "info" as const,
+      loading: viewMode === "manual" && loading,
+      selected: viewMode === "manual",
+      onClick: () => selectMetric("manual"),
+    },
+    duplicates: {
+      key: "duplicates",
+      label: "Duplicados",
+      value: duplicatesError ? "—" : safeCount(duplicatesPayload?.stats?.duplicate_groups),
+      tone: "recurrence" as const,
+      loading: viewMode === "duplicates" && duplicatesLoading,
+      selected: viewMode === "duplicates",
+      onClick: () => selectMetric("duplicates"),
+    },
+  }), [
+    applied.state,
+    applied.unassigned,
+    duplicatesError,
+    duplicatesLoading,
+    duplicatesPayload?.stats?.duplicate_groups,
+    error,
+    globalCounts?.closed,
+    globalCounts?.in_progress,
+    globalCounts?.manual,
+    globalCounts?.open,
+    globalCounts?.resolved,
+    globalCounts?.total,
+    globalCounts?.unassigned,
+    loading,
+    viewMode,
+  ]);
+
+  const chamadosMetricStripItems = useMemo(
+    () => chamadosMetrics.visibleMetrics.map((metric) => ({
+      ...chamadosMetricItemsById[metric.id],
+      span: chamadosMetrics.span[metric.id] ?? 1,
+    })),
+    [chamadosMetricItemsById, chamadosMetrics.span, chamadosMetrics.visibleMetrics],
+  );
 
   return (
     <AppLayout
@@ -477,87 +612,13 @@ export default function ChamadosPage() {
       clientSelect={<SectionAccentTitle level={1}>Chamados</SectionAccentTitle>}
       wallboard={dashboard.isWallboard}
     >
-      <ConfigurableDashboard controller={dashboard} className="min-w-0">
+      <ConfigurableDashboard controller={dashboard} className="min-w-0" metricStrip={chamadosMetrics}>
         <ConfigurableDashboardWidget id="operational-summary">
         <CompactMetricStrip
           aria-label="Indicadores de chamados"
-          gridClassName="ov-chamados-metric-grid"
-          items={[
-            {
-              key: "total",
-              label: "Total",
-              value: error ? "—" : safeCount(counts?.total ?? pagination?.total_items),
-              tone: "info",
-              loading,
-              selected: viewMode === "list" && applied.state === "all" && !applied.unassigned,
-              onClick: () => selectMetric("total"),
-            },
-            {
-              key: "open",
-              label: "Abertos",
-              value: error ? "—" : safeCount(counts?.open),
-              tone: "info",
-              loading: viewMode === "list" && loading,
-              selected: viewMode === "list" && applied.state === "1" && !applied.unassigned,
-              onClick: () => selectMetric("open"),
-            },
-            {
-              key: "in_progress",
-              label: "Em andamento",
-              value: error ? "—" : safeCount(counts?.in_progress),
-              tone: "warning",
-              loading: viewMode === "list" && loading,
-              selected: viewMode === "list" && applied.state === "2" && !applied.unassigned,
-              onClick: () => selectMetric("in_progress"),
-            },
-            {
-              key: "resolved",
-              label: "Resolvidos",
-              value: error ? "—" : safeCount(counts?.resolved),
-              tone: "success",
-              loading: viewMode === "list" && loading,
-              selected: viewMode === "list" && applied.state === "6" && !applied.unassigned,
-              onClick: () => selectMetric("resolved"),
-            },
-            {
-              key: "closed",
-              label: "Encerrados",
-              value: error ? "—" : safeCount(counts?.closed),
-              tone: "neutral",
-              loading: viewMode === "list" && loading,
-              selected: viewMode === "list" && applied.state === "7" && !applied.unassigned,
-              onClick: () => selectMetric("closed"),
-            },
-            {
-              key: "unassigned",
-              label: "Sem responsável",
-              value: error ? "—" : safeCount(counts?.unassigned),
-              tone: "danger",
-              loading: viewMode === "list" && loading,
-              selected: viewMode === "list" && applied.unassigned,
-              onClick: () => selectMetric("unassigned"),
-            },
-            {
-              key: "manual",
-              label: "Manuais",
-              value: viewMode === "manual" ? (error ? "—" : safeCount(pagination?.total_items)) : "—",
-              tone: "info",
-              loading: viewMode === "manual" && loading,
-              selected: viewMode === "manual",
-              onClick: () => selectMetric("manual"),
-            },
-            {
-              key: "duplicates",
-              label: "Duplicados",
-              value: duplicatesError
-                ? "—"
-                : safeCount(duplicatesPayload?.stats?.duplicate_groups),
-              tone: "recurrence",
-              loading: viewMode === "duplicates" && duplicatesLoading,
-              selected: viewMode === "duplicates",
-              onClick: () => selectMetric("duplicates"),
-            },
-          ]}
+          layoutMode="configurable"
+          density={chamadosMetrics.density}
+          items={chamadosMetricStripItems}
         />
         </ConfigurableDashboardWidget>
 

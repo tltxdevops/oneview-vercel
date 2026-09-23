@@ -9,6 +9,8 @@ import { getOneViewDbPool } from "./oneview-db.js";
 import {
   findReadModelRelatedAlerts,
   mapReadModelIncident,
+  EXCLUDED_ASSIGNMENT_GROUP_IDS,
+  TENABLE_INTEGRATION_CALLER_ID,
 } from "./oneview-incidents-read-model.js";
 
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
@@ -204,9 +206,13 @@ export function parseDuplicateFilters(req) {
 
 function buildOpenUniverseWhere(filters, values) {
   const clauses = [
+    `(caller_id is null or lower(btrim(caller_id::text)) <> $${values.length + 1})`,
+    `(assignment_group is null or lower(btrim(assignment_group::text)) <> all($${values.length + 2}::text[]))`,
     "coalesce(contact_type::text, '') = 'monitoring'",
-    `state::text <> all($${values.length + 1}::text[])`,
   ];
+  values.push(TENABLE_INTEGRATION_CALLER_ID);
+  values.push(EXCLUDED_ASSIGNMENT_GROUP_IDS);
+  clauses.push(`state::text <> all($${values.length + 1}::text[])`);
   values.push([...OPEN_INCIDENT_STATES_EXCLUDED]);
 
   if (filters.state?.length) {

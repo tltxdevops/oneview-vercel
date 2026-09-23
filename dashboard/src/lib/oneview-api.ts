@@ -1259,6 +1259,15 @@ export type IncidentListResponse = {
     closed: number;
     unassigned: number;
   } | null;
+  global_counts?: {
+    total: number;
+    open: number;
+    in_progress: number;
+    resolved: number;
+    closed: number;
+    unassigned: number;
+    manual: number;
+  } | null;
   /** Facets do universo acessível do read-model; filtros só restringem quando explícitos. */
   facets?: {
     callers?: IncidentCallerFacet[];
@@ -1292,6 +1301,9 @@ export type FetchIncidentsParams = {
   updatedFrom?: string;
   updatedTo?: string;
   includeRelatedAlert?: boolean;
+  includeCounts?: boolean;
+  includeGlobalCounts?: boolean;
+  includeFacets?: boolean;
   manual?: boolean;
   unassigned?: boolean;
   assignmentGroup?: string;
@@ -1318,6 +1330,9 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   if (params?.updatedFrom) search.set("updated_from", params.updatedFrom);
   if (params?.updatedTo) search.set("updated_to", params.updatedTo);
   if (params?.includeRelatedAlert) search.set("include_related_alert", "true");
+  if (params?.includeCounts === false) search.set("include_counts", "false");
+  if (params?.includeGlobalCounts === false) search.set("include_global_counts", "false");
+  if (params?.includeFacets === false) search.set("include_facets", "false");
   if (params?.manual) search.set("manual", "true");
   if (params?.unassigned) search.set("unassigned", "true");
   if (params?.hasAssignee) search.set("has_assignee", "true");
