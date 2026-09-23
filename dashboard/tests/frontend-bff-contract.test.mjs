@@ -309,7 +309,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   ]);
   assert.match(index, /SectionAccentTitle level=\{1\}>Início/);
   assert.doesNotMatch(index, /Visão geral da operação Teletex/);
-  assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);
+  assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|ConfigurableMetricStrip/);
   assert.match(index, /homeOperationalWindowActiveLabel/);
   assert.doesNotMatch(index, /Total persistido|Em acompanhamento no OneView|active_total/);
   assert.doesNotMatch(index, /title: "Alertas ativos"/);
@@ -362,7 +362,7 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.match(index, /fetchHomeAlerts|status: "active"/);
   assert.match(index, /description=\{incidentsPanelTitle\}/);
   assert.match(index, /Contexto operacional[\s\S]*Atualizado:/);
-  assert.match(index, /CompactMetricStrip[\s\S]*surface=\{false\}/);
+  assert.match(index, /ConfigurableMetricStrip[\s\S]*surface=\{false\}/);
   assert.match(index, /title="Links de operadoras"/);
   assert.match(app, /path="\/historico"/);
   assert.match(app, /HistoricoPage/);
@@ -614,7 +614,7 @@ test("OV-P0-19/38 Monitoramento NOC com Sidebar real, sem scroll e com janela re
   assert.match(monitoring, /MONITOR_QUEUE_LIMIT|PRIORITY_LIMIT/);
   assert.match(monitoring, /MONITOR_UNASSIGNED_LIMIT|MONITOR_HOSTS_LIMIT|HOSTS_LIMIT/);
   assert.match(monitoring, /queueOverflowLabel/);
-  assert.match(monitoring, /MONITOR_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);
+  assert.match(monitoring, /MONITOR_VISUAL_SEVERITY_STRIP|ConfigurableMetricStrip/);
   assert.match(monitoring, /monitorWindowActiveLabel|parseMonitorWindow/);
   assert.match(monitoring, /formatNullableCount/);
   assert.doesNotMatch(monitoring, /Novos na última hora|ACK 30 min/);
@@ -677,7 +677,7 @@ test("OV-P0-23 Home/Monitoramento usam janelas recentes server-side", async () =
   assert.match(index, /fetchRecentOperationalMetrics/);
   assert.match(index, /fetchRecentOperationalEvents/);
   assert.match(index, /HOME_ALERTS_PAGE_SIZE|fetchHomeAlerts/);
-  assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);
+  assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|ConfigurableMetricStrip/);
   assert.match(index, /homeOperationalWindowActiveLabel/);
   assert.doesNotMatch(index, /Novos nas últimas \$\{windowLabel\}/);
   assert.doesNotMatch(index, /Disaster sem ACK · \$\{windowLabel\}/);
@@ -792,7 +792,7 @@ test("cards de indicadores aplicam filtros rápidos sem textos redundantes", asy
   const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /type SummaryFilter =[\s\S]*"information"[\s\S]*"warning"[\s\S]*"average"[\s\S]*"high"[\s\S]*"disaster"[\s\S]*"not_classified"/);
   assert.match(alerts, /const applySummaryFilter = \(filter: SummaryFilter\)/);
-  assert.match(alerts, /OneViewKpiCard/);
+  assert.match(alerts, /ConfigurableMetricStrip/);
   assert.match(alerts, /aria-label="Indicadores de alertas"/);
   assert.match(alerts, /2xl:grid-cols-9/);
   assert.match(alerts, /onClick=\{\(\) => applySummaryFilter\(card\.filter\)\}/);
@@ -808,7 +808,7 @@ test("cards de indicadores aplicam filtros rápidos sem textos redundantes", asy
   assert.doesNotMatch(alerts, /Resumo global do OneView/);
   assert.doesNotMatch(alerts, /Métricas de todo o ambiente\. Os controles da tabela afetam somente a listagem\./);
   assert.doesNotMatch(alerts, /Escopo desta tabela:/);
-  assert.match(alerts, /xl:grid-cols-5[\s\S]*summaryCards\.map/);
+  assert.match(alerts, /ConfigurableMetricStrip[\s\S]*configurableSummaryItems/);
   assert.match(alerts, /filtrados por \{tableCustomerScope\}/);
 });
 
@@ -855,8 +855,8 @@ test("OV-P0-17 resumo operacional compacto prioriza tabela", async () => {
   ]);
 
   assert.match(alerts, /OV-P0-17/);
-  assert.match(alerts, /OneViewKpiCard/);
-  assert.match(alerts, /2xl:grid-cols-9/);
+  assert.match(alerts, /ConfigurableMetricStrip/);
+  assert.match(alerts, /gridProfile="twelve"/);
   assert.match(alerts, /title: "Em acompanhamento"/);
   assert.match(alerts, /title: "Reconhecidos"/);
   assert.match(alerts, /title: "Pendentes"/);
@@ -876,7 +876,7 @@ test("OV-P0-17 resumo operacional compacto prioriza tabela", async () => {
   assert.doesNotMatch(index, /SyncsStatusPanel|PlatformHealthStrip/);
   assert.doesNotMatch(index, /Saúde da plataforma/);
   assert.match(index, /h-9 w-full|h-12 w-full/);
-  assert.match(index, /CompactMetricStrip|font-semibold tabular-nums/);
+  assert.match(index, /ConfigurableMetricStrip|font-semibold tabular-nums/);
   assert.doesNotMatch(index, /Skeleton key=\{index\} className="h-24 w-full"/);
 
   assert.match(historico, /eventos registrados/i);
@@ -1924,7 +1924,7 @@ test("OV-P0-42A Home: faixa de 5 severidades via filtered_summary (1 consulta)",
 
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP/);
   assert.match(index, /"information",\s*"warning",\s*"average",\s*"high",\s*"disaster"/);
-  assert.match(index, /CompactMetricStrip/);
+  assert.match(index, /ConfigurableMetricStrip/);
   assert.match(index, /homeOperationalWindowActiveLabel/);
   assert.match(home, /Ativos iniciados nas últimas \$\{preset\}/);
   assert.doesNotMatch(index, /formatOneViewSeverityLabel\("not_classified"\)/);
@@ -2126,7 +2126,7 @@ test("OV-P0-43 Monitoramento alinha faixa de severidades, janela e fila única",
 
   assert.match(monitoring, /MONITOR_VISUAL_SEVERITY_STRIP/);
   assert.match(monitoring, /"information",\s*"warning",\s*"average",\s*"high",\s*"disaster"/);
-  assert.match(monitoring, /CompactMetricStrip/);
+  assert.match(monitoring, /ConfigurableMetricStrip/);
   assert.doesNotMatch(monitoring, /formatOneViewSeverityLabel\("not_classified"\)/);
   assert.match(monitoring, /formatNullableCount/);
   assert.match(monitoring, /parseMonitorWindow\(searchParams\.get\("window"\)\)/);

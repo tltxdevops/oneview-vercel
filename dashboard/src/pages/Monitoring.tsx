@@ -14,7 +14,7 @@ import {
   operationalClientLabel,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
-import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
@@ -39,6 +39,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -200,6 +201,13 @@ function monitorColumnAlign(column: string) {
 }
 
 const MONITORING_DASHBOARD_WIDGETS = dashboardWidgetsForPage("monitoring").filter((widget) => widget.id !== "health");
+const MONITORING_METRIC_OPTIONS = [
+  { id: "information", label: "Informação", defaultSpan: 2 },
+  { id: "warning", label: "Warning", defaultSpan: 2 },
+  { id: "average", label: "Average", defaultSpan: 2 },
+  { id: "high", label: "High", defaultSpan: 2 },
+  { id: "disaster", label: "Disaster", defaultSpan: 2 },
+] as const;
 
 function formatDurationSeconds(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
@@ -463,13 +471,15 @@ function MonitorAlertRow({
 
 export default function MonitoringPage() {
   const { user } = useAuthContext();
+  const actorId = user?.id || user?.email || "anonymous";
   const dashboard = useOneViewDashboardLayout({
     page: "monitoring",
-    actorId: user?.id || user?.email,
+    actorId,
     widgets: MONITORING_DASHBOARD_WIDGETS,
   });
-  const monitorAlertColumns = useOneViewTableColumns({ tableId: "monitor-alerts", actorId: user?.id || user?.email, definitions: MONITOR_ALERT_COLUMNS });
-  const monitorIncidentColumns = useOneViewTableColumns({ tableId: "monitor-incidents", actorId: user?.id || user?.email, definitions: MONITOR_INCIDENT_COLUMNS });
+  const monitoringMetrics = useOneViewMetricStrip({ stripId: "monitoring-summary", actorId, definitions: MONITORING_METRIC_OPTIONS });
+  const monitorAlertColumns = useOneViewTableColumns({ tableId: "monitor-alerts", actorId, definitions: MONITOR_ALERT_COLUMNS });
+  const monitorIncidentColumns = useOneViewTableColumns({ tableId: "monitor-incidents", actorId, definitions: MONITOR_INCIDENT_COLUMNS });
   const monitoringQueueItemLimit = dashboard.layout.widgets.find((item) => item.id === "monitoring-queue")?.itemLimit ?? MONITOR_QUEUE_LIMIT;
   const monitoringIncidentItemLimit = dashboard.layout.widgets.find((item) => item.id === "incidents")?.itemLimit ?? MONITOR_UNASSIGNED_LIMIT;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -734,6 +744,17 @@ export default function MonitoringPage() {
       onClick: () => toggleSeverityChip(severity),
     };
   });
+  const severityMetricStripItems = useMemo(() => {
+    const byId = new Map(severityStripItems.map((item) => [item.key, item]));
+    return monitoringMetrics.visibleMetrics.flatMap((metric) => {
+      const item = byId.get(metric.id);
+      return item ? [{
+        ...item,
+        span: monitoringMetrics.span[metric.id] ?? 2,
+        rowSpan: monitoringMetrics.rowSpan[metric.id] ?? 1,
+      }] : [];
+    });
+  }, [monitoringMetrics.rowSpan, monitoringMetrics.span, monitoringMetrics.visibleMetrics, severityStripItems]);
 
   const queueEmpty = hasLoaded && !queueAlerts.length && !sectionErrors.queue;
   const unassignedEmpty = hasLoaded && !unassignedIncidents.length && !sectionErrors.incidents;
@@ -1358,10 +1379,17 @@ export default function MonitoringPage() {
           </div>
         </section>
 
-        <ConfigurableDashboard controller={dashboard} className="min-h-0 flex-1">
+        <ConfigurableDashboard controller={dashboard} className="min-h-0 flex-1" metricStrip={monitoringMetrics}>
           <ConfigurableDashboardWidget id="operational-summary">
             <div className="shrink-0 space-y-1">
-              <CompactMetricStrip aria-label="Severidades ativas na janela" items={severityStripItems} />
+              <ConfigurableMetricStrip
+                aria-label="Severidades ativas na janela"
+                controller={monitoringMetrics}
+                editable={dashboard.isEditing}
+                gridProfile="twelve"
+                gridClassName="ov-monitoring-metric-grid"
+                items={severityMetricStripItems}
+              />
               {sectionErrors.summary ? <p className="ov-typography-small text-[hsl(var(--ov-color-warning))]">{sectionErrors.summary}</p> : null}
             </div>
           </ConfigurableDashboardWidget>

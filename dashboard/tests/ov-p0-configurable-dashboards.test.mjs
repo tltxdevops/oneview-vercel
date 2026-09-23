@@ -159,3 +159,30 @@ test("OV-DASHBOARD: aplicar template preenche todos os slots com id", () => {
   const broken = sparse.map((item, order) => ({ ...(item ?? prepared[order]), order }));
   assert.equal(broken.filter((item) => item && item.id).length, 0);
 });
+
+test("OV-DASHBOARD: indicadores responsivos compartilham organizacao e preferencias", () => {
+  const strip = read("src/components/oneview/ConfigurableMetricStrip.tsx");
+  const preferences = read("src/lib/oneview-metric-strip-preferences.ts");
+  const tokens = read("src/styles/oneview-design-tokens.css");
+
+  assert.match(strip, /gridProfile\?: OneViewMetricGridProfile/);
+  assert.match(strip, /gridClassName\?: string/);
+  assert.match(strip, /gridProfile=\{gridProfile\}/);
+  assert.match(strip, /gridClassName=\{gridClassName\}/);
+  assert.match(preferences, /setVisible/);
+  assert.match(preferences, /setSpan/);
+  assert.match(preferences, /setRowSpan/);
+  assert.match(preferences, /window\.localStorage/);
+  assert.match(tokens, /@media \(max-width: 767px\)/);
+  for (const [source, stripId] of [
+    [read("src/pages/Index.tsx"), "home-summary"],
+    [read("src/pages/Monitoring.tsx"), "monitoring-summary"],
+    [read("src/pages/Alerts.tsx"), "alerts-summary"],
+  ]) {
+    assert.match(source, new RegExp(`stripId: "${stripId}"`));
+    assert.match(source, /useOneViewMetricStrip/);
+    assert.match(source, /<ConfigurableDashboard controller=\{dashboard\}[\s\S]*metricStrip=/);
+    assert.match(source, /<ConfigurableMetricStrip[\s\S]*editable=\{dashboard\.isEditing\}/);
+    assert.match(source, /gridProfile="twelve"/);
+  }
+});

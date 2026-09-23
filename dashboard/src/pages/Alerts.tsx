@@ -7,7 +7,6 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import {
   OneViewButton,
-  OneViewKpiCard,
   OneViewPill,
   OneViewSemanticStatusBadge,
   OneViewSeverityBadge,
@@ -26,6 +25,7 @@ import {
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
@@ -44,6 +44,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import {
   AlertDetailResponse,
@@ -202,6 +203,18 @@ const VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_cl
   "high",
   "disaster",
 ];
+
+const ALERTS_METRIC_OPTIONS = [
+  { id: "active", label: "Em acompanhamento", defaultSpan: 2 },
+  { id: "acknowledged", label: "Reconhecidos", defaultSpan: 2 },
+  { id: "pending", label: "Pendentes", defaultSpan: 2 },
+  { id: "information", label: "Informação", defaultSpan: 1 },
+  { id: "warning", label: "Warning", defaultSpan: 1 },
+  { id: "average", label: "Average", defaultSpan: 1 },
+  { id: "high", label: "High", defaultSpan: 1 },
+  { id: "disaster", label: "Disaster", defaultSpan: 1 },
+  { id: "not_classified", label: "Não classificados", defaultSpan: 1 },
+] as const;
 
 /** OV-P0-255 — polling operacional 10s. */
 const SUMMARY_REFRESH_MS = 10_000;
@@ -792,13 +805,15 @@ function historyEventIcon(eventType: string) {
 
 export default function AlertsPage() {
   const { user } = useAuthContext();
+  const actorId = user?.id || user?.email || "anonymous";
   const dashboard = useOneViewDashboardLayout({
     page: "alerts",
-    actorId: user?.id || user?.email,
+    actorId,
   });
+  const alertsMetrics = useOneViewMetricStrip({ stripId: "alerts-summary", actorId, definitions: ALERTS_METRIC_OPTIONS });
   const alertTableColumns = useOneViewTableColumns({
     tableId: "alerts",
-    actorId: user?.id || user?.email,
+    actorId,
     definitions: ALERT_TABLE_COLUMNS,
   });
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1654,6 +1669,21 @@ export default function AlertsPage() {
       triggerClassName="h-9 w-full justify-between"
     />
   );
+  const configurableSummaryItems = alertsMetrics.visibleMetrics.flatMap((metric) => {
+    const card = summaryCards.find((candidate) => candidate.filter === metric.id);
+    if (!card) return [];
+    return [{
+      key: metric.id,
+      label: card.title,
+      value: formatCardValue(card.value),
+      description: card.description,
+      tone: summaryTone(metric.id as SummaryFilter),
+      selected: summaryFilterIsActive(metric.id as SummaryFilter),
+      onClick: () => applySummaryFilter(metric.id as SummaryFilter),
+      span: alertsMetrics.span[metric.id] ?? 1,
+      rowSpan: alertsMetrics.rowSpan[metric.id] ?? 1,
+    }];
+  });
   return (
     <AppLayout
       enableAutoRefresh={false}
@@ -1682,24 +1712,18 @@ export default function AlertsPage() {
         </section>
       ) : null}
 
-      <ConfigurableDashboard controller={dashboard}>
+      <ConfigurableDashboard controller={dashboard} metricStrip={alertsMetrics}>
         <ConfigurableDashboardWidget id="operational-summary">
           <div className="space-y-2">
             {summaryError ? <OperationalErrorBanner message={summaryError} /> : null}
-            <section aria-label="Indicadores de alertas" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-9">
-              {summaryCards.map((card) => (
-                <OneViewKpiCard
-                  key={card.filter}
-                  label={card.title}
-                  value={formatCardValue(card.value)}
-                  hint={card.description}
-                  tone={summaryTone(card.filter)}
-                  selected={summaryFilterIsActive(card.filter)}
-                  className="ov-kpi-official"
-                  onClick={() => applySummaryFilter(card.filter)}
-                />
-              ))}
-            </section>
+            <ConfigurableMetricStrip
+              aria-label="Indicadores de alertas"
+              controller={alertsMetrics}
+              editable={dashboard.isEditing}
+              gridProfile="twelve"
+              gridClassName="ov-alerts-metric-grid"
+              items={configurableSummaryItems}
+            />
           </div>
         </ConfigurableDashboardWidget>
 

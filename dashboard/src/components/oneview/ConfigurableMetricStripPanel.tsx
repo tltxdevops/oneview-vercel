@@ -21,7 +21,7 @@ export function ConfigurableMetricStripPanel<MetricId extends string>({
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="ov-typography-caption uppercase text-muted-foreground">{title}</p>
-          <p className="text-[10px] text-muted-foreground">Mostrar, ordenar e ajustar o tamanho de cada card.</p>
+          <p className="text-[10px] text-muted-foreground">Mostrar, ordenar e ajustar largura/altura. No modo edição, arraste o canto de cada card.</p>
         </div>
         <Button
           type="button"
@@ -54,6 +54,7 @@ export function ConfigurableMetricStripPanel<MetricId extends string>({
         {controller.orderedMetrics.map((metric, index) => {
           const visible = controller.visibility[metric.id] !== false;
           const span = controller.span[metric.id] ?? 1;
+          const rowSpan = controller.rowSpan[metric.id] ?? 1;
           const visibleCount = controller.orderedMetrics.filter((item) => controller.visibility[item.id] !== false).length;
           const lastVisible = visible && visibleCount <= 1;
           return (
@@ -119,8 +120,35 @@ export function ConfigurableMetricStripPanel<MetricId extends string>({
                   variant="ghost"
                   className="h-6 w-6"
                   disabled={span >= 4}
-                  aria-label={`Aumentar ${metric.label}`}
+                  aria-label={`Aumentar largura de ${metric.label}`}
                   onClick={() => controller.increaseSpan(metric.id)}
+                >
+                  <Plus className="h-3 w-3" aria-hidden="true" />
+                </Button>
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-border/70 bg-background/80 px-0.5" role="group" aria-label={`Altura de ${metric.label}`}>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  disabled={rowSpan <= 1}
+                  aria-label={`Diminuir altura de ${metric.label}`}
+                  onClick={() => controller.decreaseRowSpan(metric.id)}
+                >
+                  <Minus className="h-3 w-3" aria-hidden="true" />
+                </Button>
+                <span className="min-w-[1.25rem] text-center text-[10px] font-semibold tabular-nums" aria-label={`${rowSpan} linhas`}>
+                  {rowSpan}
+                </span>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  disabled={rowSpan >= 3}
+                  aria-label={`Aumentar altura de ${metric.label}`}
+                  onClick={() => controller.increaseRowSpan(metric.id)}
                 >
                   <Plus className="h-3 w-3" aria-hidden="true" />
                 </Button>

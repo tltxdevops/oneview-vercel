@@ -82,7 +82,7 @@ function DashboardToolbar({
       {isEditing ? (
         <div className="ov-dashboard-edit-bar">
           <p className="ov-typography-small text-muted-foreground">
-            Arraste o painel pela alça. Para redimensionar, use o canto inferior direito.
+            Painéis: arraste pela alça e redimensione pelo canto. Indicadores (Total, Abertos…): use o canto de cada card.
           </p>
           <Button
             type="button"

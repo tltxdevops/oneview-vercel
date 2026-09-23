@@ -4,6 +4,7 @@ const METRIC_STRIP_PREFERENCES_VERSION = 1 as const;
 
 export type OneViewMetricStripDensity = "compact" | "default" | "comfortable";
 export type OneViewMetricSpan = 1 | 2 | 3 | 4;
+export type OneViewMetricRowSpan = 1 | 2 | 3;
 
 export const ONEVIEW_METRIC_STRIP_DENSITY_LABEL: Record<OneViewMetricStripDensity, string> = {
   compact: "Compacto",
@@ -17,6 +18,7 @@ export type OneViewMetricDefinition<MetricId extends string = string> = {
   required?: boolean;
   defaultVisible?: boolean;
   defaultSpan?: OneViewMetricSpan;
+  defaultRowSpan?: OneViewMetricRowSpan;
 };
 
 type StoredMetricStripPreferences = {
@@ -24,10 +26,12 @@ type StoredMetricStripPreferences = {
   order: string[];
   visibility: Record<string, boolean>;
   span: Record<string, OneViewMetricSpan>;
+  rowSpan: Record<string, OneViewMetricRowSpan>;
   density: OneViewMetricStripDensity;
 };
 
 const DEFAULT_SPAN: OneViewMetricSpan = 1;
+const DEFAULT_ROW_SPAN: OneViewMetricRowSpan = 1;
 
 function normalizeMetricStripPreferences<MetricId extends string>(
   definitions: readonly OneViewMetricDefinition<MetricId>[],
@@ -49,6 +53,11 @@ function normalizeMetricStripPreferences<MetricId extends string>(
     const value = stored ?? fallback;
     return [metric.id, clampSpan(value)];
   }));
+  const rowSpan = Object.fromEntries(definitions.map((metric) => {
+    const stored = (candidate as Partial<StoredMetricStripPreferences> | null | undefined)?.rowSpan?.[metric.id];
+    const fallback = metric.defaultRowSpan ?? DEFAULT_ROW_SPAN;
+    return [metric.id, clampRowSpan(stored ?? fallback)];
+  }));
   const density = candidate?.density === "compact" || candidate?.density === "comfortable"
     ? candidate.density
     : "default";
@@ -57,6 +66,7 @@ function normalizeMetricStripPreferences<MetricId extends string>(
     order,
     visibility,
     span,
+    rowSpan,
     density,
   };
 }
@@ -67,6 +77,36 @@ function clampSpan(value: unknown): OneViewMetricSpan {
   if (parsed >= 3) return 3;
   if (parsed >= 2) return 2;
   return 1;
+}
+
+function clampRowSpan(value: unknown): OneViewMetricRowSpan {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (parsed >= 3) return 3;
+  if (parsed >= 2) return 2;
+  return 1;
+}
+
+export type OneViewMetricGridProfile = "chamados" | "twelve";
+
+export function metricStripGridColumns(viewportWidth: number, profile: OneViewMetricGridProfile = "chamados"): number {
+  if (profile === "chamados") {
+    if (viewportWidth < 768) return 2;
+    if (viewportWidth < 1536) return 4;
+    return 7;
+  }
+  if (viewportWidth < 768) return 4;
+  if (viewportWidth < 1280) return 8;
+  return 12;
+}
+
+/** Span efetivo na grade atual (1–4 lógico, limitado às colunas visíveis). */
+export function effectiveMetricSpan(
+  span: OneViewMetricSpan,
+  viewportWidth: number,
+  profile: OneViewMetricGridProfile = "chamados",
+): OneViewMetricSpan {
+  const columns = metricStripGridColumns(viewportWidth, profile);
+  return clampSpan(Math.min(span, columns, 4));
 }
 
 function readMetricStripPreferences<MetricId extends string>(
@@ -93,11 +133,15 @@ export type OneViewMetricStripController<MetricId extends string = string> = {
   visibleMetrics: OneViewMetricDefinition<MetricId>[];
   visibility: Record<MetricId, boolean>;
   span: Record<MetricId, OneViewMetricSpan>;
+  rowSpan: Record<MetricId, OneViewMetricRowSpan>;
   density: OneViewMetricStripDensity;
   setVisible: (id: MetricId, visible: boolean) => void;
   setSpan: (id: MetricId, span: OneViewMetricSpan) => void;
   increaseSpan: (id: MetricId) => void;
   decreaseSpan: (id: MetricId) => void;
+  setRowSpan: (id: MetricId, rowSpan: OneViewMetricRowSpan) => void;
+  increaseRowSpan: (id: MetricId) => void;
+  decreaseRowSpan: (id: MetricId) => void;
   setDensity: (density: OneViewMetricStripDensity) => void;
   reorder: (sourceId: MetricId, targetId: MetricId) => void;
   move: (id: MetricId, direction: -1 | 1) => void;
@@ -187,6 +231,30 @@ export function useOneViewMetricStrip<MetricId extends string>({
     });
   }, []);
 
+  const setRowSpan = useCallback((id: MetricId, rowSpan: OneViewMetricRowSpan) => {
+    if (!definitionsById.has(id)) return;
+    setPreferences((current) => ({
+      ...current,
+      rowSpan: { ...current.rowSpan, [id]: clampRowSpan(rowSpan) },
+    }));
+  }, [definitionsById]);
+
+  const increaseRowSpan = useCallback((id: MetricId) => {
+    setPreferences((current) => {
+      const currentRowSpan = clampRowSpan(current.rowSpan[id]);
+      if (currentRowSpan >= 3) return current;
+      return { ...current, rowSpan: { ...current.rowSpan, [id]: (currentRowSpan + 1) as OneViewMetricRowSpan } };
+    });
+  }, []);
+
+  const decreaseRowSpan = useCallback((id: MetricId) => {
+    setPreferences((current) => {
+      const currentRowSpan = clampRowSpan(current.rowSpan[id]);
+      if (currentRowSpan <= 1) return current;
+      return { ...current, rowSpan: { ...current.rowSpan, [id]: (currentRowSpan - 1) as OneViewMetricRowSpan } };
+    });
+  }, []);
+
   const setDensity = useCallback((density: OneViewMetricStripDensity) => {
     setPreferences((current) => ({ ...current, density }));
   }, []);
@@ -226,11 +294,15 @@ export function useOneViewMetricStrip<MetricId extends string>({
     visibleMetrics,
     visibility: preferences.visibility as Record<MetricId, boolean>,
     span: preferences.span as Record<MetricId, OneViewMetricSpan>,
+    rowSpan: preferences.rowSpan as Record<MetricId, OneViewMetricRowSpan>,
     density: preferences.density,
     setVisible,
     setSpan,
     increaseSpan,
     decreaseSpan,
+    setRowSpan,
+    increaseRowSpan,
+    decreaseRowSpan,
     setDensity,
     reorder,
     move,

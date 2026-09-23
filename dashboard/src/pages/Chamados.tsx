@@ -4,7 +4,7 @@ import { format, subDays } from "date-fns";
 import { Loader2, SlidersHorizontal } from "lucide-react";
 import { ChamadosSearchField } from "@/components/chamados/ChamadosSearchField";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableColumns } from "@/components/oneview/ConfigurableTableTools";
 import { FilterBar } from "@/components/oneview/FilterBar";
@@ -600,8 +600,9 @@ export default function ChamadosPage() {
     () => chamadosMetrics.visibleMetrics.map((metric) => ({
       ...chamadosMetricItemsById[metric.id],
       span: chamadosMetrics.span[metric.id] ?? 1,
+      rowSpan: chamadosMetrics.rowSpan[metric.id] ?? 1,
     })),
-    [chamadosMetricItemsById, chamadosMetrics.span, chamadosMetrics.visibleMetrics],
+    [chamadosMetricItemsById, chamadosMetrics.rowSpan, chamadosMetrics.span, chamadosMetrics.visibleMetrics],
   );
 
   return (
@@ -614,10 +615,10 @@ export default function ChamadosPage() {
     >
       <ConfigurableDashboard controller={dashboard} className="min-w-0" metricStrip={chamadosMetrics}>
         <ConfigurableDashboardWidget id="operational-summary">
-        <CompactMetricStrip
+        <ConfigurableMetricStrip
           aria-label="Indicadores de chamados"
-          layoutMode="configurable"
-          density={chamadosMetrics.density}
+          controller={chamadosMetrics}
+          editable={dashboard.isEditing}
           items={chamadosMetricStripItems}
         />
         </ConfigurableDashboardWidget>

@@ -12,7 +12,7 @@ import {
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
-import { CompactMetricStrip } from "@/components/oneview/CompactMetricStrip";
+import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableColumns, ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
 import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
@@ -45,6 +45,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import { useAuthContext } from "@/context/AuthContext";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
@@ -205,6 +206,13 @@ const HOME_VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "n
   "high",
   "disaster",
 ];
+const HOME_METRIC_OPTIONS = [
+  { id: "information", label: "Informação", defaultSpan: 2 },
+  { id: "warning", label: "Warning", defaultSpan: 2 },
+  { id: "average", label: "Average", defaultSpan: 2 },
+  { id: "high", label: "High", defaultSpan: 2 },
+  { id: "disaster", label: "Disaster", defaultSpan: 2 },
+] as const;
 
 function formatMetricCount(value: number | null | undefined) {
   return formatNullableCount(value);
@@ -463,15 +471,17 @@ function HomeOperatorRow({
 
 export default function Index() {
   const { user } = useAuthContext();
+  const actorId = user?.id || user?.email || "anonymous";
   const dashboard = useOneViewDashboardLayout({
     page: "home",
-    actorId: user?.id || user?.email,
+    actorId,
     widgets: HOME_DASHBOARD_WIDGETS,
   });
-  const homeEventColumns = useOneViewTableColumns({ tableId: "home-events", actorId: user?.id || user?.email, definitions: HOME_EVENT_COLUMNS });
-  const homeAlertColumns = useOneViewTableColumns({ tableId: "home-alerts", actorId: user?.id || user?.email, definitions: HOME_ALERT_COLUMNS });
-  const homeIncidentColumns = useOneViewTableColumns({ tableId: "home-incidents", actorId: user?.id || user?.email, definitions: OPERATIONAL_INCIDENT_QUEUE_COLUMNS });
-  const homeOperatorColumns = useOneViewTableColumns({ tableId: "home-operators", actorId: user?.id || user?.email, definitions: HOME_OPERATOR_COLUMNS });
+  const homeMetrics = useOneViewMetricStrip({ stripId: "home-summary", actorId, definitions: HOME_METRIC_OPTIONS });
+  const homeEventColumns = useOneViewTableColumns({ tableId: "home-events", actorId, definitions: HOME_EVENT_COLUMNS });
+  const homeAlertColumns = useOneViewTableColumns({ tableId: "home-alerts", actorId, definitions: HOME_ALERT_COLUMNS });
+  const homeIncidentColumns = useOneViewTableColumns({ tableId: "home-incidents", actorId, definitions: OPERATIONAL_INCIDENT_QUEUE_COLUMNS });
+  const homeOperatorColumns = useOneViewTableColumns({ tableId: "home-operators", actorId, definitions: HOME_OPERATOR_COLUMNS });
   const alertItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "recent-alerts", HOME_ALERTS_PAGE_SIZE);
   const incidentItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "incidents", 7);
   const operatorItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "failed-links", 3);
@@ -1073,6 +1083,17 @@ export default function Index() {
       onClick: () => toggleSeverityStrip(severity),
     };
   });
+  const homeMetricStripItems = useMemo(() => {
+    const byId = new Map(severityStripItems.map((item) => [item.key, item]));
+    return homeMetrics.visibleMetrics.flatMap((metric) => {
+      const item = byId.get(metric.id);
+      return item ? [{
+        ...item,
+        span: homeMetrics.span[metric.id] ?? 2,
+        rowSpan: homeMetrics.rowSpan[metric.id] ?? 1,
+      }] : [];
+    });
+  }, [homeMetrics.rowSpan, homeMetrics.span, homeMetrics.visibleMetrics, severityStripItems]);
 
   const headerControls = dashboard.isWallboard ? null : (
     <div className="flex items-center gap-2">
@@ -1134,7 +1155,7 @@ export default function Index() {
       contentClassName="gap-2 p-3 lg:px-4"
     >
       {contextBar}
-      <ConfigurableDashboard controller={dashboard}>
+      <ConfigurableDashboard controller={dashboard} metricStrip={homeMetrics}>
         <ConfigurableDashboardWidget id="operational-summary">
         <SectionPanel
           aria-label="Resumo operacional"
@@ -1148,9 +1169,13 @@ export default function Index() {
             </Button>
           ) : null}
         >
-          <CompactMetricStrip
+          <ConfigurableMetricStrip
             aria-label="Severidades ativas na janela"
-            items={severityStripItems}
+            controller={homeMetrics}
+            editable={dashboard.isEditing}
+            gridProfile="twelve"
+            gridClassName="ov-home-metric-grid"
+            items={homeMetricStripItems}
             surface={false}
           />
           {sectionErrors.summary ? (
