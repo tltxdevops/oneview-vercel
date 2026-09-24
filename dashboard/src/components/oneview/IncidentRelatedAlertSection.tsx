@@ -48,7 +48,7 @@ export function useIncidentRelatedAlert(incident: OneViewIncident | null) {
       setChecked(hasIncident);
       return;
     }
-    // Sem signal: GETs idênticos entram no cache/in-flight compartilhado de 8 s.
+    // Sem signal: drawer/detalhe compartilha cache/in-flight de 15 s por incidente.
     let active = true;
     setRelatedAlert(null);
     setLoading(true);

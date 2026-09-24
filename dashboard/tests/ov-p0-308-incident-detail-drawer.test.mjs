@@ -43,7 +43,7 @@ test("OV-P0-308: IncidentDetailDrawer único com Resumo / Alerta / Técnico", as
   assert.match(drawer, /Detalhes adicionais/);
   assert.match(related, /export function useIncidentRelatedAlert/);
   assert.match(related, /export function IncidentRelatedAlertContent/);
-  assert.match(related, /cache\/in-flight compartilhado de 8 s/);
+  assert.match(related, /cache\/in-flight de 15 s por incidente/);
   assert.match(related, /fetchIncidentRelatedAlert/);
   assert.match(related, /sourceEventId/);
   assert.match(related, /Alerta relacionado/);

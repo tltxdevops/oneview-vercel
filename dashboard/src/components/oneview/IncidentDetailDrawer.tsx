@@ -37,6 +37,7 @@ export function IncidentDetailDrawer({
   stacked = false,
   alertArtifact: alertArtifactProp,
   showActions = true,
+  onActionComplete,
 }: {
   incident: OneViewIncident | null;
   onOpenChange: (open: boolean) => void;
@@ -46,6 +47,7 @@ export function IncidentDetailDrawer({
   /** When omitted, related alert is resolved automatically for attachment. Pass null to disable. */
   alertArtifact?: AlertArtifactModel | null;
   showActions?: boolean;
+  onActionComplete?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<IncidentDetailDrawerTab>("summary");
   const [detail, setDetail] = useState<OneViewIncident | null>(null);
@@ -116,7 +118,8 @@ export function IncidentDetailDrawer({
 
   const bumpRefresh = useCallback(() => {
     setActionRefresh((value) => value + 1);
-  }, []);
+    onActionComplete?.();
+  }, [onActionComplete]);
 
   const descriptionText = resolved
     ? displayIncidentField(resolved.short_description, resolved.description)

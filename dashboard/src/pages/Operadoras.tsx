@@ -36,6 +36,7 @@ import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 
 const ALL = "all";
 const REFRESH_MS = 10_000;
+const REMINDERS_REFRESH_MS = 30_000;
 const RECENT_EPISODE_PREVIEW = 5;
 const DETAIL_CACHE_TTL_MS = 60_000;
 let drawerOpenedAt = 0;
@@ -584,6 +585,8 @@ export default function OperadorasPage() {
     setPage(1);
   }, [operatorQueuePageSize]);
   const requestVersion = useRef(0);
+  const queueRemindersRequestVersion = useRef(0);
+  const queueRemindersInFlight = useRef(false);
   const hasPayload = useRef(false);
   const selectedId = useRef<string | null>(null);
   const detailCache = useRef(new Map<string, { value: CanonicalLinkDetail; expiresAt: number }>());
@@ -729,6 +732,26 @@ export default function OperadorasPage() {
     openLink(link);
   }, [openLink]);
 
+  const loadQueueReminders = useCallback(async () => {
+    if (queueRemindersInFlight.current) return;
+    queueRemindersInFlight.current = true;
+    const version = ++queueRemindersRequestVersion.current;
+    try {
+      const feed = await fetchOperatorReminderFeed({ status: ["scheduled", "processing"], limit: 100 });
+      if (version !== queueRemindersRequestVersion.current) return;
+      const next = new Map<string, OperatorReminderFeedItem>();
+      for (const item of feed.items) {
+        const key = queueReminderKey(item.data_source_id, item.subject_type, item.subject_key);
+        if (key) next.set(key, item);
+      }
+      setQueueReminders(next);
+    } catch {
+      // Preserva o último snapshot; a lista principal mantém seu próprio estado de erro/freshness.
+    } finally {
+      queueRemindersInFlight.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     if (reminderDeepLinkRef.current) return;
     const ds = searchParams.get("ds")?.trim();
@@ -770,19 +793,17 @@ export default function OperadorasPage() {
   }, [load]);
 
   useEffect(() => {
-    if (view !== "queue" || !payload) return;
-    let active = true;
-    void fetchOperatorReminderFeed({ status: ["scheduled", "processing"], limit: 100 }).then((feed) => {
-      if (!active) return;
-      const next = new Map<string, OperatorReminderFeedItem>();
-      for (const item of feed.items) {
-        const key = queueReminderKey(item.data_source_id, item.subject_type, item.subject_key);
-        if (key) next.set(key, item);
-      }
-      setQueueReminders(next);
-    }).catch(() => { if (active) setQueueReminders(new Map()); });
-    return () => { active = false; };
-  }, [payload, view]);
+    if (view !== "queue") return;
+    void loadQueueReminders();
+    const id = window.setInterval(() => {
+      if (document.hidden) return;
+      void loadQueueReminders();
+    }, REMINDERS_REFRESH_MS);
+    return () => {
+      window.clearInterval(id);
+      queueRemindersRequestVersion.current += 1;
+    };
+  }, [loadQueueReminders, view]);
 
   useEffect(() => {
     const id = window.setInterval(() => {

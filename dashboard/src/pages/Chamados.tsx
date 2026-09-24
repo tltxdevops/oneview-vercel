@@ -54,6 +54,7 @@ import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
 
 const PAGE_SIZE = 25;
+const INCIDENT_LIST_REFRESH_MS = 15_000;
 
 const COLUMNS = [
   "Número",
@@ -216,7 +217,7 @@ export default function ChamadosPage() {
   const payloadRef = useRef<IncidentListResponse | null>(null);
   const metadataRefreshRef = useRef(-1);
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const [tableRequestMode, setTableRequestMode] = useState<"full" | "metric">("full");
+  const [metadataRefreshVersion, setMetadataRefreshVersion] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<OneViewIncident | null>(null);
@@ -235,7 +236,7 @@ export default function ChamadosPage() {
     const refresh = () => {
       if (document.visibilityState === "visible") setRefreshVersion((current) => current + 1);
     };
-    const timer = window.setInterval(refresh, 30_000);
+    const timer = window.setInterval(refresh, INCIDENT_LIST_REFRESH_MS);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       window.clearInterval(timer);
@@ -248,7 +249,7 @@ export default function ChamadosPage() {
       const search = draft.search.trim();
       if (search === applied.search) return;
       setPage(1);
-      setTableRequestMode("full");
+      setMetadataRefreshVersion((current) => current + 1);
       setApplied((current) => ({ ...current, search }));
     }, 250);
     return () => window.clearTimeout(timer);
@@ -262,8 +263,9 @@ export default function ChamadosPage() {
     setError(null);
     const period = periodBounds(applied.period);
     const searchParams = resolveIncidentSearch(applied.search);
-    const refreshMetadata = !payloadRef.current || metadataRefreshRef.current !== refreshVersion;
-    const includeMetadata = tableRequestMode === "full" || refreshMetadata;
+    // Poll de 15 s atualiza somente a tabela. Metadados globais são renovados
+    // no primeiro load, em mudanças de filtro e após actions relevantes.
+    const includeMetadata = !payloadRef.current || metadataRefreshRef.current !== metadataRefreshVersion;
 
     fetchIncidents({
       page,
@@ -300,7 +302,7 @@ export default function ChamadosPage() {
           global_counts: response.global_counts ?? previous?.global_counts,
           facets: response.facets ?? previous?.facets,
         };
-        if (includeMetadata) metadataRefreshRef.current = refreshVersion;
+        if (includeMetadata) metadataRefreshRef.current = metadataRefreshVersion;
         payloadRef.current = next;
         setPayload(next);
       })
@@ -317,7 +319,7 @@ export default function ChamadosPage() {
       });
 
     return () => controller.abort();
-  }, [applied, incidentTablePageSize, page, refreshVersion, tableRequestMode, viewMode]);
+  }, [applied, incidentTablePageSize, metadataRefreshVersion, page, refreshVersion, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "duplicates") return;
@@ -451,9 +453,9 @@ export default function ChamadosPage() {
     };
   }, [applied, viewMode]);
 
-  function applyFilters(next: DraftFilters = draft, requestMode: "full" | "metric" = "full") {
+  function applyFilters(next: DraftFilters = draft, _requestMode: "full" | "metric" = "full") {
     setPage(1);
-    setTableRequestMode(requestMode);
+    setMetadataRefreshVersion((current) => current + 1);
     setApplied({
       ...next,
       search: next.search.trim(),
@@ -465,8 +467,13 @@ export default function ChamadosPage() {
     setDraft(EMPTY_DRAFT);
     setApplied(EMPTY_DRAFT);
     setPage(1);
-    setTableRequestMode("full");
+    setMetadataRefreshVersion((current) => current + 1);
     setViewMode("list");
+  }
+
+  function refreshAfterIncidentAction() {
+    setMetadataRefreshVersion((current) => current + 1);
+    setRefreshVersion((current) => current + 1);
   }
 
   function selectMetric(kind: "total" | "open" | "in_progress" | "resolved" | "closed" | "unassigned" | "manual" | "duplicates") {
@@ -967,7 +974,7 @@ export default function ChamadosPage() {
                           >
                             <IncidentTableActionsCell
                               incident={item}
-                              onActionComplete={() => setRefreshVersion((value) => value + 1)}
+                              onActionComplete={refreshAfterIncidentAction}
                             />
                           </TableCell>
                         );
@@ -1019,6 +1026,7 @@ export default function ChamadosPage() {
         incident={selected}
         onOpenChange={(open) => { if (!open) setSelected(null); }}
         description="Consulta operacional do chamado."
+        onActionComplete={refreshAfterIncidentAction}
       />
     </AppLayout>
   );

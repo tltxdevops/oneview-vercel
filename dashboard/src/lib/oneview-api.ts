@@ -10,6 +10,8 @@ export const ONEVIEW_READ_CACHE_TTL_MS = 8_000;
 const READ_CACHE_TTL_MS = ONEVIEW_READ_CACHE_TTL_MS;
 const READ_CACHE_STALE_TTL_MS = 5 * 60_000;
 const INCIDENT_DETAIL_TTL_MS = 60_000;
+const SERVICENOW_ACTION_RESOURCE_TTL_MS = 60_000;
+const INCIDENT_RELATED_ALERT_TTL_MS = 15_000;
 type CachedRead<T = unknown> = { value: T; freshUntil: number; expiresAt: number };
 const readCache = new Map<string, CachedRead>();
 const inFlightReads = new Map<string, Promise<unknown>>();
@@ -18,6 +20,10 @@ const incidentDetailInFlight = new Map<string, Promise<unknown>>();
 const operatorReminderCache = new Map<string, { items: unknown[]; expiresAt: number }>();
 const operatorReminderInFlight = new Map<string, Promise<unknown>>();
 const operatorReminderGeneration = new Map<string, number>();
+const serviceNowActionResourceCache = new Map<string, { value: unknown; expiresAt: number }>();
+const serviceNowActionResourceInFlight = new Map<string, Promise<unknown>>();
+const incidentRelatedAlertCache = new Map<string, { value: unknown; expiresAt: number }>();
+const incidentRelatedAlertInFlight = new Map<string, Promise<unknown>>();
 export function oneViewReadCacheKey(path: string, init?: RequestInit) {
   return `${path}|${String(init?.method || "GET").toUpperCase()}`;
 }
@@ -1778,8 +1784,36 @@ export type ServiceNowPutOnHoldResponse = {
   };
 };
 
+async function fetchSharedServiceNowActionResource<T>(path: string, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  const cached = serviceNowActionResourceCache.get(path);
+  if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+  const pending = serviceNowActionResourceInFlight.get(path);
+  if (pending) return pending as Promise<T>;
+
+  // A requisição compartilhada não herda o AbortSignal de uma linha desmontada.
+  const request = fetchApi<T>(path).then((value) => {
+    serviceNowActionResourceCache.set(path, {
+      value,
+      expiresAt: Date.now() + SERVICENOW_ACTION_RESOURCE_TTL_MS,
+    });
+    return value;
+  });
+  serviceNowActionResourceInFlight.set(path, request);
+  try {
+    return await request;
+  } finally {
+    if (serviceNowActionResourceInFlight.get(path) === request) {
+      serviceNowActionResourceInFlight.delete(path);
+    }
+  }
+}
+
 export async function fetchServiceNowPutOnHoldOptions(signal?: AbortSignal): Promise<ServiceNowPutOnHoldOptions> {
-  return fetchApi<ServiceNowPutOnHoldOptions>("/oneview/servicenow/put-on-hold-options", { signal });
+  return fetchSharedServiceNowActionResource<ServiceNowPutOnHoldOptions>(
+    "/oneview/servicenow/put-on-hold-options",
+    signal,
+  );
 }
 
 export async function requestServiceNowIncidentPutOnHold({
@@ -1796,7 +1830,7 @@ export async function requestServiceNowIncidentPutOnHold({
 }
 
 export async function fetchServiceNowOperatorIdentity(signal?: AbortSignal): Promise<ServiceNowOperatorIdentity> {
-  return fetchApi<ServiceNowOperatorIdentity>("/oneview/servicenow/me", { signal });
+  return fetchSharedServiceNowActionResource<ServiceNowOperatorIdentity>("/oneview/servicenow/me", signal);
 }
 
 export async function requestServiceNowIncidentClaim({
@@ -1907,6 +1941,10 @@ export function clearOneViewSessionCaches() {
   clearOneViewReadCache();
   clearIncidentDetailCache();
   clearOperatorReminderCache();
+  serviceNowActionResourceCache.clear();
+  serviceNowActionResourceInFlight.clear();
+  incidentRelatedAlertCache.clear();
+  incidentRelatedAlertInFlight.clear();
 }
 
 export async function fetchIncidentDetail(sysId: string): Promise<OneViewIncident> {
@@ -2279,10 +2317,35 @@ export async function fetchIncidentRelatedAlert(
     if (reference.number) search.set("number", reference.number.trim());
     if (reference.sourceEventId) search.set("source_event_id", reference.sourceEventId.trim());
   }
-  return fetchApi<IncidentRelatedAlertResponse>(
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  const key = typeof reference === "string"
+    ? `event:${reference.trim().toLowerCase()}`
+    : reference.sysId
+      ? `sys:${reference.sysId.trim().toLowerCase()}`
+      : reference.number
+        ? `number:${reference.number.trim().toUpperCase()}`
+        : `event:${String(reference.sourceEventId || "").trim().toLowerCase()}`;
+  const cached = incidentRelatedAlertCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value as IncidentRelatedAlertResponse;
+  const pending = incidentRelatedAlertInFlight.get(key);
+  if (pending) return pending as Promise<IncidentRelatedAlertResponse>;
+
+  // Drawer/detalhe compartilha uma leitura curta por incidente. Writes não passam por este cache.
+  const request = fetchApi<IncidentRelatedAlertResponse>(
     `/oneview/incidents/related-alert?${search.toString()}`,
-    { signal },
-  );
+  ).then((value) => {
+    incidentRelatedAlertCache.set(key, {
+      value,
+      expiresAt: Date.now() + INCIDENT_RELATED_ALERT_TTL_MS,
+    });
+    return value;
+  });
+  incidentRelatedAlertInFlight.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (incidentRelatedAlertInFlight.get(key) === request) incidentRelatedAlertInFlight.delete(key);
+  }
 }
 
 /** SN-P0-16 / SN-P0-27 — incidentes SN relacionados ao alerta. Sem fallback por host. */

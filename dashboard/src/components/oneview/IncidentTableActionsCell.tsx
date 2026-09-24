@@ -1,10 +1,5 @@
-import { useMemo } from "react";
-import { useIncidentRelatedAlert } from "@/components/oneview/IncidentRelatedAlertSection";
 import { IncidentDetailActions } from "@/components/oneview/IncidentDetailActions";
-import {
-  buildAlertArtifactFromIncidentRelatedAlert,
-  type AlertArtifactModel,
-} from "@/lib/oneview-alert-artifact";
+import type { AlertArtifactModel } from "@/lib/oneview-alert-artifact";
 import type { OneViewIncident } from "@/lib/oneview-api";
 import { cn } from "@/lib/utils";
 
@@ -24,7 +19,7 @@ export type IncidentTableActionsIncident = Pick<OneViewIncident, "sys_id" | "num
 
 type Props = {
   incident: IncidentTableActionsIncident;
-  /** Omitir = busca alerta relacionado (como no drawer). `null` = sem anexo de alerta. */
+  /** Listas nunca resolvem correlação. O drawer é o único carregamento sob demanda. */
   alertArtifact?: AlertArtifactModel | null;
   className?: string;
   onActionComplete?: () => void;
@@ -38,16 +33,7 @@ export function IncidentTableActionsCell({
   onActionComplete,
 }: Props) {
   const hasIncident = Boolean(incident.sys_id && incident.number);
-  const autoResolveArtifact = alertArtifact === undefined;
-  const { relatedAlert } = useIncidentRelatedAlert(
-    hasIncident && !incident.identity_conflict && autoResolveArtifact ? (incident as OneViewIncident) : null,
-  );
-  const resolvedArtifact = useMemo(() => {
-    if (!hasIncident) return null;
-    if (alertArtifact !== undefined) return alertArtifact;
-    if (!relatedAlert) return null;
-    return buildAlertArtifactFromIncidentRelatedAlert(relatedAlert, incident);
-  }, [alertArtifact, hasIncident, incident, relatedAlert]);
+  const resolvedArtifact = alertArtifact ?? null;
 
   if (!hasIncident) {
     return <span className="text-[10px] text-muted-foreground">—</span>;

@@ -219,6 +219,7 @@ const ALERTS_METRIC_OPTIONS = [
 /** OV-P0-255 — polling operacional 10s. */
 const SUMMARY_REFRESH_MS = 10_000;
 const ALERTS_REFRESH_MS = 10_000;
+const STABLE_SUMMARY_REFRESH_MS = 30_000;
 
 const emptyPagination: AlertPagination = {
   page: 1,
@@ -949,6 +950,7 @@ export default function AlertsPage() {
   const detailRequestRef = useRef<AbortController | null>(null);
   const summaryRequestRef = useRef<Promise<void> | null>(null);
   const summaryDeadlineRef = useRef(Date.now() + SUMMARY_REFRESH_MS);
+  const stableSummaryDeadlineRef = useRef(Date.now());
   const alertsDeadlineRef = useRef(Date.now() + ALERTS_REFRESH_MS);
 
   useEffect(() => {
@@ -1050,35 +1052,37 @@ export default function AlertsPage() {
     }
   }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, health, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
-  const loadSummaryResources = useCallback((force = false) => {
+  const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
     setIsSummaryLoading(true);
     setSummaryError(null);
     const request = (async () => {
       const results = await Promise.allSettled([
-        fetchOneViewHealth(),
         fetchAlertMetrics({ refresh: force }),
-        fetchDataSourcesWithMeta(),
-        fetchOneViewFacets(),
-        fetchOperationsHealth(),
+        fetchOneViewHealth(),
+        ...(includeStable ? [
+          fetchDataSourcesWithMeta(),
+          fetchOneViewFacets(),
+          fetchOperationsHealth(),
+        ] : []),
       ]);
 
       if (results[0].status === "fulfilled") {
-        setHealth(results[0].value);
-        setHealthMeta(metaOf(results[0].value));
+        setMetrics(results[0].value);
+        setMetricsMeta(metaOf(results[0].value));
       }
-      if (results[1].status === "fulfilled") {
-        setMetrics(results[1].value);
-        setMetricsMeta(metaOf(results[1].value));
+      if (results[1]?.status === "fulfilled") {
+        setHealth(results[1].value);
+        setHealthMeta(metaOf(results[1].value));
       }
-      if (results[2].status === "fulfilled") {
+      if (includeStable && results[2]?.status === "fulfilled") {
         setSourcesMeta(metaOf(results[2].value));
       }
-      if (results[3].status === "fulfilled") {
+      if (includeStable && results[3]?.status === "fulfilled") {
         setFacets(results[3].value);
         setFacetsMeta(metaOf(results[3].value));
       }
-      if (results[4].status === "fulfilled") {
+      if (includeStable && results[4]?.status === "fulfilled") {
         setOperationsMeta(metaOf(results[4].value));
       }
       const rejected = results.find((result) => result.status === "rejected");
@@ -1086,6 +1090,7 @@ export default function AlertsPage() {
         setSummaryError(rejected.reason instanceof Error ? rejected.reason.message : "Falha ao atualizar o resumo operacional.");
       }
       summaryDeadlineRef.current = Date.now() + SUMMARY_REFRESH_MS;
+      if (includeStable) stableSummaryDeadlineRef.current = Date.now() + STABLE_SUMMARY_REFRESH_MS;
       setIsSummaryLoading(false);
     })();
     summaryRequestRef.current = request;
@@ -1153,7 +1158,7 @@ export default function AlertsPage() {
       if (document.hidden) return;
       if (now >= summaryDeadlineRef.current) {
         summaryDeadlineRef.current = now + SUMMARY_REFRESH_MS;
-        void loadSummaryResources();
+        void loadSummaryResources(false, now >= stableSummaryDeadlineRef.current);
       }
       if (now >= alertsDeadlineRef.current) {
         alertsDeadlineRef.current = now + ALERTS_REFRESH_MS;
@@ -1164,7 +1169,8 @@ export default function AlertsPage() {
       if (document.hidden) return;
       summaryDeadlineRef.current = Date.now() + SUMMARY_REFRESH_MS;
       alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
-      void loadSummaryResources();
+      const refreshStable = Date.now() >= stableSummaryDeadlineRef.current;
+      void loadSummaryResources(false, refreshStable);
       void loadAlerts({ quiet: true });
     };
     document.addEventListener("visibilitychange", onVisibility);

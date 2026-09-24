@@ -1,3 +1,6 @@
 import { createOneViewHandler } from "../_lib/oneview-response.js";
+import { withBffPerformanceTelemetry } from "../_lib/oneview-bff-performance.js";
 
-export default createOneViewHandler("runtime-health");
+export default withBffPerformanceTelemetry(createOneViewHandler("runtime-health"), {
+  route: "/api/oneview/runtime-health",
+});
