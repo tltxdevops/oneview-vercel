@@ -14,6 +14,8 @@ const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const SAFE_EVENT_ID = /^[A-Za-z0-9._:-]{1,80}$/;
 const SAFE_MAPS_HOST = /^[A-Za-z0-9._:-]{1,253}$/;
 const SAFE_MAPS_PROBLEM = /^[\s\S]{1,240}$/;
+// Correlation timestamps are instants, never browser/local-time strings.
+const SAFE_UTC_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function oneQuery(req, key) {
   const value = req?.query?.[key];
@@ -82,6 +84,24 @@ export function parseOptionalZabbixEventId(req) {
     throw error;
   }
   return eventId;
+}
+
+/** Início do episódio do alerta, normalizado para ISO-8601 UTC no BFF. */
+export function parseAlertEpisodeStartedAt(req) {
+  const raw = String(oneQuery(req, "alert_episode_started_at") || "").trim();
+  if (!raw) return null;
+  if (!SAFE_UTC_INSTANT.test(raw)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
+  const timestamp = Date.parse(raw);
+  if (!Number.isFinite(timestamp)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
+  return new Date(timestamp).toISOString();
 }
 
 /** Números INC do histórico/comentário (?inc= / ?inc_refs= / ?text=). */
@@ -171,12 +191,14 @@ export function createRelatedIncidentsHandler({
     }
 
     let sourceEventId = null;
+    let alertEpisodeStartedAt = null;
     let incidentNumbers = [];
     let tagIncidentNumbers = [];
     let incidentSysIds = [];
     let mapsOperational = { mapsDatasource: null, mapsHost: null, mapsProblemName: null };
     try {
       sourceEventId = parseOptionalZabbixEventId(req);
+      alertEpisodeStartedAt = parseAlertEpisodeStartedAt(req);
       incidentNumbers = parseIncidentCorrelationInputs(req);
       tagIncidentNumbers = parseTagIncidentNumberInputs(req);
       incidentSysIds = parseIncidentSysIdInputs(req);
@@ -207,6 +229,7 @@ export function createRelatedIncidentsHandler({
     try {
       const result = await lookup({
         sourceEventId,
+        alertEpisodeStartedAt,
         incidentNumbers,
         tagIncidentNumbers,
         incidentSysIds,
@@ -219,6 +242,7 @@ export function createRelatedIncidentsHandler({
         matched: incidents.length > 0,
         relation_source: result.relation_source || "none",
         source_event_id: sourceEventId,
+        alert_episode_started_at: alertEpisodeStartedAt,
         incident_numbers: result.incident_numbers || [...tagIncidentNumbers, ...incidentNumbers],
         incident_sys_ids: result.incident_sys_ids || incidentSysIds,
         incidents,
@@ -253,6 +277,7 @@ export function createRelatedIncidentsHandler({
         relation_source: "none",
         incidents: [],
         source_event_id: sourceEventId,
+        alert_episode_started_at: alertEpisodeStartedAt,
         incident_numbers: incidentNumbers,
         incident_sys_ids: incidentSysIds,
         data_source: "postgresql",

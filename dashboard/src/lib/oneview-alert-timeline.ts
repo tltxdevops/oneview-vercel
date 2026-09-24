@@ -24,6 +24,21 @@ export type AlertTimelineEvent = {
   incident_url?: string | null;
 };
 
+/**
+ * Referência já validada pelo BFF para o episódio atual. A timeline nunca
+ * recebe a referência bruta projetada do alerta, pois ela pode ser resultado
+ * de enriquecimento antigo por host/descrição.
+ */
+export type AlertTimelineServiceNowReference = {
+  number?: string | null;
+  sys_id?: string | null;
+  url?: string | null;
+};
+
+type TimelineOptions = {
+  serviceNowReference?: AlertTimelineServiceNowReference | null;
+};
+
 type HistoryLike = {
   id?: string | null;
   event_type?: string | null;
@@ -105,8 +120,21 @@ export function filterPublicHistoryItems<T extends HistoryLike>(items: T[] | nul
 export function buildAlertOperationalTimeline(
   alert: AlertLike | null | undefined,
   historyItems: HistoryLike[] | null | undefined = [],
+  { serviceNowReference = null }: TimelineOptions = {},
 ): AlertTimelineEvent[] {
-  const publicItems = filterPublicHistoryItems(historyItems);
+  const episodeStartedAt = asTime(alert?.first_seen_at);
+  const incidentNumber = String(serviceNowReference?.number || "").trim() || null;
+  const incidentSysId = String(serviceNowReference?.sys_id || "").trim() || null;
+  const incidentUrl = String(serviceNowReference?.url || "").trim() || null;
+  const hasValidatedServiceNowReference = Boolean(incidentNumber || incidentSysId);
+  const publicItems = filterPublicHistoryItems(historyItems).filter((item) => {
+    if (kindFromHistory(item.event_type) !== "servicenow") return true;
+    // Um evento histórico ServiceNow só é atual quando o BFF já confirmou uma
+    // referência explícita válida e seu horário pertence ao episódio vigente.
+    return hasValidatedServiceNowReference
+      && episodeStartedAt !== Number.MAX_SAFE_INTEGER
+      && asTime(item.occurred_at) >= episodeStartedAt;
+  });
   const events: AlertTimelineEvent[] = publicItems.map((item, index) => {
     const kind = kindFromHistory(item.event_type);
     return {
@@ -159,12 +187,7 @@ export function buildAlertOperationalTimeline(
     });
   }
 
-  const reference = alert?.servicenow_reference;
-  const incidentNumber = String(reference?.number || "").trim() || null;
-  const incidentSysId = String(reference?.sys_id || "").trim() || null;
-  const incidentUrl = String(reference?.url || "").trim() || null;
-  if ((incidentNumber || reference?.sys_id) && !hasKind("servicenow")) {
-    const extra = Number(reference?.extra_count || 0);
+  if (hasValidatedServiceNowReference && episodeStartedAt !== Number.MAX_SAFE_INTEGER && !hasKind("servicenow")) {
     events.push({
       id: `${alertId}-servicenow`,
       kind: "servicenow",
@@ -174,7 +197,7 @@ export function buildAlertOperationalTimeline(
       incident_sys_id: incidentSysId,
       incident_url: incidentUrl,
       description: incidentNumber
-        ? extra > 0 ? `${incidentNumber} +${extra}` : incidentNumber
+        ? incidentNumber
         : "Chamado relacionado",
     });
   }

@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Eye, History, Info } from "lucide-react";
 import {
   CLASSIFICATION_PENDING_LABEL,
@@ -40,7 +40,10 @@ import {
 } from "@/lib/oneview-api";
 import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
 import { filterOperationalAlertTags } from "@/lib/oneview-inc-correlation";
-import { buildAlertOperationalTimeline } from "@/lib/oneview-alert-timeline";
+import {
+  buildAlertOperationalTimeline,
+  type AlertTimelineServiceNowReference,
+} from "@/lib/oneview-alert-timeline";
 import { primaryPersistedOperatorTag } from "@/lib/oneview-operator-display";
 import {
   formatZabbixSourceAudit,
@@ -50,11 +53,14 @@ import {
 export type AlertDetailDrawerTab = "summary" | "history" | "technical";
 
 const ORIGIN_UNAVAILABLE = "Indisponível na origem";
+const OPERATIONAL_TIME_ZONE = "America/Sao_Paulo";
 
 function formatDateTime(value?: string | null) {
   if (!value) return ORIGIN_UNAVAILABLE;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? ORIGIN_UNAVAILABLE : date.toLocaleString("pt-BR");
+  return Number.isNaN(date.getTime())
+    ? ORIGIN_UNAVAILABLE
+    : date.toLocaleString("pt-BR", { timeZone: OPERATIONAL_TIME_ZONE });
 }
 
 function formatDurationSeconds(seconds: number | null | undefined) {
@@ -149,12 +155,18 @@ export function AlertDetailDrawer({
   alertsQueueHref = null,
   auditEmphasis = false,
 }: AlertDetailDrawerProps) {
-  const timeline = buildAlertOperationalTimeline(alert, historyItems);
   const [activeTab, setActiveTab] = useState<AlertDetailDrawerTab>(
     ["summary", "history", "technical"].includes(defaultTab) ? defaultTab : "summary",
   );
   const [nestedIncident, setNestedIncident] = useState<OneViewIncident | null>(null);
+  const [timelineServiceNowReference, setTimelineServiceNowReference] = useState<AlertTimelineServiceNowReference | null>(null);
   const summaryCaptureRef = useRef<HTMLDivElement>(null);
+  const handleTimelineServiceNowReferenceChange = useCallback((reference: AlertTimelineServiceNowReference | null) => {
+    setTimelineServiceNowReference(reference);
+  }, []);
+  const timeline = buildAlertOperationalTimeline(alert, historyItems, {
+    serviceNowReference: timelineServiceNowReference,
+  });
 
   async function prepareSummaryCapture() {
     setActiveTab("summary");
@@ -176,6 +188,10 @@ export function AlertDetailDrawer({
 
   useEffect(() => {
     setNestedIncident(null);
+  }, [alert?.id]);
+
+  useEffect(() => {
+    setTimelineServiceNowReference(null);
   }, [alert?.id]);
 
   const customer = alert
@@ -269,7 +285,7 @@ export function AlertDetailDrawer({
               {error ? <OperationalErrorBanner className="mx-6 mt-4 px-3 py-2" message={error} /> : null}
 
               <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
-                <TabsContent value="summary" className="mt-4 space-y-4">
+                <TabsContent value="summary" className="mt-4 space-y-4" forceMount>
                   <div
                     ref={summaryCaptureRef}
                     className="space-y-4 rounded-lg bg-background p-1"
@@ -353,6 +369,7 @@ export function AlertDetailDrawer({
                     historyItems={historyItems}
                     alert={alert}
                     onOpenIncidentDetail={(item) => setNestedIncident(relatedIncidentToOneViewIncident(item))}
+                    onTimelineServiceNowReferenceChange={handleTimelineServiceNowReferenceChange}
                   />
 
                   {operatorTag ? (

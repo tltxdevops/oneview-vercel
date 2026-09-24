@@ -93,17 +93,20 @@ export class OneViewApiError extends Error {
   }
 }
 
-async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
+type OneViewFetchInit = RequestInit & { oneViewFresh?: boolean };
+
+async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
+  const { oneViewFresh = false, ...requestInit } = init || {};
   const method = String(init?.method || "GET").toUpperCase();
   const isRead = method === "GET";
   // Only signal-free reads enter `inFlightReads`; a screen can safely reuse
   // that prefetch without inheriting its own AbortSignal.
   const canShare = canShareOneViewRead(init);
   const key = oneViewReadCacheKey(path, init);
-  const cached = isRead ? readCache.get(key) : undefined;
+  const cached = isRead && !oneViewFresh ? readCache.get(key) : undefined;
   const now = Date.now();
   if (cached && cached.freshUntil > now) return cached.value as T;
-  const shared = inFlightReads.get(key);
+  const shared = oneViewFresh ? undefined : inFlightReads.get(key);
   if (shared) {
     if (cached && cached.expiresAt > now) {
       void shared.catch(() => undefined);
@@ -114,13 +117,13 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   const request = (async () => {
   const authorization = await authHeaders();
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
+    ...requestInit,
     cache: "no-store",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...authorization,
-      ...(init?.headers ?? {}),
+        ...(requestInit.headers ?? {}),
     },
   });
 
@@ -225,7 +228,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   if (canShare) inFlightReads.set(key, request);
   try {
     const value = await request;
-    if (isRead) cacheReadValue(key, value);
+    if (isRead && !oneViewFresh) cacheReadValue(key, value);
     else if (shouldInvalidateReadCache(path, method)) {
       const root = path.split("?")[0];
       const base = root.replace(/\/[0-9a-f-]{8,}.*$/i, "").replace(/\/[^/]+$/, "") || "/oneview";
@@ -242,7 +245,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
     }
     return value;
   } catch (cause) {
-    if (isRead && cached && cached.expiresAt > Date.now()) return cached.value as T;
+    if (isRead && !oneViewFresh && cached && cached.expiresAt > Date.now()) return cached.value as T;
     throw cause;
   } finally { if (canShare) inFlightReads.delete(key); }
 }
@@ -2315,6 +2318,7 @@ export type AlertRelatedIncidentsResponse = OneViewResponseMeta & {
   matched: boolean;
   relation_source?: AlertRelatedIncidentsRelationSource;
   source_event_id: string | null;
+  alert_episode_started_at?: string | null;
   incident_numbers?: string[];
   incident_sys_ids?: string[];
   incidents: AlertRelatedIncident[];
@@ -2323,6 +2327,8 @@ export type AlertRelatedIncidentsResponse = OneViewResponseMeta & {
 
 export type FetchAlertRelatedIncidentsParams = {
   sourceEventId?: string | null;
+  /** ISO-8601 instant from alert.first_seen_at; BFF normalizes it to UTC. */
+  alertEpisodeStartedAt?: string | null;
   /** Números INC do histórico/comentário (BFF valida e consulta SN). */
   incidentNumbers?: string[] | null;
   /** OV-P0-108 — números de __zbx_servicenow_number. */
@@ -2347,6 +2353,8 @@ export async function fetchAlertRelatedIncidents(
   const search = new URLSearchParams();
   const eventId = String(params.sourceEventId || "").trim();
   if (eventId) search.set("source_event_id", eventId);
+  const episodeStartedAt = String(params.alertEpisodeStartedAt || "").trim();
+  if (episodeStartedAt) search.set("alert_episode_started_at", episodeStartedAt);
   for (const number of params.incidentNumbers || []) {
     const value = String(number || "").trim();
     if (value) search.append("inc", value);
@@ -2371,7 +2379,7 @@ export async function fetchAlertRelatedIncidents(
   if (mapsDatasource) search.set("maps_datasource", mapsDatasource);
   return fetchApi<AlertRelatedIncidentsResponse>(
     `/oneview/alerts/related-incidents?${search.toString()}`,
-    { signal },
+    { signal, oneViewFresh: true },
   );
 }
 

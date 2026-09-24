@@ -54,6 +54,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   readOneViewNotificationPreferences,
+  setOneViewReminderLinkPopup,
   setOneViewReminderLinkSound,
   type OneViewNotificationPreferences,
 } from "@/lib/oneview-notification-preferences";
@@ -352,10 +353,25 @@ export default function SettingsPage() {
 
         <SectionPanel
           title="Notificações"
-          description="Pop-ups de lembrete de link aparecem em qualquer tela enquanto você estiver logado. O som é opcional."
+          description="O Webex/Theo segue independente. O pop-up aparece somente para quem criou o lembrete, em qualquer tela desta conta."
           bodyClassName="space-y-4 p-4"
         >
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">Exibir pop-up de lembrete</p>
+              <p className="text-xs text-muted-foreground">
+                Permanece na tela até você fechar. Desligar aqui não cancela o lembrete nem a mensagem Webex.
+              </p>
+            </div>
+            <Switch
+              checked={notificationPreferences.reminderLinkPopup}
+              onCheckedChange={(checked) => {
+                setNotificationPreferences(setOneViewReminderLinkPopup(checked, actorId));
+              }}
+              aria-label="Exibir pop-up nos lembretes de link"
+            />
+          </div>
+          <div className="flex flex-col gap-4 border-t border-border/60 pt-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <p className="text-sm font-medium text-foreground">Som nos lembretes de link</p>
               <p className="text-xs text-muted-foreground">

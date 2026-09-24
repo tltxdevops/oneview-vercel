@@ -1,13 +1,16 @@
 export const ONEVIEW_NOTIFICATION_PREFERENCES_VERSION = 1 as const;
+export const ONEVIEW_NOTIFICATION_PREFERENCES_EVENT = "oneview:notification-preferences";
 
 export type OneViewNotificationPreferences = {
   version: typeof ONEVIEW_NOTIFICATION_PREFERENCES_VERSION;
+  reminderLinkPopup: boolean;
   reminderLinkSound: boolean;
 };
 
 export function defaultOneViewNotificationPreferences(): OneViewNotificationPreferences {
   return {
     version: ONEVIEW_NOTIFICATION_PREFERENCES_VERSION,
+    reminderLinkPopup: true,
     reminderLinkSound: false,
   };
 }
@@ -27,6 +30,7 @@ export function readOneViewNotificationPreferences(actorId?: string | null): One
     if (value.version !== ONEVIEW_NOTIFICATION_PREFERENCES_VERSION) return fallback;
     return {
       ...fallback,
+      reminderLinkPopup: value.reminderLinkPopup !== false,
       reminderLinkSound: Boolean(value.reminderLinkSound),
     };
   } catch {
@@ -41,6 +45,7 @@ export function writeOneViewNotificationPreferences(
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(oneViewNotificationPreferencesStorageKey(actorId), JSON.stringify(preferences));
+    window.dispatchEvent(new Event(ONEVIEW_NOTIFICATION_PREFERENCES_EVENT));
   } catch {
     // optional persistence
   }
@@ -48,6 +53,12 @@ export function writeOneViewNotificationPreferences(
 
 export function setOneViewReminderLinkSound(enabled: boolean, actorId?: string | null) {
   const next = { ...readOneViewNotificationPreferences(actorId), reminderLinkSound: enabled };
+  writeOneViewNotificationPreferences(next, actorId);
+  return next;
+}
+
+export function setOneViewReminderLinkPopup(enabled: boolean, actorId?: string | null) {
+  const next = { ...readOneViewNotificationPreferences(actorId), reminderLinkPopup: enabled };
   writeOneViewNotificationPreferences(next, actorId);
   return next;
 }

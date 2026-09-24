@@ -7,7 +7,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
 import {
@@ -22,6 +21,14 @@ import {
   extractServiceNowIncidentNumbersFromHistory,
   extractServiceNowRefsFromAlertTags,
 } from "@/lib/oneview-inc-correlation";
+import type { AlertTimelineServiceNowReference } from "@/lib/oneview-alert-timeline";
+
+const OPERATIONAL_TIME_ZONE = "America/Sao_Paulo";
+const TIMELINE_EXPLICIT_RELATION_SOURCES = new Set<AlertRelatedIncidentsRelationSource>([
+  "zabbix_servicenow_sys_id",
+  "zabbix_servicenow_number",
+  "zabbix_event_id",
+]);
 
 /** Severidades automaticamente elegíveis a incidente (SN-P0-20/21). */
 export const INCIDENT_ELIGIBLE_SEVERITIES = Object.freeze([
@@ -54,7 +61,22 @@ function displayValue(...values: Array<string | null | undefined>) {
 function formatDateTime(value?: string | null) {
   if (!value) return "Indisponível na origem";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Indisponível na origem" : date.toLocaleString("pt-BR");
+  return Number.isNaN(date.getTime())
+    ? "Indisponível na origem"
+    : date.toLocaleString("pt-BR", { timeZone: OPERATIONAL_TIME_ZONE });
+}
+
+function timelineReference(
+  relationSource: AlertRelatedIncidentsRelationSource | null,
+  incidents: AlertRelatedIncident[],
+): AlertTimelineServiceNowReference | null {
+  if (!relationSource || !TIMELINE_EXPLICIT_RELATION_SOURCES.has(relationSource)) return null;
+  const incident = incidents[0];
+  if (!incident) return null;
+  const number = String(incident.number || "").trim() || null;
+  const sysId = String(incident.sys_id || "").trim() || null;
+  if (!number && !sysId) return null;
+  return { number, sys_id: sysId, url: incident.servicenow_url || null };
 }
 
 function relationSourceLabel(source?: AlertRelatedIncidentsRelationSource | null) {
@@ -97,11 +119,9 @@ export function relatedIncidentToOneViewIncident(item: AlertRelatedIncident): On
 
 function IncidentCard({
   item,
-  extraCount = 0,
   onOpenIncidentDetail,
 }: {
   item: AlertRelatedIncident;
-  extraCount?: number;
   onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
 }) {
   const identityConflict = Boolean(item.identity_conflict);
@@ -121,12 +141,10 @@ function IncidentCard({
           >
             {number}
             <span aria-hidden className="text-[10px] leading-none">↗</span>
-            {extraCount > 0 ? <span className="text-[10px] text-muted-foreground">+{extraCount}</span> : null}
           </a>
         ) : (
           <p className="font-mono text-sm font-semibold">
             {number}
-            {extraCount > 0 ? <span className="ml-1 text-[10px] font-normal text-muted-foreground">+{extraCount}</span> : null}
           </p>
         )}
         <Badge variant="outline">{displayValue(item.state_display, item.state)}</Badge>
@@ -183,31 +201,6 @@ function IncidentCard({
   );
 }
 
-function ProjectedIncidentCard({
-  reference,
-  loadingDetails,
-}: {
-  reference: NonNullable<OneViewAlert["servicenow_reference"]>;
-  loadingDetails: boolean;
-}) {
-  return (
-    <article className="space-y-3 rounded-md border border-border/70 p-3" aria-label="Chamado relacionado">
-      <div className="flex flex-wrap items-center gap-2">
-        <AlertServiceNowReferenceCell reference={reference} />
-      </div>
-      {loadingDetails ? (
-        <div className="space-y-2" aria-label="Carregando detalhe do chamado">
-          <Skeleton className="h-4 w-2/3" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-10 w-full" />
-        </div>
-      ) : (
-        <p className="text-sm text-muted-foreground">Detalhe do chamado indisponível na origem</p>
-      )}
-    </article>
-  );
-}
-
 type AlertRelatedIncidentsSectionProps = {
   sourceEventId?: string | null;
   severity?: string | null;
@@ -226,8 +219,10 @@ type AlertRelatedIncidentsSectionProps = {
     | "host_name"
     | "host_visible_name"
     | "problem_name"
+    | "first_seen_at"
   > | null;
   onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
+  onTimelineServiceNowReferenceChange?: (reference: AlertTimelineServiceNowReference | null) => void;
 };
 
 export function AlertRelatedIncidentsSection({
@@ -236,6 +231,7 @@ export function AlertRelatedIncidentsSection({
   historyItems = [],
   alert = null,
   onOpenIncidentDetail,
+  onTimelineServiceNowReferenceChange,
 }: AlertRelatedIncidentsSectionProps) {
   const eligible = isIncidentEligibleSeverity(severity);
   const [loading, setLoading] = useState(false);
@@ -243,6 +239,7 @@ export function AlertRelatedIncidentsSection({
   const [incidents, setIncidents] = useState<AlertRelatedIncident[]>([]);
   const [relationSource, setRelationSource] = useState<AlertRelatedIncidentsRelationSource | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
   const requestKeyRef = useRef<string>("");
 
   const tagRefs = useMemo(
@@ -271,6 +268,7 @@ export function AlertRelatedIncidentsSection({
     tagRefs.sysIds.join(","),
     tagRefs.numbers.join(","),
     historyNumbers.join(","),
+    String(alert?.first_seen_at || "").trim(),
     mapsBridge?.mapsHost || "",
     mapsBridge?.mapsProblemName || "",
   ].join("|");
@@ -289,6 +287,8 @@ export function AlertRelatedIncidentsSection({
       setIncidents([]);
       setRelationSource("none");
       setError(null);
+      setStale(false);
+      onTimelineServiceNowReferenceChange?.(null);
       return;
     }
 
@@ -297,18 +297,24 @@ export function AlertRelatedIncidentsSection({
       setIncidents([]);
       setRelationSource(null);
       setChecked(false);
+      setStale(false);
       requestKeyRef.current = correlationKey;
     }
 
-    // Sem signal: GETs idênticos compartilham o in-flight/cache curto do
-    // cliente, deixando reabertura do alerta e drawer aninhado mais fluidos.
+    // Correlação não recebe fallback do cache: refresh falho não pode tratar
+    // uma resposta anterior como relação atual.
     let active = true;
+    const controller = new AbortController();
+    // A timeline não mantém vínculo anterior enquanto confirma este refresh.
+    onTimelineServiceNowReferenceChange?.(null);
     setLoading(true);
     setError(null);
+    setStale(false);
 
     fetchAlertRelatedIncidents(
       {
         sourceEventId: eventId || null,
+        alertEpisodeStartedAt: alert?.first_seen_at || null,
         incidentNumbers: historyNumbers,
         tagIncidentNumbers: tagRefs.numbers,
         incidentSysIds: tagRefs.sysIds,
@@ -316,35 +322,37 @@ export function AlertRelatedIncidentsSection({
         mapsHost: mapsBridge?.mapsHost || null,
         mapsProblemName: mapsBridge?.mapsProblemName || null,
       },
+      controller.signal,
     )
       .then((response) => {
         if (!active) return;
-        setIncidents(Array.isArray(response.incidents) ? response.incidents : []);
-        setRelationSource(response.relation_source || (response.matched ? "zabbix_event_id" : "none"));
+        const nextIncidents = Array.isArray(response.incidents) ? response.incidents : [];
+        const nextRelationSource = response.relation_source || (response.matched ? "zabbix_event_id" : "none");
+        setIncidents(nextIncidents);
+        setRelationSource(nextRelationSource);
+        onTimelineServiceNowReferenceChange?.(timelineReference(nextRelationSource, nextIncidents));
         setChecked(true);
+        setStale(false);
       })
       .catch((err: unknown) => {
         if (!active) return;
         setRelationSource("none");
         setChecked(true);
         setError("ServiceNow indisponível");
+        setStale(true);
+        onTimelineServiceNowReferenceChange?.(null);
         void err;
       })
       .finally(() => {
         if (active) setLoading(false);
       });
 
-    return () => { active = false; };
-  }, [sourceEventId, correlationKey, tagRefs.sysIds, tagRefs.numbers, historyNumbers]);
+    return () => { active = false; controller.abort(); };
+  }, [sourceEventId, correlationKey, tagRefs.sysIds, tagRefs.numbers, historyNumbers, alert?.first_seen_at, onTimelineServiceNowReferenceChange]);
 
-  const projected = alert?.servicenow_reference
-    && (alert.servicenow_reference.number || alert.servicenow_reference.sys_id)
-    ? alert.servicenow_reference
-    : null;
-  const extraCount = Number(projected?.extra_count || 0);
   const hasIncidents = incidents.length > 0;
-  const showEmptyEligible = checked && !hasIncidents && !error && eligible && !loading && !projected;
-  const hideNonEligibleEmpty = checked && !hasIncidents && !error && !eligible && !loading && !projected;
+  const showEmptyEligible = checked && !hasIncidents && !error && eligible && !loading;
+  const hideNonEligibleEmpty = checked && !hasIncidents && !error && !eligible && !loading;
 
   if (hideNonEligibleEmpty) return null;
 
@@ -360,18 +368,16 @@ export function AlertRelatedIncidentsSection({
       </div>
       {hasIncidents ? (
         <div className="space-y-3">
-          {incidents.map((item, index) => (
+          {incidents.map((item) => (
             <IncidentCard
               key={item.sys_id || item.number || JSON.stringify(item)}
               item={item}
-              extraCount={index === 0 ? extraCount : 0}
               onOpenIncidentDetail={onOpenIncidentDetail}
             />
           ))}
           {loading ? <p className="text-[11px] text-muted-foreground">Atualizando…</p> : null}
+          {stale ? <p className="text-xs text-amber-700">Dados de correlação desatualizados. Atualize novamente para confirmar.</p> : null}
         </div>
-      ) : projected ? (
-        <ProjectedIncidentCard reference={projected} loadingDetails={loading} />
       ) : error ? (
         <p className="text-sm text-muted-foreground">{error}</p>
       ) : loading ? (
@@ -381,7 +387,7 @@ export function AlertRelatedIncidentsSection({
           <Skeleton className="h-16 w-full" />
         </div>
       ) : showEmptyEligible ? (
-        <p className="text-sm text-muted-foreground">Sem chamado correlacionado</p>
+        <p className="text-sm text-muted-foreground">Sem chamado relacionado</p>
       ) : null}
     </section>
   );

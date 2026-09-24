@@ -5,6 +5,7 @@ import test from "node:test";
 import { createIncidentsHandler, parseIncidentFilters } from "../api/_lib/oneview-incidents.js";
 import {
   EXCLUDED_ASSIGNMENT_GROUP_IDS,
+  EXCLUDED_ASSIGNMENT_GROUP_NAMES,
   TENABLE_INTEGRATION_CALLER_ID,
   ZABBIX_MONITORING_CALLER_ID,
   fetchReadModelIncidentsPage,
@@ -65,14 +66,26 @@ test("OV-P0-317: Chamados exclui Tenable e grupos antes de lista, filtros e tota
     "9f0a34be47622610082e3d02e26d43ab",
     "fa7a932f47fa47106b618ca2036d43b1",
   ]);
+  assert.deepEqual(EXCLUDED_ASSIGNMENT_GROUP_NAMES, [
+    "n3 - soc csirt",
+    "salesforce",
+    "n1 - sustentação - infra",
+    "sustentação protheus - teletex",
+    "n3 - engenharia - infraestrutura microsoft",
+  ]);
   assert.match(source, /caller_id is null or lower\(btrim\(caller_id::text\)\) <> \$\{addParam\(values, TENABLE_INTEGRATION_CALLER_ID\)\}/);
   assert.match(source, /EXCLUDED_ASSIGNMENT_GROUP_IDS/);
+  assert.match(source, /EXCLUDED_ASSIGNMENT_GROUP_NAMES/);
+  assert.match(source, /assignment_group_display/);
+  assert.match(source, /not like '%infraestrutura%'/);
   assert.match(source, /fetchCounts\(pool, effectiveFilters\)/);
   assert.match(source, /fetchFacets\(pool, effectiveFilters\)/);
   assert.match(source, /fetchGlobalCounts\(pool\)/);
   assert.match(source, /global_counts:/);
   assert.match(duplicates, /TENABLE_INTEGRATION_CALLER_ID/);
   assert.match(duplicates, /EXCLUDED_ASSIGNMENT_GROUP_IDS/);
+  assert.match(duplicates, /EXCLUDED_ASSIGNMENT_GROUP_NAMES/);
+  assert.match(duplicates, /assignmentGroupExclusionSql/);
   assert.match(duplicates, /caller_id is null or lower\(btrim\(caller_id::text\)\) <>/);
   assert.match(page, /const globalCounts = payload\?\.global_counts/);
   assert.match(page, /safeCount\(globalCounts\?\.manual\)/);

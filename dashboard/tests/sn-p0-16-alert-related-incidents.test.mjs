@@ -223,7 +223,7 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
   assert.match(drawer, /sourceEventId=\{alert\.source_event_id\}/);
   assert.match(drawer, /severity=\{alert\.severity\}/);
   assert.match(drawer, /historyItems=\{historyItems\}/);
-  assert.match(section, /Sem chamado correlacionado/);
+  assert.match(section, /Sem chamado relacionado/);
   assert.match(section, /isIncidentEligibleSeverity/);
 
   assert.match(bff, /alerts\/related-incidents/);

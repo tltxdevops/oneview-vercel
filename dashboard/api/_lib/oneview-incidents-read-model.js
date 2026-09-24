@@ -14,6 +14,7 @@ import {
 import { mergeRankedSuggestions } from "./oneview-search-suggest-rank.js";
 
 const OPERATIONAL_STATES = ["1", "2", "3"];
+const TERMINAL_INCIDENT_STATES = new Set(["6", "7", "8", "resolved", "closed", "cancelled", "canceled"]);
 // Manual = caller_id diferente do emissor técnico Zabbix; NULL também é manual.
 // Não usa contact_type, alerta ou correlação como critério.
 export const ZABBIX_MONITORING_CALLER_ID = "aa62f29f47477610082e3d02e26d4358";
@@ -24,9 +25,65 @@ export const EXCLUDED_ASSIGNMENT_GROUP_IDS = Object.freeze([
   "fa7a932f47fa47106b618ca2036d43b1", // N1 - Sustentação - Infra
 ]);
 
+export const EXCLUDED_ASSIGNMENT_GROUP_NAMES = Object.freeze([
+  "n3 - soc csirt",
+  "salesforce",
+  "n1 - sustentação - infra",
+  "sustentação protheus - teletex",
+  "n3 - engenharia - infraestrutura microsoft",
+]);
+
+// assignment_group é normalmente sys_id; o nome operacional vem do display_values.
+export const ASSIGNMENT_GROUP_LABEL_SQL = `coalesce(
+  nullif(btrim(display_values->>'assignment_group_display'), ''),
+  nullif(btrim(display_values->>'assignment_group'), ''),
+  nullif(btrim(assignment_group::text), ''),
+  ''
+)`;
+
+export function assignmentGroupExclusionSql(idParam, nameParam) {
+  return `(assignment_group is null or (
+    lower(btrim(assignment_group::text)) <> all(${idParam}::text[])
+    and lower(${ASSIGNMENT_GROUP_LABEL_SQL}) <> all(${nameParam}::text[])
+    and lower(${ASSIGNMENT_GROUP_LABEL_SQL}) not like '%infraestrutura%'
+  ))`;
+}
+
 function text(value) {
   const output = String(value ?? "").trim();
   return output || null;
+}
+
+/** Parses an instant to epoch milliseconds. All temporal comparisons stay UTC. */
+export function utcEpochMilliseconds(value) {
+  if (value == null || value === "") return null;
+  const parsed = Date.parse(value instanceof Date ? value.toISOString() : String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function isTerminalServiceNowIncident(incident) {
+  const rawState = text(incident?.state)?.toLowerCase();
+  const displayState = text(incident?.state_display)?.toLowerCase();
+  return TERMINAL_INCIDENT_STATES.has(rawState) || TERMINAL_INCIDENT_STATES.has(displayState);
+}
+
+/**
+ * A terminal incident is current only when its recorded opening belongs to this
+ * episode and its terminal timestamp is later. Re-open is never inferred from
+ * a generic update timestamp; no explicit re-open evidence means fail closed.
+ */
+export function isIncidentCurrentForAlertEpisode(incident, alertEpisodeStartedAt) {
+  const episodeStartedAt = utcEpochMilliseconds(alertEpisodeStartedAt);
+  const openedAt = utcEpochMilliseconds(incident?.opened_at ?? incident?.openedAt);
+  if (!isTerminalServiceNowIncident(incident)) return true;
+  if (episodeStartedAt == null) return false;
+  const resolvedAt = utcEpochMilliseconds(incident?.resolved_at ?? incident?.resolvedAt);
+  const closedAt = utcEpochMilliseconds(incident?.closed_at ?? incident?.closedAt);
+  const terminalAt = Math.max(resolvedAt ?? Number.NEGATIVE_INFINITY, closedAt ?? Number.NEGATIVE_INFINITY);
+  if (!Number.isFinite(terminalAt)) return false;
+  if (openedAt == null || openedAt < episodeStartedAt) return false;
+  if (terminalAt < openedAt) return false;
+  return terminalAt >= episodeStartedAt;
 }
 
 function displayBag(value) {
@@ -208,7 +265,8 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
   const clauses = ["true"];
   clauses.push(`(caller_id is null or lower(btrim(caller_id::text)) <> ${addParam(values, TENABLE_INTEGRATION_CALLER_ID)})`);
   const excludedGroups = addParam(values, EXCLUDED_ASSIGNMENT_GROUP_IDS);
-  clauses.push(`(assignment_group is null or lower(btrim(assignment_group::text)) <> all(${excludedGroups}::text[]))`);
+  const excludedGroupNames = addParam(values, EXCLUDED_ASSIGNMENT_GROUP_NAMES);
+  clauses.push(assignmentGroupExclusionSql(excludedGroups, excludedGroupNames));
   if (filters.contact_type === "__blank") {
     clauses.push("coalesce(btrim(contact_type::text), '') = ''");
   } else if (filters.contact_type) {
@@ -696,21 +754,24 @@ export async function fetchReadModelIncidentsPage(filters, {
   };
 }
 
-async function findBy(pool, where, values) {
+async function findBy(pool, where, values, { alertEpisodeStartedAt = null } = {}) {
   const result = await pool.query(`
     select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
       from servicenow_incidents where ${where}
      order by sys_updated_on desc nulls last, sys_id asc limit 50`, values);
-  return result.rows.map((row) => mapReadModelIncident(row));
+  return result.rows
+    .filter((row) => isIncidentCurrentForAlertEpisode(row, alertEpisodeStartedAt))
+    .map((row) => mapReadModelIncident(row));
 }
 
 async function findMapsIncidentsByOperationalAlert(
-  { hostName, problemName } = {},
+  { hostName, problemName, alertEpisodeStartedAt = null } = {},
   { pool = getOneViewDbPool() } = {},
 ) {
   const host = text(hostName);
   const problem = text(problemName)?.slice(0, 200) || null;
-  if (!host) return [];
+  // MAPS is host/description fallback: no episode start means no safe match.
+  if (!host || utcEpochMilliseconds(alertEpisodeStartedAt) == null) return [];
   const result = await pool.query(
     `
     select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
@@ -729,7 +790,9 @@ async function findMapsIncidentsByOperationalAlert(
     `,
     [host, problem],
   );
-  return (result.rows || []).map((row) => mapReadModelIncident(row));
+  return (result.rows || [])
+    .filter((row) => isIncidentCurrentForAlertEpisode(row, alertEpisodeStartedAt))
+    .map((row) => mapReadModelIncident(row));
 }
 
 export async function findReadModelRelatedIncidents({
@@ -737,6 +800,7 @@ export async function findReadModelRelatedIncidents({
   tagIncidentNumbers = [],
   incidentNumbers = [],
   sourceEventId = null,
+  alertEpisodeStartedAt = null,
   mapsDatasource = null,
   mapsHost = null,
   mapsProblemName = null,
@@ -752,12 +816,12 @@ export async function findReadModelRelatedIncidents({
   ];
   for (const [relationSource, where, values] of searches) {
     if (!values[0] || (Array.isArray(values[0]) && !values[0].length)) continue;
-    const incidents = await findBy(pool, where, values);
+    const incidents = await findBy(pool, where, values, { alertEpisodeStartedAt });
     if (incidents.length) return { matched: true, relation_source: relationSource, incidents };
   }
   if (String(mapsDatasource || "").trim().toLowerCase() === "maps") {
     const incidents = await findMapsIncidentsByOperationalAlert(
-      { hostName: mapsHost, problemName: mapsProblemName },
+      { hostName: mapsHost, problemName: mapsProblemName, alertEpisodeStartedAt },
       { pool },
     );
     if (incidents.length) {

@@ -22,7 +22,7 @@ test("SN-P0-21 gate: eligible vs warning/information + mensagens", async () => {
   assert.match(section, /"disaster"/);
   assert.match(section, /isIncidentEligibleSeverity/);
 
-  assert.match(section, /Sem chamado correlacionado/);
+  assert.match(section, /Sem chamado relacionado/);
   assert.doesNotMatch(section, /Nenhum incidente relacionado no ServiceNow/);
   assert.match(section, /ServiceNow indisponível/);
   assert.match(section, /setError\("ServiceNow indisponível"\)/);
