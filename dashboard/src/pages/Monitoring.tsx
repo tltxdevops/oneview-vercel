@@ -128,6 +128,7 @@ import {
   mergeOperationalZabbixSourceFilterOptions,
   zabbixSourceKey,
 } from "@/lib/oneview-zabbix-source";
+import { createOneViewQueryGeneration } from "@/lib/oneview-query-generation";
 
 /** OV-P0-255 — polling operacional 10s. */
 const REFRESH_MS = 10_000;
@@ -552,6 +553,8 @@ export default function MonitoringPage() {
   });
 
   const inFlight = useRef<Promise<void> | null>(null);
+  const refreshAllRef = useRef<() => Promise<void>>(async () => {});
+  const queryGenerationRef = useRef(createOneViewQueryGeneration());
   const listsAbort = useRef<AbortController | null>(null);
   const hasDataRef = useRef(false);
   const freshKnownIdsRef = useRef<Set<string>>(new Set());
@@ -781,10 +784,44 @@ export default function MonitoringPage() {
     );
   };
 
+  const monitoringQueryKey = useMemo(() => JSON.stringify({
+    alertMode,
+    severitySelection,
+    customers: selectedCustomerKeys,
+    datasources: selectedDatasources,
+    queueSort,
+    incidentsMode,
+    incidentsAssignedTo,
+    windowMs,
+    monitoringQueueItemLimit,
+    monitoringIncidentItemLimit,
+  }), [
+    alertMode,
+    incidentsAssignedTo,
+    incidentsMode,
+    monitoringIncidentItemLimit,
+    monitoringQueueItemLimit,
+    queueSort,
+    selectedCustomerKeys,
+    selectedDatasources,
+    severitySelection,
+    windowMs,
+  ]);
+
+  useEffect(() => {
+    queryGenerationRef.current.advance();
+    queryGenerationRef.current.deferCurrentIfDifferent();
+    listsAbort.current?.abort();
+  }, [monitoringQueryKey]);
+
   const refreshAll = useCallback(async () => {
-    if (inFlight.current) return inFlight.current;
+    if (inFlight.current) {
+      queryGenerationRef.current.deferCurrentIfDifferent();
+      return inFlight.current;
+    }
     pollGenerationRef.current += 1;
     const pollGeneration = pollGenerationRef.current;
+    const queryGeneration = queryGenerationRef.current.begin();
 
     const request = (async () => {
       setIsUpdating(true);
@@ -822,7 +859,7 @@ export default function MonitoringPage() {
 
       const results = await Promise.allSettled(tasks);
 
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || !queryGenerationRef.current.isCurrent(queryGeneration)) return;
 
       const [metricsResult, facetsResult, queueResult, incidentsResult] = results;
       let anySuccess = false;
@@ -995,13 +1032,22 @@ export default function MonitoringPage() {
         setLastUpdatedAt(Date.now());
       }
     })().finally(() => {
-      setIsUpdating(false);
+      const refreshCurrentQuery = queryGenerationRef.current.complete(queryGeneration);
       inFlight.current = null;
+      if (!refreshCurrentQuery) {
+        setIsUpdating(false);
+        return;
+      }
+      queueMicrotask(() => {
+        void refreshAllRef.current();
+      });
     });
 
     inFlight.current = request;
     return request;
   }, [alertMode, incidentsAssignedTo, incidentsMode, monitoringIncidentItemLimit, monitoringQueueItemLimit, queueSort, selectedCustomerKeys, selectedDatasources, setSectionError, severitySelection, windowMs]);
+
+  refreshAllRef.current = refreshAll;
 
   useEffect(() => {
     void refreshAll();

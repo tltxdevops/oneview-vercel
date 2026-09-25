@@ -8,7 +8,7 @@ import {
 type ChamadosSearchFieldProps = {
   value: string;
   onChange: (value: string) => void;
-  onSubmit: () => void;
+  onSubmit: (value: string) => void;
   onSelect: (value: string) => void;
   scope: Omit<FetchIncidentSearchSuggestionsParams, "q" | "limit" | "signal">;
   className?: string;

@@ -4,6 +4,7 @@ import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-r
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { IncidentDetailActions } from "@/components/oneview/IncidentDetailActions";
@@ -24,7 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchLinkSearchSuggestions, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
@@ -568,6 +569,7 @@ export default function OperadorasPage() {
   const [recurrence, setRecurrence] = useState<"all" | "recurrent">("all");
   const [operationalSituation, setOperationalSituation] = useState<OperationalSituation>("all");
   const [activityPeriod, setActivityPeriod] = useState<ActivityPeriod>("all");
+  const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
@@ -591,6 +593,15 @@ export default function OperadorasPage() {
   const selectedId = useRef<string | null>(null);
   const detailCache = useRef(new Map<string, { value: CanonicalLinkDetail; expiresAt: number }>());
   const detailRequests = useRef(new Map<string, Promise<CanonicalLinkDetail>>());
+  const commitLinkSearch = useCallback((value: string) => {
+    if (value === search) return;
+    setPage(1);
+    setSearch(value);
+  }, [search]);
+  const { commitNow: commitLinkSearchNow, cancelPending: cancelLinkSearch } = useOneViewCommittedSearch(
+    searchDraft,
+    commitLinkSearch,
+  );
 
   const load = useCallback(async (mode: "initial" | "quiet" | "manual" = "initial") => {
     if (mode === "quiet" && request.current && !request.current.signal.aborted) return;
@@ -829,30 +840,6 @@ export default function OperadorasPage() {
   };
   const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
     .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
-  const linkSuggestScope = useMemo(() => ({
-    customer: customer === ALL ? undefined : customer,
-    datasource: datasource === ALL ? undefined : datasource,
-    classification: classification === ALL ? undefined : classification,
-    state: state === ALL ? undefined : state,
-    ack: ack === ALL ? undefined : ack,
-    severity: severity === ALL ? undefined : severity,
-    incident: incident === ALL ? undefined : incident,
-    incident_state: incidentState === ALL ? undefined : incidentState,
-    carrier: carrier === ALL ? undefined : carrier,
-    tab,
-    resolved_window: resolvedWindow,
-    sort,
-    divergence: divergence || undefined,
-    recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
-    operational_situation: operationalSituation === ALL ? undefined : operationalSituation,
-    activity_period: activityPeriod === ALL ? undefined : activityPeriod,
-    page: 1,
-    page_size: operatorQueuePageSize,
-  }), [activityPeriod, ack, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, operatorQueuePageSize, recurrence, resolvedWindow, severity, sort, state, tab]);
-  const fetchLinkTableSuggestions = useCallback(
-    (q: string, signal: AbortSignal) => fetchLinkSearchSuggestions({ ...linkSuggestScope, q, limit: 10, signal }).then((response) => response.suggestions ?? []),
-    [linkSuggestScope],
-  );
   const panelFilterCount = [state, ack]
     .filter((value) => value !== ALL).length;
   const topbarRightSection = useMemo(() => {
@@ -887,6 +874,7 @@ export default function OperadorasPage() {
     { label: "Divergências", value: totals?.operational.divergences, tone: "warning" as const, tab: "all" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "any" as const, situation: "all" as OperationalSituation },
   ], [totals]);
   const clearFilters = () => {
+    cancelLinkSearch();
     setCustomer(ALL);
     setDatasource(ALL);
     setClassification(ALL);
@@ -900,6 +888,7 @@ export default function OperadorasPage() {
     setRecurrence("all");
     setOperationalSituation("all");
     setActivityPeriod("all");
+    setSearchDraft("");
     setSearch("");
     setPage(1);
   };
@@ -1071,10 +1060,9 @@ export default function OperadorasPage() {
           bodyClassName="p-0"
         >
           <ConfigurableTableToolbar
-            search={search}
-            onSearchChange={(value) => { setSearch(value); setPage(1); }}
-            fetchSearchSuggestions={fetchLinkTableSuggestions}
-            onSearchPick={(value) => { setSearch(value); setPage(1); }}
+            search={searchDraft}
+            onSearchChange={setSearchDraft}
+            onSearchSubmit={(value) => commitLinkSearchNow(value)}
             searchPlaceholder="Buscar link, host ou cliente…"
             searchLabel="Buscar na tabela de links"
             columns={linkTableColumns}

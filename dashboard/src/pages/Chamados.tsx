@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { format, subDays } from "date-fns";
 import { Loader2, SlidersHorizontal } from "lucide-react";
@@ -7,6 +7,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableColumns } from "@/components/oneview/ConfigurableTableTools";
+import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -244,16 +245,16 @@ export default function ChamadosPage() {
     };
   }, [viewMode]);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const search = draft.search.trim();
-      if (search === applied.search) return;
-      setPage(1);
-      setMetadataRefreshVersion((current) => current + 1);
-      setApplied((current) => ({ ...current, search }));
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [applied.search, draft.search]);
+  const commitIncidentSearch = useCallback((search: string) => {
+    if (search === applied.search) return;
+    setPage(1);
+    setMetadataRefreshVersion((current) => current + 1);
+    setApplied((current) => ({ ...current, search }));
+  }, [applied.search]);
+  const { cancelPending: cancelIncidentSearch } = useOneViewCommittedSearch(
+    draft.search,
+    commitIncidentSearch,
+  );
 
   useEffect(() => {
     if (viewMode === "duplicates") return;
@@ -454,6 +455,7 @@ export default function ChamadosPage() {
   }, [applied, viewMode]);
 
   function applyFilters(next: DraftFilters = draft, _requestMode: "full" | "metric" = "full") {
+    cancelIncidentSearch();
     setPage(1);
     setMetadataRefreshVersion((current) => current + 1);
     setApplied({
@@ -464,6 +466,7 @@ export default function ChamadosPage() {
   }
 
   function clearFilters() {
+    cancelIncidentSearch();
     setDraft(EMPTY_DRAFT);
     setApplied(EMPTY_DRAFT);
     setPage(1);
@@ -637,8 +640,14 @@ export default function ChamadosPage() {
             <ChamadosSearchField
               value={draft.search}
               onChange={(search) => setDraft((prev) => ({ ...prev, search }))}
-              onSubmit={() => applyFilters()}
+              onSubmit={(search) => {
+                cancelIncidentSearch();
+                const next = { ...draft, search };
+                setDraft(next);
+                applyFilters(next);
+              }}
               onSelect={(search) => {
+                cancelIncidentSearch();
                 const next = { ...draft, search };
                 setDraft(next);
                 applyFilters(next);

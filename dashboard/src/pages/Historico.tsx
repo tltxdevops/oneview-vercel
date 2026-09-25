@@ -14,6 +14,7 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -511,23 +512,19 @@ export default function HistoricoPage() {
     }
   }, [period, searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const trimmed = searchDraft.trim();
-      if (trimmed === search) return;
-      patchParams({ search: trimmed || null }, { resetPage: true });
-    }, 220);
-    return () => window.clearTimeout(timer);
-  }, [patchParams, search, searchDraft]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const trimmed = actorDraft.trim();
-      if (trimmed === actor) return;
-      patchParams({ actor: trimmed || null }, { resetPage: true });
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [actor, actorDraft, patchParams]);
+  const commitHistorySearch = useCallback((value: string) => {
+    if (value === search) return;
+    patchParams({ search: value || null }, { resetPage: true });
+  }, [patchParams, search]);
+  const commitHistoryActor = useCallback((value: string) => {
+    if (value === actor) return;
+    patchParams({ actor: value || null }, { resetPage: true });
+  }, [actor, patchParams]);
+  const { commitNow: commitHistorySearchNow, cancelPending: cancelHistorySearch } = useOneViewCommittedSearch(
+    searchDraft,
+    commitHistorySearch,
+  );
+  const { cancelPending: cancelHistoryActor } = useOneViewCommittedSearch(actorDraft, commitHistoryActor);
 
   useEffect(() => {
     void fetchOneViewFacets()
@@ -757,6 +754,8 @@ export default function HistoricoPage() {
     : (eventsError || eventTotal === null ? "— eventos registrados" : `${eventTotal.toLocaleString("pt-BR")} eventos registrados`);
 
   const clearFilters = () => {
+    cancelHistorySearch();
+    cancelHistoryActor();
     setSearchDraft("");
     setActorDraft("");
     setCustomRange(undefined);
@@ -905,9 +904,10 @@ export default function HistoricoPage() {
   }, [ackFilter, alertStatus, cliente, customRange, eventType, fonte, period, severities, tab]);
 
   const pickHistoricoSearch = useCallback((value: string) => {
+    cancelHistorySearch();
     setSearchDraft(value);
-    patchParams({ search: value.trim() || null }, { resetPage: true });
-  }, [patchParams]);
+    commitHistorySearch(value.trim());
+  }, [cancelHistorySearch, commitHistorySearch]);
 
   const activeFilterChips: Array<{ key: string; label: string; onClear: () => void }> = [];
   if (cliente !== "all") {
@@ -931,8 +931,9 @@ export default function HistoricoPage() {
       key: "search",
       label: `Busca: ${search}`,
       onClear: () => {
+        cancelHistorySearch();
         setSearchDraft("");
-        patchParams({ search: null }, { resetPage: true });
+        commitHistorySearch("");
       },
     });
   }
@@ -1229,6 +1230,7 @@ export default function HistoricoPage() {
                 onSearchChange={setSearchDraft}
                 fetchSearchSuggestions={fetchHistoricoSearchSuggestions}
                 onSearchPick={pickHistoricoSearch}
+                onSearchSubmit={(value) => commitHistorySearchNow(value)}
                 searchPlaceholder="Buscar host, problema ou cliente…"
                 searchLabel="Buscar na tabela do histórico de alertas"
                 columns={historyAlertColumns}
@@ -1482,6 +1484,7 @@ export default function HistoricoPage() {
                 onSearchChange={setSearchDraft}
                 fetchSearchSuggestions={fetchHistoricoSearchSuggestions}
                 onSearchPick={pickHistoricoSearch}
+                onSearchSubmit={(value) => commitHistorySearchNow(value)}
                 searchPlaceholder="Buscar evento, host, cliente ou ator…"
                 searchLabel="Buscar na tabela do histórico de eventos"
                 columns={historyEventColumns}

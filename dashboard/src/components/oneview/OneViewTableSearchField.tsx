@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Building2,
   FileText,
@@ -13,25 +13,57 @@ import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList, CommandS
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { normalizeIncSearchDraft } from "@/lib/oneview-chamados-search";
+import {
+  createOneViewSearchCommitter,
+  ONEVIEW_SEARCH_COMMIT_DEBOUNCE_MS,
+  ONEVIEW_SEARCH_SUGGEST_DEBOUNCE_MS,
+} from "@/lib/oneview-search-commit";
 import type { OneViewSearchSuggestion } from "@/lib/oneview-api";
 import { cn } from "@/lib/utils";
 
 export type OneViewTableSearchFieldProps = {
   value: string;
   onChange: (value: string) => void;
-  onSubmit?: () => void;
+  onSubmit?: (value: string) => void;
   onSelect?: (value: string) => void;
   placeholder: string;
   ariaLabel: string;
   inputId?: string;
   className?: string;
   normalizeInc?: boolean;
-  fetchSuggestions: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
+  fetchSuggestions?: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
 };
 
-const SUGGEST_DEBOUNCE_MS = 80;
 const MIN_QUERY_LENGTH = 2;
 const CACHE_MAX = 64;
+
+/** Shared main-search commit policy. Keeps typing local until debounce or Enter. */
+export function useOneViewCommittedSearch(
+  value: string,
+  onCommit: (value: string) => void,
+  delay = ONEVIEW_SEARCH_COMMIT_DEBOUNCE_MS,
+) {
+  const commitRef = useRef(onCommit);
+  commitRef.current = onCommit;
+  const committerRef = useRef<ReturnType<typeof createOneViewSearchCommitter> | null>(null);
+  if (!committerRef.current) {
+    committerRef.current = createOneViewSearchCommitter({
+      delay,
+      onCommit: (next) => commitRef.current(next),
+      schedule: (callback, wait) => window.setTimeout(callback, wait),
+      clear: (timer) => window.clearTimeout(timer as number),
+    });
+  }
+  const cancelPending = useCallback(() => committerRef.current?.cancel(), []);
+  const commitNow = useCallback((next = value) => committerRef.current?.commitNow(next), [value]);
+
+  useEffect(() => {
+    committerRef.current?.schedule(value);
+    return cancelPending;
+  }, [cancelPending, delay, value]);
+
+  return { commitNow, cancelPending };
+}
 
 const GROUP_ORDER = ["customer", "company", "host", "link", "problem", "number", "description", "actor", "event"];
 
@@ -119,10 +151,11 @@ export function OneViewTableSearchField({
   const cacheRef = useRef(new Map<string, OneViewSearchSuggestion[]>());
   const fetchRef = useRef(fetchSuggestions);
   fetchRef.current = fetchSuggestions;
+  const suggestionsEnabled = typeof fetchSuggestions === "function";
 
   useEffect(() => {
     const trimmed = value.trim();
-    if (!focused || trimmed.length < MIN_QUERY_LENGTH) {
+    if (!suggestionsEnabled || !focused || trimmed.length < MIN_QUERY_LENGTH) {
       abortRef.current?.abort();
       setLoading(false);
       if (!focused) setSuggestions([]);
@@ -159,13 +192,13 @@ export function OneViewTableSearchField({
         .finally(() => {
           if (!controller.signal.aborted) setLoading(false);
         });
-    }, cached ? 0 : SUGGEST_DEBOUNCE_MS);
+    }, cached ? 0 : ONEVIEW_SEARCH_SUGGEST_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [focused, value]);
+  }, [focused, suggestionsEnabled, value]);
 
   const trimmed = value.trim();
-  const showPopover = focused && trimmed.length >= MIN_QUERY_LENGTH;
+  const showPopover = suggestionsEnabled && focused && trimmed.length >= MIN_QUERY_LENGTH;
   const grouped = useMemo(() => groupByKindOrdered(suggestions), [suggestions]);
 
   function handleChange(nextRaw: string) {
@@ -179,9 +212,9 @@ export function OneViewTableSearchField({
   }
 
   function pickFreeText() {
-    if (onSelect) onSelect(trimmed);
+    if (onSubmit) onSubmit(trimmed);
+    else if (onSelect) onSelect(trimmed);
     else onChange(trimmed);
-    onSubmit?.();
     setFocused(false);
   }
 

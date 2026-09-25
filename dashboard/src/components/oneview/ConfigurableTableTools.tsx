@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronUp, Columns3, GripVertical, Loader2, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Check, ChevronDown, ChevronUp, Columns3, GripVertical, Loader2, RotateCcw, SlidersHorizontal } from "lucide-react";
 import { OneViewTableSearchField } from "@/components/oneview/OneViewTableSearchField";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -117,6 +116,7 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   className,
   fetchSearchSuggestions,
   onSearchPick,
+  onSearchSubmit,
   normalizeIncSearch = true,
 }: {
   search: string;
@@ -133,27 +133,22 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   className?: string;
   fetchSearchSuggestions?: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
   onSearchPick?: (value: string) => void;
+  onSearchSubmit?: (value: string) => void;
   normalizeIncSearch?: boolean;
 }) {
   return (
     <div className={cn("border-b border-border/60 bg-background/75 px-3 py-2", className)}>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {fetchSearchSuggestions ? (
-          <OneViewTableSearchField
-            value={search}
-            onChange={onSearchChange}
-            onSelect={onSearchPick}
-            fetchSuggestions={fetchSearchSuggestions}
-            placeholder={searchPlaceholder}
-            ariaLabel={searchLabel}
-            normalizeInc={normalizeIncSearch}
-          />
-        ) : (
-          <label className="relative min-w-[15rem] flex-1">
-            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="h-9 pl-9" aria-label={searchLabel} />
-          </label>
-        )}
+        <OneViewTableSearchField
+          value={search}
+          onChange={onSearchChange}
+          onSubmit={onSearchSubmit}
+          onSelect={onSearchPick}
+          fetchSuggestions={fetchSearchSuggestions}
+          placeholder={searchPlaceholder}
+          ariaLabel={searchLabel}
+          normalizeInc={normalizeIncSearch}
+        />
         {filters ? (
           <Popover>
             <PopoverTrigger asChild>
@@ -185,4 +180,3 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
     </div>
   );
 }
-

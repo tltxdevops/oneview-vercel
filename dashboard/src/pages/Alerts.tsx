@@ -5,6 +5,7 @@ import { ptBR } from "date-fns/locale";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import {
   OneViewButton,
   OneViewPill,
@@ -953,12 +954,10 @@ export default function AlertsPage() {
   const stableSummaryDeadlineRef = useRef(Date.now());
   const alertsDeadlineRef = useRef(Date.now() + ALERTS_REFRESH_MS);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setDebouncedSearch(searchQuery.trim());
-    }, 200);
-    return () => window.clearTimeout(timer);
-  }, [searchQuery]);
+  const { commitNow: commitAlertSearch, cancelPending: cancelAlertSearch } = useOneViewCommittedSearch(
+    searchQuery,
+    setDebouncedSearch,
+  );
 
   useEffect(() => {
     const next = writeAlertsUrlParams({
@@ -1414,6 +1413,7 @@ export default function AlertsPage() {
   const tableColumnCount = alertTableColumns.visibleColumns.length;
 
   const clearFilters = () => {
+    cancelAlertSearch();
     setSelectedCustomerKeys([]);
     setSelectedDatasources([]);
     setSelectedSeverities([]);
@@ -1424,6 +1424,7 @@ export default function AlertsPage() {
     setSortOrder("desc");
     setSearchField("all");
     setSearchQuery("");
+    setDebouncedSearch("");
     setDateField("first_seen");
     setDatePreset("24h");
     setDateRange(undefined);
@@ -1767,7 +1768,8 @@ export default function AlertsPage() {
           search={searchQuery}
           onSearchChange={(value) => { setSearchQuery(value); setPage(1); }}
           fetchSearchSuggestions={fetchAlertTableSuggestions}
-          onSearchPick={(value) => { setSearchQuery(value); setPage(1); }}
+          onSearchPick={(value) => { setSearchQuery(value); setPage(1); commitAlertSearch(value); }}
+          onSearchSubmit={(value) => commitAlertSearch(value)}
           searchPlaceholder="Buscar alerta, host ou cliente…"
           searchLabel="Buscar na tabela de alertas"
           columns={alertTableColumns}
