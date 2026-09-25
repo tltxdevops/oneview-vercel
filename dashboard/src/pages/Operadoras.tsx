@@ -1144,7 +1144,7 @@ export default function OperadorasPage() {
                           if (column === "current_incident") return <TableCell key={column} className="min-w-0"><CurrentIncident link={item} /></TableCell>;
                           if (column === "follow_up") return <TableCell key={column} className="min-w-0"><div className="space-y-1"><ReminderQuickAction link={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openReminder} /><FollowUp link={item} /><RecurrenceHint link={item} /></div></TableCell>;
                           if (column === "link_type") return <TableCell key={column} className="min-w-0 truncate text-xs">{linkTypeLabel(item)}</TableCell>;
-                          if (column === "carrier") return <TableCell key={column} className="min-w-0 truncate text-xs">{text(item.carrier_name)}</TableCell>;
+                          if (column === "carrier") return <TableCell key={column} className="min-w-0 truncate text-xs">{item.carrier_name || (item.operator_escalation ? "NÃ£o identificada" : "â€”")}</TableCell>;
                           if (column === "datasource") return <TableCell key={column} className="min-w-0 truncate text-xs">{zabbixSourceDisplayName(item.datasource)}</TableCell>;
                           if (column === "severity") return <TableCell key={column} className="min-w-0">{item.max_severity ? <SeverityBadge severity={item.max_severity} /> : "—"}</TableCell>;
                           return <TableCell key={column} className="min-w-0"><ResolutionBadge link={item} /></TableCell>;

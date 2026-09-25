@@ -190,6 +190,17 @@ function carrierFrom(context) {
   return { carrier_name: null, carrier_reference: tagged };
 }
 
+/** Shared, evidence-only carrier enrichment for host-inventory Links. */
+export function carrierEvidenceFromAlert(record) {
+  const context = recordContext(record);
+  const tagged = tagValue(context.tags, CARRIER_TAG_KEYS);
+  const carrier = carrierFrom(context);
+  return {
+    ...carrier,
+    carrier_source: carrier.carrier_name ? (tagged ? "alert_tag" : "alert_evidence") : null,
+  };
+}
+
 function candidate(context, values) {
   const carrier = carrierFrom(context);
   return {

@@ -1990,6 +1990,8 @@ export type CanonicalLink = {
   carrier_name: string | null;
   carrier_source: string | null;
   carrier_reference: string | null;
+  carrier_status?: "identified" | "unknown" | "not_applicable";
+  operator_escalation?: boolean;
   strategy: string;
   confidence: string | null;
   trigger_ids: string[];
