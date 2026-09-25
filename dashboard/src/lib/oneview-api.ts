@@ -201,6 +201,7 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
       INVALID_WORK_NOTE: "A anotação deve ser um texto não vazio, com no máximo 2000 caracteres.",
       WORK_NOTE_RESULT_UNCERTAIN: "Não foi possível confirmar se a anotação foi registrada. Atualize o chamado antes de tentar novamente.",
       INVALID_PUT_ON_HOLD_REQUEST: "Selecione um fornecedor homologado para colocar o chamado em espera.",
+      PUT_ON_HOLD_STATE_NOT_ALLOWED: "Somente chamados novos ou em andamento podem ser colocados em espera.",
       PUT_ON_HOLD_RESULT_UNCERTAIN: "Não foi possível confirmar se o chamado entrou em espera. Atualize o chamado antes de tentar novamente.",
     };
     throw new OneViewApiError(

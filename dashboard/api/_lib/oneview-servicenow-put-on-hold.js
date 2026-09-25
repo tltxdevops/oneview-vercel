@@ -22,6 +22,7 @@ import { extractServiceNowDisplay, extractServiceNowValue } from "./servicenow-n
 
 export const PUT_ON_HOLD_ERROR = Object.freeze({
   INVALID: "INVALID_PUT_ON_HOLD_REQUEST",
+  STATE_NOT_ALLOWED: "PUT_ON_HOLD_STATE_NOT_ALLOWED",
   INCIDENT_NOT_FOUND: "INCIDENT_NOT_FOUND",
   IDENTITY_CONFLICT: INCIDENT_IDENTITY_CONFLICT_ERROR,
   RESULT_UNCERTAIN: "PUT_ON_HOLD_RESULT_UNCERTAIN",
@@ -30,6 +31,7 @@ export const PUT_ON_HOLD_ERROR = Object.freeze({
 
 const HOLD_FIELDS = "sys_id,number,state,hold_reason,u_external_vendor,assignment_group,assigned_to,sys_updated_on";
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
+const PUT_ON_HOLD_ALLOWED_STATES = new Set(["1", "2"]);
 
 function clean(value) {
   return String(value || "").trim();
@@ -113,6 +115,10 @@ export function incidentMatchesPutOnHold(incident, externalVendor) {
     && vendorActual === vendorNeedle;
 }
 
+export function isPutOnHoldStateAllowed(state) {
+  return PUT_ON_HOLD_ALLOWED_STATES.has(clean(state));
+}
+
 export function ownershipMatches(before, after) {
   if (!before || !after) return false;
   return before.assigned_to_id === after.assigned_to_id
@@ -175,9 +181,28 @@ async function persistPutOnHoldAudit({
 function publicStatus(code) {
   if (code === PUT_ON_HOLD_ERROR.INVALID) return 400;
   if (code === PUT_ON_HOLD_ERROR.INCIDENT_NOT_FOUND) return 404;
-  if (code === PUT_ON_HOLD_ERROR.IDENTITY_CONFLICT) return 409;
+  if (code === PUT_ON_HOLD_ERROR.IDENTITY_CONFLICT || code === PUT_ON_HOLD_ERROR.STATE_NOT_ALLOWED) return 409;
   if (code === PUT_ON_HOLD_ERROR.RESULT_UNCERTAIN) return 504;
   return 503;
+}
+
+function safeFailureCode(error) {
+  const code = clean(error?.code);
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(code) ? code : "unclassified";
+}
+
+function logHoldFailure(logger, event, error, incident, reason) {
+  const upstreamStatus = Number(error?.status);
+  logger({
+    event,
+    result: "failed",
+    error_code: safeFailureCode(error),
+    upstream_status: Number.isInteger(upstreamStatus) && upstreamStatus >= 100 && upstreamStatus <= 599
+      ? upstreamStatus
+      : null,
+    incident_number: incident?.number || null,
+    ...(reason ? { reason } : {}),
+  });
 }
 
 export function createServiceNowPutOnHoldHandler({
@@ -220,30 +245,15 @@ export function createServiceNowPutOnHoldHandler({
 
       const config = configProvider();
       if (!config.configured) throw new Error(PUT_ON_HOLD_ERROR.UNAVAILABLE);
-      incident = await readIncident(incidentSysId, { config });
+      try {
+        incident = await readIncident(incidentSysId, { config });
+      } catch (error) {
+        logHoldFailure(logger, "HOLD_GET_FAILED", error, null);
+        throw error;
+      }
       if (!incident?.sys_id || !incident?.number) throw new Error(PUT_ON_HOLD_ERROR.INCIDENT_NOT_FOUND);
       previousState = incident.state;
-
-      if (incidentMatchesPutOnHold(incident, externalVendor)) {
-        await invalidateIncidentCache(incident.sys_id);
-        try {
-          await audit({
-            req: auditRequestContext(req),
-            actor,
-            incident,
-            previousState,
-            externalVendor,
-            result: "already_on_hold",
-          });
-        } catch {
-          logger({ event: "oneview_servicenow_put_on_hold_audit_failed", result: "already_on_hold" });
-        }
-        return sendJson(res, 200, {
-          success: true,
-          already_on_hold: true,
-          incident: publicIncident(incident),
-        });
-      }
+      if (!isPutOnHoldStateAllowed(previousState)) throw new Error(PUT_ON_HOLD_ERROR.STATE_NOT_ALLOWED);
 
       const patchPayload = {
         state: SERVICENOW_PUT_ON_HOLD_STATE,
@@ -258,8 +268,15 @@ export function createServiceNowPutOnHoldHandler({
       try {
         await patchIncident(incident.sys_id, patchPayload, { config });
       } catch (error) {
+        logHoldFailure(logger, "HOLD_PATCH_FAILED", error, incident);
         if (error?.code !== "PUT_ON_HOLD_RESULT_UNCERTAIN" && error?.code !== "servicenow_timeout") throw error;
-        const afterTimeout = await readIncident(incident.sys_id, { config });
+        let afterTimeout;
+        try {
+          afterTimeout = await readIncident(incident.sys_id, { config });
+        } catch (confirmationError) {
+          logHoldFailure(logger, "HOLD_CONFIRMATION_FAILED", confirmationError, incident, "read_failed");
+          throw new Error(PUT_ON_HOLD_ERROR.RESULT_UNCERTAIN);
+        }
         if (incidentMatchesPutOnHold(afterTimeout, externalVendor) && ownershipMatches(ownershipBefore, afterTimeout)) {
           await invalidateIncidentCache(incident.sys_id);
           try {
@@ -283,11 +300,19 @@ export function createServiceNowPutOnHoldHandler({
           });
           return sendJson(res, 200, { success: true, already_on_hold: false, incident: publicIncident(afterTimeout) });
         }
+        logHoldFailure(logger, "HOLD_CONFIRMATION_FAILED", null, incident, "result_mismatch");
         throw new Error(PUT_ON_HOLD_ERROR.RESULT_UNCERTAIN);
       }
 
-      const confirmed = await readIncident(incident.sys_id, { config });
+      let confirmed;
+      try {
+        confirmed = await readIncident(incident.sys_id, { config });
+      } catch (error) {
+        logHoldFailure(logger, "HOLD_CONFIRMATION_FAILED", error, incident, "read_failed");
+        throw error;
+      }
       if (!incidentMatchesPutOnHold(confirmed, externalVendor) || !ownershipMatches(ownershipBefore, confirmed)) {
+        logHoldFailure(logger, "HOLD_CONFIRMATION_FAILED", null, incident, "result_mismatch");
         throw new Error(PUT_ON_HOLD_ERROR.UNAVAILABLE);
       }
       await invalidateIncidentCache(incident.sys_id);

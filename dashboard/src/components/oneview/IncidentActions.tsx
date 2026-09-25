@@ -64,8 +64,7 @@ type Props = {
   onPutOnHold?: (result: ServiceNowPutOnHoldResponse) => void;
 };
 
-/** Espelha o default do BFF (`oneview-servicenow-external-vendors`). */
-const DEFAULT_PUT_ON_HOLD_VENDORS = ["Cisco"] as const;
+const PUT_ON_HOLD_ALLOWED_STATES = new Set(["1", "2"]);
 
 function identityUnavailableMessage(identity: ServiceNowOperatorIdentity | null, error: string | null) {
   if (identity && !identity.noc_member) {
@@ -100,6 +99,7 @@ export function IncidentActions({
   const [holdSetupOpen, setHoldSetupOpen] = useState(false);
   const [holdConfirmOpen, setHoldConfirmOpen] = useState(false);
   const [holdError, setHoldError] = useState<string | null>(null);
+  const [holdOptionsError, setHoldOptionsError] = useState<string | null>(null);
 
   useEffect(() => {
     if (incident.identity_conflict) {
@@ -119,6 +119,9 @@ export function IncidentActions({
     setHoldSetupOpen(false);
     setHoldConfirmOpen(false);
     setHoldError(null);
+    setHoldVendors([]);
+    setHoldVendor("");
+    setHoldOptionsError(null);
     void fetchServiceNowOperatorIdentity(controller.signal)
       .then(setIdentity)
       .catch((error: unknown) => {
@@ -129,14 +132,19 @@ export function IncidentActions({
     void fetchServiceNowPutOnHoldOptions(controller.signal)
       .then((options) => {
         if (controller.signal.aborted) return;
-        setHoldVendors(options.external_vendors);
+        const vendors = options.external_vendors
+          .map((vendor) => vendor.trim())
+          .filter(Boolean);
+        setHoldVendors(vendors);
         setHoldReasonLabel(options.hold_reason_label || "Aguardando fornecedor");
-        setHoldVendor((current) => current || options.external_vendors[0] || "");
+        setHoldVendor(vendors[0] || "");
+        setHoldOptionsError(vendors.length ? null : "Nenhum fornecedor homologado foi retornado pelo ServiceNow.");
       })
       .catch(() => {
         if (!controller.signal.aborted) {
-          setHoldVendors([...DEFAULT_PUT_ON_HOLD_VENDORS]);
-          setHoldVendor((current) => current || DEFAULT_PUT_ON_HOLD_VENDORS[0]);
+          setHoldVendors([]);
+          setHoldVendor("");
+          setHoldOptionsError("Não foi possível carregar os fornecedores do ServiceNow. Tente novamente mais tarde.");
         }
       });
     return () => controller.abort();
@@ -232,13 +240,14 @@ export function IncidentActions({
   }
 
   function openHoldSetup() {
+    if (holdOptionsError || !holdVendors.length) return;
     setHoldError(null);
     if (!holdVendor && holdVendors[0]) setHoldVendor(holdVendors[0]);
     setHoldSetupOpen(true);
   }
 
   function proceedHoldConfirmation() {
-    if (!holdVendor) {
+    if (holdOptionsError || !holdVendor || !holdVendors.includes(holdVendor)) {
       setHoldError("Selecione um fornecedor homologado.");
       return;
     }
@@ -248,7 +257,8 @@ export function IncidentActions({
   }
 
   async function putOnHold() {
-    if (!incident.sys_id || !holdVendor || submitting) return;
+    const state = String(incident.state || "").trim();
+    if (!incident.sys_id || !PUT_ON_HOLD_ALLOWED_STATES.has(state) || holdOptionsError || !holdVendor || !holdVendors.includes(holdVendor) || submitting) return;
     setSubmitting(true);
     setHoldError(null);
     setActionError(null);
@@ -278,22 +288,25 @@ export function IncidentActions({
   const canClaim = Boolean(identity?.available && identity.noc_member && incident.sys_id && !assignedToSelf);
   const canAddWorkNote = Boolean(identity?.available && incident.sys_id);
   const canAttachAlert = Boolean(identity?.available && incident.sys_id && alertArtifact);
-  const canPutOnHold = Boolean(identity?.available && incident.sys_id && holdVendors.length > 0);
-  const onHoldAlready = String(incident.state || "").trim() === "3";
-  const terminalState = ["6", "7", "8"].includes(String(incident.state || "").trim());
+  const incidentState = String(incident.state || "").trim();
+  const holdStateAllowed = PUT_ON_HOLD_ALLOWED_STATES.has(incidentState);
+  const onHoldAlready = incidentState === "3";
+  const canPutOnHold = Boolean(identity?.available && incident.sys_id && holdStateAllowed && !holdOptionsError && holdVendors.length > 0);
   const disabledReason = identityUnavailableMessage(identity, identityError);
   const attachDisabledReason = !alertArtifact
     ? "Não há alerta relacionado a este chamado."
     : disabledReason;
-  const holdDisabledReason = terminalState
-    ? "Chamado encerrado — não é possível colocar em espera."
-    : onHoldAlready
+  const holdDisabledReason = onHoldAlready
       ? "Chamado já está em espera."
-      : !holdVendors.length
+      : !holdStateAllowed
+        ? "Somente chamados novos ou em andamento podem ser colocados em espera."
+        : holdOptionsError
+          ? holdOptionsError
+          : !holdVendors.length
         ? "Nenhum fornecedor homologado disponível."
         : disabledReason;
   const moreActionsDisabled = submitting || (!identity && !identityError);
-  const holdMenuDisabled = !canPutOnHold || submitting || onHoldAlready || terminalState;
+  const holdMenuDisabled = !canPutOnHold || submitting;
 
   if (!incident.sys_id || !incident.number) return null;
   if (incident.identity_conflict) {
@@ -480,6 +493,7 @@ export function IncidentActions({
         {moreActionsMenu}
       </div>
       {actionError ? <p className="text-xs text-destructive">{actionError}</p> : null}
+      {holdOptionsError ? <p role="alert" className="text-xs text-destructive">{holdOptionsError}</p> : null}
       <Dialog open={workNoteOpen} onOpenChange={(open) => { if (!submitting) { setWorkNoteOpen(open); if (!open) setWorkNoteError(null); } }}>
         <DialogContent>
           <DialogHeader>
@@ -529,7 +543,7 @@ export function IncidentActions({
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" disabled={submitting} onClick={() => setHoldSetupOpen(false)}>Cancelar</Button>
-            <Button type="button" disabled={submitting || !holdVendor} onClick={proceedHoldConfirmation}>Continuar</Button>
+            <Button type="button" disabled={submitting || Boolean(holdOptionsError) || !holdVendor || !holdVendors.includes(holdVendor)} onClick={proceedHoldConfirmation}>Continuar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -547,7 +561,7 @@ export function IncidentActions({
           {holdError ? <p role="alert" className="text-xs text-destructive">{holdError}</p> : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={submitting}>Cancelar</AlertDialogCancel>
-            <AlertDialogAction disabled={submitting || !holdVendor} onClick={(event) => { event.preventDefault(); void putOnHold(); }}>
+            <AlertDialogAction disabled={submitting || !holdStateAllowed || Boolean(holdOptionsError) || !holdVendor || !holdVendors.includes(holdVendor)} onClick={(event) => { event.preventDefault(); void putOnHold(); }}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
               Colocar em espera
             </AlertDialogAction>

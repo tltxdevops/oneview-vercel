@@ -7,6 +7,7 @@ import {
   createServiceNowPutOnHoldHandler,
   fetchServiceNowPutOnHoldIncident,
   incidentMatchesPutOnHold,
+  isPutOnHoldStateAllowed,
   ownershipMatches,
 } from "../api/_lib/oneview-servicenow-put-on-hold.js";
 import {
@@ -76,6 +77,8 @@ function createHandler({
   invalidate = async () => undefined,
   vendorEnv = {},
   identityGuard = async () => null,
+  read = null,
+  logger = () => undefined,
 } = {}) {
   let readIndex = 0;
   return createServiceNowPutOnHoldHandler({
@@ -83,12 +86,12 @@ function createHandler({
     actorProvider: () => ACTOR,
     configProvider: () => CONFIG,
     vendorConfigProvider: () => getServiceNowExternalVendorsConfig(vendorEnv),
-    readIncident: async () => reads[Math.min(readIndex++, reads.length - 1)],
+    readIncident: read || (async () => reads[Math.min(readIndex++, reads.length - 1)]),
     patchIncident: patch,
     audit,
     invalidateIncidentCache: invalidate,
     identityGuard,
-    logger: () => undefined,
+    logger,
   });
 }
 
@@ -130,6 +133,27 @@ test("OV-P0-309 hold PATCH envia somente state=3, hold_reason=4 e u_external_ven
   assert.equal(audits.length, 1);
   assert.equal(audits[0].externalVendor, "Cisco");
   assert.equal(audits[0].result, "success");
+});
+
+test("OV-P0-309 hold permite somente estados Novo (1) e Em andamento (2)", async () => {
+  assert.equal(isPutOnHoldStateAllowed("1"), true);
+  assert.equal(isPutOnHoldStateAllowed("2"), true);
+  for (const state of ["", "3", "4", "5", "6", "7", "8"]) {
+    assert.equal(isPutOnHoldStateAllowed(state), false);
+    let patches = 0;
+    const res = await request(createHandler({
+      reads: [incident({ state })],
+      patch: async () => { patches += 1; },
+    }));
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.payload.error, PUT_ON_HOLD_ERROR.STATE_NOT_ALLOWED);
+    assert.equal(patches, 0);
+  }
+
+  const newIncident = await request(createHandler({
+    reads: [incident({ state: "1" }), incident({ state: "3", holdReason: "4", vendor: "Cisco" })],
+  }));
+  assert.equal(newIncident.statusCode, 200);
 });
 
 test("OV-P0-309 hold preserva ownership após confirmação", async () => {
@@ -256,6 +280,58 @@ test("OV-P0-309 confirmação exige passo explícito antes do PATCH", async () =
   assert.match(component, /proceedHoldConfirmation/);
   assert.match(component, /setHoldConfirmOpen\(true\)/);
   assert.match(component, /AlertDialogAction[\s\S]*void putOnHold\(\)/);
+});
+
+test("OV-P0-309 UI bloqueia estado e falha de vendors sem exigir noc_member", async () => {
+  const [component, backend] = await Promise.all([
+    readFile(new URL("../src/components/oneview/IncidentActions.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/oneview-servicenow-put-on-hold.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(component, /PUT_ON_HOLD_ALLOWED_STATES = new Set\(\["1", "2"\]\)/);
+  assert.match(component, /canPutOnHold = Boolean\(identity\?\.available && incident\.sys_id && holdStateAllowed/);
+  assert.doesNotMatch(component, /canPutOnHold = Boolean\([^\n]*noc_member/);
+  assert.doesNotMatch(component, /DEFAULT_PUT_ON_HOLD_VENDORS/);
+  assert.match(component, /setHoldVendors\(\[\]\)[\s\S]*setHoldVendor\(""\)[\s\S]*Não foi possível carregar os fornecedores/);
+  assert.match(component, /holdOptionsError \? <p role="alert"/);
+  assert.match(component, /AlertDialogAction disabled=\{submitting \|\| !holdStateAllowed \|\| Boolean\(holdOptionsError\)/);
+  assert.doesNotMatch(backend, /noc_member|NOC_MEMBERSHIP_REQUIRED/);
+});
+
+test("OV-P0-309 logs distinguem falhas GET, PATCH e confirmação sem mensagem sensível", async () => {
+  const getLogs = [];
+  const getRes = await request(createHandler({
+    read: async () => { throw { code: "servicenow_timeout", status: 504, message: "password=secret" }; },
+    logger: (entry) => getLogs.push(entry),
+  }));
+  assert.equal(getRes.statusCode, 503);
+  assert.equal(getLogs[0].event, "HOLD_GET_FAILED");
+  assert.equal(getLogs[0].error_code, "servicenow_timeout");
+  assert.equal(getLogs[0].upstream_status, 504);
+  assert.doesNotMatch(JSON.stringify(getLogs), /password|secret/);
+
+  const patchLogs = [];
+  const patchRes = await request(createHandler({
+    patch: async () => { throw { code: "servicenow_http_error", status: 502, message: "token=secret" }; },
+    logger: (entry) => patchLogs.push(entry),
+  }));
+  assert.equal(patchRes.statusCode, 503);
+  assert.equal(patchLogs[0].event, "HOLD_PATCH_FAILED");
+  assert.doesNotMatch(JSON.stringify(patchLogs), /token|secret/);
+
+  const confirmationLogs = [];
+  let reads = 0;
+  const confirmationRes = await request(createHandler({
+    read: async () => {
+      reads += 1;
+      if (reads === 1) return incident({ state: "2" });
+      throw { code: "servicenow_timeout", status: 504, message: "credential=secret" };
+    },
+    logger: (entry) => confirmationLogs.push(entry),
+  }));
+  assert.equal(confirmationRes.statusCode, 503);
+  assert.equal(confirmationLogs[0].event, "HOLD_CONFIRMATION_FAILED");
+  assert.equal(confirmationLogs[0].reason, "read_failed");
+  assert.doesNotMatch(JSON.stringify(confirmationLogs), /credential|secret/);
 });
 
 test("OV-P0-315 put on hold blocks an identity conflict before PATCH", async () => {
