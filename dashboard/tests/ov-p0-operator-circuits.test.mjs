@@ -571,28 +571,31 @@ test("reminder fallback aliases survive on the resulting canonical circuit", asy
   assert.ok(equivalentOperationalSubjects(subject).some((item) => item.subject_type === "alert_subject" && item.subject_key === "alert:havan-aggregator:wan2"));
 });
 
-test("BFF reads inventory plus PostgreSQL operator evidence without persistence", async () => {
+test("BFF reads current host registry plus PostgreSQL operator evidence without persistence", async () => {
   const queries = [];
   const operatorAlert = meraki("wan2", "226 - Tramandaí", "wan2");
   const pool = {
     async query(input) {
       const sql = typeof input === "string" ? input : input.text;
       queries.push(sql);
-      if (/from zabbix_link_inventory l join data_sources/.test(sql)) return { rows: [inventory("havan-aggregator")] };
+      if (/from zabbix_host_inventory h/.test(sql)) return { rows: [inventory("havan-aggregator")] };
       if (/from alerts a join data_sources/.test(sql)) return { rows: [operatorAlert] };
       throw new Error("unexpected query");
     },
   };
   const links = await fetchCanonicalLinks({ pool });
   assert.equal(links.length, 1);
-  assert.equal(links[0].strategy, "meraki");
-  assert.equal(links[0].operational_subject.subject_type, "circuit");
-  assert.equal(links[0].operational_subject.subject_key, `circuit:${links[0].circuit_key}`);
-  assert.equal(links[0].operational_subject.data_source_id, operatorAlert.data_source_id);
+  assert.equal(links[0].strategy, "inventory_host");
+  assert.equal(links[0].id, "inventory-havan-aggregator");
+  assert.equal(links[0].data_source_id, operatorAlert.data_source_id);
   assert.equal(queries.filter((sql) => /from alerts a join data_sources/.test(sql)).length, 2);
-  assert.equal(queries.filter((sql) => /from zabbix_link_inventory l join data_sources/.test(sql)).length, 1);
+  assert.equal(queries.filter((sql) => /select\s+h\.id::text/.test(sql)).length, 1);
+  const inventorySql = queries.find((sql) => /select\s+h\.id::text/.test(sql));
+  assert.match(inventorySql, /coalesce\(h\.zabbix_status, 0\) = 0/);
+  assert.match(inventorySql, /sanepar\/sdwan\/\(router\|vmanage\)/);
   const alertsSql = queries.filter((sql) => /from alerts a join data_sources/.test(sql)).join("\n");
   assert.match(alertsSql, /source_trigger_id/);
+  assert.match(queries.join("\n"), /zabbix_host_inventory/);
   assert.match(alertsSql, /zabbix_link_inventory/);
   assert.match(alertsSql, /interval '7 days'/);
   assert.match(alertsSql, /__zbx_servicenow_sys_id/);

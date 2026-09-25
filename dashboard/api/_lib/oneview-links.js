@@ -4,7 +4,7 @@ import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewDbPool } from "./oneview-db.js";
 import { extractServiceNowRefsFromAlertTags } from "./oneview-inc-correlation.js";
 import { mapReadModelIncident } from "./oneview-incidents-read-model.js";
-import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
+import { discoverOperatorCircuits, hasExactOperatorEscalation } from "./oneview-operator-circuits.js";
 import { attachOperationalRecurrence, OPERATIONAL_RECENT_DETAIL_LIMIT, OPERATIONAL_RECENT_PREVIEW_LIMIT } from "./oneview-operational-recurrence.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
 import { mergeRankedSuggestions, matchRank } from "./oneview-search-suggest-rank.js";
@@ -62,6 +62,18 @@ const SERVICENOW_TAG_EXISTS_SQL = `(
   or coalesce(a.trigger_tags::text, '') ilike '%__zbx_servicenow_sys_id%'
   or coalesce(a.trigger_tags::text, '') ilike '%__zbx_servicenow_number%'
 )`;
+/** Strong technical signals allowed to classify a current registry host. */
+function technicalLinkSignalSql(alias = "a") {
+  return `(
+  coalesce(${alias}.item_key, '') ~* 'fgVWLHealthCheckLink(?:PacketLoss|State)\\['
+  or coalesce(${alias}.item_key, '') ~* 'meraki\\.uplink\\.status\\['
+  or (
+    lower(btrim(coalesce(${alias}.customer_key, ''))) = 'sanepar'
+    and coalesce(${alias}.item_key, '') ~* 'sdwan\\.'
+  )
+  )`;
+}
+const TECHNICAL_LINK_SIGNAL_SQL = technicalLinkSignalSql();
 
 /** Operational queue needs active + resolved_window(7d); SN residuals are queried separately. */
 
@@ -485,6 +497,80 @@ export function composeCircuitLevelLinks({ inventoryRows = [], alertRows = [], i
   ));
 }
 
+function isSaneparSdwanSignal(alert) {
+  return String(alert?.customer_key || "").trim().toLowerCase() === "sanepar"
+    && /sdwan\./i.test(String(alert?.item_key || ""));
+}
+
+function isSaneparSdwanInventoryHost(row) {
+  return String(row?.customer_key || "").trim().toLowerCase() === "sanepar"
+    && /sanepar\/sdwan\/(router|vmanage)\b/i.test(JSON.stringify(row?.host_groups || ""));
+}
+
+function registryClassification(row, alerts) {
+  if (text(row.classification)) return row;
+  if (isSaneparSdwanInventoryHost(row)) {
+    return {
+      ...row,
+      classification: "sdwan",
+      classification_source: "host_registry_group",
+      classification_confidence: "high",
+    };
+  }
+  if (alerts.some(isSaneparSdwanSignal)) {
+    return {
+      ...row,
+      classification: "sdwan",
+      classification_source: "host_registry_signal",
+      classification_confidence: "high",
+    };
+  }
+  if (alerts.some(hasExactOperatorEscalation)) {
+    return {
+      ...row,
+      classification: "operator_link",
+      classification_source: "host_registry_signal",
+      classification_confidence: "high",
+    };
+  }
+  return row;
+}
+
+function dedupeRegistryHosts(rows) {
+  const byHost = new Map();
+  for (const row of rows || []) {
+    const key = hostKey(row);
+    if (!text(row?.data_source_id) || !text(row?.source_host_id)) continue;
+    const current = byHost.get(key);
+    if (!current || valueTimestamp(row.updated_at) > valueTimestamp(current.updated_at)) byHost.set(key, row);
+  }
+  return [...byHost.values()];
+}
+
+/**
+ * Links UI canonical model: current host registry is authoritative for host existence.
+ * One row per datasource + host prevents stale inventory rows and duplicate hosts.
+ */
+export function composeHostRegistryLinks({ inventoryRows = [], alertRows = [], incidents = [], incidentMatches = null } = {}) {
+  const alerts = uniqueAlerts(alertRows);
+  const matches = incidentMatches || correlateLinkIncidents(alerts, incidents);
+  const alertsByHost = new Map();
+  for (const alert of alerts) {
+    const key = hostKey(alert);
+    const current = alertsByHost.get(key) || [];
+    current.push(alert);
+    alertsByHost.set(key, current);
+  }
+  return dedupeRegistryHosts(inventoryRows).map((row) => {
+    const related = alertsByHost.get(hostKey(row)) || [];
+    return inventoryLink(registryClassification(row, related), related, matches);
+  }).sort((a, b) => (
+    String(a.customer_name || "").localeCompare(String(b.customer_name || ""), "pt-BR")
+    || String(a.service_name || "").localeCompare(String(b.service_name || ""), "pt-BR")
+    || String(a.id).localeCompare(String(b.id), "pt-BR")
+  ));
+}
+
 function filteredBase(rows, filters) {
   return rows.filter((row) => {
     if (filters.customer && row.customer_key !== filters.customer && row.customer_name !== filters.customer) return false;
@@ -606,7 +692,39 @@ function ordered(rows, filters) {
     return activityB - activityA || String(a.id).localeCompare(String(b.id));
   });
 }
-const INVENTORY_SELECT = "select l.id::text, l.data_source_id::text, l.source_host_id::text, l.customer_key, l.customer_name, l.service_name, l.classification, l.classification_source, l.classification_confidence, l.carrier_name, l.carrier_source, l.source_metadata, l.updated_at, d.name as datasource from zabbix_link_inventory l join data_sources d on d.id=l.data_source_id";
+/** Current Zabbix host registry is authoritative for whether a host still exists. */
+const HOST_REGISTRY_SELECT = `select
+  h.id::text,
+  h.data_source_id::text,
+  h.source_host_id::text,
+  h.customer_key,
+  h.customer_name,
+  coalesce(nullif(btrim(l.service_name), ''), nullif(btrim(h.host_visible_name), ''), nullif(btrim(h.host_name), ''), h.source_host_id::text) as service_name,
+  l.classification,
+  l.classification_source,
+  l.classification_confidence,
+  l.carrier_name,
+  l.carrier_source,
+  l.source_metadata,
+  h.host_name,
+  h.host_visible_name,
+  h.host_tags,
+  h.host_groups,
+  h.zabbix_status,
+  h.last_seen_at,
+  h.updated_at,
+  l.id::text as legacy_link_id,
+  d.name as datasource
+from zabbix_host_inventory h
+join data_sources d on d.id=h.data_source_id
+left join lateral (
+  select l.*
+    from zabbix_link_inventory l
+   where l.data_source_id=h.data_source_id
+     and l.source_host_id=h.source_host_id
+   order by l.updated_at desc nulls last, l.id asc
+   limit 1
+) l on true`;
 /** Shared alert identity/tags for circuit discovery + SN correlation. No raw_payload blob. */
 const ALERTS_CORE_PROJECTION = `a.id::text, a.data_source_id::text, a.source_host_id::text, a.source_trigger_id::text, a.source_event_id::text, a.source_problem_id::text, a.customer_name, a.customer_key, a.host_name, a.service_name, a.item_key, a.item_name, a.trigger_description, a.problem_name, a.event_tags, a.trigger_tags, a.host_tags, a.severity, a.status_source, a.status_internal, a.acknowledged_source, a.first_seen_at, a.resolved_at, a.last_seen_at, a.updated_at, d.name as datasource, (${activeSql}) as is_active`;
 /** Detail keeps payload-derived template_tags for full escalation eligibility. */
@@ -634,7 +752,7 @@ function markIncidentDegraded(rows) {
   }
 }
 
-async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId = null, includeIncidents = true } = {}) {
+async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId = null, includeIncidents = true, composition = "host" } = {}) {
   const startedAt = Date.now(); const timings = {};
   const scoped = Boolean(dataSourceId && sourceHostId);
   const timedQuery = async (query) => {
@@ -642,26 +760,63 @@ async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId
     const result = await pool.query(query);
     return { result, elapsed_ms: elapsedMs(queryStartedAt) };
   };
-  const listScopeSql = `(
-    exists (select 1 from zabbix_link_inventory l where l.data_source_id=a.data_source_id and l.source_host_id=a.source_host_id)
-    or ${LIST_OPERATOR_TAG_SQL}
-  )`;
   const recentWindowSql = `((${activeSql})
     or a.resolved_at >= now() - interval '7 days'
     or coalesce(a.last_seen_at, a.updated_at, a.first_seen_at) >= now() - interval '7 days')`;
+  const staticRegistryLinkSql = `(exists (
+      select 1 from zabbix_link_inventory l
+       where l.data_source_id=h.data_source_id and l.source_host_id=h.source_host_id
+    ) or (
+      lower(btrim(coalesce(h.customer_key, ''))) = 'sanepar'
+      and coalesce(h.host_groups::text, '') ~* 'sanepar/sdwan/(router|vmanage)'
+    ))`;
+  const registryScopeSql = `(coalesce(h.zabbix_status, 0) = 0 and (
+    ${staticRegistryLinkSql}
+    or exists (
+      select 1 from alerts a
+       where a.data_source_id=h.data_source_id
+         and a.source_host_id=h.source_host_id
+         and ${recentWindowSql}
+         and (${LIST_OPERATOR_TAG_SQL} or ${TECHNICAL_LINK_SIGNAL_SQL})
+    )
+  ))`;
+  const enabledRegistryExistsForAlertSql = `exists (
+    select 1 from zabbix_host_inventory h
+     where h.data_source_id=a.data_source_id
+       and h.source_host_id=a.source_host_id
+       and coalesce(h.zabbix_status, 0) = 0
+  )`;
+  const saneparSdwanRegistryExistsForAlertSql = `exists (
+    select 1 from zabbix_host_inventory h
+     where h.data_source_id=a.data_source_id
+       and h.source_host_id=a.source_host_id
+       and coalesce(h.zabbix_status, 0) = 0
+       and lower(btrim(coalesce(h.customer_key, ''))) = 'sanepar'
+       and coalesce(h.host_groups::text, '') ~* 'sanepar/sdwan/(router|vmanage)'
+  )`;
+  const legacyLinkExistsForAlertSql = `exists (
+    select 1 from zabbix_link_inventory l
+     where l.data_source_id=a.data_source_id and l.source_host_id=a.source_host_id
+  )`;
+  const staticLinkedRegistryExistsForAlertSql = `((${enabledRegistryExistsForAlertSql}
+    and ${legacyLinkExistsForAlertSql}) or ${saneparSdwanRegistryExistsForAlertSql})`;
+  const listScopeSql = `(${staticLinkedRegistryExistsForAlertSql} or (
+    ${enabledRegistryExistsForAlertSql}
+    and (${LIST_OPERATOR_TAG_SQL} or ${TECHNICAL_LINK_SIGNAL_SQL})
+  ))`;
+  const residualScopeSql = `${listScopeSql}
+        and ${SERVICENOW_TAG_EXISTS_SQL}
+        and not ${recentWindowSql}`;
   const [inventoryQuery, recentAlertsQuery, residualAlertsQuery] = scoped
     ? await Promise.all([
-      timedQuery({ text: `${INVENTORY_SELECT} where l.data_source_id=$1 and l.source_host_id=$2 order by l.customer_name, l.service_name`, values: [dataSourceId, sourceHostId] }),
-      timedQuery({ text: `${ALERTS_DETAIL_SELECT} where a.data_source_id=$1 and a.source_host_id=$2`, values: [dataSourceId, sourceHostId] }),
+      timedQuery({ text: `${HOST_REGISTRY_SELECT} where h.data_source_id=$1 and h.source_host_id=$2 order by h.customer_name, h.host_visible_name`, values: [dataSourceId, sourceHostId] }),
+      timedQuery({ text: `${ALERTS_DETAIL_SELECT} where a.data_source_id=$1 and a.source_host_id=$2 and ${activeSql}`, values: [dataSourceId, sourceHostId] }),
       Promise.resolve({ result: { rows: [] }, elapsed_ms: 0 }),
     ])
     : await Promise.all([
-      timedQuery(`${INVENTORY_SELECT} order by l.customer_name, l.service_name`),
+      timedQuery(`${HOST_REGISTRY_SELECT} where ${registryScopeSql} order by h.customer_name, h.host_visible_name`),
       timedQuery(`${ALERTS_LIST_SELECT} where ${listScopeSql} and ${recentWindowSql}`),
-      timedQuery(`${ALERTS_LIST_SELECT} where exists (
-          select 1 from zabbix_link_inventory l
-          where l.data_source_id=a.data_source_id and l.source_host_id=a.source_host_id
-        ) and ${SERVICENOW_TAG_EXISTS_SQL} and not ${recentWindowSql}`),
+      timedQuery(`${ALERTS_LIST_SELECT} where ${residualScopeSql}`),
     ]);
   const inventoryResult = inventoryQuery.result;
   const alerts = uniqueAlerts([
@@ -684,7 +839,9 @@ async function fetchCanonicalLinkModel({ pool, dataSourceId = null, sourceHostId
   timings.circuit_discovery_ms = elapsedMs(discoveryStartedAt);
   const compositionStartedAt = Date.now();
   const incidentMatches = correlateLinkIncidents(alerts, incidents);
-  const rows = composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits, incidentMatches });
+  const rows = composition === "circuit"
+    ? composeCircuitLevelLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, circuits, incidentMatches })
+    : composeHostRegistryLinks({ inventoryRows: inventoryResult.rows || [], alertRows: alerts, incidents, incidentMatches });
   attachOperationalRecurrence(rows, alerts, new Date(), { recentLimit: scoped ? OPERATIONAL_RECENT_PREVIEW_LIMIT : 0, incidentMatches });
   timings.composition_ms = elapsedMs(compositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
@@ -730,8 +887,8 @@ export async function fetchCanonicalLinks({ pool = getOneViewDbPool() } = {}) {
   return rows;
 }
 
-export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId, pool = getOneViewDbPool() } = {}) {
-  const model = await fetchCanonicalLinkModel({ pool, dataSourceId, sourceHostId, includeIncidents: false });
+export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId, pool = getOneViewDbPool(), composition = "host" } = {}) {
+  const model = await fetchCanonicalLinkModel({ pool, dataSourceId, sourceHostId, includeIncidents: false, composition });
   const candidate = model.rows.find((row) => String(row.id) === String(id));
   if (!candidate) return null;
   const circuit = model.circuits.find((item) => String(item.circuit_key) === String(id));
@@ -743,7 +900,9 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
   model.timings.servicenow_correlation_ms = elapsedMs(serviceNowStartedAt);
   const detailCompositionStartedAt = Date.now();
   const incidentMatches = correlateLinkIncidents(model.alerts, incidents);
-  const rows = composeCircuitLevelLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, circuits: model.circuits, incidentMatches });
+  const rows = composition === "circuit"
+    ? composeCircuitLevelLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, circuits: model.circuits, incidentMatches })
+    : composeHostRegistryLinks({ inventoryRows: model.inventory_rows_data, alertRows: model.alerts, incidents, incidentMatches });
   attachOperationalRecurrence(rows, model.alerts, new Date(), { recentLimit: OPERATIONAL_RECENT_DETAIL_LIMIT, incidentMatches });
   model.timings.composition_ms = elapsedMs(detailCompositionStartedAt);
   if (servicenowStatus === "degraded") markIncidentDegraded(rows);
@@ -767,10 +926,10 @@ export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId,
 
 /** Revalidate a stable alert subject; canonical circuit data remains presentation enrichment only. */
 export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, dataSourceId, sourceHostId, sourceTriggerId, pool = getOneViewDbPool() } = {}) {
-  if (subjectType === "circuit") return fetchCanonicalLinkDetail({ id: circuitKey, dataSourceId, sourceHostId, pool });
+  if (subjectType === "circuit") return fetchCanonicalLinkDetail({ id: circuitKey, dataSourceId, sourceHostId, pool, composition: "circuit" });
   if (subjectType !== "alert_subject" || !dataSourceId || !sourceHostId || !sourceTriggerId) return null;
 
-  const model = await fetchCanonicalLinkModel({ pool, dataSourceId, sourceHostId, includeIncidents: false });
+  const model = await fetchCanonicalLinkModel({ pool, dataSourceId, sourceHostId, includeIncidents: false, composition: "circuit" });
   const relatedAlerts = uniqueAlerts(model.alerts).filter((alert) => (
     String(alert.data_source_id || "") === String(dataSourceId)
     && String(alert.source_host_id || "") === String(sourceHostId)
