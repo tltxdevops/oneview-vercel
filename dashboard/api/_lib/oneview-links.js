@@ -82,7 +82,7 @@ export function parseLinkFilters(req) {
     customer: text(oneQuery(req, "customer")), datasource: text(oneQuery(req, "datasource")),
     classification: text(oneQuery(req, "classification")), state: text(oneQuery(req, "state")),
     ack: text(oneQuery(req, "ack")), severity: text(oneQuery(req, "severity")),
-    incident: text(oneQuery(req, "incident")), carrier: text(oneQuery(req, "carrier")), search: text(oneQuery(req, "search")),
+    incident: text(oneQuery(req, "incident")), carrier: text(oneQuery(req, "carrier")), operator_escalation: text(oneQuery(req, "operator_escalation")), search: text(oneQuery(req, "search")),
     tab: text(oneQuery(req, "tab")) || "all", resolved_window: text(oneQuery(req, "resolved_window")) || "today",
     divergence: text(oneQuery(req, "divergence")), recurrence: text(oneQuery(req, "recurrence")),
     incident_state: text(oneQuery(req, "incident_state")), operational_situation: text(oneQuery(req, "operational_situation")),
@@ -94,7 +94,8 @@ export function parseLinkFilters(req) {
   if (filters.state && !new Set(["critical", "alert", "attention", "normal"]).has(filters.state.toLowerCase())) throw invalidQuery();
   if (filters.ack && !new Set(["all", "pending", "none"]).has(filters.ack.toLowerCase())) throw invalidQuery();
   if (filters.incident && !INCIDENT_FILTERS.has(filters.incident.toLowerCase())) throw invalidQuery();
-  if (filters.carrier && !new Set(["all", "unknown"]).has(filters.carrier.toLowerCase())) throw invalidQuery();
+  if (filters.carrier && !SAFE.test(filters.carrier)) throw invalidQuery();
+  if (filters.operator_escalation && !new Set(["all", "yes", "no"]).has(filters.operator_escalation.toLowerCase())) throw invalidQuery();
   if (!QUEUE_TABS.has(filters.tab.toLowerCase()) || !RESOLVED_WINDOWS.has(filters.resolved_window.toLowerCase()) || !QUEUE_SORTS.has(filters.sort.toLowerCase())) throw invalidQuery();
   if (filters.divergence && !new Set(["a", "b", "any"]).has(filters.divergence.toLowerCase())) throw invalidQuery();
   if (filters.recurrence && !new Set(["all", "recurrent"]).has(filters.recurrence.toLowerCase())) throw invalidQuery();
@@ -630,6 +631,9 @@ function filteredBase(rows, filters) {
     if (filters.incident === "cancelled" && servicenowState(row) !== "cancelled") return false;
     if (filters.incident_state && String((row.current_incident || row.latest_incident)?.state || "") !== filters.incident_state) return false;
     if (filters.carrier === "unknown" && row.carrier_name) return false;
+    if (filters.carrier && filters.carrier !== "all" && filters.carrier !== "unknown" && String(row.carrier_name || "").toLowerCase() !== filters.carrier.toLowerCase()) return false;
+    if (filters.operator_escalation === "yes" && !row.operator_escalation) return false;
+    if (filters.operator_escalation === "no" && row.operator_escalation) return false;
     if (filters.search) { const needle = filters.search.toLowerCase(); if (![row.service_name, row.customer_name, row.source_host_id, row.host_name, row.site_name, row.link_type, row.carrier_name, row.circuit_key].some((value) => String(value || "").toLowerCase().includes(needle))) return false; }
     return true;
   });
@@ -1034,7 +1038,7 @@ export function buildLinksPayload(rows, filters, now = Date.now(), integrationSt
     divergence_b: base.filter((row) => row.divergence_type === "b").length,
     resolved_today: base.filter((row) => !row.has_active_alert && (timestamp(row.latest_activity_at || row.resolved_at || row.updated_at) || 0) >= resolvedWindowStart("today", now)).length,
   };
-  return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:integrationStatus.servicenow === "degraded" ? null : base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, integration_status:integrationStatus, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
+  return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:integrationStatus.servicenow === "degraded" ? null : base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, integration_status:integrationStatus, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification"),carriers:facets("carrier_name")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
 }
 const LINKS_SUGGEST_CACHE_MS = 30_000;
 const LINK_SEARCH_FIELDS = ["service_name", "customer_name", "source_host_id", "host_name", "site_name", "link_type", "carrier_name", "circuit_key"];

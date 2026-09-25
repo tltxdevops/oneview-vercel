@@ -274,6 +274,11 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
   }
   if (filters.manual) {
     clauses.push(`(caller_id is null or lower(btrim(caller_id::text)) <> ${addParam(values, ZABBIX_MONITORING_CALLER_ID)})`);
+  } else if (filters.origin === "manual") {
+    clauses.push(`(caller_id is null or lower(btrim(caller_id::text)) <> ${addParam(values, ZABBIX_MONITORING_CALLER_ID)})`);
+  }
+  if (!filters.manual && filters.origin === "automatic") {
+    clauses.push(`lower(btrim(caller_id::text)) = ${addParam(values, ZABBIX_MONITORING_CALLER_ID)}`);
   }
   if (filters.caller_id) clauses.push(`caller_id::text = ${addParam(values, filters.caller_id)}`);
   const assigneeIds = assignedToIds(filters.assigned_to);
@@ -346,6 +351,7 @@ async function fetchFacets(pool, filters) {
     ["contact_types", "coalesce(nullif(btrim(contact_type::text), ''), '__blank')", "contact_type"],
     ["states", "state", "state"],
     ["priorities", "priority", "priority"],
+    ["assignment_groups", "assignment_group", "assignment_group"],
   ];
   const all = await Promise.all(specs.map(async ([name, field, displayField]) => {
     const result = await pool.query(`

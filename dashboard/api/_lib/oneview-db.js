@@ -2649,6 +2649,7 @@ export function buildGlobalHistoryScopeClauses(req, dataSourceNames = getOperati
   const customers = queryValues(req, "customer").map((value) => value.slice(0, 160));
   const datasources = queryValues(req, "datasource").map((value) => value.slice(0, 160));
   const eventType = oneQueryValue(req, "event_type").toLowerCase();
+  const actor = oneQueryValue(req, "actor").slice(0, 160);
   const search = oneQueryValue(req, "search").slice(0, 200);
   const occurredFrom = isoFilterDate(oneQueryValue(req, "occurred_from"));
   const occurredTo = isoFilterDate(oneQueryValue(req, "occurred_to"));
@@ -2688,6 +2689,9 @@ export function buildGlobalHistoryScopeClauses(req, dataSourceNames = getOperati
   if (eventType && eventType !== "all") {
     params.push(GLOBAL_HISTORY_EVENT_TYPES[eventType]);
     clauses.push(`lower(coalesce(h.action_type, '')) = any($${params.length})`);
+  }
+  if (actor) {
+    push("lower(coalesce(nullif(h.actor_name, ''), nullif(h.operator_name, ''), '')) = lower(?)", actor);
   }
   if (occurredFrom) push("coalesce(h.occurred_at, h.created_at) >= ?::timestamptz", occurredFrom);
   if (occurredTo) push("coalesce(h.occurred_at, h.created_at) < ?::timestamptz", occurredTo);

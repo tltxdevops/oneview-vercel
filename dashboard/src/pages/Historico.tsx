@@ -555,14 +555,14 @@ export default function HistoricoPage() {
         setEventsLoaded(true);
         return;
       }
-      const searchParts = [search, actor].map((value) => value.trim()).filter(Boolean);
       const response = await fetchGlobalHistory({
         page,
         pageSize: historyPageSize,
         customers: cliente === "all" ? [] : [cliente],
         datasources: fonte === "all" ? [] : [fonte],
         eventType,
-        search: searchParts.length ? searchParts.join(" ") : undefined,
+        search: search || undefined,
+        actor: actor || undefined,
         occurredFrom: bounds.from,
         occurredTo: bounds.to,
         signal: controller.signal,

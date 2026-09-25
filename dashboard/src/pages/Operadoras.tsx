@@ -593,6 +593,7 @@ export default function OperadorasPage() {
   const [incident, setIncident] = useState(ALL);
   const [incidentState, setIncidentState] = useState(ALL);
   const [carrier, setCarrier] = useState(ALL);
+  const [operatorEscalation, setOperatorEscalation] = useState(ALL);
   const [tab, setTab] = useState<QueueTab>("open");
   const [view, setView] = useState<PageView>("queue");
   const [resolvedWindow, setResolvedWindow] = useState("today");
@@ -673,6 +674,7 @@ export default function OperadorasPage() {
         incident,
         incident_state: incidentState === ALL ? undefined : incidentState,
         carrier,
+        operator_escalation: operatorEscalation,
         tab,
         resolved_window: resolvedWindow,
         sort,
@@ -717,7 +719,7 @@ export default function OperadorasPage() {
       }
       finishRequest?.();
     }
-  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, operatorQueuePageSize, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
+  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operatorEscalation, operationalSituation, operatorQueuePageSize, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
 
   const cachedDetail = (key: string) => {
     const cached = detailCache.current.get(key);
@@ -950,7 +952,7 @@ export default function OperadorasPage() {
     setter(value);
     setPage(1);
   };
-  const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operationalSituation, activityPeriod]
+  const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operatorEscalation, operationalSituation, activityPeriod]
     .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
   const panelFilterCount = [state, ack]
     .filter((value) => value !== ALL).length;
@@ -999,6 +1001,7 @@ export default function OperadorasPage() {
     setIncident(ALL);
     setIncidentState(ALL);
     setCarrier(ALL);
+    setOperatorEscalation(ALL);
     setDivergence("");
     setRecurrence("all");
     setOperationalSituation("all");
@@ -1191,6 +1194,8 @@ export default function OperadorasPage() {
                 <Filter label="Recorrência" value={recurrence} options={[{ value: "all", label: "Todos" }, { value: "recurrent", label: "Recorrentes" }]} onChange={(value) => { setRecurrence(value === "recurrent" ? "recurrent" : "all"); setPage(1); }} />
                 <Filter label="Estado" value={state} options={[{ value: ALL, label: "Todos" }, { value: "critical", label: "Crítico" }, { value: "alert", label: "Alerta" }, { value: "attention", label: "Atenção" }, { value: "normal", label: "Normal" }]} onChange={setFilter(setState)} />
                 <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
+                <Filter label="Operadora" value={operatorEscalation} options={[{ value: ALL, label: "Todos" }, { value: "yes", label: "Escalonado" }, { value: "no", label: "Não escalonado" }]} onChange={setFilter(setOperatorEscalation)} />
+                <Filter label="Carrier" value={carrier} options={[{ value: ALL, label: "Todos" }, { value: "unknown", label: "Não identificada" }, ...(payload?.facets.carriers || []).map((item) => ({ value: item.value, label: item.label }))]} onChange={setFilter(setCarrier)} />
                 <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
               </div>
             )}

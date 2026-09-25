@@ -141,6 +141,8 @@ type DraftFilters = {
   assignedTo: string;
   callerId: string;
   contactType: string;
+  assignmentGroup: string;
+  origin: "all" | "manual" | "automatic";
   period: string;
   unassigned: boolean;
 };
@@ -153,6 +155,8 @@ const EMPTY_DRAFT: DraftFilters = {
   assignedTo: "all",
   callerId: "all",
   contactType: "all",
+  assignmentGroup: "all",
+  origin: "all",
   period: "all",
   unassigned: false,
 };
@@ -289,6 +293,8 @@ export default function ChamadosPage() {
       // OV-P0-265: caller e canal opcionais; "Todos" preserva o universo do read-model.
       callerId: applied.callerId !== "all" ? applied.callerId : undefined,
       contactType: applied.contactType !== "all" ? applied.contactType : undefined,
+      assignmentGroup: applied.assignmentGroup !== "all" ? applied.assignmentGroup : undefined,
+      origin: applied.origin === "all" ? undefined : applied.origin,
       manual: viewMode === "manual",
       unassigned: applied.unassigned || undefined,
       updatedFrom: period.openedFrom,
@@ -374,6 +380,8 @@ export default function ChamadosPage() {
     + Number(!draft.unassigned && draft.assignedTo !== "all")
     + Number(draft.callerId !== "all")
     + Number(draft.contactType !== "all")
+    + Number(draft.assignmentGroup !== "all")
+    + Number(draft.origin !== "all")
     + Number(draft.period !== "all")
     + Number(draft.unassigned);
   const totalLabel = useMemo(() => {
@@ -447,6 +455,10 @@ export default function ChamadosPage() {
     return [...map.values()];
   }, [payload?.facets?.assignees, applied.assignedTo]);
 
+  const assignmentGroupOptions = useMemo(() => [{ value: "all", label: "Todos" }, ...(payload?.facets?.assignment_groups ?? []).map((facet) => ({
+    value: String(facet.value), label: String(facet.display_value || facet.label || facet.value),
+  }))], [payload?.facets?.assignment_groups]);
+
   const searchSuggestScope = useMemo((): Omit<FetchIncidentSearchSuggestionsParams, "q" | "limit" | "signal"> => {
     const period = periodBounds(applied.period);
     return {
@@ -458,6 +470,8 @@ export default function ChamadosPage() {
         : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
       callerId: applied.callerId !== "all" ? applied.callerId : undefined,
       contactType: applied.contactType !== "all" ? applied.contactType : undefined,
+      assignmentGroup: applied.assignmentGroup !== "all" ? applied.assignmentGroup : undefined,
+      origin: applied.origin === "all" ? undefined : applied.origin,
       manual: viewMode === "manual",
       unassigned: applied.unassigned || undefined,
       updatedFrom: period.openedFrom,
@@ -503,7 +517,7 @@ export default function ChamadosPage() {
       setViewMode("manual");
       setSelected(null);
       setSelectedDuplicateGroup(null);
-      const next = { ...draft, state: "all", unassigned: false };
+      const next = { ...draft, state: "all", unassigned: false, origin: "all" as const };
       setDraft(next);
       applyFilters(next, "metric");
       return;
@@ -725,6 +739,20 @@ export default function ChamadosPage() {
                     <Select value={draft.callerId} onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}>
                       <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
                       <SelectContent>{callerOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Grupo
+                    <Select value={draft.assignmentGroup} onValueChange={(value) => setDraft((prev) => ({ ...prev, assignmentGroup: value }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent>{assignmentGroupOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Origem
+                    <Select value={draft.origin} onValueChange={(value) => setDraft((prev) => ({ ...prev, origin: value as DraftFilters["origin"] }))}>
+                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="automatic">Automático</SelectItem><SelectItem value="manual">Manual</SelectItem></SelectContent>
                     </Select>
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">

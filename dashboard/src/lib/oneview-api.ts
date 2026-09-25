@@ -1102,6 +1102,7 @@ export async function fetchGlobalHistory(params?: {
   customers?: string[];
   datasources?: string[];
   eventType?: string;
+  actor?: string;
   search?: string;
   occurredFrom?: string;
   occurredTo?: string;
@@ -1113,6 +1114,7 @@ export async function fetchGlobalHistory(params?: {
   for (const customer of params?.customers ?? []) search.append("customer", customer);
   for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
   if (params?.eventType && params.eventType !== "all") search.set("event_type", params.eventType);
+  if (params?.actor) search.set("actor", params.actor);
   if (params?.search) search.set("search", params.search);
   if (params?.occurredFrom) search.set("occurred_from", params.occurredFrom);
   if (params?.occurredTo) search.set("occurred_to", params.occurredTo);
@@ -1286,6 +1288,7 @@ export type IncidentListResponse = {
     contact_types?: IncidentAssigneeFacet[];
     states?: IncidentAssigneeFacet[];
     priorities?: IncidentAssigneeFacet[];
+    assignment_groups?: IncidentAssigneeFacet[];
   } | null;
   data_source?: OneViewDataSourceKind | string;
   checked_at?: string;
@@ -1315,6 +1318,7 @@ export type FetchIncidentsParams = {
   includeGlobalCounts?: boolean;
   includeFacets?: boolean;
   manual?: boolean;
+  origin?: "manual" | "automatic";
   unassigned?: boolean;
   assignmentGroup?: string;
   search?: string;
@@ -1344,6 +1348,7 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   if (params?.includeGlobalCounts === false) search.set("include_global_counts", "false");
   if (params?.includeFacets === false) search.set("include_facets", "false");
   if (params?.manual) search.set("manual", "true");
+  if (params?.origin) search.set("origin", params.origin);
   if (params?.unassigned) search.set("unassigned", "true");
   if (params?.hasAssignee) search.set("has_assignee", "true");
   if (params?.includeUnassigned) search.set("include_unassigned", "true");
@@ -1416,6 +1421,7 @@ function appendIncidentScopeQueryParams(search: URLSearchParams, params?: FetchI
   if (params?.includeUnassigned) search.set("include_unassigned", "true");
   if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.manual) search.set("manual", "true");
+  if (params?.origin) search.set("origin", params.origin);
 }
 
 export function oneViewIncidentSearchSuggestPath(params: FetchIncidentSearchSuggestionsParams): string {
@@ -2043,7 +2049,7 @@ export type CanonicalLink = {
   is_recurrent?: boolean;
 };
 export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; recent_episodes?: Array<{ started_at: string | null; resolved_at: string | null; active: boolean; duration_seconds: number | null; incident_number: string | null; incident_sys_id: string | null; incident_state: string | null; source_trigger_ids: string[]; alert_titles: string[]; severities: string[] }>; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
-export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; normalized?: number; without_incident?: number; without_open_incident: number; with_open_incident: number; recurrent?: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[] } };
+export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; normalized?: number; without_incident?: number; without_open_incident: number; with_open_incident: number; recurrent?: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[]; carriers: OperatorQueueFacet[] } };
 export type CanonicalLinksQuery = Record<string, string | number | undefined> & { signal?: AbortSignal };
 export const DEFAULT_CANONICAL_LINKS_QUERY = {
   tab: "open",

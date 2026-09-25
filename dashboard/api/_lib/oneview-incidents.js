@@ -64,6 +64,7 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "assigned_to",
   "contact_type",
   "manual",
+  "origin",
   "number",
   "sys_id",
   "state",
@@ -235,6 +236,8 @@ export function parseIncidentFilters(req) {
   const includeGlobalCounts = booleanFlag(oneQuery(req, "include_global_counts"), true);
   const includeFacets = booleanFlag(oneQuery(req, "include_facets"), true);
   const manual = booleanFlag(oneQuery(req, "manual"), false);
+  const origin = (cleanOptional(oneQuery(req, "origin")) || "all").toLowerCase();
+  if (!new Set(["all", "manual", "automatic"]).has(origin)) throw invalidQuery("invalid_origin");
 
   let numberRaw = cleanOptional(oneQuery(req, "number"));
   const sysIdRaw = cleanOptional(oneQuery(req, "sys_id"));
@@ -286,6 +289,7 @@ export function parseIncidentFilters(req) {
     include_global_counts: includeGlobalCounts,
     include_facets: includeFacets,
     manual,
+    origin,
     assignment_group: assignmentGroup,
     search,
   };
