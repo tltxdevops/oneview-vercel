@@ -32,6 +32,8 @@ export type OneViewTableSearchFieldProps = {
   className?: string;
   normalizeInc?: boolean;
   fetchSuggestions?: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
+  activity?: "idle" | "pending" | "searching";
+  activityQuery?: string;
 };
 
 const MIN_QUERY_LENGTH = 2;
@@ -143,6 +145,8 @@ export function OneViewTableSearchField({
   className,
   normalizeInc = true,
   fetchSuggestions,
+  activity = "idle",
+  activityQuery,
 }: OneViewTableSearchFieldProps) {
   const [focused, setFocused] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -200,6 +204,11 @@ export function OneViewTableSearchField({
   const trimmed = value.trim();
   const showPopover = suggestionsEnabled && focused && trimmed.length >= MIN_QUERY_LENGTH;
   const grouped = useMemo(() => groupByKindOrdered(suggestions), [suggestions]);
+  const activityLabel = activity === "pending"
+    ? "Preparando busca…"
+    : activity === "searching"
+      ? `Buscando por “${activityQuery?.trim() || trimmed}”…`
+      : null;
 
   function handleChange(nextRaw: string) {
     onChange(normalizeInc ? normalizeIncSearchDraft(nextRaw) : nextRaw);
@@ -242,12 +251,18 @@ export function OneViewTableSearchField({
               if (event.key === "Escape") setFocused(false);
             }}
             placeholder={placeholder}
-            className="h-9 pl-9"
+            className={cn("h-9 pl-9", activityLabel && "pr-36 sm:pr-48")}
             aria-label={ariaLabel}
             aria-expanded={showPopover}
             autoComplete="off"
           />
-          {loading && trimmed.length >= MIN_QUERY_LENGTH ? (
+          {activityLabel ? (
+            <span aria-live="polite" className="pointer-events-none absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center gap-1.5 rounded-full bg-muted/90 px-2 py-1 text-[10px] font-medium text-muted-foreground shadow-sm">
+              <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin text-primary" />
+              <span className="hidden sm:inline">{activityLabel}</span>
+              <span className="sm:hidden">Buscando…</span>
+            </span>
+          ) : loading && trimmed.length >= MIN_QUERY_LENGTH ? (
             <Loader2
               aria-hidden="true"
               className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground"
@@ -262,7 +277,7 @@ export function OneViewTableSearchField({
       >
         <Command shouldFilter={false}>
           <CommandList className="max-h-80">
-            <CommandGroup heading="Ação rápida">
+            <CommandGroup heading="Pesquisar">
               <CommandItem
                 value={`search-all-${trimmed}`}
                 onMouseDown={(event) => event.preventDefault()}
@@ -271,7 +286,7 @@ export function OneViewTableSearchField({
               >
                 <Search className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
                 <span className="min-w-0 flex-1 text-xs">
-                  Buscar na tabela por «<span className="font-semibold">{trimmed}</span>»
+                  Pesquisar por «<span className="font-semibold">{trimmed}</span>»
                 </span>
               </CommandItem>
             </CommandGroup>

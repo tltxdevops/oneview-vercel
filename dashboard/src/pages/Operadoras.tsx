@@ -1,6 +1,6 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Bell, ChevronDown, Link as LinkIcon, RotateCcw, Search } from "lucide-react";
+import { Bell, ChevronDown, Link as LinkIcon, Loader2, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
@@ -580,6 +580,7 @@ export default function OperadorasPage() {
   const [detail, setDetail] = useState<CanonicalLinkDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [linkSearchLoading, setLinkSearchLoading] = useState(false);
   const request = useRef<AbortController | null>(null);
   const requestDone = useRef<Promise<void> | null>(null);
 
@@ -593,8 +594,12 @@ export default function OperadorasPage() {
   const selectedId = useRef<string | null>(null);
   const detailCache = useRef(new Map<string, { value: CanonicalLinkDetail; expiresAt: number }>());
   const detailRequests = useRef(new Map<string, Promise<CanonicalLinkDetail>>());
+  const linkSearchIntent = useRef<{ id: number; value: string } | null>(null);
+  const linkSearchIntentId = useRef(0);
   const commitLinkSearch = useCallback((value: string) => {
     if (value === search) return;
+    linkSearchIntent.current = { id: ++linkSearchIntentId.current, value };
+    setLinkSearchLoading(true);
     setPage(1);
     setSearch(value);
   }, [search]);
@@ -613,6 +618,7 @@ export default function OperadorasPage() {
     }
     if (version !== requestVersion.current) return;
     const controller = new AbortController();
+    const searchIntent = linkSearchIntent.current?.value === search ? linkSearchIntent.current : null;
     request.current = controller;
     let finishRequest: (() => void) | null = null;
     requestDone.current = new Promise<void>((resolve) => { finishRequest = resolve; });
@@ -668,6 +674,10 @@ export default function OperadorasPage() {
         requestDone.current = null;
         setRefreshing(false);
         if (!controller.signal.aborted && !hasPayload.current) setLoading(false);
+      }
+      if (searchIntent && linkSearchIntent.current?.id === searchIntent.id) {
+        linkSearchIntent.current = null;
+        setLinkSearchLoading(false);
       }
       finishRequest?.();
     }
@@ -850,12 +860,13 @@ export default function OperadorasPage() {
     })() : null;
     if (!checkedAtLabel && !refreshing) return null;
     return (
-      <span className="whitespace-nowrap text-xs text-muted-foreground">
+      <span className="inline-flex whitespace-nowrap text-xs text-muted-foreground">
         {checkedAtLabel ? <>Última consulta: {checkedAtLabel}</> : null}
-        {refreshing ? <>{checkedAtLabel ? " · " : ""}Atualizando…</> : null}
+        {refreshing ? <span title="Atualização em segundo plano" aria-label="Atualização em segundo plano" className="ml-1 inline-flex items-center"><Loader2 className="h-3 w-3 animate-spin opacity-50" /></span> : null}
       </span>
     );
   }, [payload?.checked_at, refreshing]);
+  const linkSearchActivity = searchDraft !== search ? "pending" : linkSearchLoading ? "searching" : "idle";
   const visibleLinkColumnIds = linkTableColumns.visibleColumns.map((column) => column.id);
   const chamadoChip = incident === ALL && incidentState === ALL ? ALL : incident;
   const customerOptions = useMemo(() => [
@@ -875,6 +886,8 @@ export default function OperadorasPage() {
   ], [totals]);
   const clearFilters = () => {
     cancelLinkSearch();
+    linkSearchIntent.current = null;
+    setLinkSearchLoading(false);
     setCustomer(ALL);
     setDatasource(ALL);
     setClassification(ALL);
@@ -1056,7 +1069,7 @@ export default function OperadorasPage() {
         <SectionPanel
           title="Fila operacional de links"
           description="Situação atual, alertas e chamados por circuito"
-          aside={<span className="text-xs text-muted-foreground">{refreshing ? "Atualizando…" : `${payload?.pagination.total_items ?? 0} links`}</span>}
+          aside={<span className="text-xs text-muted-foreground">{payload?.pagination.total_items ?? 0} links</span>}
           bodyClassName="p-0"
         >
           <ConfigurableTableToolbar
@@ -1066,7 +1079,8 @@ export default function OperadorasPage() {
             searchPlaceholder="Buscar link, host ou cliente…"
             searchLabel="Buscar na tabela de links"
             columns={linkTableColumns}
-            updating={refreshing}
+            searchActivity={linkSearchActivity}
+            searchActivityQuery={search}
             activeFilterCount={Math.max(0, activeFilterCount - (search.trim() ? 1 : 0))}
             onClearFilters={clearFilters}
             filters={(

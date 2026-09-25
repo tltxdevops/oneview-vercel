@@ -886,6 +886,7 @@ export default function AlertsPage() {
   });
   const [searchQuery, setSearchQuery] = useState(() => initialQuery.get("search") ?? initialQuery.get("host") ?? initialQuery.get("problem") ?? "");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [alertSearchLoading, setAlertSearchLoading] = useState(false);
   const [dateField, setDateField] = useState<AlertsDateField>(() => {
     if (initialQuery.get("date_field")) return dateFieldFromUrl(initialQuery.get("date_field"));
     if (initialQuery.get("updated") && initialQuery.get("updated") !== "all") return "last_seen";
@@ -948,15 +949,23 @@ export default function AlertsPage() {
 
   const alertsRequestRef = useRef<AbortController | null>(null);
   const alertsRequestIdRef = useRef(0);
+  const alertSearchIntent = useRef<{ id: number; value: string } | null>(null);
+  const alertSearchIntentId = useRef(0);
   const detailRequestRef = useRef<AbortController | null>(null);
   const summaryRequestRef = useRef<Promise<void> | null>(null);
   const summaryDeadlineRef = useRef(Date.now() + SUMMARY_REFRESH_MS);
   const stableSummaryDeadlineRef = useRef(Date.now());
   const alertsDeadlineRef = useRef(Date.now() + ALERTS_REFRESH_MS);
 
+  const commitAlertSearchValue = useCallback((value: string) => {
+    if (value === debouncedSearch) return;
+    alertSearchIntent.current = { id: ++alertSearchIntentId.current, value };
+    setAlertSearchLoading(true);
+    setDebouncedSearch(value);
+  }, [debouncedSearch]);
   const { commitNow: commitAlertSearch, cancelPending: cancelAlertSearch } = useOneViewCommittedSearch(
     searchQuery,
-    setDebouncedSearch,
+    commitAlertSearchValue,
   );
 
   useEffect(() => {
@@ -989,6 +998,7 @@ export default function AlertsPage() {
     const controller = new AbortController();
     alertsRequestRef.current = controller;
     const requestId = ++alertsRequestIdRef.current;
+    const searchIntent = alertSearchIntent.current?.value === debouncedSearch ? alertSearchIntent.current : null;
     if (!options?.quiet) {
       setIsAlertsLoading(true);
       setAlertsError(null);
@@ -1048,6 +1058,10 @@ export default function AlertsPage() {
       setAlertsError(error instanceof Error ? error.message : "Não foi possível carregar os alertas.");
     } finally {
       if (requestId === alertsRequestIdRef.current) setIsAlertsLoading(false);
+      if (searchIntent && alertSearchIntent.current?.id === searchIntent.id) {
+        alertSearchIntent.current = null;
+        setAlertSearchLoading(false);
+      }
     }
   }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, health, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
@@ -1408,12 +1422,15 @@ export default function AlertsPage() {
     [history?.history_partial, v1HistoryGroups],
   );
   const isRefreshing = isAlertsLoading || isSummaryLoading;
+  const alertSearchActivity = searchQuery !== debouncedSearch ? "pending" : alertSearchLoading ? "searching" : "idle";
   const showAlertsSkeleton = isAlertsLoading && !hasLoadedAlerts && alerts.length === 0;
   const ackRequestsEnabled = health?.capabilities?.acknowledgement === true;
   const tableColumnCount = alertTableColumns.visibleColumns.length;
 
   const clearFilters = () => {
     cancelAlertSearch();
+    alertSearchIntent.current = null;
+    setAlertSearchLoading(false);
     setSelectedCustomerKeys([]);
     setSelectedDatasources([]);
     setSelectedSeverities([]);
@@ -1775,7 +1792,8 @@ export default function AlertsPage() {
           columns={alertTableColumns}
           activeFilterCount={activeFilterChips.length}
           onClearFilters={clearFilters}
-          updating={isAlertsLoading && hasLoadedAlerts}
+          searchActivity={alertSearchActivity}
+          searchActivityQuery={debouncedSearch}
           filters={(
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label className="space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
@@ -1825,12 +1843,6 @@ export default function AlertsPage() {
         {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} /> : null}
 
         <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading}>
-          {isAlertsLoading && hasLoadedAlerts ? (
-            <div className="sticky top-0 z-20 flex items-center justify-center gap-2 border-b border-border/50 bg-background/90 px-3 py-2 ov-type-caption text-muted-foreground backdrop-blur">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Atualizando...
-            </div>
-          ) : null}
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
           <TooltipProvider delayDuration={250}>
           <Table className={cn("ov-operational-table w-full table-fixed", tableColumnCount > 7 ? "min-w-[1240px]" : "min-w-[760px]")}>

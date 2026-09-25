@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronUp, Columns3, GripVertical, Loader2, RotateCcw, SlidersHorizontal } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Columns3, GripVertical, RotateCcw, SlidersHorizontal } from "lucide-react";
 import { OneViewTableSearchField } from "@/components/oneview/OneViewTableSearchField";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -118,6 +118,8 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   onSearchPick,
   onSearchSubmit,
   normalizeIncSearch = true,
+  searchActivity = "idle",
+  searchActivityQuery,
 }: {
   search: string;
   onSearchChange: (value: string) => void;
@@ -135,6 +137,8 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   onSearchPick?: (value: string) => void;
   onSearchSubmit?: (value: string) => void;
   normalizeIncSearch?: boolean;
+  searchActivity?: "idle" | "pending" | "searching";
+  searchActivityQuery?: string;
 }) {
   return (
     <div className={cn("border-b border-border/60 bg-background/75 px-3 py-2", className)}>
@@ -148,6 +152,8 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
           placeholder={searchPlaceholder}
           ariaLabel={searchLabel}
           normalizeInc={normalizeIncSearch}
+          activity={searchActivity}
+          activityQuery={searchActivityQuery}
         />
         {filters ? (
           <Popover>
@@ -174,7 +180,6 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
         ) : null}
         <ConfigurableTableColumns controller={columns} />
         {trailing}
-        {updating ? <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Atualizando</span> : null}
       </div>
       {scopeHint ? <p className="mt-1 text-[10px] text-muted-foreground">{scopeHint}</p> : null}
     </div>

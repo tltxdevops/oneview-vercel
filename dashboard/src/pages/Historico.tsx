@@ -422,11 +422,14 @@ export default function HistoricoPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
 
   const [searchDraft, setSearchDraft] = useState(() => searchParams.get("search") || "");
+  const [historySearchLoading, setHistorySearchLoading] = useState(false);
   const [actorDraft, setActorDraft] = useState(() => searchParams.get("actor") || "");
   const [customRange, setCustomRange] = useState<DateRange | undefined>(() => rangeFromUrl(searchParams));
   const [filtersOpen, setFiltersOpen] = useState(false);
   const eventsRequestRef = useRef<AbortController | null>(null);
   const alertsRequestRef = useRef<AbortController | null>(null);
+  const historySearchIntent = useRef<{ id: number; value: string } | null>(null);
+  const historySearchIntentId = useRef(0);
   const detailRequestRef = useRef<AbortController | null>(null);
   const eventsLoadedRef = useRef(false);
   const alertsLoadedRef = useRef(false);
@@ -514,6 +517,8 @@ export default function HistoricoPage() {
 
   const commitHistorySearch = useCallback((value: string) => {
     if (value === search) return;
+    historySearchIntent.current = { id: ++historySearchIntentId.current, value };
+    setHistorySearchLoading(true);
     patchParams({ search: value || null }, { resetPage: true });
   }, [patchParams, search]);
   const commitHistoryActor = useCallback((value: string) => {
@@ -536,6 +541,7 @@ export default function HistoricoPage() {
     eventsRequestRef.current?.abort();
     const controller = new AbortController();
     eventsRequestRef.current = controller;
+    const searchIntent = historySearchIntent.current?.value === search ? historySearchIntent.current : null;
     const quiet = eventsLoadedRef.current;
     if (!quiet) setEventsLoading(true);
     try {
@@ -575,6 +581,10 @@ export default function HistoricoPage() {
       }
     } finally {
       if (!controller.signal.aborted) setEventsLoading(false);
+      if (searchIntent && historySearchIntent.current?.id === searchIntent.id) {
+        historySearchIntent.current = null;
+        setHistorySearchLoading(false);
+      }
     }
   }, [actor, cliente, fonte, customRange, eventType, historyPageSize, page, period, search]);
 
@@ -582,6 +592,7 @@ export default function HistoricoPage() {
     alertsRequestRef.current?.abort();
     const controller = new AbortController();
     alertsRequestRef.current = controller;
+    const searchIntent = historySearchIntent.current?.value === search ? historySearchIntent.current : null;
     const quiet = alertsLoadedRef.current;
     if (!quiet) setAlertsLoading(true);
     try {
@@ -646,6 +657,10 @@ export default function HistoricoPage() {
       }
     } finally {
       if (!controller.signal.aborted) setAlertsLoading(false);
+      if (searchIntent && historySearchIntent.current?.id === searchIntent.id) {
+        historySearchIntent.current = null;
+        setHistorySearchLoading(false);
+      }
     }
   }, [ackFilter, alertStatus, cliente, fonte, customRange, historyPageSize, page, period, recurrenceKey, risk, search, severities]);
 
@@ -753,8 +768,11 @@ export default function HistoricoPage() {
     ? (alertsError || alertTotal === null ? "— alertas registrados" : `${alertTotal.toLocaleString("pt-BR")} alertas registrados`)
     : (eventsError || eventTotal === null ? "— eventos registrados" : `${eventTotal.toLocaleString("pt-BR")} eventos registrados`);
 
+  const historySearchActivity = searchDraft !== search ? "pending" : historySearchLoading ? "searching" : "idle";
   const clearFilters = () => {
     cancelHistorySearch();
+    historySearchIntent.current = null;
+    setHistorySearchLoading(false);
     cancelHistoryActor();
     setSearchDraft("");
     setActorDraft("");
@@ -1234,7 +1252,8 @@ export default function HistoricoPage() {
                 searchPlaceholder="Buscar host, problema ou cliente…"
                 searchLabel="Buscar na tabela do histórico de alertas"
                 columns={historyAlertColumns}
-                updating={alertsLoading && alertsLoaded}
+                searchActivity={historySearchActivity}
+                searchActivityQuery={search}
                 activeFilterCount={activeFilterChips.length}
                 onClearFilters={clearFilters}
                 filters={(
@@ -1488,7 +1507,8 @@ export default function HistoricoPage() {
                 searchPlaceholder="Buscar evento, host, cliente ou ator…"
                 searchLabel="Buscar na tabela do histórico de eventos"
                 columns={historyEventColumns}
-                updating={eventsLoading && eventsLoaded}
+                searchActivity={historySearchActivity}
+                searchActivityQuery={search}
                 activeFilterCount={activeFilterChips.length}
                 onClearFilters={clearFilters}
                 filters={(

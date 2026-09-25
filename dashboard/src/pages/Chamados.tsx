@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { format, subDays } from "date-fns";
-import { Loader2, SlidersHorizontal } from "lucide-react";
+import { SlidersHorizontal } from "lucide-react";
 import { ChamadosSearchField } from "@/components/chamados/ChamadosSearchField";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
@@ -220,6 +220,7 @@ export default function ChamadosPage() {
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [metadataRefreshVersion, setMetadataRefreshVersion] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [incidentSearchLoading, setIncidentSearchLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<OneViewIncident | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "manual" | "duplicates">("list");
@@ -247,6 +248,8 @@ export default function ChamadosPage() {
 
   const commitIncidentSearch = useCallback((search: string) => {
     if (search === applied.search) return;
+    incidentSearchIntent.current = { id: ++incidentSearchIntentId.current, value: search };
+    setIncidentSearchLoading(true);
     setPage(1);
     setMetadataRefreshVersion((current) => current + 1);
     setApplied((current) => ({ ...current, search }));
@@ -255,10 +258,13 @@ export default function ChamadosPage() {
     draft.search,
     commitIncidentSearch,
   );
+  const incidentSearchIntent = useRef<{ id: number; value: string } | null>(null);
+  const incidentSearchIntentId = useRef(0);
 
   useEffect(() => {
     if (viewMode === "duplicates") return;
     const controller = new AbortController();
+    const searchIntent = incidentSearchIntent.current?.value === applied.search ? incidentSearchIntent.current : null;
     if (payloadRef.current) setRefreshing(true);
     else setLoading(true);
     setError(null);
@@ -317,6 +323,10 @@ export default function ChamadosPage() {
           setLoading(false);
           setRefreshing(false);
         }
+        if (searchIntent && incidentSearchIntent.current?.id === searchIntent.id) {
+          incidentSearchIntent.current = null;
+          setIncidentSearchLoading(false);
+        }
       });
 
     return () => controller.abort();
@@ -353,6 +363,7 @@ export default function ChamadosPage() {
   }, [applied, refreshVersion, viewMode]);
 
   const items = payload?.items ?? [];
+  const incidentSearchActivity = draft.search !== applied.search ? "pending" : incidentSearchLoading ? "searching" : "idle";
   const pagination = payload?.pagination;
   const globalCounts = payload?.global_counts;
   const visibleColumnIds = incidentColumns.visibleColumns.map((column) => column.id);
@@ -467,6 +478,8 @@ export default function ChamadosPage() {
 
   function clearFilters() {
     cancelIncidentSearch();
+    incidentSearchIntent.current = null;
+    setIncidentSearchLoading(false);
     setDraft(EMPTY_DRAFT);
     setApplied(EMPTY_DRAFT);
     setPage(1);
@@ -643,16 +656,22 @@ export default function ChamadosPage() {
               onSubmit={(search) => {
                 cancelIncidentSearch();
                 const next = { ...draft, search };
+                incidentSearchIntent.current = { id: ++incidentSearchIntentId.current, value: search };
+                setIncidentSearchLoading(true);
                 setDraft(next);
                 applyFilters(next);
               }}
               onSelect={(search) => {
                 cancelIncidentSearch();
                 const next = { ...draft, search };
+                incidentSearchIntent.current = { id: ++incidentSearchIntentId.current, value: search };
+                setIncidentSearchLoading(true);
                 setDraft(next);
                 applyFilters(next);
               }}
               scope={searchSuggestScope}
+              activity={incidentSearchActivity}
+              activityQuery={applied.search}
             />
 
             <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
@@ -732,7 +751,6 @@ export default function ChamadosPage() {
 
             {activeFilterCount > 0 ? <Button type="button" size="sm" variant="ghost" className="h-9" onClick={clearFilters}>Limpar filtros</Button> : null}
             {viewMode === "manual" ? <Badge variant="secondary">Manuais: Novo, Em andamento e Em espera</Badge> : null}
-            {refreshing ? <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Atualizando</span> : null}
           </div>
         </FilterBar>
 

@@ -13,6 +13,8 @@ type ChamadosSearchFieldProps = {
   scope: Omit<FetchIncidentSearchSuggestionsParams, "q" | "limit" | "signal">;
   className?: string;
   inputId?: string;
+  activity?: "idle" | "pending" | "searching";
+  activityQuery?: string;
 };
 
 export function ChamadosSearchField({
@@ -23,6 +25,8 @@ export function ChamadosSearchField({
   scope,
   className,
   inputId = "chamados-search",
+  activity,
+  activityQuery,
 }: ChamadosSearchFieldProps) {
   const fetchSuggestions = useCallback(
     (q: string, signal: AbortSignal) =>
@@ -41,6 +45,8 @@ export function ChamadosSearchField({
       ariaLabel="Buscar na tabela de chamados"
       inputId={inputId}
       className={className}
+      activity={activity}
+      activityQuery={activityQuery}
     />
   );
 }
