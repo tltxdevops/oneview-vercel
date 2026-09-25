@@ -200,7 +200,7 @@ export function OperatorReminderInboxProvider({ children }: { children: React.Re
 
   const openLink = useCallback((item: ReminderInboxToastRecord) => {
     dismissToast(item.toastId);
-    navigate(operadorasReminderLinkPath(item.link));
+    navigate(operadorasReminderLinkPath(item));
   }, [dismissToast, navigate]);
 
   return (

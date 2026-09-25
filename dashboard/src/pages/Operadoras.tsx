@@ -25,7 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminderDeepLink, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem, type OperatorReminderInboxLink } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
@@ -64,6 +64,7 @@ type ReminderView = "scheduled" | "sent" | "skipped" | "failed" | "cancelled" | 
 type ReminderPeriod = "all" | "30m" | "1h" | "4h" | "8h" | "24h" | "7d" | "custom";
 type ReminderIncidentFilter = "all" | "with" | "without";
 type ReminderSort = "default" | "recent" | "oldest";
+type ReminderDeepLinkInput = { id: string; link: OperatorReminderInboxLink };
 
 function isAbortError(cause: unknown) {
   if (!(cause instanceof Error)) return false;
@@ -71,6 +72,37 @@ function isAbortError(cause: unknown) {
 }
 
 const text = (value: unknown, empty = "Não informada na origem") => String(value || "").trim() || empty;
+function reminderLinkPlaceholder(input: ReminderDeepLinkInput, snapshot: Record<string, unknown> = {}): CanonicalLink {
+  const link = input.link;
+  return {
+    id: link.circuit_key || link.source_host_id || "reminder-link",
+    circuit_key: link.circuit_key,
+    data_source_id: link.data_source_id,
+    datasource: link.data_source_id,
+    source_host_id: link.source_host_id || "",
+    host_name: snapshotText(snapshot, "circuit", "host_name") || null,
+    customer_name: snapshotText(snapshot, "customer", "name") || "Cliente não informado",
+    customer_key: snapshotText(snapshot, "customer", "key") || "unclassified",
+    service_name: snapshotText(snapshot, "link", "service_name") || snapshotText(snapshot, "alert", "problem_name") || "Link indisponível",
+    state: "attention",
+    active_alerts: 0,
+    unack_alerts: 0,
+    high_alerts: 0,
+    disaster_alerts: 0,
+    average_alerts: 0,
+    warning_alerts: 0,
+    incident_count: null,
+    operational_subject: {
+      subject_type: link.subject_type,
+      subject_key: link.subject_key || "",
+      circuit_key: link.circuit_key,
+      data_source_id: link.data_source_id,
+      source_host_id: link.source_host_id,
+      source_trigger_id: link.source_trigger_id,
+      fallback_subject_keys: [],
+    },
+  } as CanonicalLink;
+}
 const optionList = (items: Array<{ value: string; label: string }> | undefined, allLabel = "Todos") => [
   { value: ALL, label: allLabel },
   ...(items || []),
@@ -537,7 +569,7 @@ function MobileLinkCard({ item, reminder, onOpen }: { item: CanonicalLink; remin
 
 export default function OperadorasPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const reminderDeepLinkRef = useRef(false);
+  const reminderDeepLinkRef = useRef<string | null>(null);
   const { user } = useAuthContext();
   const dashboard = useOneViewDashboardLayout({
     page: "operators",
@@ -581,6 +613,8 @@ export default function OperadorasPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [linkSearchLoading, setLinkSearchLoading] = useState(false);
+  const [reminderDeepLink, setReminderDeepLink] = useState<ReminderDeepLinkInput | null>(null);
+  const [reminderUnavailable, setReminderUnavailable] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const requestDone = useRef<Promise<void> | null>(null);
 
@@ -594,6 +628,8 @@ export default function OperadorasPage() {
   const selectedId = useRef<string | null>(null);
   const detailCache = useRef(new Map<string, { value: CanonicalLinkDetail; expiresAt: number }>());
   const detailRequests = useRef(new Map<string, Promise<CanonicalLinkDetail>>());
+  const reminderDeepLinkRequest = useRef<AbortController | null>(null);
+  const reminderDeepLinkVersion = useRef(0);
   const linkSearchIntent = useRef<{ id: number; value: string } | null>(null);
   const linkSearchIntentId = useRef(0);
   const commitLinkSearch = useCallback((value: string) => {
@@ -726,6 +762,9 @@ export default function OperadorasPage() {
   }, []);
 
   const openLink = useCallback((link: CanonicalLink) => {
+    reminderDeepLinkVersion.current += 1;
+    reminderDeepLinkRequest.current?.abort();
+    reminderDeepLinkRequest.current = null;
     const key = `${link.id}:${link.data_source_id}:${link.source_host_id}`;
     selectedId.current = key;
     drawerOpenedAt = performance.now();
@@ -735,17 +774,63 @@ export default function OperadorasPage() {
       setDetail(cachedDetail(key) || null);
       setDetailError(null);
       setDetailLoading(!cachedDetail(key));
+      setReminderDeepLink(null);
+      setReminderUnavailable(null);
     });
     void loadDetail(link);
   }, [loadDetail]);
 
+  const openReminderDeepLink = useCallback(async (input: ReminderDeepLinkInput) => {
+    const version = ++reminderDeepLinkVersion.current;
+    reminderDeepLinkRequest.current?.abort();
+    const controller = new AbortController();
+    reminderDeepLinkRequest.current = controller;
+    selectedId.current = `reminder:${input.id}`;
+    drawerOpenedAt = performance.now();
+    startTransition(() => {
+      setSelected(reminderLinkPlaceholder(input));
+      setDetail(null);
+      setDetailError(null);
+      setDetailLoading(true);
+      setReminderDeepLink(input);
+      setReminderUnavailable(null);
+    });
+    try {
+      const result = await fetchOperatorReminderDeepLink(input, controller.signal);
+      if (controller.signal.aborted || version !== reminderDeepLinkVersion.current) return;
+      if (result.status === "available" && result.link) {
+        selectedId.current = `${result.link.id}:${result.link.data_source_id}:${result.link.source_host_id}`;
+        setSelected(result.link);
+        setDetail(result.link);
+        setDetailError(null);
+      } else {
+        setSelected(reminderLinkPlaceholder(input, result.reminder.context_snapshot));
+        setDetail(null);
+        setDetailError(null);
+        setReminderUnavailable("Este link não está mais ativo no inventário atual. Os dados abaixo pertencem ao lembrete original.");
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted && version === reminderDeepLinkVersion.current) {
+        setDetailError(cause instanceof Error ? cause.message : "Não foi possível localizar o link deste lembrete.");
+      }
+    } finally {
+      if (reminderDeepLinkRequest.current === controller) reminderDeepLinkRequest.current = null;
+      if (!controller.signal.aborted && version === reminderDeepLinkVersion.current) setDetailLoading(false);
+    }
+  }, []);
+
   const closeLink = useCallback(() => {
+    reminderDeepLinkVersion.current += 1;
+    reminderDeepLinkRequest.current?.abort();
+    reminderDeepLinkRequest.current = null;
     selectedId.current = null;
     setReminderRequest(null);
     setSelected(null);
     setDetail(null);
     setDetailError(null);
     setDetailLoading(false);
+    setReminderDeepLink(null);
+    setReminderUnavailable(null);
   }, []);
 
   const openReminder = useCallback((link: CanonicalLink) => {
@@ -774,15 +859,17 @@ export default function OperadorasPage() {
   }, []);
 
   useEffect(() => {
-    if (reminderDeepLinkRef.current) return;
     const ds = searchParams.get("ds")?.trim();
     const host = searchParams.get("host")?.trim();
     if (!ds || !host) return;
-    reminderDeepLinkRef.current = true;
+    const reminderId = searchParams.get("reminder_id")?.trim() || "";
     const circuit = searchParams.get("circuit")?.trim() || null;
     const subjectType = searchParams.get("subject_type")?.trim();
     const subjectKey = searchParams.get("subject_key")?.trim() || null;
     const trigger = searchParams.get("trigger")?.trim() || null;
+    const fingerprint = [reminderId, ds, host, circuit, subjectType, subjectKey, trigger].join(":");
+    if (reminderDeepLinkRef.current === fingerprint) return;
+    reminderDeepLinkRef.current = fingerprint;
     const operationalSubject = subjectType === "circuit" || subjectType === "alert_subject"
       ? {
         subject_type: subjectType,
@@ -800,13 +887,28 @@ export default function OperadorasPage() {
       source_host_id: host,
       operational_subject: operationalSubject,
     } as CanonicalLink;
-    openLink(link);
+    if (reminderId) {
+      if (subjectType === "circuit" || subjectType === "alert_subject") {
+        void openReminderDeepLink({ id: reminderId, link: { circuit_key: circuit, data_source_id: ds, source_host_id: host, subject_type: subjectType, subject_key: subjectKey, source_trigger_id: trigger } });
+      } else {
+        const invalid = { id: reminderId, link: { circuit_key: circuit, data_source_id: ds, source_host_id: host, subject_type: "circuit" as const, subject_key: subjectKey, source_trigger_id: null } };
+        selectedId.current = `reminder:${reminderId}`;
+        setSelected(reminderLinkPlaceholder(invalid));
+        setDetail(null);
+        setDetailLoading(false);
+        setDetailError("Não foi possível validar a identidade deste lembrete.");
+        setReminderDeepLink(null);
+        setReminderUnavailable(null);
+      }
+    } else {
+      openLink(link);
+    }
     const next = new URLSearchParams(searchParams);
-    for (const key of ["ds", "host", "circuit", "subject_type", "subject_key", "trigger", "reminder_link"]) {
+    for (const key of ["reminder_id", "ds", "host", "circuit", "subject_type", "subject_key", "trigger", "reminder_link"]) {
       next.delete(key);
     }
     setSearchParams(next, { replace: true });
-  }, [openLink, searchParams, setSearchParams]);
+  }, [openLink, openReminderDeepLink, searchParams, setSearchParams]);
 
   useEffect(() => {
     void load();
@@ -1173,12 +1275,12 @@ export default function OperadorasPage() {
         </ConfigurableDashboard>}
       </div>
 
-      <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} reminderRequest={reminderRequest} onClose={closeLink} onRetry={() => selected && void loadDetail(selected)} />
+      <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} unavailableMessage={reminderUnavailable} reminderRequest={reminderRequest} onClose={closeLink} onRetry={() => reminderDeepLink ? void openReminderDeepLink(reminderDeepLink) : selected && void loadDetail(selected)} />
     </AppLayout>
   );
 }
 
-function QueueLinkDrawer({ link, detail, loading, error, reminderRequest, onClose, onRetry }: { link: CanonicalLink | null; detail: CanonicalLinkDetail | null; loading: boolean; error: string | null; reminderRequest: string | null; onClose: () => void; onRetry: () => void }) {
+function QueueLinkDrawer({ link, detail, loading, error, unavailableMessage, reminderRequest, onClose, onRetry }: { link: CanonicalLink | null; detail: CanonicalLinkDetail | null; loading: boolean; error: string | null; unavailableMessage: string | null; reminderRequest: string | null; onClose: () => void; onRetry: () => void }) {
   const [expandedIncidentKey, setExpandedIncidentKey] = useState<string | null>(null);
   const [claimedAssignee, setClaimedAssignee] = useState<string | null>(null);
   const [incidentRefreshVersion, setIncidentRefreshVersion] = useState(0);
@@ -1203,6 +1305,7 @@ function QueueLinkDrawer({ link, detail, loading, error, reminderRequest, onClos
     <SheetHeader className="shrink-0 border-b border-border/60 px-5 py-5 pr-12 text-left"><div className="flex flex-wrap items-center gap-2"><StateBadge state={view.state} />{view.max_severity ? <SeverityBadge severity={view.max_severity} /> : null}</div><SheetTitle className="break-words text-base">{linkLabel(view)}</SheetTitle><SheetDescription>{view.customer_name} · {localLabel(view)}</SheetDescription></SheetHeader>
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
       {error ? <OperationalErrorBanner message={error} onRetry={onRetry} /> : null}
+      {unavailableMessage ? <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">{unavailableMessage}</div> : null}
       <section><h3 className="mb-2 text-sm font-semibold">Resumo operacional</h3><div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2"><Field label="Cliente" value={text(view.customer_name)} /><Field label="Local" value={localLabel(view)} /><Field label="Link" value={linkLabel(view)} /><Field label="Monitoramento" value={view.active_alerts ? `Em falha há ${failureDuration(view)}` : "Normalizado"} /><Field label="Severidade" value={text(view.max_severity)} /><Field label="Caiu às" value={timestampLabel(view.alert_started_at || view.active_since_at)} /><Field label="Último alerta às" value={timestampLabel(view.latest_alert_at)} /><Field label="Divergência" value={divergenceLabel(view)} /></div></section>
       <CircuitReminderPanel link={view} requestOpen={reminderRequest} />
       <RecurrencePanel link={view} />

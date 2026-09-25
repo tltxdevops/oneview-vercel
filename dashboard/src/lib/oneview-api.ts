@@ -2265,6 +2265,12 @@ export type OperatorReminderInboxResponse = {
   checked_at?: string;
 };
 
+export type OperatorReminderDeepLinkResponse = {
+  status: "available" | "unavailable";
+  link: CanonicalLinkDetail | null;
+  reminder: { id: string; link: OperatorReminderInboxLink; context_snapshot: Record<string, unknown> };
+};
+
 export async function fetchOperatorReminderInbox(options: {
   since: string;
   limit?: number;
@@ -2275,6 +2281,15 @@ export async function fetchOperatorReminderInbox(options: {
   return fetchApi<OperatorReminderInboxResponse>(`/oneview/reminders/inbox?${search.toString()}`, {
     signal: options.signal,
   });
+}
+
+export async function fetchOperatorReminderDeepLink(item: Pick<OperatorReminderInboxItem, "id" | "link">, signal?: AbortSignal): Promise<OperatorReminderDeepLinkResponse> {
+  const { link } = item;
+  const search = new URLSearchParams({ reminder_id: item.id, ds: link.data_source_id, subject_type: link.subject_type, subject_key: link.subject_key || "" });
+  if (link.source_host_id) search.set("host", link.source_host_id);
+  if (link.circuit_key) search.set("circuit", link.circuit_key);
+  if (link.source_trigger_id) search.set("trigger", link.source_trigger_id);
+  return fetchApi<OperatorReminderDeepLinkResponse>(`/oneview/reminders/resolve-link?${search.toString()}`, { signal });
 }
 
 export async function fetchOperatorReminderFeed(options: OperatorReminderFeedFilters & { signal?: AbortSignal; force?: boolean } = {}): Promise<OperatorReminderFeed> {
