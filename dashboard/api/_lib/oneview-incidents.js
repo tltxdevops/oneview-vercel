@@ -87,6 +87,8 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "search",
   "q",
   "limit",
+  "sort",
+  "order",
 ]);
 
 /** Query params extras só para GET /oneview/incidents/search-suggest. */

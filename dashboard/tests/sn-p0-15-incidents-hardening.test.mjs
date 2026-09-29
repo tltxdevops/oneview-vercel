@@ -102,6 +102,10 @@ test("SN-P0-15 rejeita query params fora do allowlist", () => {
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("has_assignee"));
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("include_unassigned"));
   assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("opened_from"));
+  assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("sort"));
+  assert.ok(INCIDENT_ALLOWED_QUERY_KEYS.includes("order"));
+  assert.equal(parseIncidentFilters(requestMock({ sort: "updated", order: "desc" })).sort, "updated");
+  assert.equal(parseIncidentFilters(requestMock({ sort: "updated", order: "desc" })).order, "desc");
   assert.ok(!INCIDENT_ALLOWED_QUERY_KEYS.includes("sysparm_query"));
 });
 
