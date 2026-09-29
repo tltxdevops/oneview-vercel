@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { Bell, ChevronDown, Link as LinkIcon, Loader2, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
 import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
@@ -54,6 +54,36 @@ const LINK_TABLE_COLUMNS = [
   { id: "classification", label: "Classificação", defaultVisible: false },
 ] as const;
 type LinkTableColumnId = typeof LINK_TABLE_COLUMNS[number]["id"];
+type LinkSortKey = "recent" | "oldest" | "activity" | "duration" | "severity" | "link" | "customer" | "carrier" | "datasource" | "type" | "situation";
+type LinkSortOrder = "asc" | "desc";
+const LINK_COLUMN_SORT: Partial<Record<LinkTableColumnId, LinkSortKey>> = {
+  link_local: "link",
+  situation: "situation",
+  latest_alert: "activity",
+  link_type: "type",
+  carrier: "carrier",
+  datasource: "datasource",
+  severity: "severity",
+  classification: "type",
+};
+const LINK_SORT_OPTIONS = [
+  { value: "activity:desc", label: "Último alerta: mais novos" },
+  { value: "activity:asc", label: "Último alerta: mais antigos" },
+  { value: "link:asc", label: "Link: A–Z" },
+  { value: "link:desc", label: "Link: Z–A" },
+  { value: "situation:asc", label: "Situação: A–Z" },
+  { value: "situation:desc", label: "Situação: Z–A" },
+  { value: "carrier:asc", label: "Operadora: A–Z" },
+  { value: "carrier:desc", label: "Operadora: Z–A" },
+  { value: "datasource:asc", label: "Fonte: A–Z" },
+  { value: "datasource:desc", label: "Fonte: Z–A" },
+  { value: "type:asc", label: "Tipo: A–Z" },
+  { value: "type:desc", label: "Tipo: Z–A" },
+  { value: "severity:desc", label: "Maior severidade" },
+  { value: "severity:asc", label: "Menor severidade" },
+  { value: "duration:desc", label: "Maior duração" },
+  { value: "duration:asc", label: "Menor duração" },
+] as const;
 const OPERATOR_DASHBOARD_WIDGETS = dashboardWidgetsForPage("operators").filter((widget) => widget.id !== "operators-filters");
 type QueueTab = "open" | "normalized" | "all";
 type OperationalSituation = "all" | "failure_without_incident" | "failure_with_open_incident" | "failure_with_closed_incident" | "normalized_with_open_incident" | "normalized_without_open_incident";
@@ -391,6 +421,9 @@ function LinkTableColumnHeader({
   onSeverityChange,
   onClassificationChange,
   onCarrierChange,
+  sort,
+  order,
+  onSort,
 }: {
   column: { id: LinkTableColumnId; label: string };
   facets: CanonicalLinksResponse["facets"] | undefined;
@@ -410,7 +443,12 @@ function LinkTableColumnHeader({
   onSeverityChange: (value: string) => void;
   onClassificationChange: (value: string) => void;
   onCarrierChange: (value: string) => void;
+  sort: LinkSortKey;
+  order: LinkSortOrder;
+  onSort: (field: LinkSortKey) => void;
 }) {
+  const sortField = LINK_COLUMN_SORT[column.id];
+  const sortActive = sortField === sort || (column.id === "latest_alert" && ((sort === "recent" && order === "desc") || (sort === "oldest" && order === "asc")));
   const filter = (() => {
     if (column.id === "situation") {
       return (
@@ -502,9 +540,9 @@ function LinkTableColumnHeader({
   })();
 
   return (
-    <TableHead key={column.id} className={cn(OV_TABLE_HEAD, "align-top")}>
+    <TableHead key={column.id} aria-sort={sortField ? sortActive ? order === "asc" ? "ascending" : "descending" : "none" : undefined} className={cn(OV_TABLE_HEAD, "overflow-visible align-top")}>
       <div className="space-y-0.5">
-        <span className="block">{column.label}</span>
+        {sortField ? <OneViewSortableHeader label={column.label} active={sortActive} direction={order} onClick={() => onSort(sortField)} /> : <span className="block">{column.label}</span>}
         {filter}
       </div>
     </TableHead>
@@ -597,7 +635,8 @@ export default function OperadorasPage() {
   const [tab, setTab] = useState<QueueTab>("open");
   const [view, setView] = useState<PageView>("queue");
   const [resolvedWindow, setResolvedWindow] = useState("today");
-  const [sort, setSort] = useState("recent");
+  const [sort, setSort] = useState<LinkSortKey>("recent");
+  const [sortOrder, setSortOrder] = useState<LinkSortOrder>("desc");
   const [divergence, setDivergence] = useState<"a" | "b" | "any" | "">("");
   const [recurrence, setRecurrence] = useState<"all" | "recurrent">("all");
   const [operationalSituation, setOperationalSituation] = useState<OperationalSituation>("all");
@@ -678,6 +717,7 @@ export default function OperadorasPage() {
         tab,
         resolved_window: resolvedWindow,
         sort,
+        order: sortOrder,
         divergence: divergence || undefined,
         recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
         operational_situation: operationalSituation === ALL ? undefined : operationalSituation,
@@ -719,7 +759,22 @@ export default function OperadorasPage() {
       }
       finishRequest?.();
     }
-  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operatorEscalation, operationalSituation, operatorQueuePageSize, page, recurrence, resolvedWindow, search, severity, sort, state, tab]);
+  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operatorEscalation, operationalSituation, operatorQueuePageSize, page, recurrence, resolvedWindow, search, severity, sort, sortOrder, state, tab]);
+
+  const toggleLinkSort = useCallback((field: LinkSortKey) => {
+    const currentField = sort === "recent" || sort === "oldest" ? "activity" : sort;
+    const defaultOrder: LinkSortOrder = field === "activity" || field === "severity" ? "desc" : "asc";
+    setSortOrder((current) => currentField === field ? current === "asc" ? "desc" : "asc" : defaultOrder);
+    setSort(field);
+    setPage(1);
+  }, [sort]);
+
+  const applyLinkSort = useCallback((value: string) => {
+    const [field, order] = value.split(":") as [LinkSortKey, LinkSortOrder];
+    setSort(field);
+    setSortOrder(order === "asc" ? "asc" : "desc");
+    setPage(1);
+  }, []);
 
   const cachedDetail = (key: string) => {
     const cached = detailCache.current.get(key);
@@ -1148,7 +1203,7 @@ export default function OperadorasPage() {
                     onChange={setFilter(setState)}
                   />
                   <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
-                  <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
+                  <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={(value) => { setSort(value as LinkSortKey); setPage(1); }} />
               </div>
             </div>
           ) : null}
@@ -1188,6 +1243,12 @@ export default function OperadorasPage() {
             searchActivityQuery={search}
             activeFilterCount={Math.max(0, activeFilterCount - (search.trim() ? 1 : 0))}
             onClearFilters={clearFilters}
+            sort={{
+              value: sort === "recent" ? "activity:desc" : sort === "oldest" ? "activity:asc" : `${sort}:${sortOrder}`,
+              options: [...LINK_SORT_OPTIONS],
+              onChange: applyLinkSort,
+              label: "Ordenar links",
+            }}
             filters={(
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerOptions} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={(key) => { setCustomer(key === ALL || key === customer ? ALL : key); setCustomerFilterOpen(false); setPage(1); }} countNoun="neste filtro" /></div>
@@ -1196,7 +1257,7 @@ export default function OperadorasPage() {
                 <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
                 <Filter label="Operadora" value={operatorEscalation} options={[{ value: ALL, label: "Todos" }, { value: "yes", label: "Escalonado" }, { value: "no", label: "Não escalonado" }]} onChange={setFilter(setOperatorEscalation)} />
                 <Filter label="Carrier" value={carrier} options={[{ value: ALL, label: "Todos" }, { value: "unknown", label: "Não identificada" }, ...(payload?.facets.carriers || []).map((item) => ({ value: item.value, label: item.label }))]} onChange={setFilter(setCarrier)} />
-                <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={setFilter(setSort)} />
+                <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={(value) => { setSort(value as LinkSortKey); setPage(1); }} />
               </div>
             )}
           />
@@ -1215,7 +1276,7 @@ export default function OperadorasPage() {
                 {items.map((item) => <MobileLinkCard key={item.id} item={item} reminder={queueReminderForLink(item, queueReminders)} onOpen={openLink} />)}
               </div>
               <div className="hidden overflow-x-auto md:block">
-                <Table className={cn("w-full table-fixed", visibleLinkColumnIds.length > 6 && "min-w-[70rem]")}>
+                <Table className={cn("ov-operational-table w-full table-fixed", visibleLinkColumnIds.length > 6 && "min-w-[70rem]")}>
                   <TableHeader>
                     <TableRow>
                       {linkTableColumns.visibleColumns.map((column) => (
@@ -1239,6 +1300,9 @@ export default function OperadorasPage() {
                           onSeverityChange={setFilter(setSeverity)}
                           onClassificationChange={setFilter(setClassification)}
                           onCarrierChange={setFilter(setCarrier)}
+                          sort={sort}
+                          order={sortOrder}
+                          onSort={toggleLinkSort}
                         />
                       ))}
                     </TableRow>

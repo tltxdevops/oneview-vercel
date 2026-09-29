@@ -99,6 +99,74 @@ export class OneViewApiError extends Error {
   }
 }
 
+export type ClientShareMessage = {
+  client_key: string;
+  client_name: string;
+  severity: string;
+  host: string;
+  problem: string;
+  started_at: string;
+  status: string;
+  incident_number?: string | null;
+  servicenow_url?: string | null;
+  oneview_url?: string | null;
+  message_type: "alert" | "resolved";
+  route_key?: string | null;
+  snapshot?: Record<string, unknown> | null;
+};
+
+export type ClientShareChannel = "teams" | "webex";
+
+export type ClientShareDestination = {
+  client_key: string;
+  route_key: string;
+  route_label: string;
+  destination_id: string;
+  destination_name: string;
+  channel_type: ClientShareChannel;
+  enabled: boolean;
+  is_default: boolean;
+};
+
+export type ClientShareResolution = {
+  selection: "auto" | "preselected" | "explicit" | "required" | "none";
+  selected_destination_id: string | null;
+  requires_selection: boolean;
+  reason: "single_destination" | "route_key" | "destination_id" | "unknown_route" | "ambiguous_route" | "multiple_destinations" | "no_destination";
+};
+
+export type ClientShareDestinationList = {
+  destinations: ClientShareDestination[];
+  resolution: ClientShareResolution;
+  external_enabled: boolean;
+};
+
+export type ClientSharePreview = {
+  message: ClientShareMessage;
+  destinations: ClientShareDestination[];
+  resolution: ClientShareResolution;
+  destination: ClientShareDestination | null;
+  preview: { text: string; destination_id: string | null; destinations: { teams: boolean; webex: boolean } };
+  external_enabled: boolean;
+};
+
+export async function fetchClientShareDestinations(clientKey: string, routeKey?: string | null, signal?: AbortSignal): Promise<ClientShareDestinationList> {
+  const search = new URLSearchParams({ client_key: clientKey });
+  if (routeKey) search.set("route_key", routeKey);
+  return fetchApi(`/oneview/client-sharing/destinations?${search.toString()}`, { signal });
+}
+
+export async function fetchClientSharePreview(message: ClientShareMessage, signal?: AbortSignal): Promise<ClientSharePreview> {
+  return fetchApi("/oneview/client-sharing/preview", { method: "POST", body: JSON.stringify({ message }), signal });
+}
+
+export async function sendClientShare(message: ClientShareMessage, idempotencyKey: string, destinationId: string): Promise<{ dry_run: boolean; duplicate?: boolean }> {
+  return fetchApi("/oneview/client-sharing/send", {
+    method: "POST",
+    body: JSON.stringify({ message, idempotency_key: idempotencyKey, destination_id: destinationId }),
+  });
+}
+
 type OneViewFetchInit = RequestInit & { oneViewFresh?: boolean };
 
 async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
@@ -1106,6 +1174,8 @@ export async function fetchGlobalHistory(params?: {
   search?: string;
   occurredFrom?: string;
   occurredTo?: string;
+  sort?: "occurred" | "client" | "host" | "problem" | "actor" | "description" | "severity";
+  order?: "asc" | "desc";
   signal?: AbortSignal;
 }): Promise<GlobalHistoryResponse> {
   const search = new URLSearchParams();
@@ -1118,6 +1188,8 @@ export async function fetchGlobalHistory(params?: {
   if (params?.search) search.set("search", params.search);
   if (params?.occurredFrom) search.set("occurred_from", params.occurredFrom);
   if (params?.occurredTo) search.set("occurred_to", params.occurredTo);
+  if (params?.sort) search.set("sort", params.sort);
+  if (params?.order) search.set("order", params.order);
   const query = search.toString();
   return fetchApi<GlobalHistoryResponse>(`/oneview/history${query ? `?${query}` : ""}`, { signal: params?.signal });
 }
@@ -1324,6 +1396,8 @@ export type FetchIncidentsParams = {
   search?: string;
   hasAssignee?: boolean;
   includeUnassigned?: boolean;
+  sort?: "updated" | "opened" | "number" | "client" | "description" | "state" | "priority" | "group" | "assignee";
+  order?: "asc" | "desc";
   signal?: AbortSignal;
 };
 
@@ -1354,6 +1428,8 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   if (params?.includeUnassigned) search.set("include_unassigned", "true");
   if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.search) search.set("search", params.search);
+  if (params?.sort) search.set("sort", params.sort);
+  if (params?.order) search.set("order", params.order);
   const query = search.toString();
   return `/oneview/incidents${query ? `?${query}` : ""}`;
 }

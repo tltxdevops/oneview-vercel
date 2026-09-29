@@ -124,14 +124,11 @@ server.listen(apiPort, () => {
   console.log(`[oneview-local-api] http://localhost:${apiPort}`);
 });
 
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-// `npm run dev` is the single local command. Spawn the raw Vite target here
-// so this runner does not recursively start another local API server.
-const vite = spawn(npmCommand, ["run", "dev:vite"], {
+// Spawn Vite directly so nested `npm run dev:vite` does not lose node_modules/.bin on Windows.
+const viteBin = path.join(rootDir, "node_modules", "vite", "bin", "vite.js");
+const vite = spawn(process.execPath, [viteBin], {
   cwd: rootDir,
   stdio: "inherit",
-  // Node 25 on Windows can reject a direct .cmd spawn with EINVAL.
-  shell: process.platform === "win32",
   env: {
     ...process.env,
     VITE_AUTH_MODE: "server",

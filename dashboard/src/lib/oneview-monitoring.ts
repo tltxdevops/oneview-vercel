@@ -213,6 +213,8 @@ export function monitoringAlertsFetchParams(params: {
   limit?: number;
   windowMs: number;
   sort?: MonitorQueueSort | string | null;
+  tableSort?: FetchAlertsParams["sort"];
+  tableOrder?: "asc" | "desc";
   now?: number;
 }): FetchAlertsParams {
   const now = params.now ?? bucketOneViewReadNow();
@@ -228,8 +230,8 @@ export function monitoringAlertsFetchParams(params: {
     datasources: params.datasources?.length ? params.datasources : undefined,
     acknowledgedSource: params.mode === MONITOR_ALERT_MODE.prioritary ? false : undefined,
     firstSeenFrom: isoAgo(params.windowMs, now),
-    sort: sortParams.sort,
-    order: sortParams.order,
+    sort: params.tableSort || sortParams.sort,
+    order: params.tableOrder || sortParams.order,
   };
 }
 
@@ -258,6 +260,8 @@ export async function fetchMonitoringAlerts(params: {
   windowMs: number;
   /** OV-P0-83 — recent | oldest | severity. Default recent. */
   sort?: MonitorQueueSort | string | null;
+  tableSort?: FetchAlertsParams["sort"];
+  tableOrder?: "asc" | "desc";
   signal?: AbortSignal;
   now?: number;
 }): Promise<MonitorAlertsResult> {
@@ -286,6 +290,8 @@ export async function fetchMonitoringUnassignedIncidents(params?: {
   now?: number;
   limit?: number;
   signal?: AbortSignal;
+  sort?: "updated" | "opened" | "number" | "client" | "description" | "state" | "priority" | "group" | "assignee";
+  order?: "asc" | "desc";
 }): Promise<IncidentListResponse> {
   return fetchOperationalIncidents(params);
 }

@@ -367,6 +367,7 @@
   .ov-live-metric[data-tone="neutral"] .ov-live-metric-value { color: hsl(var(--ov-color-text-primary)); }
   .ov-pill-official { border-radius: var(--ov-radius-pill); }
 
+  .ov-operational-table th { overflow: visible; }
   .ov-operational-table thead tr { height: var(--ov-table-header-height); }
   .ov-operational-table tbody tr { height: var(--ov-table-row-height); border-bottom: 1px solid hsl(var(--ov-color-border)); }
   .ov-operational-table th, .ov-operational-table td { padding-inline: var(--ov-space-16); vertical-align: middle; }
@@ -531,6 +532,8 @@
     overflow: hidden;
     white-space: nowrap;
   }
+  .ov-monitoring-table-grid.sticky > *,
+  .ov-monitoring-table-grid.ov-sortable-headers > * { overflow: visible; }
   .ov-dashboard-widget-editing { position: relative; border: 1px dashed hsl(var(--ov-color-primary) / 0.45); border-radius: var(--ov-radius-lg); padding: var(--ov-space-4); }
   .ov-dashboard-widget-resizing { user-select: none; border-color: hsl(var(--ov-color-primary) / 0.82); box-shadow: 0 0 0 2px hsl(var(--ov-color-primary) / 0.12); }
   .ov-dashboard-widget-dragging { opacity: 0.55; }

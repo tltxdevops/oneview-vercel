@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
+import { OneViewSortableHeader, type OneViewSortDirection } from "@/components/oneview/ConfigurableTableTools";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { cn } from "@/lib/utils";
 import type { OneViewIncident } from "@/lib/oneview-api";
@@ -152,6 +153,12 @@ type OperationalIncidentsQueueListProps = {
   emptyMessage?: string;
   className?: string;
   onActionComplete?: () => void;
+  sort?: {
+    field: string;
+    order: OneViewSortDirection;
+    columnFields: Partial<Record<OperationalIncidentQueueColumnId, string>>;
+    onSort: (field: string) => void;
+  };
 };
 
 export function OperationalIncidentsQueueList({
@@ -167,6 +174,7 @@ export function OperationalIncidentsQueueList({
   emptyMessage = "Nenhum chamado monitoring sem responsável.",
   className,
   onActionComplete,
+  sort,
 }: OperationalIncidentsQueueListProps) {
   if (loading) {
     return <p className="py-2 text-center text-sm text-muted-foreground">Carregando…</p>;
@@ -182,13 +190,17 @@ export function OperationalIncidentsQueueList({
           <div
             className="ov-monitoring-table-grid grid shrink-0 gap-x-3 border-b border-border/70 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
             style={{ gridTemplateColumns: gridTemplate }}
-            aria-hidden="true"
+            role="row"
           >
-            {columnLabels.map((column) => (
-              <span key={column.id} className={cn("min-w-0 truncate", operationalIncidentColumnAlign(column.id))}>
-                {column.label}
-              </span>
-            ))}
+            {columnLabels.map((column) => {
+              const id = column.id as OperationalIncidentQueueColumnId;
+              const field = sort?.columnFields[id];
+              return (
+                <span key={column.id} className={cn("min-w-0", operationalIncidentColumnAlign(column.id))} aria-sort={field ? sort?.field === field ? sort.order === "asc" ? "ascending" : "descending" : "none" : undefined}>
+                  {field && sort ? <OneViewSortableHeader label={column.label} active={sort.field === field} direction={sort.order} className={id === "updated" ? "justify-end" : undefined} onClick={() => sort.onSort(field)} /> : column.label}
+                </span>
+              );
+            })}
           </div>
           {items.map((item) => (
             <OperationalIncidentQueueRow

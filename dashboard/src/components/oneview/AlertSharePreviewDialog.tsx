@@ -154,7 +154,7 @@ export function AlertSharePreviewDialog({
           </Button>
           <Button type="button" variant="secondary" disabled={actionsDisabled} onClick={() => void runCopyClient()}>
             {busy === "copyClient" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-            Enviar para o cliente
+            Copiar texto do cliente
           </Button>
           <Button type="button" disabled={actionsDisabled} onClick={() => void runPrint()}>
             {busy === "print" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Printer className="mr-2 h-4 w-4" />}

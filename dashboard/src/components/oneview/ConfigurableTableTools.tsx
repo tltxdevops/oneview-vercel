@@ -1,12 +1,75 @@
 import { useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronUp, Columns3, GripVertical, RotateCcw, SlidersHorizontal } from "lucide-react";
+import { ArrowUpDown, Check, ChevronDown, ChevronUp, Columns3, GripVertical, RotateCcw, SlidersHorizontal } from "lucide-react";
 import { OneViewTableSearchField } from "@/components/oneview/OneViewTableSearchField";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { OneViewSearchSuggestion } from "@/lib/oneview-api";
 import type { OneViewTableColumnDefinition } from "@/lib/oneview-table-preferences";
 import { cn } from "@/lib/utils";
+
+export type OneViewSortDirection = "asc" | "desc";
+export type OneViewTableSortOption = { value: string; label: string };
+
+export function OneViewSortableHeader({
+  label,
+  active = false,
+  direction = "asc",
+  onClick,
+  className,
+}: {
+  label: string;
+  active?: boolean;
+  direction?: OneViewSortDirection;
+  onClick: () => void;
+  className?: string;
+}) {
+  const nextLabel = active
+    ? direction === "asc" ? "ordem decrescente" : "ordem crescente"
+    : "ordenar";
+  return (
+    <button
+      type="button"
+      className={cn("group inline-flex w-full min-w-0 items-center justify-start gap-1 whitespace-nowrap font-semibold text-inherit transition-colors hover:text-primary", className)}
+      aria-label={`${label}: ${nextLabel}`}
+      aria-pressed={active}
+      title={`${label}: ${nextLabel}`}
+      onClick={onClick}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      <ArrowUpDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-primary", active && "text-primary")} aria-hidden="true" />
+    </button>
+  );
+}
+
+export function OneViewTableSortMenu({
+  value,
+  options,
+  onChange,
+  label = "Ordenar",
+}: {
+  value: string;
+  options: OneViewTableSortOption[];
+  onChange: (value: string) => void;
+  label?: string;
+}) {
+  if (!options.length) return null;
+  return (
+    <div className="flex h-9 min-w-0 items-center gap-1.5">
+      <span className="sr-only">{label}</span>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="h-9 min-w-[10rem] max-w-[15rem]" aria-label={label}>
+          <ArrowUpDown className="mr-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <SelectValue placeholder={label} />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
 
 type ColumnController<ColumnId extends string> = {
   orderedColumns: OneViewTableColumnDefinition<ColumnId>[];
@@ -121,6 +184,7 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   normalizeIncSearch = true,
   searchActivity = "idle",
   searchActivityQuery,
+  sort,
 }: {
   search: string;
   onSearchChange: (value: string) => void;
@@ -141,6 +205,12 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   normalizeIncSearch?: boolean;
   searchActivity?: "idle" | "pending" | "searching";
   searchActivityQuery?: string;
+  sort?: {
+    value: string;
+    options: OneViewTableSortOption[];
+    onChange: (value: string) => void;
+    label?: string;
+  };
 }) {
   return (
     <div className={cn("border-b border-border/60 bg-background/75 px-3 py-2", className)}>
@@ -181,6 +251,7 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
             </PopoverContent>
           </Popover>
         ) : null}
+        {sort ? <OneViewTableSortMenu {...sort} /> : null}
         <ConfigurableTableColumns controller={columns} />
         {trailing}
       </div>

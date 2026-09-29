@@ -4,7 +4,7 @@ import { endOfDay, format, formatDistanceToNow, startOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
 import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import {
   OneViewButton,
@@ -147,6 +147,7 @@ const ALERT_TABLE_COLUMNS = [
 type AlertTableColumnId = typeof ALERT_TABLE_COLUMNS[number]["id"];
 
 const ALERT_COLUMN_SORT: Partial<Record<AlertTableColumnId, SortField>> = {
+  client: "client",
   severity: "severity",
   host: "host",
   problem: "problem",
@@ -155,6 +156,26 @@ const ALERT_COLUMN_SORT: Partial<Record<AlertTableColumnId, SortField>> = {
   ack: "acknowledged_source",
   status: "status",
 };
+const ALERT_TABLE_SORT_OPTIONS = [
+  { value: "first_seen_at:desc", label: "Início: mais novos" },
+  { value: "first_seen_at:asc", label: "Início: mais antigos" },
+  { value: "last_seen_at:desc", label: "Atualização: mais novos" },
+  { value: "last_seen_at:asc", label: "Atualização: mais antigos" },
+  { value: "client:asc", label: "Cliente: A–Z" },
+  { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "host:asc", label: "Host: A–Z" },
+  { value: "host:desc", label: "Host: Z–A" },
+  { value: "problem:asc", label: "Problema: A–Z" },
+  { value: "problem:desc", label: "Problema: Z–A" },
+  { value: "severity:desc", label: "Maior severidade" },
+  { value: "severity:asc", label: "Menor severidade" },
+  { value: "duration:desc", label: "Maior duração" },
+  { value: "duration:asc", label: "Menor duração" },
+  { value: "acknowledged_source:desc", label: "ACK: reconhecidos primeiro" },
+  { value: "acknowledged_source:asc", label: "ACK: pendentes primeiro" },
+  { value: "status:desc", label: "Estado: resolvidos primeiro" },
+  { value: "status:asc", label: "Estado: ativos primeiro" },
+] as const;
 type ResolvedTemporalPreset = AlertsDatePreset;
 type HistoryFilter = "all" | "acknowledgements" | "changes" | "recovery" | "legacy";
 
@@ -1665,16 +1686,12 @@ export default function AlertsPage() {
   };
 
   const sortableHeader = (label: string, field: SortField) => (
-    <button
-      type="button"
-      className="group inline-flex min-w-0 items-center justify-start gap-1 font-semibold text-foreground transition-colors hover:text-primary"
+    <OneViewSortableHeader
+      label={label}
+      active={sortField === field}
+      direction={sortOrder}
       onClick={() => toggleColumnSort(field)}
-      title={`Ordenar ${label}: ${sortField === field && sortOrder === "asc" ? "Z–A" : "A–Z"}`}
-    >
-      <span className="truncate">{label}</span>
-      <ArrowUpDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/60 group-hover:text-primary", sortField === field && "text-primary")} />
-      {sortField === field ? <span className="sr-only">{sortOrder === "asc" ? "ordem crescente" : "ordem decrescente"}</span> : null}
-    </button>
+    />
   );
 
   const temporalOptionText = (subject: string, preset: ResolvedTemporalPreset, count?: number) => preset === "all"
@@ -1809,6 +1826,17 @@ export default function AlertsPage() {
           onClearFilters={clearFilters}
           searchActivity={alertSearchActivity}
           searchActivityQuery={debouncedSearch}
+          sort={{
+            value: `${sortField}:${sortOrder}`,
+            options: [...ALERT_TABLE_SORT_OPTIONS],
+            onChange: (value) => {
+              const [sort, order] = value.split(":");
+              setSortField(sort as SortField);
+              setSortOrder(order === "asc" ? "asc" : "desc");
+              setPage(1);
+            },
+            label: "Ordenar alertas",
+          }}
           filters={(
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label className="space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
@@ -1876,7 +1904,7 @@ export default function AlertsPage() {
             <TableHeader className="sticky top-0 z-10">
               <TableRow className="border-border bg-muted/80 ov-type-caption text-muted-foreground hover:bg-muted/80">
                 {alertTableColumns.visibleColumns.map((column) => (
-                  <TableHead key={column.id} className={cn("font-semibold", column.id === "duration" ? "text-right" : column.id === "actions" ? "text-center" : "text-left")}>
+                  <TableHead key={column.id} className={cn("overflow-visible font-semibold", column.id === "duration" ? "text-right" : column.id === "actions" ? "text-center" : "text-left")}>
                     {ALERT_COLUMN_SORT[column.id] ? sortableHeader(column.label, ALERT_COLUMN_SORT[column.id]!) : column.label}
                   </TableHead>
                 ))}

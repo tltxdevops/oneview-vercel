@@ -77,6 +77,8 @@ export async function fetchOperationalIncidents(params?: {
   windowMs?: number;
   now?: number;
   signal?: AbortSignal;
+  sort?: "updated" | "opened" | "number" | "client" | "description" | "state" | "priority" | "group" | "assignee";
+  order?: "asc" | "desc";
 }): Promise<IncidentListResponse> {
   const mode = parseIncidentsQueueMode(params?.mode);
   const assignedIds = mode === INCIDENTS_QUEUE_MODE.unassigned
@@ -96,17 +98,21 @@ export async function fetchOperationalIncidents(params?: {
     includeUnassigned: mode === INCIDENTS_QUEUE_MODE.all && Boolean(assignedCsv) ? true : undefined,
     openedFrom,
     state: OPERATIONAL_INCIDENT_STATES,
+    sort: params?.sort,
+    order: params?.order,
     signal: params?.signal,
   });
 
   const openItems = (response.items ?? []).filter(
     (item) => !CLOSED_SN_STATES.has(String(item.state || "").trim()),
   );
-  const items = mode === INCIDENTS_QUEUE_MODE.unassigned
-    ? prioritizeOperationalIncidents(openItems)
-    : openItems.sort((left, right) => (
-      Date.parse(String(right.opened_at || "")) - Date.parse(String(left.opened_at || ""))
-    ));
+  const items = params?.sort
+    ? openItems
+    : mode === INCIDENTS_QUEUE_MODE.unassigned
+      ? prioritizeOperationalIncidents(openItems)
+      : openItems.sort((left, right) => (
+        Date.parse(String(right.opened_at || "")) - Date.parse(String(left.opened_at || ""))
+      ));
 
   return {
     ...response,

@@ -13,7 +13,7 @@ import {
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
 import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
@@ -109,6 +109,60 @@ const HISTORY_EVENT_COLUMNS = [
   { id: "comment", label: "Comentário" },
   { id: "occurred", label: "Ocorrido em" },
   { id: "severity", label: "Severidade" },
+] as const;
+type HistoryAlertColumnId = typeof HISTORY_ALERT_COLUMNS[number]["id"];
+type HistoryEventColumnId = typeof HISTORY_EVENT_COLUMNS[number]["id"];
+type HistoryAlertSort = "client" | "severity" | "host" | "problem" | "first_seen_at" | "acknowledged_source" | "status" | "last_seen_at";
+type HistoryEventSort = "occurred" | "client" | "host" | "problem" | "actor" | "description" | "severity";
+type HistorySortOrder = "asc" | "desc";
+
+const HISTORY_ALERT_COLUMN_SORT: Partial<Record<HistoryAlertColumnId, HistoryAlertSort>> = {
+  client: "client", severity: "severity", host: "host", problem: "problem",
+  started: "first_seen_at", ack: "acknowledged_source", status: "status",
+};
+const HISTORY_EVENT_COLUMN_SORT: Partial<Record<HistoryEventColumnId, HistoryEventSort>> = {
+  client: "client", host: "host", problem: "problem", actor: "actor",
+  comment: "description", occurred: "occurred", severity: "severity",
+};
+function historyDefaultSortOrder(field: string): HistorySortOrder {
+  return field === "first_seen_at" || field === "last_seen_at" || field === "occurred" || field === "severity" || field === "status" || field === "acknowledged_source"
+    ? "desc"
+    : "asc";
+}
+
+const HISTORY_ALERT_SORT_OPTIONS = [
+  { value: "last_seen_at:desc", label: "Atualização: mais novos" },
+  { value: "last_seen_at:asc", label: "Atualização: mais antigos" },
+  { value: "first_seen_at:desc", label: "Início: mais novos" },
+  { value: "first_seen_at:asc", label: "Início: mais antigos" },
+  { value: "client:asc", label: "Cliente: A–Z" },
+  { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "host:asc", label: "Host: A–Z" },
+  { value: "host:desc", label: "Host: Z–A" },
+  { value: "problem:asc", label: "Problema: A–Z" },
+  { value: "problem:desc", label: "Problema: Z–A" },
+  { value: "severity:desc", label: "Maior severidade" },
+  { value: "severity:asc", label: "Menor severidade" },
+  { value: "acknowledged_source:desc", label: "ACK: reconhecidos primeiro" },
+  { value: "acknowledged_source:asc", label: "ACK: pendentes primeiro" },
+  { value: "status:desc", label: "Estado: resolvidos primeiro" },
+  { value: "status:asc", label: "Estado: ativos primeiro" },
+] as const;
+const HISTORY_EVENT_SORT_OPTIONS = [
+  { value: "occurred:desc", label: "Ocorrido: mais novos" },
+  { value: "occurred:asc", label: "Ocorrido: mais antigos" },
+  { value: "client:asc", label: "Cliente: A–Z" },
+  { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "host:asc", label: "Host: A–Z" },
+  { value: "host:desc", label: "Host: Z–A" },
+  { value: "problem:asc", label: "Problema: A–Z" },
+  { value: "problem:desc", label: "Problema: Z–A" },
+  { value: "actor:asc", label: "Ator: A–Z" },
+  { value: "actor:desc", label: "Ator: Z–A" },
+  { value: "description:asc", label: "Comentário: A–Z" },
+  { value: "description:desc", label: "Comentário: Z–A" },
+  { value: "severity:desc", label: "Maior severidade" },
+  { value: "severity:asc", label: "Menor severidade" },
 ] as const;
 const HISTORY_DASHBOARD_WIDGETS = dashboardWidgetsForPage("history").filter((widget) => widget.id !== "history-filters");
 
@@ -435,6 +489,14 @@ export default function HistoricoPage() {
   const alertsLoadedRef = useRef(false);
 
   const tab = queryEnum(searchParams.get("tab"), ["alertas", "eventos"] as const, "alertas") as HistoryTab;
+  const sortOrder: HistorySortOrder = searchParams.get("order") === "asc" ? "asc" : "desc";
+  const requestedSort = searchParams.get("sort");
+  const alertSort: HistoryAlertSort = (["client", "severity", "host", "problem", "first_seen_at", "acknowledged_source", "status", "last_seen_at"] as const).includes(requestedSort as HistoryAlertSort)
+    ? requestedSort as HistoryAlertSort
+    : "last_seen_at";
+  const eventSort: HistoryEventSort = (["occurred", "client", "host", "problem", "actor", "description", "severity"] as const).includes(requestedSort as HistoryEventSort)
+    ? requestedSort as HistoryEventSort
+    : "occurred";
   const risk = queryEnum(
     searchParams.get("risk"),
     HISTORY_RISK_PRESETS.map((item) => item.value),
@@ -565,6 +627,8 @@ export default function HistoricoPage() {
         actor: actor || undefined,
         occurredFrom: bounds.from,
         occurredTo: bounds.to,
+        sort: eventSort,
+        order: sortOrder,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -586,7 +650,7 @@ export default function HistoricoPage() {
         setHistorySearchLoading(false);
       }
     }
-  }, [actor, cliente, fonte, customRange, eventType, historyPageSize, page, period, search]);
+  }, [actor, cliente, customRange, eventSort, eventType, fonte, historyPageSize, page, period, search, sortOrder]);
 
   const loadAlerts = useCallback(async () => {
     alertsRequestRef.current?.abort();
@@ -619,8 +683,8 @@ export default function HistoricoPage() {
           ? (ackFilter === "all" ? undefined : ackFilter === "true")
           : undefined,
         search: search || undefined,
-        sort: "last_seen_at",
-        order: "desc",
+        sort: alertSort,
+        order: sortOrder,
         signal: controller.signal,
         recurrenceKey: recurrenceKey || undefined,
       }, risk);
@@ -632,6 +696,7 @@ export default function HistoricoPage() {
           request = { ...request, firstSeenFrom: bounds.from, firstSeenTo: bounds.to };
         }
       }
+      request = { ...request, sort: alertSort, order: sortOrder, sortSecondary: undefined };
 
       const response = await fetchAlerts(request);
       if (controller.signal.aborted) return;
@@ -662,7 +727,7 @@ export default function HistoricoPage() {
         setHistorySearchLoading(false);
       }
     }
-  }, [ackFilter, alertStatus, cliente, fonte, customRange, historyPageSize, page, period, recurrenceKey, risk, search, severities]);
+  }, [ackFilter, alertSort, alertStatus, cliente, fonte, customRange, historyPageSize, page, period, recurrenceKey, risk, search, severities, sortOrder]);
 
   useEffect(() => {
     if (tab !== "eventos") return;
@@ -926,6 +991,17 @@ export default function HistoricoPage() {
     setSearchDraft(value);
     commitHistorySearch(value.trim());
   }, [cancelHistorySearch, commitHistorySearch]);
+
+  const applyHistorySort = useCallback((value: string) => {
+    const [sort, order] = value.split(":");
+    patchParams({ sort, order }, { resetPage: true });
+  }, [patchParams]);
+
+  const toggleHistorySort = useCallback((sort: string) => {
+    const current = tab === "alertas" ? alertSort : eventSort;
+    const nextOrder: HistorySortOrder = current === sort ? (sortOrder === "asc" ? "desc" : "asc") : historyDefaultSortOrder(sort);
+    patchParams({ sort, order: nextOrder }, { resetPage: true });
+  }, [alertSort, eventSort, patchParams, sortOrder, tab]);
 
   const activeFilterChips: Array<{ key: string; label: string; onClear: () => void }> = [];
   if (cliente !== "all") {
@@ -1256,6 +1332,12 @@ export default function HistoricoPage() {
                 searchActivityQuery={search}
                 activeFilterCount={activeFilterChips.length}
                 onClearFilters={clearFilters}
+                sort={{
+                  value: requestedSort ? `${alertSort}:${sortOrder}` : isRiskSummaryPreset(risk) ? "severity:desc" : "last_seen_at:desc",
+                  options: [...HISTORY_ALERT_SORT_OPTIONS],
+                  onChange: applyHistorySort,
+                  label: "Ordenar histórico de alertas",
+                }}
                 filters={(
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
@@ -1280,7 +1362,11 @@ export default function HistoricoPage() {
                   <Table className={cn("ov-operational-table table-fixed", historyAlertColumns.visibleColumns.length > 6 && "min-w-[70rem]")}>
                     <TableHeader>
                       <TableRow>
-                        {historyAlertColumns.visibleColumns.map((column) => <TableHead key={column.id} className="ov-type-caption font-semibold">{column.label}</TableHead>)}
+                        {historyAlertColumns.visibleColumns.map((column) => {
+                          const field = HISTORY_ALERT_COLUMN_SORT[column.id];
+                          const active = field === alertSort;
+                          return <TableHead key={column.id} aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined} className="ov-type-caption overflow-visible font-semibold">{field ? <OneViewSortableHeader label={column.label} active={active} direction={sortOrder} onClick={() => toggleHistorySort(field)} /> : column.label}</TableHead>;
+                        })}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1511,6 +1597,12 @@ export default function HistoricoPage() {
                 searchActivityQuery={search}
                 activeFilterCount={activeFilterChips.length}
                 onClearFilters={clearFilters}
+                sort={{
+                  value: `${eventSort}:${sortOrder}`,
+                  options: [...HISTORY_EVENT_SORT_OPTIONS],
+                  onChange: applyHistorySort,
+                  label: "Ordenar histórico de eventos",
+                }}
                 filters={(
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
@@ -1530,12 +1622,15 @@ export default function HistoricoPage() {
                   <Skeleton className="h-16 w-full" />
                 </div>
               ) : eventItems.length ? (
-                eventType === "acks" ? (
                   <div className="overflow-x-auto">
                     <Table className={cn("ov-operational-table table-fixed", historyEventColumns.visibleColumns.length > 5 && "min-w-[64rem]")}>
                       <TableHeader>
                         <TableRow>
-                          {historyEventColumns.visibleColumns.map((column) => <TableHead key={column.id} className="ov-type-caption font-semibold">{column.label}</TableHead>)}
+                          {historyEventColumns.visibleColumns.map((column) => {
+                            const field = HISTORY_EVENT_COLUMN_SORT[column.id];
+                            const active = field === eventSort;
+                            return <TableHead key={column.id} aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined} className="ov-type-caption overflow-visible font-semibold">{field ? <OneViewSortableHeader label={column.label} active={active} direction={sortOrder} onClick={() => toggleHistorySort(field)} /> : column.label}</TableHead>;
+                          })}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1544,7 +1639,7 @@ export default function HistoricoPage() {
                           const comment = isValidOperationalComment(item.description) ? item.description.trim() : null;
                           return (
                             <TableRow
-                              key={item.id}
+                              key={`${dayGroupKey(item.occurred_at)}:${item.id}`}
                               className="cursor-pointer hover:bg-muted/40"
                               tabIndex={0}
                               role="button"
@@ -1561,7 +1656,7 @@ export default function HistoricoPage() {
                                 if (column.id === "client") return <TableCell key={column.id} className="max-w-[12rem]"><ClientIdentity customer={{ key: item.customer_key, name: item.customer_name, operational_scope: item.operational_scope, operational_scope_label: item.operational_scope_label }} operationalScope={item.operational_scope} operationalScopeLabel={item.operational_scope_label || historyEventClientLabel(item)} showName nameClassName="truncate ov-type-body" /></TableCell>;
                                 if (column.id === "host") return <TableCell key={column.id} className="max-w-[12rem] truncate">{canonicalHostName(item)}</TableCell>;
                                 if (column.id === "problem") return <TableCell key={column.id} className="max-w-[16rem] truncate">{item.problem_name || "Problema não informado"}</TableCell>;
-                                if (column.id === "actor") return <TableCell key={column.id} className="max-w-[10rem] truncate">{actorName || "—"}</TableCell>;
+                                if (column.id === "actor") return <TableCell key={column.id} className="max-w-[10rem] truncate" title={formalOperationalTitle(item)}>{actorName || "—"}</TableCell>;
                                 if (column.id === "comment") return <TableCell key={column.id} className="max-w-[16rem] truncate ov-type-caption text-muted-foreground">{comment || "—"}</TableCell>;
                                 if (column.id === "occurred") return <TableCell key={column.id} className="whitespace-nowrap ov-type-caption text-muted-foreground">{formatWhen(item.occurred_at)}</TableCell>;
                                 return <TableCell key={column.id}><SeverityBadge severity={item.severity} /></TableCell>;
@@ -1572,68 +1667,6 @@ export default function HistoricoPage() {
                       </TableBody>
                     </Table>
                   </div>
-                ) : (
-                  <div className="divide-y divide-border/60">
-                    {groupedEvents.map((group) => (
-                      <section key={group.key} className="px-4 py-3">
-                        <h2 className="mb-2 ov-type-caption font-semibold uppercase tracking-wide text-muted-foreground">
-                          {group.label}
-                        </h2>
-                        <ol className="space-y-2">
-                          {group.items.map((item) => {
-                            const title = formalOperationalTitle(item);
-                            const actorName = safeActorName(item.actor_name);
-                            const comment = isValidOperationalComment(item.description) ? item.description.trim() : null;
-                            const customer = historyEventClientLabel({
-                              key: item.customer_key,
-                              name: item.customer_name,
-                              operational_scope: item.operational_scope,
-                              operational_scope_label: item.operational_scope_label,
-                            });
-                            return (
-                              <li
-                                key={item.id}
-                                className="ov-surface-official cursor-pointer px-4 py-3 hover:bg-muted/40"
-                                tabIndex={0}
-                                role="button"
-                                aria-label={`Abrir detalhe de ${item.problem_name || canonicalHostName(item)}`}
-                                onClick={() => openAlertDetail(item.alert_id)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter" || event.key === " ") {
-                                    event.preventDefault();
-                                    openAlertDetail(item.alert_id);
-                                  }
-                                }}
-                              >
-                                <div className="min-w-0 space-y-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="ov-type-caption tabular-nums text-muted-foreground">
-                                      {formatClock(item.occurred_at)}
-                                    </span>
-                                    <p className="ov-type-body font-semibold">{title}</p>
-                                    <SeverityBadge severity={item.severity} />
-                                  </div>
-                                  <p className="truncate ov-type-body font-semibold">{item.problem_name || "Problema não informado"}</p>
-                                  <p className="truncate ov-type-caption text-muted-foreground">
-                                    Host: {canonicalHostName(item)} · {customer}
-                                  </p>
-                                  {actorName && String(item.event_type || "").toLowerCase() !== "acknowledged" ? (
-                                    <p className="ov-type-caption text-muted-foreground">Responsável: {actorName}</p>
-                                  ) : null}
-                                  {comment ? (
-                                    <p className="line-clamp-2 ov-type-caption text-muted-foreground">
-                                      Comentário: {comment}
-                                    </p>
-                                  ) : null}
-                                </div>
-                              </li>
-                            );
-                          })}
-                        </ol>
-                      </section>
-                    ))}
-                  </div>
-                )
               ) : (
                 <OperationalEmptyState
                   icon={<History className="h-5 w-5" />}

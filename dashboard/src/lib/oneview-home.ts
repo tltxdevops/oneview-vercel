@@ -160,6 +160,8 @@ export function homeAlertsFetchParams(params: {
   limit?: number;
   windowMs: number;
   now?: number;
+  sort?: FetchAlertsParams["sort"];
+  order?: "asc" | "desc";
 }): FetchAlertsParams {
   const now = params.now ?? bucketOneViewReadNow();
   const limit = Math.min(Math.max(params.limit ?? HOME_ALERTS_PAGE_SIZE, 1), 50);
@@ -175,6 +177,8 @@ export function homeAlertsFetchParams(params: {
     sort: "first_seen_at",
     order: "desc",
     excludeOperator: true,
+    ...(params.sort ? { sort: params.sort } : {}),
+    ...(params.order ? { order: params.order } : {}),
   };
 }
 
@@ -217,12 +221,18 @@ export async function fetchHomeAlerts(params: {
   windowMs: number;
   signal?: AbortSignal;
   now?: number;
+  sort?: FetchAlertsParams["sort"];
+  order?: "asc" | "desc";
 }): Promise<HomeAlertsResult> {
   const request = homeAlertsFetchParams(params);
   const response = await fetchAlerts({
     ...request,
     signal: params.signal,
   });
+  if (params.sort) {
+    const items = (response.items ?? []).slice(0, request.pageSize ?? HOME_ALERTS_PAGE_SIZE);
+    return { items, total: Number(response.pagination?.total_items) || items.length, data_source: response.data_source, checked_at: response.checked_at };
+  }
   return homeAlertsResultFromResponse(response, request.pageSize ?? HOME_ALERTS_PAGE_SIZE);
 }
 

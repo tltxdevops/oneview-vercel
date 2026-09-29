@@ -14,7 +14,7 @@ import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableColumns, ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { ConfigurableTableColumns, ConfigurableTableToolbar, OneViewSortableHeader, OneViewTableSortMenu } from "@/components/oneview/ConfigurableTableTools";
 import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
@@ -154,6 +154,42 @@ const HOME_OPERATOR_COLUMNS = [
   { id: "state", label: "Estado INC", defaultVisible: false },
 ] as const;
 type HomeOperatorColumnId = typeof HOME_OPERATOR_COLUMNS[number]["id"];
+type SortOrder = "asc" | "desc";
+type HomeAlertSort = "first_seen_at" | "client" | "host" | "problem" | "severity" | "acknowledged_source" | "duration";
+type HomeIncidentSort = "updated" | "opened" | "number" | "client" | "description" | "state" | "priority" | "assignee";
+type HomeOperatorSort = "updated" | "customer" | "operator" | "host" | "problem" | "incident" | "analyst" | "severity" | "state";
+type HomeEventSort = "occurred" | "client" | "host" | "problem" | "severity";
+const HOME_ALERT_COLUMN_SORT: Partial<Record<HomeAlertColumnId, HomeAlertSort>> = { client: "client", host: "host", problem: "problem", severity: "severity", ack: "acknowledged_source", started: "first_seen_at", duration: "duration" };
+const HOME_INCIDENT_COLUMN_SORT: Partial<Record<OperationalIncidentQueueColumnId, HomeIncidentSort>> = { number: "number", description: "description", client: "client", updated: "updated", analyst: "assignee", priority: "priority", state: "state" };
+const HOME_OPERATOR_COLUMN_SORT: Partial<Record<HomeOperatorColumnId, HomeOperatorSort>> = { customer: "customer", operator: "operator", host: "host", problem: "problem", incident: "incident", analyst: "analyst", updated: "updated", severity: "severity", state: "state" };
+const HOME_EVENT_COLUMN_SORT: Record<typeof HOME_EVENT_COLUMNS[number]["id"], HomeEventSort> = { client: "client", host: "host", problem: "problem", severity: "severity", time: "occurred" };
+const HOME_ALERT_SORT_OPTIONS = [
+  { value: "first_seen_at:desc", label: "Mais recentes" }, { value: "first_seen_at:asc", label: "Mais antigos" },
+  { value: "client:asc", label: "Cliente: A–Z" }, { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "host:asc", label: "Host: A–Z" }, { value: "host:desc", label: "Host: Z–A" },
+  { value: "problem:asc", label: "Problema: A–Z" }, { value: "problem:desc", label: "Problema: Z–A" },
+  { value: "severity:desc", label: "Maior severidade" }, { value: "severity:asc", label: "Menor severidade" },
+  { value: "duration:desc", label: "Maior duração" }, { value: "duration:asc", label: "Menor duração" },
+];
+const HOME_INCIDENT_SORT_OPTIONS = [
+  { value: "updated:desc", label: "Atualizados recentemente" }, { value: "updated:asc", label: "Atualizados há mais tempo" },
+  { value: "number:asc", label: "Número: crescente" }, { value: "number:desc", label: "Número: decrescente" },
+  { value: "client:asc", label: "Cliente: A–Z" }, { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "description:asc", label: "Descrição: A–Z" }, { value: "description:desc", label: "Descrição: Z–A" },
+];
+const HOME_OPERATOR_SORT_OPTIONS = [
+  { value: "updated:desc", label: "Atualização: mais novos" }, { value: "updated:asc", label: "Atualização: mais antigos" },
+  { value: "customer:asc", label: "Cliente: A–Z" }, { value: "customer:desc", label: "Cliente: Z–A" },
+  { value: "operator:asc", label: "Operadora: A–Z" }, { value: "operator:desc", label: "Operadora: Z–A" },
+  { value: "problem:asc", label: "Problema: A–Z" }, { value: "problem:desc", label: "Problema: Z–A" },
+  { value: "host:asc", label: "Host: A–Z" }, { value: "host:desc", label: "Host: Z–A" },
+];
+const HOME_EVENT_SORT_OPTIONS = [
+  { value: "occurred:desc", label: "Ocorrido: mais novos" }, { value: "occurred:asc", label: "Ocorrido: mais antigos" },
+  { value: "client:asc", label: "Cliente: A–Z" }, { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "host:asc", label: "Host: A–Z" }, { value: "host:desc", label: "Host: Z–A" },
+  { value: "problem:asc", label: "Problema: A–Z" }, { value: "problem:desc", label: "Problema: Z–A" },
+];
 
 const HOME_ALERT_COLUMN_WIDTH: Record<HomeAlertColumnId, string> = {
   client: "11rem",
@@ -506,6 +542,14 @@ export default function Index() {
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>([]);
   const [clientFilterOpen, setClientFilterOpen] = useState(false);
   const [eventSearch, setEventSearch] = useState("");
+  const [alertSort, setAlertSort] = useState<HomeAlertSort>("first_seen_at");
+  const [alertOrder, setAlertOrder] = useState<SortOrder>("desc");
+  const [incidentSort, setIncidentSort] = useState<HomeIncidentSort>("updated");
+  const [incidentOrder, setIncidentOrder] = useState<SortOrder>("desc");
+  const [operatorSort, setOperatorSort] = useState<HomeOperatorSort>("updated");
+  const [operatorOrder, setOperatorOrder] = useState<SortOrder>("desc");
+  const [eventSort, setEventSort] = useState<HomeEventSort>("occurred");
+  const [eventOrder, setEventOrder] = useState<SortOrder>("desc");
   const [customerOptions, setCustomerOptions] = useState<ClientFilterOption[]>([
     { key: "all", name: "Todos" },
   ]);
@@ -717,6 +761,8 @@ export default function Index() {
         windowMs,
         signal: controller.signal,
         now: bucketOneViewReadNow(),
+        sort: alertSort,
+        order: alertOrder,
       });
       if (controller.signal.aborted || criticalAlertsRequest.current !== controller) return;
       setHomeAlerts(payload.items);
@@ -739,7 +785,7 @@ export default function Index() {
         setCriticalHomeReady(true);
       }
     }
-  }, [alertItemLimit, alertMode, alertStatus, selectedCustomerKeys, setSectionError, severityFilter, windowMs]);
+  }, [alertItemLimit, alertMode, alertOrder, alertSort, alertStatus, selectedCustomerKeys, setSectionError, severityFilter, windowMs]);
 
   const loadLists = useCallback(async (mode: "initial" | "quiet" | "manual" = "quiet") => {
     if (mode === "quiet" && listsRequest.current && !listsRequest.current.signal.aborted) return;
@@ -768,6 +814,8 @@ export default function Index() {
             windowMs,
             signal: controller.signal,
             now,
+            sort: alertSort,
+            order: alertOrder,
           }),
         fetchRecentOperationalEvents({
           limit: eventItemLimit,
@@ -781,6 +829,8 @@ export default function Index() {
           assignedTo: incidentsAssignedTo,
           limit: incidentItemLimit,
           windowMs,
+          sort: incidentSort,
+          order: incidentOrder,
           signal: controller.signal,
           now,
         }),
@@ -883,11 +933,15 @@ export default function Index() {
   }, [
     alertMode,
     alertItemLimit,
+    alertOrder,
+    alertSort,
     alertStatus,
     beginQuietUpdate,
     endQuietUpdate,
     incidentsAssignedTo,
     incidentItemLimit,
+    incidentOrder,
+    incidentSort,
     incidentsMode,
     eventItemLimit,
     operatorItemLimit,
@@ -1031,9 +1085,25 @@ export default function Index() {
       ? `${incidentsTitleCount.toLocaleString("pt-BR")} chamados`
       : `${incidentsTitleCount.toLocaleString("pt-BR")} sem responsável`;
   const chamadosHref = buildOperationalChamadosHref({ mode: incidentsMode, assignedTo: incidentsAssignedTo });
+  const nextSortOrder = (active: boolean, current: SortOrder, defaultOrder: SortOrder = "asc"): SortOrder => active ? current === "asc" ? "desc" : "asc" : defaultOrder;
   const visibleHomeAlerts = homeAlerts.slice(0, alertItemLimit);
   const visibleHomeIncidents = homeIncidents.slice(0, incidentItemLimit);
-  const operatorItems = (operatorQueue?.items ?? []).slice(0, operatorItemLimit);
+  const operatorItems = [...(operatorQueue?.items ?? [])].sort((left, right) => {
+    const direction = operatorOrder === "asc" ? 1 : -1;
+    const text = (item: OperatorQueueItem) => ({
+      customer: item.customer_name || "",
+      operator: item.operator_tag || "",
+      host: item.host_name || "",
+      problem: item.problem_name || "",
+      incident: item.incident_number || "",
+      analyst: item.assigned_to_display || item.assigned_to || "",
+      severity: item.severity || "",
+      state: item.incident_state || "",
+    }[operatorSort] || "");
+    const time = Date.parse(String(left.last_updated_at || "")) - Date.parse(String(right.last_updated_at || ""));
+    if (operatorSort === "updated") return (operatorOrder === "asc" ? time : -time) || String(left.alert_id).localeCompare(String(right.alert_id));
+    return text(left).localeCompare(text(right), "pt-BR", { numeric: true, sensitivity: "base" }) * direction || String(left.alert_id).localeCompare(String(right.alert_id));
+  }).slice(0, operatorItemLimit);
   const homeAlertColumnIds = useMemo(
     () => homeAlertColumns.visibleColumns.map((column) => column.id as HomeAlertColumnId),
     [homeAlertColumns.visibleColumns],
@@ -1059,9 +1129,17 @@ export default function Index() {
     [homeOperatorColumnIds],
   );
   const normalizedEventSearch = eventSearch.trim().toLocaleLowerCase("pt-BR");
-  const visibleRecentEvents = recentEvents
+  const visibleRecentEvents = [...recentEvents]
     .filter((item) => !normalizedEventSearch || [item.customer_name, canonicalHostName(item), item.problem_name, item.severity]
       .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(normalizedEventSearch)))
+    .sort((left, right) => {
+      const direction = eventOrder === "asc" ? 1 : -1;
+      if (eventSort === "occurred") {
+        return (Date.parse(String(left.occurred_at || "")) - Date.parse(String(right.occurred_at || ""))) * direction;
+      }
+      const value = (item: GlobalHistoryItem) => eventSort === "client" ? item.customer_name || "" : eventSort === "host" ? canonicalHostName(item) : eventSort === "problem" ? item.problem_name || "" : item.severity || "";
+      return value(left).localeCompare(value(right), "pt-BR", { numeric: true, sensitivity: "base" }) * direction;
+    })
     .slice(0, eventItemLimit);
   const operatorCounts = operatorQueue?.counts;
 
@@ -1248,7 +1326,8 @@ export default function Index() {
               </OperationalFilterGroup>
             </div> : null}
             {!dashboard.isWallboard ? (
-              <div className="flex justify-end border-b border-border/60 py-1">
+              <div className="flex justify-end gap-2 border-b border-border/60 py-1">
+                <OneViewTableSortMenu value={`${alertSort}:${alertOrder}`} options={HOME_ALERT_SORT_OPTIONS} onChange={(value) => { const [field, order] = value.split(":") as [HomeAlertSort, SortOrder]; setAlertSort(field); setAlertOrder(order === "asc" ? "asc" : "desc"); }} label="Ordenar alertas" />
                 <ConfigurableTableColumns controller={homeAlertColumns} />
               </div>
             ) : null}
@@ -1262,13 +1341,14 @@ export default function Index() {
               >
                 <div style={{ minWidth: HOME_ALERT_TABLE_MIN_WIDTH }}>
                   <div
-                    className="ov-monitoring-table-grid sticky top-0 z-[1] grid gap-x-3 border-b border-border/70 bg-card px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                    className="ov-monitoring-table-grid ov-sortable-headers sticky top-0 z-[1] grid gap-x-3 border-b border-border/70 bg-card px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
                     style={{ gridTemplateColumns: homeAlertGrid }}
                     aria-hidden="true"
                   >
-                    {homeAlertColumns.visibleColumns.map((column) => (
-                      <span key={column.id} className={cn("min-w-0 truncate", homeColumnAlign(column.id))}>{column.label}</span>
-                    ))}
+                    {homeAlertColumns.visibleColumns.map((column) => {
+                      const field = HOME_ALERT_COLUMN_SORT[column.id];
+                      return <span key={column.id} className={cn("min-w-0", homeColumnAlign(column.id))} aria-sort={field ? alertSort === field ? alertOrder === "asc" ? "ascending" : "descending" : "none" : undefined}>{field ? <OneViewSortableHeader label={column.label} active={alertSort === field} direction={alertOrder} className={column.id === "duration" ? "justify-end" : undefined} onClick={() => { setAlertOrder(nextSortOrder(alertSort === field, alertOrder, field === "first_seen_at" || field === "severity" || field === "duration" ? "desc" : "asc")); setAlertSort(field); }} /> : column.label}</span>;
+                    })}
                   </div>
                   {visibleHomeAlerts.map((alert) => (
                     <HomeAlertRow
@@ -1312,7 +1392,10 @@ export default function Index() {
                   onAssignedToChange={changeIncidentsAssignedTo}
                   analysts={incidentAssignees}
                 />
-                <ConfigurableTableColumns controller={homeIncidentColumns} />
+                <div className="flex items-center gap-2">
+                  <OneViewTableSortMenu value={`${incidentSort}:${incidentOrder}`} options={HOME_INCIDENT_SORT_OPTIONS} onChange={(value) => { const [field, order] = value.split(":") as [HomeIncidentSort, SortOrder]; setIncidentSort(field); setIncidentOrder(order === "asc" ? "asc" : "desc"); }} label="Ordenar chamados" />
+                  <ConfigurableTableColumns controller={homeIncidentColumns} />
+                </div>
               </div>
             )}
             toolbarClassName="px-4 py-2"
@@ -1343,6 +1426,16 @@ export default function Index() {
                       : "Nenhum chamado monitoring sem responsável."
                 }
                 onActionComplete={() => void loadLists("manual")}
+                sort={{
+                  field: incidentSort,
+                  order: incidentOrder,
+                  columnFields: HOME_INCIDENT_COLUMN_SORT,
+                  onSort: (field) => {
+                    const nextField = field as HomeIncidentSort;
+                    setIncidentOrder(nextSortOrder(incidentSort === nextField, incidentOrder, nextField === "updated" || nextField === "opened" ? "desc" : "asc"));
+                    setIncidentSort(nextField);
+                  },
+                }}
               />
             )}
           </SectionPanel>
@@ -1361,7 +1454,8 @@ export default function Index() {
             <div><p className="text-base font-semibold tabular-nums">{formatMetricCount(operatorCounts?.following)}</p><p className="text-[10px] text-muted-foreground">Em acompanhamento</p></div>
           </div>
           {!dashboard.isWallboard ? (
-            <div className="flex justify-end border-b border-border/60 py-1">
+            <div className="flex justify-end gap-2 border-b border-border/60 py-1">
+              <OneViewTableSortMenu value={`${operatorSort}:${operatorOrder}`} options={HOME_OPERATOR_SORT_OPTIONS} onChange={(value) => { const [field, order] = value.split(":") as [HomeOperatorSort, SortOrder]; setOperatorSort(field); setOperatorOrder(order === "asc" ? "asc" : "desc"); }} label="Ordenar operadoras" />
               <ConfigurableTableColumns controller={homeOperatorColumns} />
             </div>
           ) : null}
@@ -1376,13 +1470,14 @@ export default function Index() {
             <div className="overflow-x-auto">
               <div style={{ minWidth: HOME_OPERATOR_TABLE_MIN_WIDTH }}>
                 <div
-                  className="ov-monitoring-table-grid grid gap-x-3 border-b border-border/70 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                className="ov-monitoring-table-grid ov-sortable-headers sticky top-0 z-[1] grid gap-x-3 border-b border-border/70 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
                   style={{ gridTemplateColumns: homeOperatorGrid }}
                   aria-hidden="true"
                 >
-                  {homeOperatorColumns.visibleColumns.map((column) => (
-                    <span key={column.id} className={cn("min-w-0 truncate", homeColumnAlign(column.id))}>{column.label}</span>
-                  ))}
+                  {homeOperatorColumns.visibleColumns.map((column) => {
+                    const field = HOME_OPERATOR_COLUMN_SORT[column.id];
+                    return <span key={column.id} className={cn("min-w-0", homeColumnAlign(column.id))} aria-sort={field ? operatorSort === field ? operatorOrder === "asc" ? "ascending" : "descending" : "none" : undefined}>{field ? <OneViewSortableHeader label={column.label} active={operatorSort === field} direction={operatorOrder} className={column.id === "updated" ? "justify-end" : undefined} onClick={() => { setOperatorOrder(nextSortOrder(operatorSort === field, operatorOrder, field === "updated" || field === "severity" ? "desc" : "asc")); setOperatorSort(field); }} /> : column.label}</span>;
+                  })}
                 </div>
                 {operatorItems.map((item) => (
                   <HomeOperatorRow
@@ -1424,12 +1519,16 @@ export default function Index() {
               searchLabel="Buscar na tabela de eventos recentes"
               columns={homeEventColumns}
               scopeHint="A busca considera os eventos carregados neste painel."
+              sort={{ value: `${eventSort}:${eventOrder}`, options: HOME_EVENT_SORT_OPTIONS, onChange: (value) => { const [field, order] = value.split(":") as [HomeEventSort, SortOrder]; setEventSort(field); setEventOrder(order === "asc" ? "asc" : "desc"); }, label: "Ordenar eventos" }}
             />
             <div className="max-h-[18rem] overflow-auto xl:max-h-[20rem]">
               <table className="w-full min-w-[36rem] table-fixed text-left text-sm">
                 <thead className="sticky top-0 z-[1] bg-card">
                   <tr className="border-b border-border/70 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {homeEventColumns.visibleColumns.map((column) => <th key={column.id} className="px-3 py-1.5 font-semibold">{column.label}</th>)}
+                    {homeEventColumns.visibleColumns.map((column) => {
+                      const field = HOME_EVENT_COLUMN_SORT[column.id];
+                      return <th key={column.id} className="px-3 py-1.5 font-semibold" aria-sort={eventSort === field ? eventOrder === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label={column.label} active={eventSort === field} direction={eventOrder} onClick={() => { setEventOrder(nextSortOrder(eventSort === field, eventOrder, field === "occurred" || field === "severity" ? "desc" : "asc")); setEventSort(field); }} /></th>;
+                    })}
                   </tr>
                 </thead>
                 <tbody>
