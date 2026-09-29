@@ -6,7 +6,7 @@ import { ChamadosSearchField } from "@/components/chamados/ChamadosSearchField";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableColumns } from "@/components/oneview/ConfigurableTableTools";
+import { ConfigurableTableColumns, OneViewSortableHeader, OneViewTableSortMenu } from "@/components/oneview/ConfigurableTableTools";
 import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
@@ -94,6 +94,46 @@ const INCIDENT_COLUMN_OPTIONS = [
 ] as const;
 
 type IncidentColumnId = typeof INCIDENT_COLUMN_OPTIONS[number]["id"];
+type IncidentSortKey = "updated" | "opened" | "number" | "client" | "description" | "state" | "priority" | "group" | "assignee";
+type SortOrder = "asc" | "desc";
+
+const INCIDENT_COLUMN_SORT: Partial<Record<IncidentColumnId, IncidentSortKey>> = {
+  number: "number",
+  client: "client",
+  description: "description",
+  state: "state",
+  priority: "priority",
+  group: "group",
+  assignee: "assignee",
+  updated: "updated",
+};
+
+const INCIDENT_SORT_OPTIONS = [
+  { value: "updated:desc", label: "Atualização: mais novos" },
+  { value: "updated:asc", label: "Atualização: mais antigos" },
+  { value: "opened:desc", label: "Abertura: mais novos" },
+  { value: "opened:asc", label: "Abertura: mais antigos" },
+  { value: "number:asc", label: "Número: A–Z" },
+  { value: "number:desc", label: "Número: Z–A" },
+  { value: "client:asc", label: "Cliente: A–Z" },
+  { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "description:asc", label: "Descrição: A–Z" },
+  { value: "description:desc", label: "Descrição: Z–A" },
+  { value: "state:asc", label: "Estado: operacional crescente" },
+  { value: "state:desc", label: "Estado: operacional decrescente" },
+  { value: "priority:asc", label: "Prioridade: maior primeiro" },
+  { value: "priority:desc", label: "Prioridade: menor primeiro" },
+  { value: "group:asc", label: "Grupo: A–Z" },
+  { value: "group:desc", label: "Grupo: Z–A" },
+  { value: "assignee:asc", label: "Responsável: A–Z" },
+  { value: "assignee:desc", label: "Responsável: Z–A" },
+] as const;
+
+function incidentSortFromUrl(value: string | null): IncidentSortKey {
+  return (["updated", "opened", "number", "client", "description", "state", "priority", "group", "assignee"] as const).includes(value as IncidentSortKey)
+    ? value as IncidentSortKey
+    : "updated";
+}
 
 /** Larguras fixas — tabela rola horizontalmente em vez de cortar colunas. */
 const INCIDENT_COLUMN_WIDTH: Record<IncidentColumnId, string> = {
@@ -202,7 +242,7 @@ export default function ChamadosPage() {
   const chamadosMetrics = useOneViewMetricStrip({ stripId: "incidents-summary", actorId, definitions: CHAMADOS_METRIC_OPTIONS });
   const incidentTablePageSize = dashboard.layout.widgets.find((item) => item.id === "incidents-table")?.itemLimit ?? PAGE_SIZE;
   const incidentColumns = useOneViewTableColumns({ tableId: "incidents", actorId, definitions: INCIDENT_COLUMN_OPTIONS });
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialFilters = useMemo<DraftFilters>(() => {
     if (searchParams.get("unassigned") === "true") {
       return { ...EMPTY_DRAFT, unassigned: true };
@@ -216,6 +256,8 @@ export default function ChamadosPage() {
   const [draft, setDraft] = useState<DraftFilters>(initialFilters);
   const [applied, setApplied] = useState<DraftFilters>(initialFilters);
   const [page, setPage] = useState(1);
+  const [sortField, setSortField] = useState<IncidentSortKey>(() => incidentSortFromUrl(searchParams.get("sort")));
+  const [sortOrder, setSortOrder] = useState<SortOrder>(() => searchParams.get("order") === "asc" ? "asc" : "desc");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<IncidentListResponse | null>(null);
@@ -236,6 +278,13 @@ export default function ChamadosPage() {
   useEffect(() => {
     setPage(1);
   }, [incidentTablePageSize]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (sortField !== "updated") next.set("sort", sortField); else next.delete("sort");
+    if (sortOrder !== "desc") next.set("order", sortOrder); else next.delete("order");
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, sortField, sortOrder]);
 
   useEffect(() => {
     if (viewMode === "duplicates") return;
@@ -304,6 +353,8 @@ export default function ChamadosPage() {
       includeCounts: includeMetadata,
       includeGlobalCounts: includeMetadata,
       includeFacets: includeMetadata,
+      sort: sortField,
+      order: sortOrder,
       signal: controller.signal,
     })
       .then((response) => {
@@ -336,7 +387,7 @@ export default function ChamadosPage() {
       });
 
     return () => controller.abort();
-  }, [applied, incidentTablePageSize, metadataRefreshVersion, page, refreshVersion, viewMode]);
+  }, [applied, incidentTablePageSize, metadataRefreshVersion, page, refreshVersion, sortField, sortOrder, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "duplicates") return;
@@ -499,6 +550,20 @@ export default function ChamadosPage() {
     setPage(1);
     setMetadataRefreshVersion((current) => current + 1);
     setViewMode("list");
+  }
+
+  function applyIncidentSort(value: string) {
+    const [field, order] = value.split(":") as [IncidentSortKey, SortOrder];
+    setSortField(incidentSortFromUrl(field));
+    setSortOrder(order === "asc" ? "asc" : "desc");
+    setPage(1);
+  }
+
+  function toggleIncidentSort(field: IncidentSortKey) {
+    const defaultOrder: SortOrder = field === "updated" || field === "opened" || field === "priority" || field === "state" ? "desc" : "asc";
+    setSortOrder((current) => sortField === field ? current === "asc" ? "desc" : "asc" : defaultOrder);
+    setSortField(field);
+    setPage(1);
   }
 
   function refreshAfterIncidentAction() {
@@ -775,6 +840,12 @@ export default function ChamadosPage() {
               </PopoverContent>
             </Popover>
 
+            <OneViewTableSortMenu
+              value={`${sortField}:${sortOrder}`}
+              options={[...INCIDENT_SORT_OPTIONS]}
+              onChange={applyIncidentSort}
+              label="Ordenar chamados"
+            />
             <ConfigurableTableColumns controller={incidentColumns} />
 
             {activeFilterCount > 0 ? <Button type="button" size="sm" variant="ghost" className="h-9" onClick={clearFilters}>Limpar filtros</Button> : null}
@@ -974,11 +1045,19 @@ export default function ChamadosPage() {
             </colgroup>
             <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
               <TableRow className="hover:bg-transparent">
-                {incidentColumns.visibleColumns.map((column) => (
-                  <TableHead key={column.id} className="ov-type-caption px-3 py-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
-                    {column.label}
-                  </TableHead>
-                ))}
+                {incidentColumns.visibleColumns.map((column) => {
+                  const field = INCIDENT_COLUMN_SORT[column.id];
+                  const active = field === sortField;
+                  return (
+                    <TableHead
+                      key={column.id}
+                      aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined}
+                      className="ov-type-caption overflow-visible px-3 py-1.5 font-semibold uppercase tracking-wide text-muted-foreground"
+                    >
+                      {field ? <OneViewSortableHeader label={column.label} active={active} direction={sortOrder} onClick={() => toggleIncidentSort(field)} /> : column.label}
+                    </TableHead>
+                  );
+                })}
               </TableRow>
             </TableHeader>
             <TableBody>

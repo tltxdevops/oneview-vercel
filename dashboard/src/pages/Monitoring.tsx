@@ -16,7 +16,7 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableToolbar } from "@/components/oneview/ConfigurableTableTools";
+import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
 import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { OperationalCta } from "@/components/oneview/OperationalCta";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -171,6 +171,33 @@ const MONITOR_INCIDENT_COLUMNS = [
   { id: "state", label: "Estado" },
 ] as const;
 type MonitorIncidentColumnId = typeof MONITOR_INCIDENT_COLUMNS[number]["id"];
+type MonitorAlertTableSort = "first_seen_at" | "client" | "host" | "problem" | "severity" | "acknowledged_source" | "duration";
+type MonitorIncidentTableSort = "updated" | "opened" | "number" | "client" | "description" | "state" | "priority" | "assignee";
+type SortOrder = "asc" | "desc";
+const MONITOR_ALERT_COLUMN_SORT: Partial<Record<MonitorAlertColumnId, MonitorAlertTableSort>> = {
+  client: "client", host: "host", problem: "problem", severity: "severity", ack: "acknowledged_source", started: "first_seen_at", duration: "duration",
+};
+const MONITOR_INCIDENT_COLUMN_SORT: Partial<Record<MonitorIncidentColumnId, MonitorIncidentTableSort>> = {
+  number: "number", description: "description", client: "client", updated: "updated", analyst: "assignee", priority: "priority", state: "state",
+};
+const MONITOR_ALERT_SORT_OPTIONS = [
+  { value: "first_seen_at:desc", label: "Mais recentes" }, { value: "first_seen_at:asc", label: "Mais antigos" },
+  { value: "client:asc", label: "Cliente: A–Z" }, { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "host:asc", label: "Host: A–Z" }, { value: "host:desc", label: "Host: Z–A" },
+  { value: "problem:asc", label: "Problema: A–Z" }, { value: "problem:desc", label: "Problema: Z–A" },
+  { value: "severity:desc", label: "Maior severidade" }, { value: "severity:asc", label: "Menor severidade" },
+  { value: "acknowledged_source:desc", label: "ACK: reconhecidos primeiro" }, { value: "acknowledged_source:asc", label: "ACK: pendentes primeiro" },
+  { value: "duration:desc", label: "Maior duração" }, { value: "duration:asc", label: "Menor duração" },
+];
+const MONITOR_INCIDENT_SORT_OPTIONS = [
+  { value: "updated:desc", label: "Atualizados recentemente" }, { value: "updated:asc", label: "Atualizados há mais tempo" },
+  { value: "number:asc", label: "Número: crescente" }, { value: "number:desc", label: "Número: decrescente" },
+  { value: "client:asc", label: "Cliente: A–Z" }, { value: "client:desc", label: "Cliente: Z–A" },
+  { value: "description:asc", label: "Descrição: A–Z" }, { value: "description:desc", label: "Descrição: Z–A" },
+  { value: "assignee:asc", label: "Analista: A–Z" }, { value: "assignee:desc", label: "Analista: Z–A" },
+  { value: "priority:desc", label: "Prioridade: maior primeiro" }, { value: "priority:asc", label: "Prioridade: menor primeiro" },
+  { value: "state:desc", label: "Estado: operacional decrescente" }, { value: "state:asc", label: "Estado: operacional crescente" },
+];
 
 const MONITOR_ALERT_COLUMN_WIDTH: Record<MonitorAlertColumnId, string> = {
   client: "11rem",
@@ -510,6 +537,10 @@ export default function MonitoringPage() {
   const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(null);
   const [alertSearch, setAlertSearch] = useState("");
   const [incidentSearch, setIncidentSearch] = useState("");
+  const [alertTableSort, setAlertTableSort] = useState<MonitorAlertTableSort>("first_seen_at");
+  const [alertTableOrder, setAlertTableOrder] = useState<SortOrder>("desc");
+  const [incidentTableSort, setIncidentTableSort] = useState<MonitorIncidentTableSort>("updated");
+  const [incidentTableOrder, setIncidentTableOrder] = useState<SortOrder>("desc");
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(() => peekOneViewFacets());
   const [queueAlerts, setQueueAlerts] = useState<OneViewAlert[]>([]);
   const [queueTotal, setQueueTotal] = useState(0);
@@ -611,6 +642,27 @@ export default function MonitoringPage() {
       }
     });
   }, [patchSearchParams]);
+
+  const toggleAlertColumnSort = useCallback((field: MonitorAlertTableSort) => {
+    const defaultOrder: SortOrder = field === "first_seen_at" || field === "severity" || field === "duration" || field === "acknowledged_source" ? "desc" : "asc";
+    setAlertTableOrder((current) => alertTableSort === field ? (current === "asc" ? "desc" : "asc") : defaultOrder);
+    setAlertTableSort(field);
+  }, [alertTableSort]);
+  const toggleIncidentColumnSort = useCallback((field: MonitorIncidentTableSort) => {
+    const defaultOrder: SortOrder = field === "updated" || field === "opened" || field === "priority" || field === "state" ? "desc" : "asc";
+    setIncidentTableOrder((current) => incidentTableSort === field ? (current === "asc" ? "desc" : "asc") : defaultOrder);
+    setIncidentTableSort(field);
+  }, [incidentTableSort]);
+  const applyAlertTableSort = useCallback((value: string) => {
+    const [field, order] = value.split(":") as [MonitorAlertTableSort, SortOrder];
+    setAlertTableSort(field);
+    setAlertTableOrder(order === "asc" ? "asc" : "desc");
+  }, []);
+  const applyIncidentTableSort = useCallback((value: string) => {
+    const [field, order] = value.split(":") as [MonitorIncidentTableSort, SortOrder];
+    setIncidentTableSort(field);
+    setIncidentTableOrder(order === "asc" ? "asc" : "desc");
+  }, []);
 
   const setIncidentsMode = useCallback((mode: IncidentsQueueMode) => {
     patchSearchParams((next) => {
@@ -844,6 +896,8 @@ export default function MonitoringPage() {
           limit: monitoringQueueItemLimit,
           windowMs,
           sort: queueSort,
+          tableSort: alertTableSort,
+          tableOrder: alertTableOrder,
           signal: controller.signal,
           now,
         }),
@@ -853,6 +907,8 @@ export default function MonitoringPage() {
           windowMs,
           now,
           limit: monitoringIncidentItemLimit,
+          sort: incidentTableSort,
+          order: incidentTableOrder,
           signal: controller.signal,
         }),
       ];
@@ -1045,7 +1101,7 @@ export default function MonitoringPage() {
 
     inFlight.current = request;
     return request;
-  }, [alertMode, incidentsAssignedTo, incidentsMode, monitoringIncidentItemLimit, monitoringQueueItemLimit, queueSort, selectedCustomerKeys, selectedDatasources, setSectionError, severitySelection, windowMs]);
+  }, [alertMode, alertTableOrder, alertTableSort, incidentTableOrder, incidentTableSort, incidentsAssignedTo, incidentsMode, monitoringIncidentItemLimit, monitoringQueueItemLimit, queueSort, selectedCustomerKeys, selectedDatasources, setSectionError, severitySelection, windowMs]);
 
   refreshAllRef.current = refreshAll;
 
@@ -1465,6 +1521,7 @@ export default function MonitoringPage() {
               columns={monitorAlertColumns}
               scopeHint="A busca considera os alertas carregados nesta fila."
               className="-mx-4 -mt-2 mb-2"
+              sort={{ value: `${alertTableSort}:${alertTableOrder}`, options: MONITOR_ALERT_SORT_OPTIONS, onChange: applyAlertTableSort, label: "Ordenar alertas" }}
               activeFilterCount={selectedCustomerKeys.length + selectedDatasources.length + (homeWindow === DEFAULT_MONITOR_WINDOW ? 0 : 1) + (alertMode === MONITOR_ALERT_MODE.prioritary ? 0 : 1) + (queueSort === MONITOR_QUEUE_SORT.recent ? 0 : 1)}
               onClearFilters={() => { setSelectedCustomerKeys([]); setSelectedDatasources([]); setMonitorWindow(DEFAULT_MONITOR_WINDOW); setAlertMode(MONITOR_ALERT_MODE.prioritary); setQueueSort(MONITOR_QUEUE_SORT.recent); }}
               trailing={(
@@ -1512,11 +1569,14 @@ export default function MonitoringPage() {
                 <div className="min-h-0 flex-1 overflow-auto overscroll-contain max-h-[calc(100dvh-20rem)]">
                   <div className="ov-monitoring-table" style={{ minWidth: MONITOR_ALERT_TABLE_MIN_WIDTH }}>
                     <div
-                      className="ov-monitoring-table-grid sticky top-0 z-10 grid shrink-0 items-center gap-x-3 border-b border-border/70 bg-background px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                      className="ov-monitoring-table-grid ov-sortable-headers sticky top-0 z-10 grid shrink-0 items-center gap-x-3 border-b border-border/70 bg-background px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
                       style={{ gridTemplateColumns: monitorAlertGrid }}
-                      aria-hidden="true"
+                      role="row"
                     >
-                      {monitorAlertColumns.visibleColumns.map((column) => <span key={column.id} className={cn("min-w-0 truncate", monitorColumnAlign(column.id))}>{column.label}</span>)}
+                      {monitorAlertColumns.visibleColumns.map((column) => {
+                        const field = MONITOR_ALERT_COLUMN_SORT[column.id];
+                        return <span key={column.id} className={cn("min-w-0", monitorColumnAlign(column.id))} aria-sort={field ? alertTableSort === field ? alertTableOrder === "asc" ? "ascending" : "descending" : "none" : undefined}>{field ? <OneViewSortableHeader label={column.label} active={alertTableSort === field} direction={alertTableOrder} className={column.id === "duration" || column.id === "started" ? "justify-end" : undefined} onClick={() => toggleAlertColumnSort(field)} /> : column.label}</span>;
+                      })}
                     </div>
                     <ul className="divide-y divide-border">
                     {displayQueueAlerts.map((alert) => (
@@ -1571,6 +1631,7 @@ export default function MonitoringPage() {
               activeFilterCount={(incidentsMode === INCIDENTS_QUEUE_MODE.unassigned ? 0 : 1) + incidentsAssignedTo.length}
               scopeHint="A busca considera os chamados carregados nesta fila."
               className="-mx-4 -mt-2 mb-2"
+              sort={{ value: `${incidentTableSort}:${incidentTableOrder}`, options: MONITOR_INCIDENT_SORT_OPTIONS, onChange: applyIncidentTableSort, label: "Ordenar chamados" }}
               filters={<OperationalIncidentsToolbar mode={incidentsMode} onModeChange={setIncidentsMode} assignedTo={incidentsAssignedTo} onAssignedToChange={setIncidentsAssignedTo} analysts={incidentAssignees} />}
             />
             {!hasLoaded && !unassignedIncidents.length ? (
@@ -1587,11 +1648,14 @@ export default function MonitoringPage() {
               <div className="min-h-0 flex-1 overflow-auto">
                 <div className="ov-monitoring-table" style={{ minWidth: MONITOR_INCIDENT_TABLE_MIN_WIDTH }}>
                   <div
-                    className="ov-monitoring-table-grid sticky top-0 z-10 grid shrink-0 items-center gap-x-3 border-b border-border/70 bg-background pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                    className="ov-monitoring-table-grid ov-sortable-headers sticky top-0 z-10 grid shrink-0 items-center gap-x-3 border-b border-border/70 bg-background pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
                     style={{ gridTemplateColumns: monitorIncidentGrid }}
-                    aria-hidden="true"
+                    role="row"
                   >
-                    {monitorIncidentColumns.visibleColumns.map((column) => <span key={column.id} className={cn("min-w-0 truncate", monitorColumnAlign(column.id))}>{column.label}</span>)}
+                    {monitorIncidentColumns.visibleColumns.map((column) => {
+                      const field = MONITOR_INCIDENT_COLUMN_SORT[column.id];
+                      return <span key={column.id} className={cn("min-w-0", monitorColumnAlign(column.id))} aria-sort={field ? incidentTableSort === field ? incidentTableOrder === "asc" ? "ascending" : "descending" : "none" : undefined}>{field ? <OneViewSortableHeader label={column.label} active={incidentTableSort === field} direction={incidentTableOrder} className={column.id === "updated" ? "justify-end" : undefined} onClick={() => toggleIncidentColumnSort(field)} /> : column.label}</span>;
+                    })}
                   </div>
                   <div>
                   {displayUnassignedIncidents.map((item) => (

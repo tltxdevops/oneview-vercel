@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
 import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
+import { OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuthContext } from "@/context/AuthContext";
@@ -76,6 +77,8 @@ function sourceStatusClass(status: DataSource["status"]) {
 }
 
 const SETTINGS_REFRESH_SECONDS = 60;
+type SourceSortKey = "name" | "status" | "enabled" | "success" | "alerts" | "failures";
+type SortOrder = "asc" | "desc";
 
 function settingsHealthLabel(level: HealthLevel) {
   if (level === "ok") return "Operacional";
@@ -126,6 +129,8 @@ export default function SettingsPage() {
   const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sourceSort, setSourceSort] = useState<SourceSortKey>("name");
+  const [sourceOrder, setSourceOrder] = useState<SortOrder>("asc");
   const [dashboardPreferences, setDashboardPreferences] = useState<OneViewDashboardPreferences>(
     () => readOneViewDashboardPreferences(actorId),
   );
@@ -133,6 +138,21 @@ export default function SettingsPage() {
     () => readOneViewNotificationPreferences(actorId),
   );
   const loadRequestRef = useRef<Promise<void> | null>(null);
+  const visibleDataSources = useMemo(() => {
+    const statusRank: Record<DataSource["status"], number> = { error: 0, inactive: 1, active: 2 };
+    const direction = sourceOrder === "asc" ? 1 : -1;
+    return [...dataSources].sort((left, right) => {
+      const numeric = (source: DataSource) => ({ status: statusRank[source.status], enabled: source.sync_enabled ? 1 : 0, success: Date.parse(source.last_success_at || source.last_sync_at || "") || 0, alerts: source.alerts_count || 0, failures: source.failure_count || 0 }[sourceSort] || 0);
+      const comparison = sourceSort === "name"
+        ? sourceDisplayName(left.name).localeCompare(sourceDisplayName(right.name), "pt-BR", { sensitivity: "base", numeric: true })
+        : numeric(left) - numeric(right);
+      return comparison * direction || String(left.id).localeCompare(String(right.id));
+    });
+  }, [dataSources, sourceOrder, sourceSort]);
+  const toggleSourceSort = (field: SourceSortKey) => {
+    setSourceOrder((current) => sourceSort === field ? current === "asc" ? "desc" : "asc" : field === "name" ? "asc" : "desc");
+    setSourceSort(field);
+  };
 
   useEffect(() => {
     setDashboardPreferences(readOneViewDashboardPreferences(actorId));
@@ -455,16 +475,16 @@ export default function SettingsPage() {
               <table className="w-full min-w-[720px] text-sm text-foreground">
                 <thead>
                   <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
-                    <th className="px-3 py-3">Fonte</th>
-                    <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Sincronização habilitada</th>
-                    <th className="px-3 py-3">Último sucesso</th>
-                    <th className="px-3 py-3">Alertas ativos</th>
-                    <th className="px-3 py-3">Falhas</th>
+                    <th className="px-3 py-3" aria-sort={sourceSort === "name" ? sourceOrder === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Fonte" active={sourceSort === "name"} direction={sourceOrder} onClick={() => toggleSourceSort("name")} /></th>
+                    <th className="px-3 py-3" aria-sort={sourceSort === "status" ? sourceOrder === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Status" active={sourceSort === "status"} direction={sourceOrder} onClick={() => toggleSourceSort("status")} /></th>
+                    <th className="px-3 py-3" aria-sort={sourceSort === "enabled" ? sourceOrder === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Sincronização habilitada" active={sourceSort === "enabled"} direction={sourceOrder} onClick={() => toggleSourceSort("enabled")} /></th>
+                    <th className="px-3 py-3" aria-sort={sourceSort === "success" ? sourceOrder === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Último sucesso" active={sourceSort === "success"} direction={sourceOrder} onClick={() => toggleSourceSort("success")} /></th>
+                    <th className="px-3 py-3" aria-sort={sourceSort === "alerts" ? sourceOrder === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Alertas ativos" active={sourceSort === "alerts"} direction={sourceOrder} onClick={() => toggleSourceSort("alerts")} /></th>
+                    <th className="px-3 py-3" aria-sort={sourceSort === "failures" ? sourceOrder === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Falhas" active={sourceSort === "failures"} direction={sourceOrder} onClick={() => toggleSourceSort("failures")} /></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {dataSources.map((source) => (
+                  {visibleDataSources.map((source) => (
                     <tr
                       key={source.id}
                       className="border-b border-border last:border-none hover:bg-muted/30"

@@ -14,7 +14,7 @@ const SAFE = /^[\p{L}\p{N}._:@/| -]{1,240}$/u;
 const SEVERITIES = new Set(["information", "warning", "average", "high", "critical", "disaster", "not_classified"]);
 const QUEUE_TABS = new Set(["open", "normalized", "all", "without_incident", "with_incident", "resolved"]);
 const RESOLVED_WINDOWS = new Set(["today", "24h", "7d"]);
-const QUEUE_SORTS = new Set(["recent", "oldest", "duration", "severity"]);
+const QUEUE_SORTS = new Set(["recent", "oldest", "activity", "duration", "severity", "link", "customer", "carrier", "datasource", "type", "situation"]);
 const OPEN_INCIDENT_STATES = new Set(["1", "2", "3"]);
 const RESOLVED_INCIDENT_STATES = new Set(["6"]);
 const CLOSED_INCIDENT_STATES = new Set(["7"]);
@@ -87,6 +87,7 @@ export function parseLinkFilters(req) {
     divergence: text(oneQuery(req, "divergence")), recurrence: text(oneQuery(req, "recurrence")),
     incident_state: text(oneQuery(req, "incident_state")), operational_situation: text(oneQuery(req, "operational_situation")),
     activity_period: text(oneQuery(req, "activity_period")), sort: text(oneQuery(req, "sort")) || "recent",
+    order: text(oneQuery(req, "order")),
     page: pageInt(oneQuery(req, "page"), 1, 10_000), page_size: pageInt(oneQuery(req, "page_size"), 50, 100),
   };
   for (const value of Object.values(filters)) if (typeof value === "string" && !SAFE.test(value)) throw invalidQuery();
@@ -97,6 +98,7 @@ export function parseLinkFilters(req) {
   if (filters.carrier && !SAFE.test(filters.carrier)) throw invalidQuery();
   if (filters.operator_escalation && !new Set(["all", "yes", "no"]).has(filters.operator_escalation.toLowerCase())) throw invalidQuery();
   if (!QUEUE_TABS.has(filters.tab.toLowerCase()) || !RESOLVED_WINDOWS.has(filters.resolved_window.toLowerCase()) || !QUEUE_SORTS.has(filters.sort.toLowerCase())) throw invalidQuery();
+  if (filters.order && !new Set(["asc", "desc"]).has(filters.order.toLowerCase())) throw invalidQuery();
   if (filters.divergence && !new Set(["a", "b", "any"]).has(filters.divergence.toLowerCase())) throw invalidQuery();
   if (filters.recurrence && !new Set(["all", "recurrent"]).has(filters.recurrence.toLowerCase())) throw invalidQuery();
   if (filters.incident_state && !INCIDENT_STATES.has(filters.incident_state)) throw invalidQuery();
@@ -731,8 +733,37 @@ function ordered(rows, filters) {
     const startedA = timestamp(a.active_since_at) || Number.MAX_SAFE_INTEGER;
     const startedB = timestamp(b.active_since_at) || Number.MAX_SAFE_INTEGER;
     if (filters.sort === "oldest") return activityA - activityB || String(a.id).localeCompare(String(b.id));
-    if (filters.sort === "duration") return startedA - startedB || activityB - activityA;
-    if (filters.sort === "severity") return severityRank(a.max_severity) - severityRank(b.max_severity) || activityB - activityA;
+    if (filters.sort === "activity") return (filters.order === "asc" ? activityA - activityB : activityB - activityA) || String(a.id).localeCompare(String(b.id));
+    if (filters.sort === "duration") {
+      const comparison = startedB - startedA;
+      return (filters.order === "asc" ? comparison : -comparison) || activityB - activityA || String(a.id).localeCompare(String(b.id));
+    }
+    if (filters.sort === "severity") {
+      const comparison = severityRank(a.max_severity) - severityRank(b.max_severity);
+      return (filters.order === "asc" ? -comparison : comparison) || activityB - activityA || String(a.id).localeCompare(String(b.id));
+    }
+    const textual = {
+      link: `${text(a.customer_name) || ""} ${text(a.site_name || a.host_name) || ""} ${text(a.service_name) || ""}`,
+      customer: text(a.customer_name || a.customer_key) || "",
+      carrier: text(a.carrier_name) || "",
+      datasource: text(a.datasource) || "",
+      type: text(a.link_type || a.classification) || "",
+      situation: text(a.state) || "",
+    };
+    if (Object.hasOwn(textual, filters.sort)) {
+      const left = textual[filters.sort];
+      const rightRow = {
+        link: `${text(b.customer_name) || ""} ${text(b.site_name || b.host_name) || ""} ${text(b.service_name) || ""}`,
+        customer: text(b.customer_name || b.customer_key) || "",
+        carrier: text(b.carrier_name) || "",
+        datasource: text(b.datasource) || "",
+        type: text(b.link_type || b.classification) || "",
+        situation: text(b.state) || "",
+      }[filters.sort];
+      const compared = left.localeCompare(rightRow, "pt-BR", { sensitivity: "base", numeric: true });
+      if (compared) return filters.order === "desc" ? -compared : compared;
+      return String(a.id).localeCompare(String(b.id));
+    }
     return activityB - activityA || String(a.id).localeCompare(String(b.id));
   });
 }

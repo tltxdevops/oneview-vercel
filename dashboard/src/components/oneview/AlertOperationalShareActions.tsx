@@ -1,8 +1,8 @@
 /**
  * OV-P0-307 — preview do print do resumo + cópia em texto.
  */
-import { useCallback, useState, type RefObject } from "react";
-import { Copy, Loader2, Printer } from "lucide-react";
+import { useCallback, useMemo, useState, type RefObject } from "react";
+import { Copy, Loader2, Printer, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
@@ -10,6 +10,7 @@ import {
   fetchAlertRelatedIncidents,
   type AlertHistoryItem,
   type AlertRelatedIncident,
+  type ClientShareMessage,
   type OneViewAlert,
 } from "@/lib/oneview-api";
 import {
@@ -22,6 +23,7 @@ import {
   AlertSharePreviewDialog,
   type AlertSharePreviewBundle,
 } from "@/components/oneview/AlertSharePreviewDialog";
+import { ClientShareDialog } from "@/components/oneview/ClientShareDialog";
 
 type Props = {
   alert: OneViewAlert;
@@ -56,6 +58,11 @@ async function copyPlainText(value: string): Promise<boolean> {
   }
 }
 
+function explicitAlertRouteKey(alert: OneViewAlert): string | null {
+  const value = (alert as OneViewAlert & { route_key?: unknown }).route_key;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 async function loadRelatedIncidents(
   alert: OneViewAlert,
   historyItems: AlertHistoryItem[],
@@ -78,6 +85,23 @@ export function AlertOperationalShareActions({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [bundle, setBundle] = useState<AlertSharePreviewBundle | null>(null);
   const [busyEntry, setBusyEntry] = useState(false);
+  const [clientShareOpen, setClientShareOpen] = useState(false);
+
+  const clientShareMessage = useMemo<ClientShareMessage>(() => ({
+    client_key: alert.customer_key || alert.client_name,
+    client_name: alert.customer_name || alert.client_name,
+    severity: alert.severity || "Não classificada",
+    host: alert.host_visible_name || alert.host_name || "Host não identificado",
+    problem: alert.problem_name || alert.trigger_description || "Alerta sem descrição",
+    started_at: alert.started_at || alert.first_seen_at,
+    status: alert.resolved_at ? "Resolvido" : "Ativo",
+    incident_number: alert.servicenow_reference?.number || null,
+    servicenow_url: alert.servicenow_reference?.url || null,
+    oneview_url: typeof window === "undefined" ? null : `${window.location.origin}/alertas?alert=${encodeURIComponent(alert.id)}`,
+    message_type: alert.resolved_at ? "resolved" : "alert",
+    route_key: explicitAlertRouteKey(alert),
+    snapshot: { alert_id: alert.id, data_source_id: alert.data_source_id, source_event_id: alert.source_event_id },
+  }), [alert]);
 
   const releasePreviewUrl = useCallback((url: string) => {
     URL.revokeObjectURL(url);
@@ -159,6 +183,10 @@ export function AlertOperationalShareActions({
         {busyEntry ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}
         Copiar resumo
       </Button>
+      <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => setClientShareOpen(true)}>
+        <Send className="h-4 w-4" aria-hidden="true" />
+        Enviar para o cliente
+      </Button>
       <AlertSharePreviewDialog
         open={previewOpen}
         onOpenChange={handlePreviewOpenChange}
@@ -166,6 +194,7 @@ export function AlertOperationalShareActions({
         bundle={bundle}
         copyPlainText={copyPlainText}
       />
+      <ClientShareDialog open={clientShareOpen} onOpenChange={setClientShareOpen} message={clientShareMessage} />
     </div>
   );
 

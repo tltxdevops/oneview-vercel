@@ -264,6 +264,13 @@ export function parseIncidentFilters(req) {
     ? (SAFE_SEARCH.test(searchRaw) ? searchRaw : (() => { throw invalidQuery("invalid_search"); })())
     : null;
 
+  const sort = (cleanOptional(oneQuery(req, "sort")) || "updated").toLowerCase();
+  const order = (cleanOptional(oneQuery(req, "order")) || "desc").toLowerCase();
+  if (!new Set(["updated", "opened", "number", "client", "description", "state", "priority", "group", "assignee"]).has(sort)) {
+    throw invalidQuery("invalid_sort");
+  }
+  if (!new Set(["asc", "desc"]).has(order)) throw invalidQuery("invalid_order");
+
   return {
     page,
     page_size: pageSize,
@@ -291,6 +298,8 @@ export function parseIncidentFilters(req) {
     manual,
     origin,
     assignment_group: assignmentGroup,
+    sort,
+    order,
     search,
   };
 }

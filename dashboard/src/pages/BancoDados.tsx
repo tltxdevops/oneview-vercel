@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
+import { OneViewSortableHeader, OneViewTableSortMenu } from "@/components/oneview/ConfigurableTableTools";
+import { OneViewTableSearchField, useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +32,13 @@ import {
 } from "recharts";
 
 const REFRESH_INTERVAL_SECONDS = 60;
+type DatabaseSortKey = "name" | "engine" | "environment" | "status" | "cpu" | "memory" | "storage" | "latency" | "replication" | "backup";
+type SortOrder = "asc" | "desc";
+const DATABASE_SORT_OPTIONS = [
+  { value: "name:asc", label: "Banco: A–Z" }, { value: "name:desc", label: "Banco: Z–A" },
+  { value: "backup:desc", label: "Backup: mais novos" }, { value: "backup:asc", label: "Backup: mais antigos" },
+  { value: "cpu:desc", label: "CPU: maior primeiro" }, { value: "latency:desc", label: "Latência: maior primeiro" },
+];
 
 const STATUS_CONFIG: Record<DatabaseStatus, { label: string; badgeClass: string; dotClass: string; chartColor: string }> = {
   Online: {
@@ -97,6 +106,11 @@ const chartTooltipFormatter = (value: number) => `${value}`;
 
 export default function BancoDadosPage() {
   const [selectedClient, setSelectedClient] = useState("all");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<DatabaseSortKey>("name");
+  const [order, setOrder] = useState<SortOrder>("asc");
+  const { commitNow: commitSearchNow } = useOneViewCommittedSearch(searchDraft, setSearch);
 
   const handleClientSelect = useCallback((value: string | string[]) => {
     if (Array.isArray(value)) {
@@ -122,6 +136,23 @@ export default function BancoDadosPage() {
     if (selectedClient === "all") return mockDatabaseInstances;
     return mockDatabaseInstances.filter((instance) => instance.clientId === selectedClient);
   }, [selectedClient]);
+  const tableInstances = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase("pt-BR");
+    const statusRank: Record<DatabaseStatus, number> = { Offline: 0, Degradado: 1, Manutenção: 2, Online: 3 };
+    const values = filteredInstances.filter((item) => !needle || [item.name, item.host, item.engine, item.version, item.environment, item.status, resolveClientName(item.clientId)]
+      .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(needle)));
+    const direction = order === "asc" ? 1 : -1;
+    return [...values].sort((left, right) => {
+      const textValue = (item: DatabaseInstance) => ({ name: `${item.name} ${item.host}`, engine: item.engine, environment: item.environment }[sort] || "");
+      const numberValue = (item: DatabaseInstance) => ({ status: statusRank[item.status], cpu: item.cpuUsage, memory: item.memoryUsage, storage: item.storageUsage, latency: item.avgLatencyMs, replication: item.replicationLagSeconds, backup: parseDate(item.lastBackup)?.getTime() || 0 }[sort] || 0);
+      const comparison = ["name", "engine", "environment"].includes(sort)
+        ? textValue(left).localeCompare(textValue(right), "pt-BR", { numeric: true, sensitivity: "base" })
+        : numberValue(left) - numberValue(right);
+      return comparison * direction || String(left.id).localeCompare(String(right.id));
+    });
+  }, [filteredInstances, order, search, sort]);
+  const applySort = (value: string) => { const [field, direction] = value.split(":") as [DatabaseSortKey, SortOrder]; setSort(field); setOrder(direction); };
+  const toggleSort = (field: DatabaseSortKey) => { setOrder((current) => sort === field ? current === "asc" ? "desc" : "asc" : field === "backup" ? "desc" : "asc"); setSort(field); };
 
   const statusCounts = useMemo(() => {
     return filteredInstances.reduce(
@@ -340,7 +371,7 @@ export default function BancoDadosPage() {
           <div>
             <h2 className="text-lg font-semibold">Inventário de bancos</h2>
             <p className="text-xs text-muted-foreground">
-              {filteredInstances.length} instâncias monitoradas neste contexto.
+              {tableInstances.length} instâncias encontradas neste contexto.
             </p>
           </div>
           {selectedClient !== "all" && (
@@ -349,23 +380,27 @@ export default function BancoDadosPage() {
             </p>
           )}
         </div>
+        <div className="flex flex-col gap-2 border-b border-border/60 p-3 sm:flex-row">
+          <OneViewTableSearchField value={searchDraft} onChange={setSearchDraft} onSubmit={commitSearchNow} placeholder="Buscar banco, host ou cliente…" ariaLabel="Buscar no inventário de bancos" activity={searchDraft !== search ? "pending" : "idle"} />
+          <OneViewTableSortMenu value={`${sort}:${order}`} options={DATABASE_SORT_OPTIONS} onChange={applySort} label="Ordenar bancos" />
+        </div>
         <Table className="min-w-full text-sm">
           <TableHeader>
             <TableRow className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground/80">
-              <TableHead className="w-[220px]">Banco</TableHead>
-              <TableHead>Mecanismo</TableHead>
-              <TableHead className="hidden lg:table-cell">Ambiente</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="hidden xl:table-cell">CPU</TableHead>
-              <TableHead className="hidden xl:table-cell">Memória</TableHead>
-              <TableHead className="hidden 2xl:table-cell">Armazenamento</TableHead>
-              <TableHead className="hidden xl:table-cell">Latência</TableHead>
-              <TableHead className="hidden 2xl:table-cell">Replicação</TableHead>
-              <TableHead className="text-right">Último backup</TableHead>
+              <TableHead className="w-[220px]" aria-sort={sort === "name" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Banco" active={sort === "name"} direction={order} onClick={() => toggleSort("name")} /></TableHead>
+              <TableHead aria-sort={sort === "engine" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Mecanismo" active={sort === "engine"} direction={order} onClick={() => toggleSort("engine")} /></TableHead>
+              <TableHead className="hidden lg:table-cell" aria-sort={sort === "environment" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Ambiente" active={sort === "environment"} direction={order} onClick={() => toggleSort("environment")} /></TableHead>
+              <TableHead aria-sort={sort === "status" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Status" active={sort === "status"} direction={order} onClick={() => toggleSort("status")} /></TableHead>
+              <TableHead className="hidden xl:table-cell" aria-sort={sort === "cpu" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="CPU" active={sort === "cpu"} direction={order} onClick={() => toggleSort("cpu")} /></TableHead>
+              <TableHead className="hidden xl:table-cell" aria-sort={sort === "memory" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Memória" active={sort === "memory"} direction={order} onClick={() => toggleSort("memory")} /></TableHead>
+              <TableHead className="hidden 2xl:table-cell" aria-sort={sort === "storage" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Armazenamento" active={sort === "storage"} direction={order} onClick={() => toggleSort("storage")} /></TableHead>
+              <TableHead className="hidden xl:table-cell" aria-sort={sort === "latency" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Latência" active={sort === "latency"} direction={order} onClick={() => toggleSort("latency")} /></TableHead>
+              <TableHead className="hidden 2xl:table-cell" aria-sort={sort === "replication" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Replicação" active={sort === "replication"} direction={order} onClick={() => toggleSort("replication")} /></TableHead>
+              <TableHead className="text-right" aria-sort={sort === "backup" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Último backup" active={sort === "backup"} direction={order} onClick={() => toggleSort("backup")} className="justify-end" /></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filteredInstances.map((instance) => (
+            {tableInstances.map((instance) => (
               <TableRow key={instance.id} className="border-b border-border/40 hover:bg-muted/40">
                 <TableCell className="font-medium text-foreground/90">
                   <div className="flex flex-col gap-1">
@@ -392,7 +427,7 @@ export default function BancoDadosPage() {
                 <TableCell className="text-right text-foreground/80">{instance.lastBackup}</TableCell>
               </TableRow>
             ))}
-            {filteredInstances.length === 0 && (
+            {tableInstances.length === 0 && (
               <TableRow>
                 <TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
                   Nenhuma instância encontrada para o filtro selecionado.

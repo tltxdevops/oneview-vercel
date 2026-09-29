@@ -41,6 +41,25 @@ export const ASSIGNMENT_GROUP_LABEL_SQL = `coalesce(
   ''
 )`;
 
+const INCIDENT_SORTS = Object.freeze({
+  updated: "sys_updated_on",
+  opened: "opened_at",
+  number: "lower(coalesce(number::text, ''))",
+  client: "lower(coalesce(nullif(display_values->>'company_display', ''), nullif(display_values->>'company', ''), company::text, ''))",
+  description: "lower(coalesce(short_description, ''))",
+  state: "coalesce(state::text, '')",
+  priority: "coalesce(priority::text, '')",
+  group: `lower(${ASSIGNMENT_GROUP_LABEL_SQL})`,
+  assignee: "lower(coalesce(nullif(display_values->>'assigned_to_display', ''), nullif(display_values->>'assigned_to', ''), assigned_to::text, ''))",
+});
+
+export function incidentOrderSql(filters = {}) {
+  const sort = Object.hasOwn(INCIDENT_SORTS, filters.sort) ? filters.sort : "updated";
+  const direction = filters.order === "asc" ? "asc" : "desc";
+  const nulls = sort === "updated" || sort === "opened" ? " nulls last" : "";
+  return `${INCIDENT_SORTS[sort]} ${direction}${nulls}, sys_id asc`;
+}
+
 export function assignmentGroupExclusionSql(idParam, nameParam) {
   return `(assignment_group is null or (
     lower(btrim(assignment_group::text)) <> all(${idParam}::text[])
@@ -710,12 +729,13 @@ export async function fetchReadModelIncidentsPage(filters, {
   const where = buildWhere(effectiveFilters, values);
   const exactLookup = Boolean(effectiveFilters.number || effectiveFilters.sys_id);
   const offset = exactLookup ? 0 : (effectiveFilters.page - 1) * effectiveFilters.page_size;
+  const orderSql = incidentOrderSql(effectiveFilters);
   const [pageResult, countResult, counts, globalCounts, facets, syncResult] = await Promise.all([
     pool.query(`
       select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
         from servicenow_incidents
        where ${where}
-       order by sys_updated_on desc nulls last, sys_id asc
+       order by ${orderSql}
        limit $${values.length + 1} offset $${values.length + 2}`,
     [...values, effectiveFilters.page_size, offset]),
     pool.query(`select count(*)::int as total from servicenow_incidents where ${where}`, values),

@@ -2712,10 +2712,33 @@ export function buildGlobalHistoryScopeClauses(req, dataSourceNames = getOperati
   return { clauses, params };
 }
 
+const GLOBAL_HISTORY_SORTS = Object.freeze({
+  occurred: "coalesce(h.occurred_at, h.created_at)",
+  client: `lower(${SAFE_CUSTOMER_NAME_SQL})`,
+  host: "lower(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, ''))",
+  problem: "lower(coalesce(a.problem_name, ''))",
+  actor: "lower(coalesce(nullif(h.actor_name, ''), nullif(h.operator_name, ''), ''))",
+  severity: `case lower(coalesce(a.severity, 'not_classified'))
+    when 'disaster' then 7 when 'critical' then 6 when 'high' then 5 when 'average' then 4
+    when 'warning' then 2 when 'information' then 1 else 0 end`,
+  description: "lower(coalesce(h.message, ''))",
+});
+
+export function globalHistoryOrderSql(req) {
+  const sort = (oneQueryValue(req, "sort") || "occurred").toLowerCase();
+  const order = (oneQueryValue(req, "order") || "desc").toLowerCase();
+  if (!Object.hasOwn(GLOBAL_HISTORY_SORTS, sort) || !["asc", "desc"].includes(order)) {
+    throw requestError("invalid_query");
+  }
+  const nulls = sort === "occurred" ? " nulls last" : "";
+  return `${GLOBAL_HISTORY_SORTS[sort]} ${order.toUpperCase()}${nulls}, h.id desc`;
+}
+
 async function fetchGlobalHistoryPayload(req, config, dataSourceNames = getOperationalDataSourceNames()) {
   const page = positiveInteger(oneQueryValue(req, "page"), 1);
   const pageSize = positiveInteger(oneQueryValue(req, "page_size"), DEFAULT_ALERT_PAGE_SIZE, { maximum: MAX_ALERT_PAGE_SIZE });
   const { clauses, params } = buildGlobalHistoryScopeClauses(req, dataSourceNames);
+  const orderSql = globalHistoryOrderSql(req);
 
   const whereSql = clauses.length ? `where ${clauses.join(" and ")}` : "";
   const fromSql = `
@@ -2759,7 +2782,7 @@ async function fetchGlobalHistoryPayload(req, config, dataSourceNames = getOpera
         a.problem_name,
         a.severity
       ${fromSql}
-      order by coalesce(h.occurred_at, h.created_at) desc nulls last, h.id desc
+      order by ${orderSql}
       limit $${params.length + 1} offset $${params.length + 2}
     `,
     [...params, pageSize, offset],

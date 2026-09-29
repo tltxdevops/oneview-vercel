@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
+import { OneViewSortableHeader, OneViewTableSortMenu } from "@/components/oneview/ConfigurableTableTools";
+import { OneViewTableSearchField, useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
 import { ClientSelect } from "@/components/certificados/ClientSelect";
 import { CertificateStatusBadge } from "@/components/certificados/CertificateStatusBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -20,6 +22,13 @@ import {
 } from "recharts";
 
 const REFRESH_INTERVAL_SECONDS = 45;
+type CertificateSortKey = "name" | "domain" | "issuer" | "expiration" | "status" | "days";
+type SortOrder = "asc" | "desc";
+const CERTIFICATE_SORT_OPTIONS = [
+  { value: "expiration:asc", label: "Expiração: mais próximas" }, { value: "expiration:desc", label: "Expiração: mais distantes" },
+  { value: "name:asc", label: "Certificado: A–Z" }, { value: "name:desc", label: "Certificado: Z–A" },
+  { value: "domain:asc", label: "Domínio: A–Z" }, { value: "domain:desc", label: "Domínio: Z–A" },
+];
 
 const resolveClientName = (clientId?: string) => {
   if (!clientId) return "Indefinido";
@@ -55,6 +64,11 @@ const formatDaysRemaining = (value: number | null) => {
 
 export default function CertificadosPage() {
   const [selectedClient, setSelectedClient] = useState("all");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<CertificateSortKey>("expiration");
+  const [order, setOrder] = useState<SortOrder>("asc");
+  const { commitNow: commitSearchNow } = useOneViewCommittedSearch(searchDraft, setSearch);
 
   const handleRefresh = useCallback(async () => {
     // Attach data fetching logic here when integrating with backend
@@ -85,6 +99,23 @@ export default function CertificadosPage() {
       })
     );
   }, [selectedClient, selectedClientName]);
+  const tableCertificates = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase("pt-BR");
+    const values = filteredCertificates.filter((item) => !needle || [item.name, item.domain, item.issuer, item.status, resolveClientName(item.clientId)]
+      .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(needle)));
+    const direction = order === "asc" ? 1 : -1;
+    const statusRank: Record<string, number> = { Expirado: 0, Crítico: 1, Atenção: 2, Válido: 3 };
+    return [...values].sort((left, right) => {
+      const textValue = (item: Certificate) => ({ name: item.name, domain: item.domain, issuer: item.issuer }[sort] || "");
+      const numberValue = (item: Certificate) => ({ expiration: item.daysRemaining ?? Number.MAX_SAFE_INTEGER, days: item.daysRemaining ?? Number.MAX_SAFE_INTEGER, status: statusRank[item.status] ?? 99 }[sort] || 0);
+      const comparison = ["name", "domain", "issuer"].includes(sort)
+        ? textValue(left).localeCompare(textValue(right), "pt-BR", { numeric: true, sensitivity: "base" })
+        : numberValue(left) - numberValue(right);
+      return comparison * direction || String(left.id).localeCompare(String(right.id));
+    });
+  }, [filteredCertificates, order, search, sort]);
+  const applySort = (value: string) => { const [field, direction] = value.split(":") as [CertificateSortKey, SortOrder]; setSort(field); setOrder(direction); };
+  const toggleSort = (field: CertificateSortKey) => { setOrder((current) => sort === field ? current === "asc" ? "desc" : "asc" : "asc"); setSort(field); };
 
   const kpis = useMemo(() => {
     const total = filteredCertificates.length;
@@ -226,7 +257,7 @@ export default function CertificadosPage() {
                 <div>
                   <h2 className="text-lg font-semibold">Lista de certificados</h2>
                   <p className="text-xs text-muted-foreground">
-                    {filteredCertificates.length} certificados monitorados
+                    {tableCertificates.length} certificados encontrados
                   </p>
                 </div>
                 {selectedClient !== "all" && (
@@ -235,19 +266,23 @@ export default function CertificadosPage() {
                   </p>
                 )}
               </div>
+              <div className="flex flex-col gap-2 border-b border-border/60 p-3 sm:flex-row">
+                <OneViewTableSearchField value={searchDraft} onChange={setSearchDraft} onSubmit={commitSearchNow} placeholder="Buscar certificado, domínio ou cliente…" ariaLabel="Buscar certificados" activity={searchDraft !== search ? "pending" : "idle"} />
+                <OneViewTableSortMenu value={`${sort}:${order}`} options={CERTIFICATE_SORT_OPTIONS} onChange={applySort} label="Ordenar certificados" />
+              </div>
               <Table className="min-w-full text-sm">
                 <TableHeader>
                   <TableRow className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground/80">
-                    <TableHead className="w-[180px]">Certificado</TableHead>
-                    <TableHead>Domínio</TableHead>
-                    <TableHead className="hidden lg:table-cell">Emissor</TableHead>
-                    <TableHead>Expiração</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Dias restantes</TableHead>
+                    <TableHead className="w-[180px]" aria-sort={sort === "name" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Certificado" active={sort === "name"} direction={order} onClick={() => toggleSort("name")} /></TableHead>
+                    <TableHead aria-sort={sort === "domain" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Domínio" active={sort === "domain"} direction={order} onClick={() => toggleSort("domain")} /></TableHead>
+                    <TableHead className="hidden lg:table-cell" aria-sort={sort === "issuer" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Emissor" active={sort === "issuer"} direction={order} onClick={() => toggleSort("issuer")} /></TableHead>
+                    <TableHead aria-sort={sort === "expiration" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Expiração" active={sort === "expiration"} direction={order} onClick={() => toggleSort("expiration")} /></TableHead>
+                    <TableHead aria-sort={sort === "status" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Status" active={sort === "status"} direction={order} onClick={() => toggleSort("status")} /></TableHead>
+                    <TableHead className="text-right" aria-sort={sort === "days" ? order === "asc" ? "ascending" : "descending" : "none"}><OneViewSortableHeader label="Dias restantes" active={sort === "days"} direction={order} onClick={() => toggleSort("days")} className="justify-end" /></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredCertificates.map((certificate) => (
+                  {tableCertificates.map((certificate) => (
                     <TableRow key={certificate.id} className="border-b border-border/40 hover:bg-muted/40">
                       <TableCell className="font-medium text-foreground/90">
                         <div className="flex flex-col">
@@ -268,7 +303,7 @@ export default function CertificadosPage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {filteredCertificates.length === 0 && (
+                  {tableCertificates.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
                         Nenhum certificado encontrado para o cliente selecionado.
