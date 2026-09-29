@@ -1379,6 +1379,8 @@ export type OneViewSearchSuggestion = {
   kind: OneViewSearchSuggestionKind | string;
   value: string;
   label: string;
+  /** Chave canÃ´nica somente para aplicar o filtro estruturado de Cliente. */
+  customer_key?: string | null;
   number?: string | null;
   company?: string | null;
   hint?: string | null;

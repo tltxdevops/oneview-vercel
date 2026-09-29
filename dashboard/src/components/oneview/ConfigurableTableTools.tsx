@@ -116,6 +116,7 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   className,
   fetchSearchSuggestions,
   onSearchPick,
+  onSearchSuggestionPick,
   onSearchSubmit,
   normalizeIncSearch = true,
   searchActivity = "idle",
@@ -135,6 +136,7 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   className?: string;
   fetchSearchSuggestions?: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
   onSearchPick?: (value: string) => void;
+  onSearchSuggestionPick?: (item: OneViewSearchSuggestion) => void;
   onSearchSubmit?: (value: string) => void;
   normalizeIncSearch?: boolean;
   searchActivity?: "idle" | "pending" | "searching";
@@ -148,6 +150,7 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
           onChange={onSearchChange}
           onSubmit={onSearchSubmit}
           onSelect={onSearchPick}
+          onSuggestionSelect={onSearchSuggestionPick}
           fetchSuggestions={fetchSearchSuggestions}
           placeholder={searchPlaceholder}
           ariaLabel={searchLabel}

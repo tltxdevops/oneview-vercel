@@ -736,12 +736,17 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
     } else if (searchField === "problem") {
       push("coalesce(a.problem_name, '') ilike ?", `%${search}%`);
     } else if (searchField === "customer") {
-      push("coalesce(a.customer_name, a.client_name, a.customer_key, '') ilike ?", `%${search}%`);
+      push(
+        "(coalesce(a.customer_name, '') ilike $CURRENT or coalesce(a.client_name, '') ilike $CURRENT or coalesce(a.customer_key, '') ilike $CURRENT or " + SAFE_CUSTOMER_NAME_SQL + " ilike $CURRENT)",
+        `%${search}%`,
+      );
+      const current = `$${params.length}`;
+      clauses[clauses.length - 1] = clauses[clauses.length - 1].replaceAll("$CURRENT", current);
     } else if (searchField === "eventid") {
       push("coalesce(a.source_event_id, a.id::text, '') ilike ?", `%${search}%`);
     } else {
       push(
-        "(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike $CURRENT or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, a.client_name, '') ilike $CURRENT or coalesce(a.source_event_id, a.id::text, '') ilike $CURRENT or ${SAFE_CUSTOMER_NAME_SQL} ilike $CURRENT or lower(d.name) ilike $CURRENT)",
+        `(coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike $CURRENT or coalesce(a.problem_name, '') ilike $CURRENT or coalesce(a.service_name, '') ilike $CURRENT or coalesce(a.customer_name, '') ilike $CURRENT or coalesce(a.client_name, '') ilike $CURRENT or coalesce(a.customer_key, '') ilike $CURRENT or coalesce(a.source_event_id, a.id::text, '') ilike $CURRENT or ${SAFE_CUSTOMER_NAME_SQL} ilike $CURRENT or lower(d.name) ilike $CURRENT)`,
         `%${search}%`,
       );
       const current = `$${params.length}`;
@@ -3175,19 +3180,92 @@ async function enrichMapsServiceNowReferences(items, config = getOneViewDbConfig
   });
   if (!targets.length) return;
 
-  await Promise.all(targets.map(async (item) => {
+  // A lista pode conter 50 itens MAPS. NÃ£o consultar ServiceNow/read-model por
+  // linha: a mesma regra de match abaixo Ã© executada em uma Ãºnica query loteada.
+  const requested = new Map();
+  for (const item of targets) {
     const host = textValue(item.host_technical_name || item.host_name || item.host_visible_name);
-    const problem = textValue(item.problem_name);
-    const incident = await findServiceNowIncidentForMapsAlert({ host, problemName: problem }, config);
-    if (!incident?.number && !incident?.sys_id) return;
-    const url = buildServiceNowIncidentDeepLink(SERVICENOW_PROD_BASE_URL, incident.sys_id);
-    item.servicenow_reference = {
-      number: incident.number || null,
-      sys_id: incident.sys_id || null,
-      url,
-      extra_count: 0,
-    };
-  }));
+    const problem = mapsServiceNowProblemCorrelationToken(item.problem_name);
+    if (!host && !problem) continue;
+    const key = `${host}\u0000${problem || ""}`;
+    if (!requested.has(key)) requested.set(key, { host, problem: problem || null });
+  }
+  if (!requested.size) return;
+
+  try {
+    const candidates = [...requested.values()];
+    const rows = await queryRows(
+      config,
+      `
+      with requested(host_name, problem_token) as (
+        select nullif(btrim(host_name), ''), nullif(btrim(problem_token), '')
+          from unnest($1::text[], $2::text[]) as input(host_name, problem_token)
+      )
+      select requested.host_name, requested.problem_token,
+             matched.sys_id::text as sys_id, matched.number::text as number
+        from requested
+        join lateral (
+          select sys_id, number
+            from servicenow_incidents
+           where ${MAPS_SERVICENOW_COMPANY_WHERE_SQL}
+             and (
+               requested.host_name is not null
+               and (
+                 lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower(requested.host_name)
+                 or lower(coalesce(description, '')) like '%' || lower(requested.host_name) || '%'
+               )
+               or (
+                 requested.problem_token is not null
+                 and length(requested.problem_token) >= 12
+                 and lower(coalesce(description, '')) like '%' || lower(requested.problem_token) || '%'
+               )
+             )
+           order by
+             case
+               when requested.host_name is not null
+                and (
+                  lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower(requested.host_name)
+                  or lower(coalesce(description, '')) like '%' || lower(requested.host_name) || '%'
+                )
+                and (
+                  requested.problem_token is null
+                  or lower(coalesce(description, '')) like '%' || lower(requested.problem_token) || '%'
+                )
+               then 0
+               when requested.problem_token is not null
+                and lower(coalesce(description, '')) like '%' || lower(requested.problem_token) || '%'
+               then 1
+               else 2
+             end,
+             sys_updated_on desc nulls last,
+             sys_id asc
+           limit 1
+        ) matched on true
+      `,
+      [candidates.map((item) => item.host), candidates.map((item) => item.problem || "")],
+    );
+    const byTarget = new Map(rows.map((row) => [`${textValue(row.host_name)}\u0000${textValue(row.problem_token)}`, row]));
+    for (const item of targets) {
+      const host = textValue(item.host_technical_name || item.host_name || item.host_visible_name);
+      const problem = mapsServiceNowProblemCorrelationToken(item.problem_name) || "";
+      const incident = byTarget.get(`${host}\u0000${problem}`);
+      if (!incident?.number && !incident?.sys_id) continue;
+      item.servicenow_reference = {
+        number: textValue(incident.number) || null,
+        sys_id: textValue(incident.sys_id) || null,
+        url: buildServiceNowIncidentDeepLink(SERVICENOW_PROD_BASE_URL, incident.sys_id),
+        extra_count: 0,
+      };
+    }
+  } catch (error) {
+    // Enrichment nÃ£o pode derrubar a lista operacional. O drawer continua com
+    // sua correlaÃ§Ã£o canÃ´nica sob demanda; a linha fica sem chamado relacionado.
+    console.warn(JSON.stringify({
+      event: "maps_servicenow_list_enrichment_failed",
+      target_count: requested.size,
+      error_code: databaseFailureCode(error),
+    }));
+  }
 }
 
 /**
@@ -4048,4 +4126,4 @@ export async function findTheoProducedAlert(
   );
 }
 
-export { SAFE_CUSTOMER_NAME_SQL };
+export { SAFE_CUSTOMER_NAME_SQL, SAFE_CUSTOMER_KEY_SQL };

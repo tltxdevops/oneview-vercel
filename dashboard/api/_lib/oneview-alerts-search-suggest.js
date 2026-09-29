@@ -5,6 +5,7 @@ import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import {
   SAFE_CUSTOMER_NAME_SQL,
+  SAFE_CUSTOMER_KEY_SQL,
   buildAlertListQuery,
   getOneViewConfig,
   getOneViewDbPool,
@@ -75,18 +76,21 @@ export async function searchAlertReadModelSuggestions(req, config) {
     or coalesce(a.client_name, '') ilike ${like}
   )`;
 
-  const runBucket = async (kind, labelExpr, hintField, cap) => {
+  const runBucket = async (kind, labelExpr, hintField, cap, customerKeyExpr = null) => {
+    const customerKeySql = customerKeyExpr ? `, ${customerKeyExpr} as customer_key` : "";
+    const customerKeyGroupSql = customerKeyExpr ? `, ${customerKeyExpr}` : "";
     const rows = await queryRows(
       config,
       `
         select ${labelExpr} as label,
                max(${hintField}) as hint_detail,
                max(a.last_seen_at) as last_seen
+               ${customerKeySql}
           ${fromJoin}
          ${scopeWhere}
            and ${labelExpr} <> ''
            and ${textMatch}
-         group by ${labelExpr}
+         group by ${labelExpr}${customerKeyGroupSql}
          order by max(a.last_seen_at) desc nulls last
          limit $${params.length + 1}`,
       [...params, cap],
@@ -99,13 +103,14 @@ export async function searchAlertReadModelSuggestions(req, config) {
         kind,
         value: label,
         label,
+        customer_key: kind === "customer" ? String(row.customer_key || "").trim() || null : null,
         hint: detail ? `${kind === "customer" ? "Cliente" : kind === "host" ? "Host" : "Problema"} · ${detail}` : undefined,
       };
     }).filter(Boolean);
   };
 
   const [customers, hosts, problems] = await Promise.all([
-    runBucket("customer", CUSTOMER_EXPR, HOST_EXPR, 6),
+    runBucket("customer", CUSTOMER_EXPR, HOST_EXPR, 6, SAFE_CUSTOMER_KEY_SQL),
     runBucket("host", HOST_EXPR, CUSTOMER_EXPR, 6),
     runBucket("problem", PROBLEM_EXPR, HOST_EXPR, 4),
   ]);

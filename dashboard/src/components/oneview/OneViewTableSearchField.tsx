@@ -26,6 +26,7 @@ export type OneViewTableSearchFieldProps = {
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
   onSelect?: (value: string) => void;
+  onSuggestionSelect?: (item: OneViewSearchSuggestion) => void;
   placeholder: string;
   ariaLabel: string;
   inputId?: string;
@@ -139,6 +140,7 @@ export function OneViewTableSearchField({
   onChange,
   onSubmit,
   onSelect,
+  onSuggestionSelect,
   placeholder,
   ariaLabel,
   inputId,
@@ -215,7 +217,8 @@ export function OneViewTableSearchField({
   }
 
   function pickSuggestion(item: OneViewSearchSuggestion) {
-    if (onSelect) onSelect(item.value);
+    if (onSuggestionSelect) onSuggestionSelect(item);
+    else if (onSelect) onSelect(item.value);
     else onChange(item.value);
     setFocused(false);
   }

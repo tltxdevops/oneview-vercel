@@ -1786,6 +1786,21 @@ export default function AlertsPage() {
           onSearchChange={(value) => { setSearchQuery(value); setPage(1); }}
           fetchSearchSuggestions={fetchAlertTableSuggestions}
           onSearchPick={(value) => { setSearchQuery(value); setPage(1); commitAlertSearch(value); }}
+          onSearchSuggestionPick={(suggestion) => {
+            if (suggestion.kind === "customer" && suggestion.customer_key) {
+              cancelAlertSearch();
+              alertSearchIntent.current = null;
+              setAlertSearchLoading(false);
+              setSearchQuery("");
+              setDebouncedSearch("");
+              setSelectedCustomerKeys([suggestion.customer_key]);
+              setPage(1);
+              return;
+            }
+            setSearchQuery(suggestion.value);
+            setPage(1);
+            commitAlertSearch(suggestion.value);
+          }}
           onSearchSubmit={(value) => commitAlertSearch(value)}
           searchPlaceholder="Buscar alerta, host ou cliente…"
           searchLabel="Buscar na tabela de alertas"
