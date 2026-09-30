@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
 import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
@@ -129,6 +130,8 @@ export default function SettingsPage() {
   const [syncLogs, setSyncLogs] = useState<OneViewSyncLog[]>([]);
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const hasSettingsDataRef = useRef(false);
   const [sourceSort, setSourceSort] = useState<SourceSortKey>("name");
   const [sourceOrder, setSourceOrder] = useState<SortOrder>("asc");
   const [dashboardPreferences, setDashboardPreferences] = useState<OneViewDashboardPreferences>(
@@ -174,7 +177,7 @@ export default function SettingsPage() {
 
   const loadPage = useCallback(() => {
     if (loadRequestRef.current) return loadRequestRef.current;
-    setLoading(true);
+    if (!hasSettingsDataRef.current) setLoading(true);
     const request = (async () => {
       const results = await Promise.allSettled([fetchDataSourcesWithMeta(), fetchRuntimeHealth()]);
       const [sourcesResult, runtimeResult] = results;
@@ -183,13 +186,23 @@ export default function SettingsPage() {
         setDataSources(sourcesResult.value.items);
         setDataSource(sourcesResult.value.data_source ?? null);
         setCheckedAt(sourcesResult.value.checked_at ?? null);
+        hasSettingsDataRef.current = true;
+        setLoadError(null);
       } else {
-        toast.error(sourcesResult.reason instanceof Error
-          ? sourcesResult.reason.message
-          : "Erro ao carregar fontes de dados");
+        setLoadError(hasSettingsDataRef.current
+          ? "Atualização falhou — exibindo último dado disponível"
+          : "Não foi possível carregar as fontes de dados.");
+        if (!hasSettingsDataRef.current) {
+          toast.error(sourcesResult.reason instanceof Error
+            ? sourcesResult.reason.message
+            : "Erro ao carregar fontes de dados");
+        }
       }
 
-      if (runtimeResult.status === "fulfilled") setRuntimeHealth(runtimeResult.value);
+      if (runtimeResult.status === "fulfilled") {
+        setRuntimeHealth(runtimeResult.value);
+        hasSettingsDataRef.current = true;
+      }
     })().finally(() => {
       setLoading(false);
       loadRequestRef.current = null;
@@ -228,6 +241,7 @@ export default function SettingsPage() {
       checkedAt={checkedAt}
     >
       <div className="space-y-6 text-foreground">
+        {loadError ? <OperationalErrorBanner message={loadError} onRetry={() => void loadPage()} retryDisabled={loading} /> : null}
         <SectionPanel title="Conta" description="Identificação da sua sessão SSO." bodyClassName="p-4">
           <dl className="grid gap-3 sm:grid-cols-2">
             <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">

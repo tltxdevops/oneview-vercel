@@ -4,6 +4,7 @@ import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentS
 import { IncidentDetailActions } from "@/components/oneview/IncidentDetailActions";
 import { IncidentDetailField, IncidentRelatedAlertContent, useIncidentRelatedAlert } from "@/components/oneview/IncidentRelatedAlertSection";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
+import { OneViewErrorBoundary } from "@/components/oneview/OneViewErrorBoundary";
 import { displayIncidentField } from "@/components/oneview/OperationalIncidentsQueueList";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -13,7 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildAlertArtifactFromIncidentRelatedAlert, type AlertArtifactModel } from "@/lib/oneview-alert-artifact";
 import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
-import { fetchIncidentDetail, type OneViewIncident } from "@/lib/oneview-api";
+import { fetchIncidentDetail, isOneViewAbortError, type OneViewIncident } from "@/lib/oneview-api";
 import { cn } from "@/lib/utils";
 
 export type IncidentDetailDrawerTab = "summary" | "alert" | "technical";
@@ -80,7 +81,8 @@ export function IncidentDetailDrawer({
         if (active) setDetail(item);
       })
       .catch((error: unknown) => {
-        if (active) setDetailError(error instanceof Error ? error.message : "Não foi possível atualizar o chamado.");
+        if (!active || isOneViewAbortError(error)) return;
+        setDetailError("Não foi possível atualizar o chamado.");
       })
       .finally(() => {
         if (active) setDetailLoading(false);
@@ -139,6 +141,7 @@ export function IncidentDetailDrawer({
         overlayClassName={stacked ? "z-[60]" : undefined}
         className={cn("flex h-full w-full flex-col border-l border-border bg-background p-0 sm:max-w-2xl", stacked && "z-[60]")}
       >
+        <OneViewErrorBoundary scope="drawer" resetKeys={[incident?.sys_id ?? ""]}>
         {!resolved ? (
           <div className="flex h-full flex-col">
             <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
@@ -308,6 +311,7 @@ export function IncidentDetailDrawer({
             </div>
           </div>
         )}
+        </OneViewErrorBoundary>
       </SheetContent>
     </Sheet>
   );

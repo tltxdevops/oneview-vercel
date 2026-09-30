@@ -1066,24 +1066,22 @@ export function createIncidentsHandler({
     try {
       const payload = await readModelPage(filters, readModelOptions);
       logger({
-        event: "oneview_request",
+        event: "oneview_bff_performance",
         route: "/api/oneview/incidents",
-        data_source: "postgresql",
+        status: 200,
         duration_ms: Math.max(Date.now() - startedAt, 0),
-        rows: payload.items.length,
-        page: payload.pagination.page,
-        page_size: payload.pagination.page_size,
+        error_class: "none",
       });
       return sendIncidentsJson(res, 200, payload, { dataSource: "postgresql" });
     } catch (error) {
       const status = 503;
       const code = "database_unavailable";
       logger({
-        event: "oneview_incidents_error",
+        event: "oneview_bff_performance",
         route: "/api/oneview/incidents",
-        error: code,
-        detail: String(error?.message || "database_unavailable").slice(0, 160),
+        status,
         duration_ms: Math.max(Date.now() - startedAt, 0),
+        error_class: "http_5xx",
       });
       return sendIncidentsJson(res, status, { error: code, data_source: "postgresql" }, { dataSource: "postgresql" });
     }

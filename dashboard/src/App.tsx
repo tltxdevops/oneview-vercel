@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
+import { OneViewErrorBoundary } from "@/components/oneview/OneViewErrorBoundary";
 import SsoCallback from "@/pages/SsoCallback";
 import { getBrowserRouterBase } from "@/lib/basePath";
 
@@ -18,7 +19,11 @@ const routeFallback = (
     Carregando tela...
   </div>
 );
-const route = (node: ReactNode) => <Suspense fallback={routeFallback}>{node}</Suspense>;
+const route = (node: ReactNode) => (
+  <OneViewErrorBoundary scope="route">
+    <Suspense fallback={routeFallback}>{node}</Suspense>
+  </OneViewErrorBoundary>
+);
 
 /**
  * OV-P0-141B — páginas sem fonte real permanecem apenas no servidor local.
@@ -35,6 +40,7 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter basename={getBrowserRouterBase()}>
+        <OneViewErrorBoundary scope="global">
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/sso/callback" element={<SsoCallback />} />
@@ -50,10 +56,11 @@ const App = () => (
             <Route path="/operadoras" element={route(<OperadorasPage />)} />
             <Route path="/ui-kit" element={route(<UiKitPage />)} />
             {WorkspacesPage && <Route path="/workspaces" element={<Suspense fallback={routeFallback}><WorkspacesPage /></Suspense>} />}
-            <Route path="/config" element={<SettingsPage />} />
+            <Route path="/config" element={route(<SettingsPage />)} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </OneViewErrorBoundary>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

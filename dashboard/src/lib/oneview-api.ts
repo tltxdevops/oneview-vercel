@@ -182,10 +182,6 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
   if (cached && cached.freshUntil > now) return cached.value as T;
   const shared = oneViewFresh ? undefined : inFlightReads.get(key);
   if (shared) {
-    if (cached && cached.expiresAt > now) {
-      void shared.catch(() => undefined);
-      return cached.value as T;
-    }
     return shared as Promise<T>;
   }
   const request = (async () => {
@@ -320,9 +316,16 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
     }
     return value;
   } catch (cause) {
-    if (isRead && !oneViewFresh && cached && cached.expiresAt > Date.now()) return cached.value as T;
     throw cause;
   } finally { if (canShare) inFlightReads.delete(key); }
+}
+
+export function isOneViewAbortError(cause: unknown): boolean {
+  if (!cause || typeof cause !== "object") return false;
+  const name = "name" in cause ? String((cause as { name?: unknown }).name || "") : "";
+  if (name === "AbortError") return true;
+  const message = "message" in cause ? String((cause as { message?: unknown }).message || "") : "";
+  return /aborted|AbortError/i.test(message);
 }
 
 export type OneViewDataSourceKind = "database" | "snapshot" | "servicenow";

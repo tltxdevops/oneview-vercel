@@ -23,6 +23,7 @@ import {
 } from "@/components/oneview/AlertRelatedIncidentsSection";
 import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
+import { OneViewErrorBoundary } from "@/components/oneview/OneViewErrorBoundary";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -240,6 +241,7 @@ export function AlertDetailDrawer({
     <>
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full border-l border-border bg-background p-0 sm:max-w-2xl">
+        <OneViewErrorBoundary scope="drawer" resetKeys={[alert?.id ?? ""]}>
         {!alert ? (
           <div className="flex h-full flex-col">
             <SheetHeader className="border-b border-border/70 py-5 pl-6 pr-14 text-left">
@@ -548,6 +550,7 @@ export function AlertDetailDrawer({
             </Tabs>
           </div>
         )}
+        </OneViewErrorBoundary>
       </SheetContent>
     </Sheet>
     <IncidentDetailDrawer

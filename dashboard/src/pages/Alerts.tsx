@@ -72,6 +72,7 @@ import {
   formatDurationSeconds,
   formatNullableCount,
   formatOneViewSeverityLabel,
+  isOneViewAbortError,
   isOneViewSeverity,
   normalizeAlertSeveritySummary,
   normalizeOneViewSeverity,
@@ -1022,7 +1023,7 @@ export default function AlertsPage() {
     const searchIntent = alertSearchIntent.current?.value === debouncedSearch ? alertSearchIntent.current : null;
     if (!options?.quiet) {
       setIsAlertsLoading(true);
-      setAlertsError(null);
+      if (!hasLoadedAlerts) setAlertsError(null);
     }
     try {
       const requestTime = Date.now();
@@ -1075,8 +1076,8 @@ export default function AlertsPage() {
       setHasLoadedAlerts(true);
       alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
     } catch (error) {
-      if (controller.signal.aborted) return;
-      setAlertsError(error instanceof Error ? error.message : "Não foi possível carregar os alertas.");
+      if (controller.signal.aborted || isOneViewAbortError(error)) return;
+      setAlertsError("Não foi possível carregar os alertas.");
     } finally {
       if (requestId === alertsRequestIdRef.current) setIsAlertsLoading(false);
       if (searchIntent && alertSearchIntent.current?.id === searchIntent.id) {
@@ -1084,7 +1085,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, health, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, hasLoadedAlerts, health, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1883,7 +1884,7 @@ export default function AlertsPage() {
           </div>
         ) : null}
 
-        {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} /> : null}
+        {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} onRetry={() => void loadAlerts()} /> : null}
 
         <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading}>
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}

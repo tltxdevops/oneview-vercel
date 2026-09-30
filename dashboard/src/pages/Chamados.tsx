@@ -273,6 +273,7 @@ export default function ChamadosPage() {
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [duplicatesError, setDuplicatesError] = useState<string | null>(null);
   const [duplicatesPayload, setDuplicatesPayload] = useState<IncidentDuplicatesResponse | null>(null);
+  const duplicatesPayloadRef = useRef<IncidentDuplicatesResponse | null>(null);
   const [selectedDuplicateGroup, setSelectedDuplicateGroup] = useState<DuplicateIncidentGroup | null>(null);
 
   useEffect(() => {
@@ -319,8 +320,10 @@ export default function ChamadosPage() {
     const controller = new AbortController();
     const searchIntent = incidentSearchIntent.current?.value === applied.search ? incidentSearchIntent.current : null;
     if (payloadRef.current) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
+    else {
+      setLoading(true);
+      setError(null);
+    }
     const period = periodBounds(applied.period);
     const searchParams = resolveIncidentSearch(applied.search);
     // Poll de 15 s atualiza somente a tabela. Metadados globais são renovados
@@ -392,8 +395,7 @@ export default function ChamadosPage() {
   useEffect(() => {
     if (viewMode !== "duplicates") return;
     const controller = new AbortController();
-    setDuplicatesLoading(true);
-    setDuplicatesError(null);
+    if (!duplicatesPayloadRef.current) setDuplicatesLoading(true);
     fetchIncidentDuplicates({
       customer: applied.company.trim() || undefined,
       assignedTo: applied.unassigned
@@ -405,11 +407,12 @@ export default function ChamadosPage() {
     })
       .then((response) => {
         if (controller.signal.aborted) return;
+        duplicatesPayloadRef.current = response;
         setDuplicatesPayload(response);
+        setDuplicatesError(null);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        setDuplicatesPayload(null);
         setDuplicatesError("Duplicados indisponíveis");
         void err;
       })
@@ -858,7 +861,7 @@ export default function ChamadosPage() {
             {duplicatesError ? (
               <OperationalErrorBanner
                 message={duplicatesError}
-                onRetry={() => setViewMode("duplicates")}
+                onRetry={() => setRefreshVersion((current) => current + 1)}
               />
             ) : null}
             <SectionPanel
@@ -873,13 +876,13 @@ export default function ChamadosPage() {
                 </p>
               )}
             >
-              {duplicatesLoading ? (
+              {duplicatesLoading && !duplicatesPayload?.groups?.length ? (
                 <div className="space-y-2">
                   {Array.from({ length: 3 }).map((_, index) => (
                     <Skeleton key={`dup-skel-${index}`} className="h-28 w-full" />
                   ))}
                 </div>
-              ) : duplicatesError ? (
+              ) : duplicatesError && !duplicatesPayload?.groups?.length ? (
                 <p className="text-sm text-muted-foreground">Não foi possível carregar duplicados.</p>
               ) : !(duplicatesPayload?.groups?.length) ? (
                 <OperationalEmptyState compact title="Nenhum grupo de duplicidade sugerida" />

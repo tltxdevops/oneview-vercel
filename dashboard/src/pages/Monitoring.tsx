@@ -58,6 +58,7 @@ import {
   formatNullableCount,
   formatOneViewSeverityLabel,
   bucketOneViewReadNow,
+  isOneViewAbortError,
 } from "@/lib/oneview-api";
 import {
   activeFreshAttentionIds,
@@ -868,8 +869,11 @@ export default function MonitoringPage() {
 
   const refreshAll = useCallback(async () => {
     if (inFlight.current) {
-      queryGenerationRef.current.deferCurrentIfDifferent();
-      return inFlight.current;
+      const generation = queryGenerationRef.current;
+      if (generation.inFlightGeneration() === generation.peek()) {
+        return inFlight.current;
+      }
+      listsAbort.current?.abort();
     }
     pollGenerationRef.current += 1;
     const pollGeneration = pollGenerationRef.current;
@@ -924,7 +928,7 @@ export default function MonitoringPage() {
         setRecentMetrics(metricsResult.value as RecentOperationalMetrics);
         setSectionError("summary", null);
         anySuccess = true;
-      } else {
+      } else if (!isOneViewAbortError(metricsResult.reason)) {
         setSectionError(
           "summary",
           isInitial ? "Não foi possível carregar as métricas." : "Falha ao atualizar métricas. Valores anteriores mantidos.",
@@ -995,7 +999,7 @@ export default function MonitoringPage() {
         setQueueTotal(payload.total);
         setSectionError("queue", null);
         anySuccess = true;
-      } else {
+      } else if (!isOneViewAbortError(queueResult.reason)) {
         setSectionError(
           "queue",
           isInitial ? "Não foi possível carregar a fila." : "Falha ao atualizar a fila. Valores anteriores mantidos.",
@@ -1076,6 +1080,8 @@ export default function MonitoringPage() {
         });
         setSectionError("incidents", null);
         anySuccess = true;
+      } else if (isOneViewAbortError(incidentsResult?.reason)) {
+        /* timeout/abort da troca de filtro não gera erro falso */
       } else if (isInitial && !hasDataRef.current) {
         setSectionError("incidents", "Chamados indisponíveis");
       } else {
