@@ -40,12 +40,14 @@ import {
 import {
   fetchIncidentDuplicates,
   fetchIncidents,
+  formatDurationSeconds,
   type DuplicateIncidentGroup,
   type IncidentDuplicatesResponse,
   type IncidentListResponse,
   type FetchIncidentSearchSuggestionsParams,
   type OneViewIncident,
 } from "@/lib/oneview-api";
+import { incidentSlaLabel } from "@/lib/oneview-incident-sla";
 import { resolveIncidentSearch } from "@/lib/oneview-chamados-search";
 import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
@@ -89,6 +91,8 @@ const INCIDENT_COLUMN_OPTIONS = [
   { id: "priority", label: COLUMNS[4] },
   { id: "group", label: COLUMNS[5] },
   { id: "assignee", label: COLUMNS[6] },
+  { id: "duration", label: "Tempo aberto" },
+  { id: "sla", label: "SLA" },
   { id: "updated", label: COLUMNS[7] },
   { id: "actions", label: "Ações", required: true },
 ] as const;
@@ -144,6 +148,8 @@ const INCIDENT_COLUMN_WIDTH: Record<IncidentColumnId, string> = {
   priority: "9%",
   group: "12%",
   assignee: "10%",
+  duration: "9%",
+  sla: "12%",
   updated: "8%",
   actions: "11%",
 };
@@ -155,6 +161,7 @@ const STATE_OPTIONS = [
   { value: "3", label: "Em espera" },
   { value: "6", label: "Resolvido" },
   { value: "7", label: "Encerrado" },
+  { value: "8", label: "Cancelado(a)" },
 ] as const;
 
 const PRIORITY_OPTIONS = [
@@ -171,6 +178,7 @@ const PERIOD_OPTIONS = [
   { value: "24h", label: "Últimas 24 h" },
   { value: "7d", label: "Últimos 7 dias" },
   { value: "30d", label: "Últimos 30 dias" },
+  { value: "custom", label: "Personalizado" },
 ] as const;
 
 type DraftFilters = {
@@ -184,6 +192,8 @@ type DraftFilters = {
   assignmentGroup: string;
   origin: "all" | "manual" | "automatic";
   period: string;
+  customFrom: string;
+  customTo: string;
   unassigned: boolean;
 };
 
@@ -198,6 +208,8 @@ const EMPTY_DRAFT: DraftFilters = {
   assignmentGroup: "all",
   origin: "all",
   period: "all",
+  customFrom: "",
+  customTo: "",
   unassigned: false,
 };
 
@@ -226,7 +238,8 @@ function incidentKey(item: OneViewIncident, index: number) {
   return item.sys_id || item.number || `incident-${index}`;
 }
 
-function periodBounds(period: string): { openedFrom?: string; openedTo?: string } {
+function periodBounds(period: string, customFrom = "", customTo = ""): { openedFrom?: string; openedTo?: string } {
+  if (period === "custom" && customFrom && customTo) return { openedFrom: customFrom, openedTo: customTo };
   if (period === "all") return {};
   const days = period === "24h" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : 0;
   if (!days) return {};
@@ -244,14 +257,17 @@ export default function ChamadosPage() {
   const incidentColumns = useOneViewTableColumns({ tableId: "incidents", actorId, definitions: INCIDENT_COLUMN_OPTIONS });
   const [searchParams, setSearchParams] = useSearchParams();
   const initialFilters = useMemo<DraftFilters>(() => {
+    const temporal = searchParams.get("period") === "custom" && searchParams.get("from") && searchParams.get("to")
+      ? { period: "custom", customFrom: searchParams.get("from") || "", customTo: searchParams.get("to") || "" }
+      : {};
     if (searchParams.get("unassigned") === "true") {
-      return { ...EMPTY_DRAFT, unassigned: true };
+      return { ...EMPTY_DRAFT, ...temporal, unassigned: true };
     }
     const assignedIds = parseAssignedToSysIds(searchParams.get("assigned_to"));
     if (assignedIds.length) {
-      return { ...EMPTY_DRAFT, assignedTo: assignedIds.join(",") };
+      return { ...EMPTY_DRAFT, ...temporal, assignedTo: assignedIds.join(",") };
     }
-    return EMPTY_DRAFT;
+    return { ...EMPTY_DRAFT, ...temporal };
   }, [searchParams]);
   const [draft, setDraft] = useState<DraftFilters>(initialFilters);
   const [applied, setApplied] = useState<DraftFilters>(initialFilters);
@@ -324,7 +340,7 @@ export default function ChamadosPage() {
       setLoading(true);
       setError(null);
     }
-    const period = periodBounds(applied.period);
+    const period = periodBounds(applied.period, applied.customFrom, applied.customTo);
     const searchParams = resolveIncidentSearch(applied.search);
     // Poll de 15 s atualiza somente a tabela. Metadados globais são renovados
     // no primeiro load, em mudanças de filtro e após actions relevantes.
@@ -349,8 +365,8 @@ export default function ChamadosPage() {
       origin: applied.origin === "all" ? undefined : applied.origin,
       manual: viewMode === "manual",
       unassigned: applied.unassigned || undefined,
-      updatedFrom: period.openedFrom,
-      updatedTo: period.openedTo,
+      openedFrom: period.openedFrom,
+      openedTo: period.openedTo,
       // KPI clicks always filter server-side. Reuse the already-rendered
       // global KPIs/facets, which are unrelated to the selected table filter.
       includeCounts: includeMetadata,
@@ -514,7 +530,7 @@ export default function ChamadosPage() {
   }))], [payload?.facets?.assignment_groups]);
 
   const searchSuggestScope = useMemo((): Omit<FetchIncidentSearchSuggestionsParams, "q" | "limit" | "signal"> => {
-    const period = periodBounds(applied.period);
+    const period = periodBounds(applied.period, applied.customFrom, applied.customTo);
     return {
       company: applied.company.trim() || undefined,
       state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
@@ -824,12 +840,22 @@ export default function ChamadosPage() {
                     </Select>
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">
-                    Última atualização
+                    Abertura
                     <Select value={draft.period} onValueChange={(value) => setDraft((prev) => ({ ...prev, period: value }))}>
                       <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
                       <SelectContent>{PERIOD_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
                     </Select>
                   </label>
+                  {draft.period === "custom" ? (
+                    <div className="grid grid-cols-2 gap-2 sm:col-span-2">
+                      <label className="space-y-1 text-xs text-muted-foreground">De
+                        <Input type="datetime-local" value={draft.customFrom.replace(/Z$/, "").slice(0, 16)} onChange={(event) => setDraft((prev) => ({ ...prev, customFrom: event.target.value ? new Date(event.target.value).toISOString() : "" }))} />
+                      </label>
+                      <label className="space-y-1 text-xs text-muted-foreground">Até
+                        <Input type="datetime-local" value={draft.customTo.replace(/Z$/, "").slice(0, 16)} onChange={(event) => setDraft((prev) => ({ ...prev, customTo: event.target.value ? new Date(event.target.value).toISOString() : "" }))} />
+                      </label>
+                    </div>
+                  ) : null}
                   <div className="flex items-end">
                     <Button type="button" variant={draft.unassigned ? "default" : "outline"} className="w-full" aria-pressed={draft.unassigned} onClick={() => setDraft((prev) => ({ ...prev, unassigned: !prev.unassigned, assignedTo: "all", state: "all" }))}>
                       Sem responsável
@@ -1123,6 +1149,8 @@ export default function ChamadosPage() {
                       if (column === "priority") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-sm">{displayValue(item.priority_display, item.priority)}</TableCell>;
                       if (column === "group") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.assignment_group_display, item.assignment_group)}>{displayValue(item.assignment_group_display, item.assignment_group)}</TableCell>;
                       if (column === "assignee") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.assigned_to_display, item.assigned_to)}>{displayValue(item.assigned_to_display, item.assigned_to)}</TableCell>;
+                      if (column === "duration") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums">{formatDurationSeconds(item.open_duration_seconds)}</TableCell>;
+                      if (column === "sla") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-xs" title={item.sla_summary?.name || undefined}>{incidentSlaLabel(item.sla_summary)}</TableCell>;
                       return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums text-muted-foreground">{formatDateTime(item.sys_updated_on)}</TableCell>;
                     })}
                   </TableRow>

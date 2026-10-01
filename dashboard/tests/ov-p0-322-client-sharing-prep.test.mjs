@@ -45,10 +45,59 @@ test("client sharing: preview usa contrato canônico, snapshot opcional e flag i
   const normalized = clientShareMessageContract(message);
   const preview = clientSharePreview(normalized, null);
   assert.equal(normalized.snapshot, null);
-  assert.match(preview.text, /Cliente A/);
-  assert.match(preview.text, /Link indisponível/);
+  assert.equal(preview.text, [
+    "🔴 router-a - Link indisponível",
+    "📟 Equipamento: router-a",
+    "📅 Data/Hora: 28/09/2026 - 09:00:00",
+    "🛠️ Ação: Alerta em análise.",
+    "🔄 Próximos Passos: Acompanhando alerta.",
+    "🔎 Acompanhamento: Equipe NOC",
+  ].join("\n"));
+  assert.equal(
+    clientShareMessageContract({ ...message, incident_number: "INC0088000" }).action,
+    "Aberto chamado INC0088000 para acompanhamento de alerta.",
+  );
+  assert.equal(clientShareMessageContract({ ...message, actor_name: "Operador" }).follow_up, "Equipe NOC");
   assert.equal(isClientSharingEnabled(env([])), false);
   assert.equal(clientShareIdempotencyKey("client-share:0123456789abcdef"), "client-share:0123456789abcdef");
+});
+
+test("client sharing: campos editados usam o mesmo texto canônico no preview", () => {
+  const normalized = clientShareMessageContract({
+    ...message,
+    equipment: "router-a.internal",
+    incident_number: "INC0088000",
+    action: "Cliente acionado via central.",
+    next_steps: "Aguardando validação.",
+    follow_up: "Ana NOC",
+  });
+  const preview = clientSharePreview(normalized, null);
+  assert.match(preview.text, /📟 Equipamento: router-a\.internal/);
+  assert.match(preview.text, /🛠️ Ação: Cliente acionado via central\./);
+  assert.match(preview.text, /🔄 Próximos Passos: Aguardando validação\./);
+  assert.match(preview.text, /🔎 Acompanhamento: Ana NOC/);
+  assert.match(preview.text, /Link indisponível/);
+  assert.doesNotMatch(preview.text, /Cliente A|oneview\.example|Abrir no OneView|Abrir no ServiceNow/);
+});
+
+test("client sharing: campos editáveis são limitados e não injetam novas linhas", () => {
+  const normalized = clientShareMessageContract({
+    ...message,
+    action: "Cliente <script>alert(1)</script>\nacionado",
+    next_steps: `A${"b".repeat(400)}`,
+    follow_up: "  Ana\nNOC  ",
+  });
+  assert.equal(normalized.action, "Cliente <script>alert(1)</script> acionado");
+  assert.equal(normalized.next_steps.length, 240);
+  assert.equal(normalized.follow_up, "Ana NOC");
+  assert.equal(clientSharePreview(normalized, null).text.split("\n").length, 6);
+});
+
+test("client sharing: timestamp inválido é rejeitado antes do preview", () => {
+  assert.throws(
+    () => clientShareMessageContract({ ...message, started_at: "28/09/2026 12:00" }),
+    /invalid_client_share_message/,
+  );
 });
 
 test("client sharing: feature flag off bloqueia send antes de adapter ou audit", async () => {
@@ -87,18 +136,21 @@ test("client sharing: mesma idempotency_key em duplo clique só registra um dry-
   await handler(request, second);
   assert.equal(first.body.duplicate, false);
   assert.equal(second.body.duplicate, true);
-  assert.equal(audits, 1);
+  assert.equal(audits, 2);
   assert.equal(sends, 1);
 });
 
-test("client sharing: adapters são dry-run e não executam chamada externa", async () => {
+test("client sharing: adapters não-piloto permanecem dry-run e Webex não faz IO", async () => {
   const destinationRecord = destination({
     client_key: "both", destination_id: "both:noc", channel_type: "teams", teams_webhook_url: "https://example.webhook.office.com/secret",
   });
   assert.equal((await sendTeamsClientShare({ destination: destinationRecord })).external_called, false);
+  assert.equal((await sendTeamsClientShare({ destination: destinationRecord, live: true })).status, "smoke_destination_not_allowed");
   assert.equal((await sendWebexClientShare({ destination: destinationRecord })).external_called, false);
   const source = await readFile(new URL("../api/_lib/oneview-client-sharing-transports.js", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /fetch\s*\(/);
+  const webex = source.slice(source.indexOf("export async function sendWebexClientShare"));
+  assert.doesNotMatch(webex, /fetch\s*\(/);
+  assert.doesNotMatch(source, /graph\.microsoft\.com|ChannelMessage/);
 });
 
 test("client sharing: UI possui modal, preview e botão guardado por feature flag", async () => {
@@ -109,5 +161,6 @@ test("client sharing: UI possui modal, preview e botão guardado por feature fla
   assert.match(actions, /Enviar para o cliente/);
   assert.match(dialog, /Cliente sem canal de comunicação configurado/);
   assert.match(dialog, /externalEnabled/);
+  assert.match(dialog, /liveSend/);
   assert.match(dialog, /idempotency/);
 });

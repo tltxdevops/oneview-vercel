@@ -174,6 +174,8 @@ export async function fetchRecentOperationalMetrics(params?: {
   now?: number;
   /** Quando informado (Home OV-P0-42A), uma única consulta alimenta by_severity. */
   windowMs?: number;
+  from?: string;
+  to?: string;
 }): Promise<RecentOperationalMetrics> {
   const now = params?.now ?? Date.now();
   const customers = params?.customers;
@@ -181,7 +183,7 @@ export async function fetchRecentOperationalMetrics(params?: {
   const signal = params?.signal;
 
   // Home: 1× alerts (summary) + sync. Monitoramento (sem windowMs) mantém as 4 consultas legadas.
-  if (params?.windowMs != null) {
+  if (params?.windowMs != null || params?.from) {
     const results = await Promise.allSettled([
       fetchAlerts({
         page: 1,
@@ -189,7 +191,8 @@ export async function fetchRecentOperationalMetrics(params?: {
         status: "active",
         customers,
         datasources,
-        firstSeenFrom: isoAgo(params.windowMs, now),
+        firstSeenFrom: params.from ?? isoAgo(params.windowMs ?? RECENT_PRIORITY_WINDOW_MS, now),
+        firstSeenTo: params.to,
         signal,
       }),
       fetchSyncLogs(8),
@@ -302,6 +305,8 @@ export async function fetchRecentOperationalEvents(params: {
   signal?: AbortSignal;
   now?: number;
   windowMs?: number;
+  from?: string;
+  to?: string;
 }): Promise<{ items: GlobalHistoryItem[]; total: number; data_source?: string; checked_at?: string }> {
   const now = params.now ?? Date.now();
   const windowMs = params.windowMs ?? RECENT_EVENTS_WINDOW_MS;
@@ -311,7 +316,8 @@ export async function fetchRecentOperationalEvents(params: {
     customers: params.customers,
     datasources: params.datasources,
     eventType: "operational",
-    occurredFrom: isoAgo(windowMs, now),
+    occurredFrom: params.from ?? isoAgo(windowMs, now),
+    occurredTo: params.to,
     signal: params.signal,
   });
   const items = (response.items ?? []).slice(0, params.limit);

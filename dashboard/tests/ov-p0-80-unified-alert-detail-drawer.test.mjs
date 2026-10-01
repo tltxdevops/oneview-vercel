@@ -37,9 +37,10 @@ test("OV-P0-80: AlertDetailDrawer único com Resumo / Histórico / Técnico", as
   assert.match(drawer, /safeHostIp\(alert\.host_ip\)/);
   assert.match(drawer, /interfaceFromAlertTags/);
   assert.match(drawer, /AlertRelatedIncidentsSection/);
-  assert.match(drawer, /buildAlertOperationalTimeline/);
+  assert.match(drawer, /Ocorrências anteriores/);
   assert.match(drawer, /filterOperationalAlertTags/);
   assert.doesNotMatch(drawer, /Atribuir|Comentar|disabled className="w-full"/);
+  assert.doesNotMatch(drawer, /setDetail\(null\).*fetchAlertHistory|setHistory\(null\).*loadSelectedAlert/);
   assert.doesNotMatch(drawer, /Integração ServiceNow em preparação/);
   assert.doesNotMatch(drawer, /Abrir em Alertas/);
 });

@@ -48,19 +48,37 @@ test("OV-P0-103 Resumo operacional: filtro local toggle (sem /alertas)", async (
     read("src/pages/Index.tsx"),
   ]);
 
-  assert.match(home, /export function toggleHomeSeverityFilter/);
-  assert.match(index, /toggleHomeSeverityFilter|toggleSeverityStrip/);
-  assert.match(index, /selected: severityFilter === severity/);
+  assert.match(home, /export function toggleHomeSeveritySelection/);
+  assert.match(home, /homeModeDefaultSeverities/);
+  assert.match(index, /toggleHomeSeveritySelection|toggleSeverityStrip/);
+  assert.match(index, /selected: selectedSeverities\.includes\(severity\)/);
   assert.match(index, /onClick: \(\) => toggleSeverityStrip\(severity\)/);
   assert.doesNotMatch(index, /href: severityAlertsHref/);
   assert.doesNotMatch(index, /severityAlertsHref/);
 
-  function toggleHomeSeverityFilter(current, next) {
-    return current === next ? "all" : next;
+  const HOME_PRIORITARY_SEVERITIES = ["average", "high", "disaster"];
+  function homeModeDefaultSeverities(mode) {
+    return mode === "prioritary" ? [...HOME_PRIORITARY_SEVERITIES] : [];
   }
-  assert.equal(toggleHomeSeverityFilter("all", "high"), "high");
-  assert.equal(toggleHomeSeverityFilter("high", "high"), "all");
-  assert.equal(toggleHomeSeverityFilter("high", "disaster"), "disaster");
+  function toggleHomeSeveritySelection(current, next, mode) {
+    const selected = [...current];
+    const result = selected.includes(next)
+      ? selected.filter((item) => item !== next)
+      : [...selected, next];
+    if (!result.length && mode === "prioritary") return homeModeDefaultSeverities(mode);
+    return result;
+  }
+  assert.deepEqual(toggleHomeSeveritySelection([], "high"), ["high"]);
+  assert.deepEqual(toggleHomeSeveritySelection(["high"], "high"), []);
+  assert.deepEqual(toggleHomeSeveritySelection(["high"], "disaster"), ["high", "disaster"]);
+  assert.deepEqual(
+    toggleHomeSeveritySelection(["average", "high", "disaster"], "average", "prioritary"),
+    ["high", "disaster"],
+  );
+  assert.deepEqual(
+    toggleHomeSeveritySelection(["high"], "high", "prioritary"),
+    ["average", "high", "disaster"],
+  );
 });
 
 test("OV-P0-103 Chamados sem responsável: unassigned + estados operacionais + teto 100", async () => {

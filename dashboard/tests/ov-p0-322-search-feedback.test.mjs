@@ -30,6 +30,6 @@ test("OV-P0-322: toolbar não repete refresh e páginas identificam somente a bu
   }
   assert.match(incidents, /incidentSearchLoading/);
   assert.match(incidents, /activity=\{incidentSearchActivity\}/);
-  assert.match(links, /Atualização em segundo plano/);
+  assert.match(links, /OneViewQuietRefreshIndicator/);
   assert.doesNotMatch(links, /refreshing \? "Atualizando/);
 });

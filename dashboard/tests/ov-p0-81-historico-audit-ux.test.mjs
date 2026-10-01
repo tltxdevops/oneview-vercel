@@ -51,10 +51,12 @@ test("OV-P0-81: drawer do Histórico abre aba Histórico com ênfase de auditori
   assert.match(drawer, /defaultTab/);
   assert.match(drawer, /auditEmphasis/);
   assert.match(drawer, /alertsQueueHref/);
-  assert.match(drawer, /aria-label="Auditoria temporal"/);
-  assert.match(drawer, /Reconhecido em/);
-  assert.match(drawer, /Reconhecido por/);
-  assert.match(drawer, /Duração total/);
+  assert.match(drawer, /Ocorrências anteriores/);
+  assert.match(drawer, /label="Início"/);
+  assert.match(drawer, /label="Recovery"/);
+  assert.match(drawer, /label="Duração"/);
+  assert.match(drawer, /label="ACK"/);
+  assert.match(drawer, /Chamado/);
   assert.match(drawer, /Ver na fila de Alertas/);
   assert.doesNotMatch(drawer, /Abrir em Alertas/);
   assert.doesNotMatch(drawer, /Button[\s\S]{0,80}Ver na fila de Alertas/);

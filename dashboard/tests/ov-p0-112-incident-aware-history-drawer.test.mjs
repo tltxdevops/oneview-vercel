@@ -52,10 +52,10 @@ test("OV-P0-112 Drawer: chamado com INC clicável, skeleton só no detalhe, tags
   ]);
 
   assert.match(drawer, /AlertRelatedIncidentsSection/);
-  assert.match(drawer, /buildAlertOperationalTimeline/);
+  assert.match(drawer, /Ocorrências anteriores/);
   assert.match(drawer, /filterOperationalAlertTags/);
-  assert.match(drawer, /aria-label="Timeline do alerta"/);
-  assert.match(drawer, /Vínculo com ServiceNow|kind === "servicenow"/);
+  assert.doesNotMatch(drawer, /aria-label="Timeline do alerta"/);
+  assert.doesNotMatch(drawer, /buildAlertOperationalTimeline/);
   assert.doesNotMatch(drawer, /setDetail\(null\).*fetchAlertHistory|setHistory\(null\).*loadSelectedAlert/);
 
   assert.match(section, /ProjectedIncidentCard/);

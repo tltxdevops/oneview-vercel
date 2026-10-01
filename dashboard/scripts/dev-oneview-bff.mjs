@@ -78,6 +78,10 @@ const routes = new Map([
   ["/api/oneview/incidents", "incidents"],
   ["/api/oneview/incidents/related-alert", "incident-related-alert"],
   ["/api/oneview/operator-queue", "operator-queue"],
+  ["/api/oneview/client-sharing/destinations", "client-sharing-destinations"],
+  ["/api/oneview/client-sharing/preview", "client-sharing-preview"],
+  ["/api/oneview/client-sharing/send", "client-sharing-send"],
+  ["/api/oneview/client-sharing/smoke", "client-sharing-smoke"],
 ]);
 
 const handlers = new Map();
@@ -90,6 +94,8 @@ async function getHandler(routeName) {
         ? path.join("alerts", "[id]", "history.js")
         : routeName === "alert-ack-request"
         ? path.join("alerts", "[id]", "ack-request.js")
+        : routeName === "alert-source-acknowledge"
+        ? path.join("alerts", "[id]", "source-acknowledge.js")
         : routeName === "link-detail"
           ? path.join("links", "[id].js")
           : routeName === "link-reminders"
@@ -104,6 +110,14 @@ async function getHandler(routeName) {
             ? path.join("incidents", "related-alert.js")
           : routeName === "alert-related-incidents"
             ? path.join("alerts", "related-incidents.js")
+          : routeName === "client-sharing-destinations"
+            ? path.join("client-sharing", "destinations.js")
+          : routeName === "client-sharing-preview"
+            ? path.join("client-sharing", "preview.js")
+          : routeName === "client-sharing-send"
+            ? path.join("client-sharing", "send.js")
+          : routeName === "client-sharing-smoke"
+            ? path.join("client-sharing", "smoke.js")
           : `${routeName}.js`;
     const moduleUrl = pathToFileURL(path.join(rootDir, "api", "oneview", modulePath)).href;
     const module = await import(moduleUrl);
@@ -121,6 +135,8 @@ function resolveRoute(pathname) {
   if (linkReminders) return { routeName: "link-reminders", params: { id: decodeURIComponent(linkReminders[1]) } };
   const linkDetail = pathname.match(/^\/api\/oneview\/links\/([^/]+)$/);
   if (linkDetail) return { routeName: "link-detail", params: { id: decodeURIComponent(linkDetail[1]) } };
+  const sourceAcknowledge = pathname.match(/^\/api\/oneview\/alerts\/([^/]+)\/source-acknowledge$/);
+  if (sourceAcknowledge) return { routeName: "alert-source-acknowledge", params: { id: decodeURIComponent(sourceAcknowledge[1]) } };
   const ackRequest = pathname.match(/^\/api\/oneview\/alerts\/([^/]+)\/ack-request$/);
   if (ackRequest) return { routeName: "alert-ack-request", params: { id: decodeURIComponent(ackRequest[1]) } };
   const history = pathname.match(/^\/api\/oneview\/alerts\/([^/]+)\/history$/);
@@ -136,6 +152,7 @@ function routeTemplate(routeName) {
   if (routeName === "alert-detail") return "/api/oneview/alerts/:id";
   if (routeName === "alert-history") return "/api/oneview/alerts/:id/history";
   if (routeName === "alert-ack-request") return "/api/oneview/alerts/:id/ack-request";
+  if (routeName === "alert-source-acknowledge") return "/api/oneview/alerts/:id/source-acknowledge";
   if (routeName === "link-detail") return "/api/oneview/links/:id";
   if (routeName === "link-reminders") return "/api/oneview/links/:id/reminders";
   if (routeName === "incident-detail") return "/api/oneview/incidents/detail/:id";
@@ -273,7 +290,9 @@ const server = http.createServer(async (req, res) => {
   try {
     req.query = { ...buildQuery(url), ...route.params };
     if ((route.routeName === "alert-ack-request" && req.method === "POST")
-      || (route.routeName === "link-reminders" && ["POST", "PATCH", "DELETE"].includes(req.method || ""))) {
+      || (route.routeName === "alert-source-acknowledge" && req.method === "POST")
+      || (route.routeName === "link-reminders" && ["POST", "PATCH", "DELETE"].includes(req.method || ""))
+      || (["client-sharing-preview", "client-sharing-send", "client-sharing-smoke"].includes(route.routeName) && req.method === "POST")) {
       try {
         req.body = await readJsonBody(req);
       } catch (error) {

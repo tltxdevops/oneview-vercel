@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Send } from "lucide-react";
+import { Copy, Loader2, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,6 +10,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import {
+  alertClientSeverityIcon,
+  formatAlertClientCommunication,
+  formatAlertClientDateTime,
+  type AlertClientCommunication,
+} from "@/lib/oneview-alert-operational-share";
 import {
   fetchClientShareDestinations,
   fetchClientSharePreview,
@@ -41,6 +47,45 @@ function destinationLabel(item: ClientShareDestination) {
   return `${item.destination_name}${route} · ${channelLabel(item.channel_type)}${fallback}`;
 }
 
+function liveSendError(status?: string, httpStatus?: number | null) {
+  if (status === "rejected" || status === "definite_failure") {
+    return httpStatus
+      ? `O Teams recusou o envio (HTTP ${httpStatus}). Nenhuma mensagem foi entregue.`
+      : "O Teams recusou o envio. Nenhuma mensagem foi entregue.";
+  }
+  if (status === "timeout" || status === "ambiguous") return "O Teams não respondeu a tempo. Confira o canal antes de tentar de novo.";
+  if (status === "network_error") return "Falha de rede ao enviar para o Teams. Nenhuma entrega foi confirmada.";
+  if (status && /not_configured$/.test(status)) return "Canal Teams da Ailos ainda não está configurado.";
+  return "Não foi possível confirmar o envio ao Teams. Nenhuma entrega foi assumida.";
+}
+
+function copyPlainText(value: string): Promise<boolean> {
+  return (async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+      /* fallback abaixo */
+    }
+    try {
+      const area = document.createElement("textarea");
+      area.value = value;
+      area.setAttribute("readonly", "true");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  })();
+}
+
 function selectionHint(reason: ClientShareResolution["reason"] | undefined) {
   if (reason === "unknown_route") return "A rota do alerta não corresponde a um grupo. Selecione o destino.";
   if (reason === "ambiguous_route") return "Há mais de um destino para esta rota. Selecione o grupo.";
@@ -52,6 +97,7 @@ export function ClientShareDialog({ open, onOpenChange, message }: Props) {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [destinations, setDestinations] = useState<ClientShareDestination[]>([]);
   const [resolution, setResolution] = useState<ClientShareResolution | null>(null);
   const [selectedId, setSelectedId] = useState("");
@@ -60,8 +106,26 @@ export function ClientShareDialog({ open, onOpenChange, message }: Props) {
   const selected = destinations.find((item) => item.destination_id === selectedId) || null;
   const hasDestination = destinations.length > 0;
   const needsChoice = destinations.length > 1;
+  const liveSend = Boolean(preview?.live_send);
   const externalEnabled = Boolean(preview?.external_enabled);
-  const body = useMemo(() => preview?.preview.text || "Gerando preview…", [preview]);
+  const canSend = Boolean(selected) && (externalEnabled || liveSend);
+  const previewCommunication = useMemo<AlertClientCommunication | null>(() => {
+    const normalized = preview?.message;
+    if (!normalized) return null;
+    const resolved = normalized.message_type === "resolved";
+    return {
+      statusIcon: alertClientSeverityIcon(normalized.severity),
+      unitHost: normalized.host,
+      problem: normalized.problem,
+      equipment: normalized.equipment || normalized.host,
+      occurredAt: formatAlertClientDateTime(normalized.started_at),
+      action: normalized.action || (resolved ? "Alarme normalizado." : "Alerta em análise."),
+      nextSteps: normalized.next_steps || (resolved ? "Acompanhamento concluído." : "Acompanhando alerta."),
+      followUp: normalized.follow_up || "Equipe NOC",
+      incidentNumber: normalized.incident_number || null,
+      messageType: resolved ? "resolved" : "alert",
+    };
+  }, [preview]);
   const hint = selectionHint(resolution?.reason);
 
   useEffect(() => {
@@ -90,15 +154,50 @@ export function ClientShareDialog({ open, onOpenChange, message }: Props) {
     return () => controller.abort();
   }, [message, open, toast]);
 
+  const clientText = preview?.preview?.text || (previewCommunication ? formatAlertClientCommunication(previewCommunication) : "");
+
+  async function copyClientText() {
+    if (copying || loading || !clientText) return;
+    setCopying(true);
+    try {
+      if (!await copyPlainText(clientText)) throw new Error("copy_failed");
+      toast({ title: "Texto para o cliente copiado", description: "Mensagem pronta para colar." });
+    } catch {
+      toast({ title: "Não foi possível copiar o texto para o cliente.", variant: "destructive" });
+    } finally {
+      setCopying(false);
+    }
+  }
+
   async function send() {
-    if (sending || !externalEnabled || !selected) return;
+    if (sending || !canSend || !selected) return;
     setSending(true);
     try {
       const result = await sendClientShare(message, keyRef.current, selected.destination_id);
-      toast({ title: result.duplicate ? "Solicitação já registrada" : "Dry-run registrado", description: "Nenhuma mensagem externa foi enviada." });
-      onOpenChange(false);
+      const delivery = result.deliveries?.[0];
+      if (result.duplicate) {
+        toast({ title: "Solicitação já registrada", description: liveSend ? "Este alerta já foi enviado. Nenhum card extra foi gerado." : "Nenhuma mensagem externa foi enviada." });
+        onOpenChange(false);
+        return;
+      }
+      if (result.dry_run) {
+        toast({ title: "Dry-run registrado", description: "Nenhuma mensagem externa foi enviada." });
+        onOpenChange(false);
+        return;
+      }
+      if (delivery?.status === "sent") {
+        toast({ title: "Mensagem enviada para Ailos no Teams." });
+        onOpenChange(false);
+        return;
+      }
+      toast({
+        title: "Falha no envio ao Teams",
+        description: liveSendError(delivery?.status, delivery?.http_status),
+        variant: "destructive",
+      });
+      if (delivery?.status === "definite_failure") keyRef.current = idempotencyKey();
     } catch {
-      toast({ title: "Não foi possível registrar o dry-run.", variant: "destructive" });
+      toast({ title: liveSend ? "Falha no envio ao Teams" : "Não foi possível registrar o dry-run.", description: liveSend ? "Nenhuma entrega foi assumida." : undefined, variant: "destructive" });
     } finally {
       setSending(false);
     }
@@ -142,13 +241,33 @@ export function ClientShareDialog({ open, onOpenChange, message }: Props) {
           {!loading && !hasDestination ? <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">Cliente sem canal de comunicação configurado.</p> : null}
           <div>
             <p className="mb-1 font-medium">Preview</p>
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 p-3 font-sans text-xs">{body}</pre>
+            {preview?.preview?.text ? (
+              <pre className="whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-sans text-sm leading-relaxed text-foreground">
+                {preview.preview.text}
+              </pre>
+            ) : previewCommunication ? (
+              <pre className="whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-sans text-sm leading-relaxed text-foreground">
+                {formatAlertClientCommunication(previewCommunication)}
+              </pre>
+            ) : (
+              <div className="flex min-h-40 items-center justify-center rounded-xl border bg-muted/30 text-sm text-muted-foreground">
+                Gerando preview…
+              </div>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground">Envio externo permanece em dry-run até habilitação explícita da feature.</p>
+          <p className="text-xs text-muted-foreground">
+            {liveSend
+              ? "Esta mensagem será enviada ao canal Teams configurado."
+              : "Envio externo permanece em dry-run até habilitação explícita da feature."}
+          </p>
         </div>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button type="button" disabled={loading || sending || !selected || !externalEnabled} onClick={() => void send()}>
+          <Button type="button" disabled={loading || sending} variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button type="button" disabled={loading || sending || copying || !clientText} variant="secondary" onClick={() => void copyClientText()}>
+            {copying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Copy className="mr-2 h-4 w-4" />}
+            Copiar texto
+          </Button>
+          <Button type="button" disabled={loading || sending || !selected || !canSend} onClick={() => void send()}>
             {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
             Enviar
           </Button>

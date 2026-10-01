@@ -8,9 +8,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  buildAlertClientCommunication,
   buildAlertClientSharePlainText,
   buildAlertOperationalShareDocument,
   buildAlertRelatedIncidentsFetchParams,
+  formatAlertClientCommunication,
+  resolveAlertClientFollowUp,
 } from "../src/lib/oneview-alert-operational-share.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -190,7 +193,7 @@ test("OV-P0-307 documento não vaza IDs internos nem tags técnicas", () => {
   }
 });
 
-test("OV-P0-307 texto para cliente é resumido e sem rodapé interno", () => {
+test("OV-P0-307 texto para cliente segue o cartão canônico e o fuso operacional", () => {
   const relatedIncidents = [{
     sys_id: INCIDENT_SYS_ID,
     number: "INC0012345",
@@ -214,15 +217,158 @@ test("OV-P0-307 texto para cliente é resumido e sem rodapé interno", () => {
     relatedIncidents,
   });
 
-  assert.match(clientText, /Comunicação operacional/);
-  assert.match(clientText, /Havan/);
-  assert.match(clientText, /INC0012345/);
-  assert.match(clientText, /Em andamento/);
+  assert.equal(clientText, [
+    "🔴 HAVAN-WAN1 - Unavailable by ICMP ping",
+    "📟 Equipamento: havan-wan1.local (200.1.2.3)",
+    "📅 Data/Hora: 21/09/2026 - 09:00:00",
+    "🛠️ Ação: Aberto chamado INC0012345 para acompanhamento de alerta.",
+    "🔄 Próximos Passos: Acompanhando alerta.",
+    "🔎 Acompanhamento: Ana NOC",
+  ].join("\n"));
   assert.doesNotMatch(clientText, /Gerado pelo OneView — uso operacional interno/);
   assert.doesNotMatch(clientText, /Tags operacionais/);
   assert.doesNotMatch(clientText, /Abertura do alerta/);
   assert.doesNotMatch(clientText, /Histórico/);
   assert.ok(clientText.length < doc.plainText.length);
+});
+
+test("OV-P0-307 acompanhamento usa incidente atual, ACK canônico e Equipe NOC", () => {
+  const activeOwned = {
+    sys_id: INCIDENT_SYS_ID,
+    number: "INC0012345",
+    state: "2",
+    state_display: "Em andamento",
+    priority: "2",
+    assignment_group: "NOC",
+    assigned_to: "ana",
+    assigned_to_display: "Ana NOC",
+    sys_updated_on: "2026-09-21T12:15:00.000Z",
+  };
+  const activeUnassigned = {
+    ...activeOwned,
+    assigned_to: "abcdefabcdefabcdefabcdefabcdefab",
+    assigned_to_display: null,
+  };
+  const terminalOld = {
+    ...activeOwned,
+    number: "INC0009999",
+    state: "6",
+    state_display: "Resolvido",
+    assigned_to_display: "Ana NOC",
+  };
+  const ackAlert = alert({
+    servicenow_reference: null,
+    acknowledged_source: true,
+    acknowledged_source_by: "Bruno ACK",
+    acknowledged_by: "Bruno ACK",
+    source_ack: {
+      acknowledged: true,
+      actor_name: "Bruno ACK",
+      acknowledged_at: "2026-09-21T12:10:00.000Z",
+      comment: null,
+      acknowledge_id: "ack-1",
+      history_available: true,
+    },
+  });
+  const noAckAlert = alert({
+    servicenow_reference: null,
+    acknowledged_source: false,
+    acknowledged_source_by: null,
+    acknowledged_by: null,
+    acknowledged_source_at: null,
+    acknowledged_at: null,
+    source_ack: null,
+  });
+
+  assert.equal(resolveAlertClientFollowUp(alert(), [activeOwned]), "Ana NOC");
+  assert.equal(buildAlertClientCommunication({ alert: alert(), relatedIncidents: [activeOwned] }).followUp, "Ana NOC");
+
+  assert.equal(resolveAlertClientFollowUp(ackAlert, [activeUnassigned]), "Bruno ACK");
+  assert.equal(buildAlertClientCommunication({ alert: ackAlert, relatedIncidents: [activeUnassigned] }).followUp, "Bruno ACK");
+
+  assert.equal(resolveAlertClientFollowUp(ackAlert, []), "Bruno ACK");
+  assert.equal(buildAlertClientCommunication({ alert: ackAlert, relatedIncidents: [] }).followUp, "Bruno ACK");
+
+  assert.equal(resolveAlertClientFollowUp(ackAlert, [terminalOld]), "Bruno ACK");
+  assert.equal(buildAlertClientCommunication({
+    alert: ackAlert,
+    relatedIncidents: [terminalOld],
+  }).followUp, "Bruno ACK");
+
+  assert.equal(resolveAlertClientFollowUp(noAckAlert, []), "Equipe NOC");
+  const noOwner = buildAlertClientCommunication({ alert: noAckAlert, relatedIncidents: [] });
+  assert.equal(noOwner.followUp, "Equipe NOC");
+  assert.equal(noOwner.incidentNumber, null);
+  assert.doesNotMatch(formatAlertClientCommunication(noOwner), /INC\d+/);
+
+  const senderDifferent = buildAlertClientCommunication({
+    alert: alert(),
+    relatedIncidents: [activeOwned],
+  });
+  assert.equal(senderDifferent.followUp, "Ana NOC");
+  assert.notEqual(senderDifferent.followUp, "Guilherme Franco");
+  assert.match(formatAlertClientCommunication(senderDifferent), /🔎 Acompanhamento: Ana NOC/);
+});
+
+test("OV-P0-307 identidade ambígua ou conflitante não escolhe outro chamado", () => {
+  const incident = (number, identityConflict = false) => ({
+    sys_id: `${number}-sys-id`,
+    number,
+    identity_conflict: identityConflict,
+    state: "2",
+    priority: "2",
+    assignment_group: "NOC",
+    assigned_to: "ana",
+    assigned_to_display: "Ana NOC",
+    sys_updated_on: null,
+  });
+  const ambiguous = buildAlertClientCommunication({
+    alert: alert({ servicenow_reference: null }),
+    relatedIncidents: [incident("INC0010001"), incident("INC0010002")],
+  });
+  const conflict = buildAlertClientCommunication({
+    alert: alert({ servicenow_reference: null }),
+    relatedIncidents: [incident("INC0010003", true)],
+  });
+  assert.equal(ambiguous.incidentNumber, null);
+  assert.equal(conflict.incidentNumber, null);
+  assert.equal(ambiguous.action, "Alerta em análise.");
+  assert.equal(conflict.action, "Alerta em análise.");
+});
+
+test("OV-P0-307 alerta resolvido usa ícone de severidade e acompanhamento concluído", () => {
+  const communication = buildAlertClientCommunication({
+    alert: alert({ status_source: "resolved", status_internal: "resolved", resolved_at: "2026-09-21T12:30:00.000Z" }),
+    relatedIncidents: [],
+  });
+  assert.equal(communication.statusIcon, "🔴");
+  assert.equal(communication.messageType, "resolved");
+  assert.equal(communication.action, "Alarme normalizado.");
+  assert.equal(communication.nextSteps, "Acompanhamento concluído.");
+});
+
+test("OV-P0-307 responsável prioriza display canônico e edições locais são refletidas", () => {
+  const base = buildAlertClientCommunication({
+    alert: alert(),
+    relatedIncidents: [{
+      sys_id: INCIDENT_SYS_ID,
+      number: "INC0012345",
+      state: "2",
+      priority: "2",
+      assignment_group: "NOC",
+      assigned_to: "abcdefabcdefabcdefabcdefabcdefab",
+      assigned_to_display: "Bruno NOC",
+      sys_updated_on: null,
+    }],
+  }, {
+    action: "Cliente acionado.",
+    nextSteps: "Aguardando retorno.",
+    followUp: "Carla NOC",
+  });
+  assert.equal(base.followUp, "Carla NOC");
+  assert.match(formatAlertClientCommunication(base), /Cliente acionado/);
+  assert.match(formatAlertClientCommunication(base), /Aguardando retorno/);
+  assert.doesNotMatch(formatAlertClientCommunication(base), new RegExp(INCIDENT_SYS_ID));
 });
 
 test("OV-P0-307 chamado ausente vira texto operacional, fetch params não entram no documento", () => {
@@ -247,26 +393,78 @@ test("OV-P0-307 chamado ausente vira texto operacional, fetch params não entram
   assert.ok(params?.incidentSysIds?.includes(INCIDENT_SYS_ID));
 });
 
-test("OV-P0-307 drawer e ações de compartilhamento estão ligados", async () => {
-  const [drawer, actions, preview] = await Promise.all([
+test("OV-P0-307 print do resumo é a imagem do cartão; texto do detalhe continua no Copiar resumo", async () => {
+  const [drawer, actions, preview, clientPreview, clientDialog, card, printCard, capture] = await Promise.all([
     read("src/components/oneview/AlertDetailDrawer.tsx"),
     read("src/components/oneview/AlertOperationalShareActions.tsx"),
     read("src/components/oneview/AlertSharePreviewDialog.tsx"),
+    read("src/components/oneview/AlertClientSharePreviewDialog.tsx"),
+    read("src/components/oneview/ClientShareDialog.tsx"),
+    read("src/components/oneview/AlertClientCommunicationCard.tsx"),
+    read("src/components/oneview/AlertSummaryPrintCard.tsx"),
+    read("src/lib/oneview-alert-summary-capture.ts"),
   ]);
   assert.match(drawer, /AlertOperationalShareActions/);
-  assert.match(drawer, /historyReady=\{!historyLoading\}/);
-  assert.match(drawer, /Resumo operacional para print/);
-  assert.match(drawer, /captureTargetRef=\{summaryCaptureRef\}/);
-  assert.match(actions, /Print resumo/);
-  assert.match(actions, /Copiar resumo/);
-  assert.match(actions, /Aguarde o histórico/);
-  assert.match(actions, /captureElementToPng/);
-  assert.match(actions, /buildAlertClientSharePlainText/);
-  assert.match(actions, /AlertSharePreviewDialog/);
-  assert.match(actions, /openPreview/);
-  assert.match(actions, /fetchAlertRelatedIncidents/);
+  assert.doesNotMatch(drawer, /historyReady/);
+  assert.doesNotMatch(actions, /historyReady/);
+  assert.doesNotMatch(actions, /Aguarde o histórico/);
+  assert.match(drawer, /Situação rápida/);
+  assert.match(drawer, /Identificação/);
+  assert.match(drawer, /label="Host"/);
+  assert.match(drawer, /label="Equipamento"/);
+  assert.match(drawer, /Problema/);
+  assert.match(drawer, /label="ACK"/);
+  assert.match(drawer, /label="Recorrência"/);
+  assert.doesNotMatch(drawer, /AlertClientCommunicationCard/);
+  assert.doesNotMatch(drawer, /Ajustar mensagem/);
+  assert.doesNotMatch(drawer, /bg-\[#111214\]/);
+  assert.match(drawer, /onRelatedIncidentsChange=\{handleRelatedIncidentsChange\}/);
+  assert.doesNotMatch(drawer, /summaryCaptureRef/);
+  assert.match(actions, /\n\s+Copiar resumo\n/);
+  assert.match(actions, /\n\s+Print\n/);
+  assert.doesNotMatch(actions, /\n\s+Imprimir\n/);
+  assert.doesNotMatch(actions, /\n\s+Imagem\n/);
+  assert.match(actions, /\n\s+Enviar\n/);
+  assert.doesNotMatch(actions, /\n\s+Copiar\n/);
+  assert.match(actions, /setClientPreviewOpen\(true\)/);
+  assert.match(actions, /Enviar ao cliente ou copiar imagem/);
+  assert.match(actions, /Copiar resumo do detalhe do alerta/);
+  assert.match(actions, /shareDocument\.plainText/);
+  assert.match(actions, /captureElementToPng\(target\)/);
+  assert.match(actions, /AlertSummaryPrintCard/);
+  assert.match(actions, /Este print está ok\?|AlertSharePreviewDialog/);
+  assert.doesNotMatch(actions, /openAlertOperationalSharePrint/);
+  assert.doesNotMatch(actions, /fetchAlertRelatedIncidents/);
+  assert.doesNotMatch(actions, /title="Copiar texto para o cliente"/);
   assert.match(preview, /Este print está ok\?/);
-  assert.match(preview, /Enviar para o cliente/);
   assert.match(preview, /Copiar imagem/);
+  assert.match(preview, /Copiar resumo/);
+  assert.doesNotMatch(preview, /Copiar texto do cliente/);
   assert.match(preview, /printPngBlob/);
+  assert.match(preview, /Preview do resumo operacional/);
+  assert.match(clientPreview, /Prévia da comunicação ao cliente/);
+  assert.match(clientPreview, /Ajustar mensagem antes de compartilhar/);
+  assert.match(clientPreview, /data-alert-client-communication-card|AlertClientCommunicationCard/);
+  assert.match(clientPreview, /Copiar imagem/);
+  assert.match(clientPreview, /Enviar ao cliente/);
+  assert.doesNotMatch(clientPreview, /Copiar texto/);
+  assert.match(clientDialog, /Copiar texto/);
+  assert.doesNotMatch(clientDialog, /AlertClientCommunicationCard/);
+  assert.match(clientDialog, /formatAlertClientCommunication/);
+  assert.match(card, /data-alert-client-communication-card/);
+  assert.match(card, /formatAlertClientCommunication/);
+  assert.match(card, /bg-\[#0f1012\]/);
+  assert.doesNotMatch(card, /Abrir no OneView|Abrir no ServiceNow/);
+  assert.match(printCard, /data-alert-summary-print-card/);
+  assert.match(printCard, /Identidade/);
+  assert.match(printCard, /Estado/);
+  assert.match(printCard, /Fonte Zabbix/);
+  assert.match(printCard, /Chamado relacionado/);
+  assert.match(capture, /document\.fonts\?\.ready/);
+  assert.match(capture, /CAPTURE_SCALE = 5/);
+  assert.match(capture, /letterRendering: true/);
+  assert.match(capture, /cloneNode\(true\)/);
+  assert.match(capture, /print-color-adjust: exact/);
+  assert.match(capture, /printPngBlob/);
+  assert.doesNotMatch(capture, /window\.open/);
 });

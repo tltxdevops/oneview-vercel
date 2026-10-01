@@ -211,9 +211,9 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
 
   assert.match(section, /ServiceNowDevLink|Abrir no ServiceNow/);
   assert.doesNotMatch(section, /Abrir no ServiceNow DEV/);
-  assert.match(section, /Grupo/);
-  assert.match(section, /Analista/);
-  assert.match(section, /Última atualização|Atualização/);
+  assert.match(section, /assignment_group_display/);
+  assert.match(section, /assigned_to_display/);
+  assert.match(section, /Atualizado em/);
   assert.match(section, /fetchAlertRelatedIncidents/);
   assert.match(section, /maps_host|operational_host/);
   assert.doesNotMatch(section, /method:\s*["']POST["']/i);

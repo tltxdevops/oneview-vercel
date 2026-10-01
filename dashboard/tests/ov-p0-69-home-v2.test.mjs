@@ -22,14 +22,26 @@ function parseHomeAlertMode(value) {
   return value === HOME_ALERT_MODE.prioritary ? HOME_ALERT_MODE.prioritary : HOME_ALERT_MODE.all;
 }
 
+function parseHomeSeveritySelection(values) {
+  const raw = Array.isArray(values)
+    ? values
+    : String(values || "").split(",").map((item) => item.trim());
+  const seen = new Set();
+  for (const item of raw) {
+    const normalized = String(item || "").trim().toLowerCase();
+    if (!HOME_ALL_SEVERITIES.includes(normalized)) continue;
+    seen.add(normalized);
+  }
+  return [...seen];
+}
+
 function resolveHomeAlertSeverities(mode, severityFilter) {
   const base = mode === HOME_ALERT_MODE.all
     ? [...HOME_ALL_SEVERITIES]
     : [...HOME_PRIORITARY_SEVERITIES];
-  const raw = String(severityFilter || "").trim().toLowerCase();
-  if (!raw || raw === "all") return base;
-  if (HOME_ALL_SEVERITIES.includes(raw)) return [raw];
-  return base;
+  const selected = parseHomeSeveritySelection(severityFilter);
+  if (!selected.length) return base;
+  return selected;
 }
 
 test("OV-P0-69 helpers: Prioritários = Avg+High+Disaster; Todos = 5 severidades", () => {
@@ -44,6 +56,10 @@ test("OV-P0-69 helpers: Prioritários = Avg+High+Disaster; Todos = 5 severidades
   assert.deepEqual(
     resolveHomeAlertSeverities(HOME_ALERT_MODE.prioritary, "high"),
     ["high"],
+  );
+  assert.deepEqual(
+    resolveHomeAlertSeverities(HOME_ALERT_MODE.all, ["average", "high"]),
+    ["average", "high"],
   );
   assert.equal(parseHomeAlertMode(null), "all");
   assert.equal(parseHomeAlertMode("all"), "all");
@@ -62,7 +78,9 @@ test("OV-P0-69 oneview-home.ts: constantes e fetchers isolados do Monitoramento"
   assert.match(home, /export async function fetchHomeAlerts/);
   assert.match(home, /export async function fetchHomeIncidents/);
   assert.match(home, /status: params\.status \?\? "active"|status: "active"/);
-  assert.match(home, /firstSeenFrom: isoAgo/);
+  assert.match(home, /firstSeenFrom: params\.from \?\? isoAgo/);
+  assert.match(home, /parseHomeSeveritySelection/);
+  assert.match(home, /toggleHomeSeveritySelection/);
   assert.match(home, /fetchOperationalIncidents|fetchIncidents\(\{/);
   assert.match(home, /HOME_INCIDENTS_PAGE_SIZE/);
   assert.match(home, /HOME_ALERTS_PAGE_SIZE/);

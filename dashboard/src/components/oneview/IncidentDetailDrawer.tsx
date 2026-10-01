@@ -14,7 +14,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildAlertArtifactFromIncidentRelatedAlert, type AlertArtifactModel } from "@/lib/oneview-alert-artifact";
 import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
-import { fetchIncidentDetail, isOneViewAbortError, type OneViewIncident } from "@/lib/oneview-api";
+import { fetchIncidentDetail, formatDurationSeconds, isOneViewAbortError, type OneViewIncident } from "@/lib/oneview-api";
+import { incidentSlaLabel } from "@/lib/oneview-incident-sla";
 import { cn } from "@/lib/utils";
 
 export type IncidentDetailDrawerTab = "summary" | "alert" | "technical";
@@ -212,9 +213,34 @@ export function IncidentDetailDrawer({
                       <IncidentDetailField label="Responsável" value={displayIncidentField(resolved.assigned_to_display, resolved.assigned_to)} />
                       <IncidentDetailField label="Grupo" value={displayIncidentField(resolved.assignment_group_display, resolved.assignment_group)} />
                       <IncidentDetailField label="Abertura" value={formatDateTime(resolved.opened_at)} />
+                      <IncidentDetailField label="Tempo aberto" value={formatDurationSeconds(resolved.open_duration_seconds)} />
                       <IncidentDetailField label="Atualização" value={formatDateTime(resolved.sys_updated_on)} />
                       <IncidentDetailField label="Encerramento" value={formatDateTime(resolved.closed_at || resolved.resolved_at)} />
                     </dl>
+                  </section>
+
+                  <section aria-label="SLAs oficiais" className="space-y-2">
+                    <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">SLAs oficiais</h3>
+                    {(resolved.slas?.length ?? 0) > 0 ? (
+                      <div className="space-y-2">
+                        {resolved.slas?.map((sla) => (
+                          <div key={sla.sys_id || `${sla.name}-${sla.deadline_at}`} className="rounded-md border border-border/60 p-3 text-sm">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="font-medium">{sla.name || "SLA"}</span>
+                              <Badge variant="secondary">{incidentSlaLabel(sla)}</Badge>
+                            </div>
+                            <dl className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                              <IncidentDetailField label="Prazo oficial" value={formatDateTime(sla.deadline_at)} />
+                              <IncidentDetailField label="Estágio" value={displayIncidentField(sla.stage)} />
+                              <IncidentDetailField label="Início" value={formatDateTime(sla.start_time)} />
+                              <IncidentDetailField label="Fim" value={formatDateTime(sla.end_time)} />
+                            </dl>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">{incidentSlaLabel(resolved.sla_summary)}</p>
+                    )}
                   </section>
 
                   <section aria-label="Origem ServiceNow" className="space-y-2">

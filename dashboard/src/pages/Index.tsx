@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Eye, Loader2 } from "lucide-react";
+import { Check, ChevronsUpDown, Eye, Loader2 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import {
   ClientIdentity,
@@ -34,6 +34,7 @@ import { OneViewSemanticStatusBadge, OneViewSeverityBadge, SectionAccentTitle } 
 import { TruncatedText } from "@/components/oneview/TruncatedText";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -85,11 +86,13 @@ import {
   defaultHomeAlertsFetchParams,
   fetchHomeAlerts,
   homeAlertsResultFromResponse,
+  homeModeDefaultSeverities,
   homeOperationalWindowActiveLabel,
-  homeOperationalWindowMs,
+  homeSeverityFilterTriggerLabel,
   parseHomeAlertMode,
+  parseHomeOperationalRange,
   parseHomeOperationalWindow,
-  toggleHomeSeverityFilter,
+  toggleHomeSeveritySelection,
   type HomeAlertMode,
   type HomeAlertStatus,
   type HomeAlertSeverity,
@@ -524,8 +527,12 @@ export default function Index() {
   const eventItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "recent-events", HOME_EVENTS_LIMIT);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedAlertId = searchParams.get("alert");
-  const homeWindow = parseHomeOperationalWindow(searchParams.get("window"));
-  const windowMs = homeOperationalWindowMs(homeWindow);
+  const homeRange = parseHomeOperationalRange({
+    window: searchParams.get("window"),
+    from: searchParams.get("from"),
+    to: searchParams.get("to"),
+  });
+  const homeWindow = homeRange.window;
   const warmedHomeAlerts = useOneViewWarmRead<AlertListResponse>({
     cachePath: (!searchParams.get("window") || searchParams.get("window") === DEFAULT_HOME_OPERATIONAL_WINDOW)
       ? oneViewAlertsPath(defaultHomeAlertsFetchParams())
@@ -537,7 +544,8 @@ export default function Index() {
     : null;
 
   const [alertMode, setAlertMode] = useState<HomeAlertMode>(DEFAULT_HOME_ALERT_MODE);
-  const [severityFilter, setSeverityFilter] = useState<string>("all");
+  const [selectedSeverities, setSelectedSeverities] = useState<HomeAlertSeverity[]>([]);
+  const [severityFilterOpen, setSeverityFilterOpen] = useState(false);
   const [alertStatus, setAlertStatus] = useState<HomeAlertStatus>("active");
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>([]);
   const [clientFilterOpen, setClientFilterOpen] = useState(false);
@@ -570,7 +578,6 @@ export default function Index() {
   const [isSummaryLoading, setIsSummaryLoading] = useState(!warmedFacets.peekHit);
   const [isListsLoading, setIsListsLoading] = useState(!warmedHomeAlerts.peekHit);
   const [criticalHomeReady, setCriticalHomeReady] = useState(() => warmedHomeAlerts.peekHit);
-  const [isBackgroundUpdating, setIsBackgroundUpdating] = useState(false);
   const [metas, setMetas] = useState<ResourceMeta[]>([]);
   const [listsMeta, setListsMeta] = useState<ResourceMeta>({});
   const [sectionErrors, setSectionErrors] = useState<Partial<Record<SectionKey, string>>>({});
@@ -594,12 +601,10 @@ export default function Index() {
 
   const beginQuietUpdate = useCallback(() => {
     quietUpdatesRef.current += 1;
-    setIsBackgroundUpdating(true);
   }, []);
 
   const endQuietUpdate = useCallback(() => {
     quietUpdatesRef.current = Math.max(0, quietUpdatesRef.current - 1);
-    if (quietUpdatesRef.current === 0) setIsBackgroundUpdating(false);
   }, []);
 
   const setSectionError = useCallback((key: SectionKey, message: string | null) => {
@@ -614,6 +619,16 @@ export default function Index() {
   const setHomeWindow = useCallback((preset: HomeOperationalWindowPreset) => {
     const next = new URLSearchParams(searchParams);
     next.set("window", parseHomeOperationalWindow(preset));
+    next.delete("from");
+    next.delete("to");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const setCustomHomeRange = useCallback((from: string, to: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("window", "custom");
+    next.set("from", from);
+    next.set("to", to);
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -631,25 +646,36 @@ export default function Index() {
 
   useEffect(() => {
     const raw = searchParams.get("window");
+    if (raw === "custom" && homeRange.window === "custom") return;
     const parsed = parseHomeOperationalWindow(raw);
     if (raw === parsed) return;
     const next = new URLSearchParams(searchParams);
     next.set("window", parsed);
+    next.delete("from");
+    next.delete("to");
     setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [homeRange.window, searchParams, setSearchParams]);
 
   const homeAlertsHref = useMemo(() => buildHomeAlertsHref({
     mode: alertMode,
-    severity: severityFilter,
+    severity: selectedSeverities,
     customers: selectedCustomerKeys,
     status: alertStatus,
     windowPreset: homeWindow,
-  }), [alertMode, alertStatus, homeWindow, selectedCustomerKeys, severityFilter]);
+    fromDate: homeRange.fromDate,
+    toDate: homeRange.toDate,
+  }), [alertMode, alertStatus, homeRange.fromDate, homeRange.toDate, homeWindow, selectedCustomerKeys, selectedSeverities]);
 
   /** OV-P0-103 — Resumo operacional filtra a lista da Home (toggle local; sem navegar). */
-  const toggleSeverityStrip = useCallback((severity: HomeAlertSeverity) => {
-    setSeverityFilter((current) => toggleHomeSeverityFilter(current, severity));
+  const changeAlertMode = useCallback((value: string) => {
+    const mode = parseHomeAlertMode(value);
+    setAlertMode(mode);
+    setSelectedSeverities(homeModeDefaultSeverities(mode));
   }, []);
+
+  const toggleSeverityStrip = useCallback((severity: HomeAlertSeverity) => {
+    setSelectedSeverities((current) => toggleHomeSeveritySelection(current, severity, alertMode));
+  }, [alertMode]);
 
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
@@ -677,7 +703,7 @@ export default function Index() {
     const request = (async () => {
       const now = bucketOneViewReadNow();
       const results = await Promise.allSettled([
-        fetchRecentOperationalMetrics({ now, windowMs }),
+        fetchRecentOperationalMetrics({ now, from: homeRange.from, to: homeRange.to }),
         getOneViewFacets(),
       ]);
 
@@ -740,7 +766,7 @@ export default function Index() {
 
     summaryInFlight.current = request;
     return request;
-  }, [beginQuietUpdate, endQuietUpdate, setSectionError, windowMs]);
+  }, [beginQuietUpdate, endQuietUpdate, homeRange.from, homeRange.to, setSectionError]);
 
   const loadCriticalHomeAlerts = useCallback(async () => {
     if (hasListsRef.current) {
@@ -754,11 +780,12 @@ export default function Index() {
     try {
       const payload = await fetchHomeAlerts({
         mode: alertMode,
-        severity: severityFilter,
+        severity: selectedSeverities,
         customers: selectedCustomerKeys,
         status: alertStatus,
         limit: alertItemLimit,
-        windowMs,
+        from: homeRange.from,
+        to: homeRange.to,
         signal: controller.signal,
         now: bucketOneViewReadNow(),
         sort: alertSort,
@@ -785,7 +812,7 @@ export default function Index() {
         setCriticalHomeReady(true);
       }
     }
-  }, [alertItemLimit, alertMode, alertOrder, alertSort, alertStatus, selectedCustomerKeys, setSectionError, severityFilter, windowMs]);
+  }, [alertItemLimit, alertMode, alertOrder, alertSort, alertStatus, homeRange.from, homeRange.to, selectedCustomerKeys, setSectionError, selectedSeverities]);
 
   const loadLists = useCallback(async (mode: "initial" | "quiet" | "manual" = "quiet") => {
     if (mode === "quiet" && listsRequest.current && !listsRequest.current.signal.aborted) return;
@@ -807,11 +834,12 @@ export default function Index() {
           ? Promise.resolve(null)
           : fetchHomeAlerts({
             mode: alertMode,
-            severity: severityFilter,
+            severity: selectedSeverities,
             customers: selectedCustomerKeys,
             status: alertStatus,
             limit: alertItemLimit,
-            windowMs,
+            from: homeRange.from,
+            to: homeRange.to,
             signal: controller.signal,
             now,
             sort: alertSort,
@@ -822,13 +850,15 @@ export default function Index() {
           customers: selectedCustomerKeys,
           signal: controller.signal,
           now,
-          windowMs,
+          from: homeRange.from,
+          to: homeRange.to,
         }),
         fetchOperationalIncidents({
           mode: incidentsMode,
           assignedTo: incidentsAssignedTo,
           limit: incidentItemLimit,
-          windowMs,
+          from: homeRange.from,
+          to: homeRange.to,
           sort: incidentSort,
           order: incidentOrder,
           signal: controller.signal,
@@ -837,6 +867,8 @@ export default function Index() {
         fetchOperatorQueue({
           tab: "all",
           alertStatus: "active",
+          firstSeenFrom: homeRange.from,
+          firstSeenTo: homeRange.to,
           pageSize: operatorItemLimit,
           signal: controller.signal,
         }),
@@ -947,8 +979,9 @@ export default function Index() {
     operatorItemLimit,
     selectedCustomerKeys,
     setSectionError,
-    severityFilter,
-    windowMs,
+    selectedSeverities,
+    homeRange.from,
+    homeRange.to,
   ]);
 
   const loadSelectedAlert = useCallback(async (alertId: string) => {
@@ -1084,7 +1117,12 @@ export default function Index() {
     : incidentsMode === INCIDENTS_QUEUE_MODE.all
       ? `${incidentsTitleCount.toLocaleString("pt-BR")} chamados`
       : `${incidentsTitleCount.toLocaleString("pt-BR")} sem responsável`;
-  const chamadosHref = buildOperationalChamadosHref({ mode: incidentsMode, assignedTo: incidentsAssignedTo });
+  const chamadosHref = buildOperationalChamadosHref({
+    mode: incidentsMode,
+    assignedTo: incidentsAssignedTo,
+    from: homeRange.from,
+    to: homeRange.to,
+  });
   const nextSortOrder = (active: boolean, current: SortOrder, defaultOrder: SortOrder = "asc"): SortOrder => active ? current === "asc" ? "desc" : "asc" : defaultOrder;
   const visibleHomeAlerts = homeAlerts.slice(0, alertItemLimit);
   const visibleHomeIncidents = homeIncidents.slice(0, incidentItemLimit);
@@ -1154,10 +1192,10 @@ export default function Index() {
       label: formatOneViewSeverityLabel(severity),
       value: formatMetricCount(value),
       tone: severity === "information" ? "info" as const : severity === "warning" || severity === "average" ? "warning" as const : "danger" as const,
-      description: `${homeOperationalWindowActiveLabel(homeWindow)} · ${formatOneViewSeverityLabel(severity)}`,
+      description: `${homeWindow === "custom" ? `${homeRange.fromDate} a ${homeRange.toDate}` : homeOperationalWindowActiveLabel(homeWindow)} · ${formatOneViewSeverityLabel(severity)}`,
       unknown: value == null && !severityStripLoading,
       loading: severityStripLoading,
-      selected: severityFilter === severity,
+      selected: selectedSeverities.includes(severity),
       onClick: () => toggleSeverityStrip(severity),
     };
   });
@@ -1172,21 +1210,6 @@ export default function Index() {
       }] : [];
     });
   }, [homeMetrics.rowSpan, homeMetrics.span, homeMetrics.visibleMetrics, severityStripItems]);
-
-  const headerControls = dashboard.isWallboard ? null : (
-    <div className="flex items-center gap-2">
-      {isBackgroundUpdating ? (
-        <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          Atualizando...
-        </span>
-      ) : (
-        <span className="text-[11px] text-muted-foreground">
-          Tela atualizada: <span className="font-semibold text-foreground">{formatClock(lastCheckedAt)}</span>
-        </span>
-      )}
-    </div>
-  );
 
   const windowSelector = (
     <OperationalFilterGroup label="Janela temporal">
@@ -1203,6 +1226,41 @@ export default function Index() {
           {preset}
         </Button>
       ))}
+      <Button
+        type="button"
+        size="sm"
+        variant={homeWindow === "custom" ? "default" : "outline"}
+        className={OV_FILTER_CHIP}
+        aria-pressed={homeWindow === "custom"}
+        onClick={() => {
+          const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+          setCustomHomeRange(homeRange.fromDate || today, homeRange.toDate || today);
+        }}
+      >
+        Personalizado
+      </Button>
+      {homeWindow === "custom" ? (
+        <div className="flex items-center gap-1.5">
+          <input
+            type="date"
+            aria-label="Data inicial"
+            className={cn(OV_FILTER_CONTROL, "h-8 px-2 text-xs")}
+            value={homeRange.fromDate || ""}
+            max={homeRange.toDate}
+            onChange={(event) => setCustomHomeRange(event.target.value, homeRange.toDate || event.target.value)}
+          />
+          <span className="text-xs text-muted-foreground">até</span>
+          <input
+            type="date"
+            aria-label="Data final"
+            className={cn(OV_FILTER_CONTROL, "h-8 px-2 text-xs")}
+            value={homeRange.toDate || ""}
+            min={homeRange.fromDate}
+            max={new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date())}
+            onChange={(event) => setCustomHomeRange(homeRange.fromDate || event.target.value, event.target.value)}
+          />
+        </div>
+      ) : null}
     </OperationalFilterGroup>
   );
 
@@ -1226,7 +1284,6 @@ export default function Index() {
           {showInitialLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
         </div>
       )}
-      topbarRightSection={headerControls}
       enableAutoRefresh={false}
       showRefreshMeta={false}
       wallboard={dashboard.isWallboard}
@@ -1282,7 +1339,7 @@ export default function Index() {
                 <OperationalSegmentedControl
                   aria-label="Modo de alertas"
                   value={alertMode}
-                  onChange={(mode) => setAlertMode(parseHomeAlertMode(mode))}
+                  onChange={changeAlertMode}
                   options={[
                     { value: HOME_ALERT_MODE.all, label: "Todos" },
                     { value: HOME_ALERT_MODE.prioritary, label: "Prioritários" },
@@ -1301,16 +1358,55 @@ export default function Index() {
                 />
               </OperationalFilterGroup>
               <OperationalFilterGroup label="Severidade" showDivider>
-                <Select value={severityFilter} onValueChange={setSeverityFilter}>
-                  <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[9rem]")} aria-label="Filtrar por severidade">
-                    <SelectValue placeholder="Severidade" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {HOME_SEVERITY_FILTER_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={severityFilterOpen} onOpenChange={setSeverityFilterOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className={cn(OV_FILTER_CONTROL, "w-[9rem] justify-between gap-1 px-2.5")}
+                      aria-label="Filtrar por severidade"
+                      aria-expanded={severityFilterOpen}
+                      title={homeSeverityFilterTriggerLabel(selectedSeverities)}
+                    >
+                      <span className="truncate">{homeSeverityFilterTriggerLabel(selectedSeverities)}</span>
+                      <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" aria-hidden="true" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-44 space-y-1 p-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className={cn("h-8 w-full justify-start px-2 text-xs", selectedSeverities.length === 0 && "border border-foreground/20 bg-muted/40")}
+                      aria-pressed={selectedSeverities.length === 0}
+                      onClick={() => {
+                        setAlertMode(HOME_ALERT_MODE.all);
+                        setSelectedSeverities([]);
+                      }}
+                    >
+                      Todas
+                      {selectedSeverities.length === 0 ? <Check className="ml-auto h-3.5 w-3.5" aria-hidden="true" /> : null}
+                    </Button>
+                    {HOME_SEVERITY_FILTER_OPTIONS.filter((option): option is { value: HomeAlertSeverity; label: string } => option.value !== "all").map((option) => {
+                      const pressed = selectedSeverities.includes(option.value);
+                      return (
+                        <Button
+                          key={option.value}
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className={cn("h-8 w-full justify-start px-2 text-xs", pressed && "border border-foreground/20 bg-muted/40")}
+                          aria-pressed={pressed}
+                          onClick={() => setSelectedSeverities((current) => toggleHomeSeveritySelection(current, option.value, alertMode))}
+                        >
+                          {option.label}
+                          {pressed ? <Check className="ml-auto h-3.5 w-3.5" aria-hidden="true" /> : null}
+                        </Button>
+                      );
+                    })}
+                  </PopoverContent>
+                </Popover>
               </OperationalFilterGroup>
               <OperationalFilterGroup label="Status" showDivider>
                 <Select value={alertStatus} onValueChange={(value) => setAlertStatus(value as HomeAlertStatus)}>

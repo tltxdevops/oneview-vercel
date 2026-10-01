@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, ComponentProps, HTMLAttributes, ReactNode } from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -192,5 +193,20 @@ export function OneViewFeedback({ tone, title, description, className }: {
         {description ? <p className="mt-1 ov-type-secondary">{description}</p> : null}
       </div>
     </div>
+  );
+}
+
+const QUIET_REFRESH_ARIA = "Atualização em segundo plano";
+
+/** Indicador visual mínimo para refresh em background (sem texto na UI). */
+export function OneViewQuietRefreshIndicator({ className }: { className?: string }) {
+  return (
+    <span
+      title={QUIET_REFRESH_ARIA}
+      aria-label={QUIET_REFRESH_ARIA}
+      className={cn("inline-flex items-center", className)}
+    >
+      <Loader2 className="h-3 w-3 animate-spin opacity-50" aria-hidden="true" />
+    </span>
   );
 }

@@ -167,8 +167,11 @@ function assertSafeFilter(value, code) {
 
 function assertSafeDate(value, code) {
   if (value == null) return null;
-  if (!SAFE_DATE.test(value)) throw invalidQuery(code);
-  return value;
+  if (SAFE_DATE.test(value)) return value;
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value)) throw invalidQuery(code);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw invalidQuery(code);
+  return parsed.toISOString();
 }
 
 function escapeLike(value) {

@@ -19,7 +19,7 @@ const ALL_ANALYSTS = "all";
 const MODE_OPTIONS: Array<{ value: IncidentsQueueMode; label: string }> = [
   { value: INCIDENTS_QUEUE_MODE.unassigned, label: "Sem responsável" },
   { value: INCIDENTS_QUEUE_MODE.assigned, label: "Com analista" },
-  { value: INCIDENTS_QUEUE_MODE.all, label: "Todos" },
+  { value: INCIDENTS_QUEUE_MODE.all, label: "Todos ativos" },
 ];
 
 type OperationalIncidentsToolbarProps = {

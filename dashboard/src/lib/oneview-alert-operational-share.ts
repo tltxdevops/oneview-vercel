@@ -23,6 +23,13 @@ const ORIGIN_UNAVAILABLE = "Indisponível na origem";
 const UNKNOWN_CLIENT = "Cliente não identificado";
 const MISSING_HOST = "Host não informado";
 const PRINT_FOOTER = "Gerado pelo OneView — uso operacional interno";
+const OPERATIONAL_TIME_ZONE = "America/Sao_Paulo";
+const INCIDENT_NUMBER = /^INC\d+$/i;
+const TERMINAL_INCIDENT_STATES = new Set([
+  "6", "7", "8",
+  "resolved", "closed", "cancelled", "canceled",
+  "resolvido", "encerrado", "cancelado",
+]);
 
 const SEVERITY_LABELS: Record<string, string> = {
   "0": "Not classified",
@@ -50,7 +57,27 @@ export type AlertOperationalShareInput = {
   historyItems?: AlertHistoryItem[];
   relatedIncidents?: AlertRelatedIncident[] | null;
   generatedAt?: Date;
+  clientCommunication?: AlertClientCommunication | null;
 };
+
+export type AlertClientSeverityIcon = "🔴" | "🟠" | "🟡" | "🔵" | "⚪";
+
+export type AlertClientCommunication = {
+  statusIcon: AlertClientSeverityIcon;
+  unitHost: string;
+  problem: string;
+  equipment: string;
+  occurredAt: string;
+  action: string;
+  nextSteps: string;
+  followUp: string;
+  incidentNumber: string | null;
+  messageType: "alert" | "resolved";
+};
+
+export type AlertClientCommunicationEdits = Partial<
+  Pick<AlertClientCommunication, "action" | "nextSteps" | "followUp">
+>;
 
 type ShareLine = { label: string; value: string };
 
@@ -63,6 +90,33 @@ function formatDateTime(value?: string | null): string {
   if (!value) return ORIGIN_UNAVAILABLE;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? ORIGIN_UNAVAILABLE : date.toLocaleString("pt-BR");
+}
+
+export function formatAlertClientDateTime(value?: string | null): string {
+  if (!value) return ORIGIN_UNAVAILABLE;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return ORIGIN_UNAVAILABLE;
+  const parts = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: OPERATIONAL_TIME_ZONE,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("day")}/${part("month")}/${part("year")} - ${part("hour")}:${part("minute")}:${part("second")}`;
+}
+
+export function alertClientSeverityIcon(severity?: string | null): AlertClientSeverityIcon {
+  const value = String(severity || "").trim().toLowerCase();
+  if (["disaster", "high", "critical", "5", "4"].includes(value)) return "🔴";
+  if (["average", "3"].includes(value)) return "🟠";
+  if (["warning", "2"].includes(value)) return "🟡";
+  if (["information", "info", "1"].includes(value)) return "🔵";
+  return "⚪";
 }
 
 function formatDurationSeconds(seconds: number | null | undefined): string {
@@ -279,6 +333,125 @@ function uniqueIncidents(
   return out;
 }
 
+function safeAnalystName(value?: string | null): string | null {
+  const actor = String(value || "").trim();
+  if (!actor || /^\d+$/.test(actor) || /^[a-f0-9]{32}$/i.test(actor)) return null;
+  if (/worker|oneview|sistema|system|reconcil/i.test(actor)) return null;
+  return actor.slice(0, 120);
+}
+
+function canonicalCurrentIncident(
+  alert: OneViewAlert,
+  relatedIncidents: AlertRelatedIncident[] | null | undefined,
+) {
+  const valid = (relatedIncidents || []).filter((item) => {
+    const number = String(item.number || "").trim();
+    return !item.identity_conflict && INCIDENT_NUMBER.test(number);
+  });
+  const projectedNumber = String(alert.servicenow_reference?.number || "").trim().toUpperCase();
+  const explicitMatch = projectedNumber
+    ? valid.find((item) => String(item.number || "").trim().toUpperCase() === projectedNumber)
+    : null;
+  if (explicitMatch) return explicitMatch;
+  return valid.length === 1 ? valid[0] : null;
+}
+
+function communicationField(value: string, maxLength: number): string {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function isTerminalRelatedIncident(incident: AlertRelatedIncident | null | undefined): boolean {
+  if (!incident) return true;
+  const raw = String(incident.state || "").trim().toLowerCase();
+  const display = String(incident.state_display || "").trim().toLowerCase();
+  return TERMINAL_INCIDENT_STATES.has(raw) || TERMINAL_INCIDENT_STATES.has(display);
+}
+
+function canonicalAckActor(alert: OneViewAlert): string | null {
+  const sourceAck = alert.source_ack;
+  if (sourceAck) {
+    if (!sourceAck.acknowledged) return null;
+    return safeAnalystName(sourceAck.actor_name);
+  }
+  if (!alert.acknowledged_source) return null;
+  return safeAnalystName(alert.acknowledged_source_by || alert.acknowledged_by);
+}
+
+export function resolveAlertClientFollowUp(
+  alert: OneViewAlert,
+  relatedIncidents: AlertRelatedIncident[] | null | undefined = null,
+): string {
+  const currentIncident = canonicalCurrentIncident(alert, relatedIncidents);
+  if (currentIncident && !isTerminalRelatedIncident(currentIncident)) {
+    const owner = safeAnalystName(currentIncident.assigned_to_display) || safeAnalystName(currentIncident.assigned_to);
+    if (owner) return owner;
+  }
+  return canonicalAckActor(alert) || "Equipe NOC";
+}
+
+function formatClientEquipment(alert: OneViewAlert): string {
+  const visibleHost = hostVisible(alert);
+  const technicalHost = String(alert.host_technical_name || "").trim();
+  const equipment = technicalHost && !isMissingHostLabel(technicalHost) ? technicalHost : visibleHost;
+  const ip = safeHostIp(alert.host_ip);
+  return ip ? `${equipment} (${ip})` : equipment;
+}
+
+export function buildAlertClientCommunication({
+  alert,
+  relatedIncidents = null,
+}: AlertOperationalShareInput, edits: AlertClientCommunicationEdits = {}): AlertClientCommunication {
+  const resolved = isResolvedAlert(alert);
+  const currentIncident = canonicalCurrentIncident(alert, relatedIncidents);
+  const incidentNumber = currentIncident ? String(currentIncident.number || "").trim().toUpperCase() : null;
+  const visibleHost = hostVisible(alert);
+  const defaultAction = resolved
+    ? "Alarme normalizado."
+    : incidentNumber
+      ? `Aberto chamado ${incidentNumber} para acompanhamento de alerta.`
+      : "Alerta em análise.";
+
+  return {
+    statusIcon: alertClientSeverityIcon(alert.severity),
+    unitHost: visibleHost,
+    problem: text(alert.problem_name || alert.trigger_description, "Alerta sem descrição"),
+    equipment: formatClientEquipment(alert),
+    occurredAt: formatAlertClientDateTime(alert.started_at || alert.first_seen_at),
+    action: Object.prototype.hasOwnProperty.call(edits, "action") ? String(edits.action ?? "") : defaultAction,
+    nextSteps: Object.prototype.hasOwnProperty.call(edits, "nextSteps")
+      ? String(edits.nextSteps ?? "")
+      : resolved ? "Acompanhamento concluído." : "Acompanhando alerta.",
+    followUp: Object.prototype.hasOwnProperty.call(edits, "followUp")
+      ? String(edits.followUp ?? "")
+      : resolveAlertClientFollowUp(alert, relatedIncidents),
+    incidentNumber,
+    messageType: resolved ? "resolved" : "alert",
+  };
+}
+
+export function isAlertClientCommunicationValid(value: AlertClientCommunication): boolean {
+  return Boolean(
+    communicationField(value.unitHost, 240)
+    && communicationField(value.problem, 1_000)
+    && communicationField(value.equipment, 240)
+    && communicationField(value.occurredAt, 80)
+    && communicationField(value.action, 240)
+    && communicationField(value.nextSteps, 240)
+    && communicationField(value.followUp, 120),
+  );
+}
+
+export function formatAlertClientCommunication(value: AlertClientCommunication): string {
+  return [
+    `${value.statusIcon} ${communicationField(value.unitHost, 240)} - ${communicationField(value.problem, 1_000)}`,
+    `📟 Equipamento: ${communicationField(value.equipment, 240)}`,
+    `📅 Data/Hora: ${communicationField(value.occurredAt, 80)}`,
+    `🛠️ Ação: ${communicationField(value.action, 240)}`,
+    `🔄 Próximos Passos: ${communicationField(value.nextSteps, 240)}`,
+    `🔎 Acompanhamento: ${communicationField(value.followUp, 120)}`,
+  ].join("\n");
+}
+
 export function buildAlertOperationalShareDocument({
   alert,
   historyItems = [],
@@ -447,37 +620,11 @@ export function buildAlertOperationalShareDocument({
 export function buildAlertClientSharePlainText({
   alert,
   relatedIncidents = null,
+  clientCommunication = null,
 }: AlertOperationalShareInput): string {
-  const resolved = isResolvedAlert(alert);
-  const incidents = uniqueIncidents(alert, relatedIncidents);
-  const lines: string[] = [
-    "Comunicação operacional",
-    "",
-    `Cliente: ${clientLabel(alert)}`,
-    `Host: ${hostVisible(alert)}`,
-    `Problema: ${text(alert.problem_name || alert.trigger_description, "Alerta sem descrição")}`,
-    `Severidade: ${formatSeverity(alert.severity)}`,
-    `Situação: ${resolved ? "Normalizado / resolvido" : "Em análise"}`,
-    `Início: ${formatDateTime(alert.first_seen_at)}`,
-    `Duração: ${formatDurationSeconds(alert.duration_seconds)}`,
-  ];
-  if (resolved && alert.resolved_at) {
-    lines.push(`Recuperação: ${formatDateTime(alert.resolved_at)}`);
-  }
-  if (incidents.length) {
-    for (const item of incidents) {
-      lines.push("");
-      lines.push(`Chamado: ${item.number}`);
-      lines.push(`Estado: ${item.state}`);
-      if (item.description && item.description !== "Sem descrição") {
-        lines.push(`Descrição: ${item.description}`);
-      }
-    }
-  } else {
-    lines.push("");
-    lines.push("Chamado: em abertura ou não informado");
-  }
-  return lines.join("\n");
+  return formatAlertClientCommunication(
+    clientCommunication || buildAlertClientCommunication({ alert, relatedIncidents }),
+  );
 }
 
 function printViaHiddenIframe(html: string): boolean {

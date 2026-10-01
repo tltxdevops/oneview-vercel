@@ -28,7 +28,8 @@ test("timeline: vínculo vem apenas da referência explícita já validada pelo 
   assert.match(section, /"zabbix_event_id"/);
   assert.doesNotMatch(section, /"operational_host",\s*\n\s*"zabbix_/);
   assert.match(section, /onTimelineServiceNowReferenceChange\?\.\(null\)/);
-  assert.match(drawer, /serviceNowReference: timelineServiceNowReference/);
+  assert.match(drawer, /onTimelineServiceNowReferenceChange/);
+  assert.match(drawer, /timelineServiceNowReference/);
 });
 
 test("INC0084362: vínculo antigo terminal não tem caminho para a timeline do novo episódio", async () => {
