@@ -1,15 +1,13 @@
-# -------------------- Workflow do app que chama o workflow central --------------------
 name: Deploy na Vercel
 
+# Deploy passou para a Pipeline (ci.yml), depois do CI.
+# Este arquivo fica só para não disparar o workflow antigo em paralelo.
 on:
-  push:
-    branches-ignore:
-      - staging
   workflow_dispatch:
 
 jobs:
   deploy:
-    uses: tltxdevops/org-actions/.github/workflows/vercel-reusable.yml@main
+    uses: tltxdevops/pipelines/.github/workflows/vercel-deploy.yml@main
     with:
       production_branch: main
       working_directory: dashboard

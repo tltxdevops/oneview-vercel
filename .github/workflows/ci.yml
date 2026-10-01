@@ -4,10 +4,21 @@ on:
         branches: [ main, staging ]
     push:
         branches: [ main, staging ]
-        
+    workflow_dispatch:
+
 jobs:
     shared-ci:
         uses: tltxdevops/pipelines/.github/workflows/node-ci.yml@main
         with:
             node-version: 24
             working-directory: dashboard
+        secrets: inherit
+
+    deploy:
+        needs: shared-ci
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: tltxdevops/pipelines/.github/workflows/vercel-deploy.yml@main
+        with:
+            production_branch: main
+            working_directory: dashboard
+        secrets: inherit
