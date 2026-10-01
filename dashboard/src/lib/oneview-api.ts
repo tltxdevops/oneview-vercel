@@ -104,10 +104,16 @@ export type ClientShareMessage = {
   client_name: string;
   severity: string;
   host: string;
+  equipment?: string | null;
+  equipment_ip?: string | null;
   problem: string;
   started_at: string;
   status: string;
+  action?: string | null;
+  next_steps?: string | null;
+  follow_up?: string | null;
   incident_number?: string | null;
+  incident_state?: string | null;
   servicenow_url?: string | null;
   oneview_url?: string | null;
   message_type: "alert" | "resolved";
@@ -139,6 +145,7 @@ export type ClientShareDestinationList = {
   destinations: ClientShareDestination[];
   resolution: ClientShareResolution;
   external_enabled: boolean;
+  live_send?: boolean;
 };
 
 export type ClientSharePreview = {
@@ -148,6 +155,17 @@ export type ClientSharePreview = {
   destination: ClientShareDestination | null;
   preview: { text: string; destination_id: string | null; destinations: { teams: boolean; webex: boolean } };
   external_enabled: boolean;
+  live_send?: boolean;
+};
+
+export type ClientShareDelivery = {
+  transport?: string;
+  strategy?: string | null;
+  status?: string;
+  destination_id?: string | null;
+  external_called?: boolean;
+  http_status?: number | null;
+  ambiguous?: boolean;
 };
 
 export async function fetchClientShareDestinations(clientKey: string, routeKey?: string | null, signal?: AbortSignal): Promise<ClientShareDestinationList> {
@@ -160,7 +178,12 @@ export async function fetchClientSharePreview(message: ClientShareMessage, signa
   return fetchApi("/oneview/client-sharing/preview", { method: "POST", body: JSON.stringify({ message }), signal });
 }
 
-export async function sendClientShare(message: ClientShareMessage, idempotencyKey: string, destinationId: string): Promise<{ dry_run: boolean; duplicate?: boolean }> {
+export async function sendClientShare(message: ClientShareMessage, idempotencyKey: string, destinationId: string): Promise<{
+  dry_run: boolean;
+  live_send?: boolean;
+  duplicate?: boolean;
+  deliveries?: ClientShareDelivery[];
+}> {
   return fetchApi("/oneview/client-sharing/send", {
     method: "POST",
     body: JSON.stringify({ message, idempotency_key: idempotencyKey, destination_id: destinationId }),
@@ -182,10 +205,6 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
   if (cached && cached.freshUntil > now) return cached.value as T;
   const shared = oneViewFresh ? undefined : inFlightReads.get(key);
   if (shared) {
-    if (cached && cached.expiresAt > now) {
-      void shared.catch(() => undefined);
-      return cached.value as T;
-    }
     return shared as Promise<T>;
   }
   const request = (async () => {
@@ -245,6 +264,9 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
       ack_request_disabled: "A solicitação de reconhecimento está desabilitada.",
       datasource_not_allowed: "Esta fonte ainda não permite solicitação de reconhecimento.",
       alert_already_recognized: "Este alerta já foi reconhecido no OneView.",
+      source_acknowledge_not_implemented: "Reconhecimento no Zabbix ainda não está disponível.",
+      invalid_source_event_id: "Event ID inválido para reconhecimento no Zabbix.",
+      source_acknowledge_unconfirmed: "Não foi possível confirmar o reconhecimento no Zabbix.",
       invalid_comment: "O comentário deve possuir no máximo 500 caracteres.",
       actions_database_not_configured: "O canal seguro de solicitações ainda não está configurado.",
       authenticated_actions_disabled: "Seu usuário não possui permissão para solicitar esta ação.",
@@ -320,9 +342,16 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
     }
     return value;
   } catch (cause) {
-    if (isRead && !oneViewFresh && cached && cached.expiresAt > Date.now()) return cached.value as T;
     throw cause;
   } finally { if (canShare) inFlightReads.delete(key); }
+}
+
+export function isOneViewAbortError(cause: unknown): boolean {
+  if (!cause || typeof cause !== "object") return false;
+  const name = "name" in cause ? String((cause as { name?: unknown }).name || "") : "";
+  if (name === "AbortError") return true;
+  const message = "message" in cause ? String((cause as { message?: unknown }).message || "") : "";
+  return /aborted|AbortError/i.test(message);
 }
 
 export type OneViewDataSourceKind = "database" | "snapshot" | "servicenow";
@@ -442,6 +471,26 @@ export interface OneViewResponseMeta {
   data_source?: OneViewDataSourceKind;
   checked_at?: string;
   fallback_code?: string | null;
+}
+
+export interface AcknowledgeAlertInput {
+  alertId: string;
+  sourceEventId: string;
+  comment?: string;
+}
+
+export interface AcknowledgeAlertResponse {
+  status: "pending" | "confirmed";
+  alert_id: string;
+  source_event_id?: string;
+  acknowledged_source: boolean;
+  request_id?: string;
+  outbox_id?: string | null;
+  idempotent?: boolean;
+  message?: string;
+  acknowledged_source_by?: string | null;
+  acknowledged_source_at?: string | null;
+  comment?: string | null;
 }
 
 export interface AckRequestResponse {
@@ -885,6 +934,7 @@ export interface OneViewHealthResponse extends OneViewResponseMeta {
   };
   capabilities?: {
     acknowledgement: boolean;
+    source_acknowledgement?: boolean;
   };
   thresholds?: {
     alert_stale_minutes: number;
@@ -1090,6 +1140,7 @@ export interface FetchAlertsParams {
   customerConfidences?: Array<"high" | "medium" | "low" | "unclassified">;
   severities?: string[];
   status?: "active" | "resolved" | "all";
+  incidentState?: string;
   acknowledged?: boolean;
   acknowledgedSource?: boolean;
   acknowledgedInternal?: boolean;
@@ -1126,6 +1177,7 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
+  if (params?.incidentState) search.set("incident_state", params.incidentState);
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
   if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
   if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
@@ -1217,6 +1269,9 @@ export type OneViewIncident = {
   opened_at: string | null;
   resolved_at: string | null;
   closed_at: string | null;
+  open_duration_seconds?: number | null;
+  sla_summary?: OneViewIncidentSlaSummary | null;
+  slas?: OneViewIncidentSla[];
   sys_created_on: string | null;
   sys_updated_on: string | null;
   correlation_id: string | null;
@@ -1263,6 +1318,27 @@ export type OneViewIncident = {
     sourceEventId?: string | null;
   } | null;
   servicenow_url?: string | null;
+};
+
+export type OneViewIncidentSlaSummary = {
+  availability: "available" | "stale" | "disabled" | "missing";
+  state: "on_track" | "paused" | "breached" | "completed" | "cancelled" | null;
+  name: string | null;
+  deadline_at: string | null;
+  has_breached: boolean;
+  stage: string | null;
+  synced_at: string | null;
+};
+
+export type OneViewIncidentSla = OneViewIncidentSlaSummary & {
+  sys_id: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  original_breach_time: string | null;
+  time_left: string | null;
+  business_time_left: string | null;
+  percentage: number | null;
+  business_percentage: number | null;
 };
 
 export type IncidentRelatedAlert = {
@@ -1774,6 +1850,8 @@ export async function fetchOperatorQueue(params?: {
   state?: string;
   severity?: string;
   alertStatus?: "all" | "active" | "resolved";
+  firstSeenFrom?: string;
+  firstSeenTo?: string;
   page?: number;
   pageSize?: number;
   signal?: AbortSignal;
@@ -1789,6 +1867,8 @@ export async function fetchOperatorQueue(params?: {
   if (params?.state) search.set("state", params.state);
   if (params?.severity) search.set("severity", params.severity);
   if (params?.alertStatus && params.alertStatus !== "all") search.set("alert_status", params.alertStatus);
+  if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);
+  if (params?.firstSeenTo) search.set("first_seen_to", params.firstSeenTo);
   return fetchApi<OperatorQueueResponse>(`/oneview/operator-queue?${search.toString()}`, {
     signal: params?.signal,
   });
@@ -2558,6 +2638,25 @@ export async function requestAlertAcknowledgement(
     headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify({ comment }),
   });
+}
+
+/** ACK externo (Zabbix). Nunca reutiliza `/ack-request` interno e nunca assume sucesso. */
+export async function acknowledgeAlert({
+  alertId,
+  sourceEventId,
+  comment,
+}: AcknowledgeAlertInput): Promise<AcknowledgeAlertResponse> {
+  const payload = await fetchApi<AcknowledgeAlertResponse>(
+    `/oneview/alerts/${encodeURIComponent(alertId)}/source-acknowledge`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source_event_id: sourceEventId,
+        ...(comment?.trim() ? { comment: comment.trim() } : {}),
+      }),
+    },
+  );
+  return payload;
 }
 
 export async function fetchOperationsHealth(signal?: AbortSignal): Promise<OperationsHealthResponse> {

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { OneViewQuietRefreshIndicator } from "@/components/oneview/OneViewDesignSystem";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
 import {
@@ -129,74 +130,60 @@ function IncidentCard({
   const number = displayValue(item.number);
   const description = String(item.short_description || "").trim();
   return (
-    <article className="space-y-3 rounded-md border border-border/70 p-3" aria-label="Chamado relacionado">
-      <div className="flex flex-wrap items-center gap-2">
-        {url && number !== "Indisponível na origem" ? (
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-0.5 font-mono text-sm font-semibold text-primary hover:underline"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {number}
-            <span aria-hidden className="text-[10px] leading-none">↗</span>
-          </a>
-        ) : (
-          <p className="font-mono text-sm font-semibold">
-            {number}
-          </p>
-        )}
-        <Badge variant="outline">{displayValue(item.state_display, item.state)}</Badge>
-        <Badge variant="secondary">{displayValue(item.priority_display, item.priority)}</Badge>
+    <article className="rounded-lg border border-border/70 bg-muted/15 p-3" aria-label="Chamado relacionado">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {url && number !== "Indisponível na origem" ? (
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-0.5 font-mono text-sm font-semibold text-primary hover:underline"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {number}
+              <span aria-hidden className="text-[10px] leading-none">↗</span>
+            </a>
+          ) : (
+            <p className="font-mono text-sm font-semibold">{number}</p>
+          )}
+          <Badge variant="outline" className="text-[10px]">{displayValue(item.state_display, item.state)}</Badge>
+          <Badge variant="secondary" className="text-[10px]">{displayValue(item.priority_display, item.priority)}</Badge>
+        </div>
+        <p className="text-[11px] text-muted-foreground">Atualizado em {formatDateTime(item.sys_updated_on)}</p>
       </div>
       {description ? (
-        <p className="truncate text-sm font-semibold" title={description}>{description}</p>
+        <p className="mt-2 line-clamp-2 text-sm font-medium leading-5" title={description}>{description}</p>
       ) : null}
-      <dl className="grid gap-2 text-sm sm:grid-cols-2">
-        <div>
-          <dt className="text-xs text-muted-foreground">Estado</dt>
-          <dd className="mt-0.5 font-semibold">{displayValue(item.state_display, item.state)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-muted-foreground">Prioridade</dt>
-          <dd className="mt-0.5 font-semibold">{displayValue(item.priority_display, item.priority)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-muted-foreground">Analista</dt>
-          <dd className="mt-0.5 font-semibold">{displayValue(item.assigned_to_display, item.assigned_to)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-muted-foreground">Grupo</dt>
-          <dd className="mt-0.5 font-semibold">{displayValue(item.assignment_group_display, item.assignment_group)}</dd>
-        </div>
-        <div className="sm:col-span-2">
-          <dt className="text-xs text-muted-foreground">Última atualização</dt>
-          <dd className="mt-0.5 font-semibold">{formatDateTime(item.sys_updated_on)}</dd>
-        </div>
-      </dl>
       {identityConflict ? (
-        <p className="text-xs text-destructive">Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.</p>
+        <p className="mt-2 text-xs text-destructive">Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.</p>
       ) : null}
-      {onOpenIncidentDetail ? (
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          className="w-full sm:w-auto"
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenIncidentDetail(item);
-          }}
-        >
-          Ver detalhe no OneView
-        </Button>
-      ) : null}
-      {url ? (
-        <ServiceNowDevLink sysId={item.sys_id} size="sm" className="sm:w-auto" fullWidth />
-      ) : (
-        <p className="text-xs text-muted-foreground">Link do ServiceNow indisponível.</p>
-      )}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
+        <p className="min-w-0 truncate text-xs text-muted-foreground">
+          {displayValue(item.assigned_to_display, item.assigned_to)} · {displayValue(item.assignment_group_display, item.assignment_group)}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {onOpenIncidentDetail ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2.5 text-xs"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenIncidentDetail(item);
+              }}
+            >
+              Ver detalhe
+            </Button>
+          ) : null}
+          {url ? (
+            <ServiceNowDevLink sysId={item.sys_id} size="sm" className="w-auto" />
+          ) : (
+            <span className="text-xs text-muted-foreground">ServiceNow indisponível</span>
+          )}
+        </div>
+      </div>
     </article>
   );
 }
@@ -223,6 +210,7 @@ type AlertRelatedIncidentsSectionProps = {
   > | null;
   onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
   onTimelineServiceNowReferenceChange?: (reference: AlertTimelineServiceNowReference | null) => void;
+  onRelatedIncidentsChange?: (incidents: AlertRelatedIncident[]) => void;
 };
 
 export function AlertRelatedIncidentsSection({
@@ -232,6 +220,7 @@ export function AlertRelatedIncidentsSection({
   alert = null,
   onOpenIncidentDetail,
   onTimelineServiceNowReferenceChange,
+  onRelatedIncidentsChange,
 }: AlertRelatedIncidentsSectionProps) {
   const eligible = isIncidentEligibleSeverity(severity);
   const [loading, setLoading] = useState(false);
@@ -289,6 +278,7 @@ export function AlertRelatedIncidentsSection({
       setError(null);
       setStale(false);
       onTimelineServiceNowReferenceChange?.(null);
+      onRelatedIncidentsChange?.([]);
       return;
     }
 
@@ -299,6 +289,7 @@ export function AlertRelatedIncidentsSection({
       setChecked(false);
       setStale(false);
       requestKeyRef.current = correlationKey;
+      onRelatedIncidentsChange?.([]);
     }
 
     // Correlação não recebe fallback do cache: refresh falho não pode tratar
@@ -331,6 +322,7 @@ export function AlertRelatedIncidentsSection({
         setIncidents(nextIncidents);
         setRelationSource(nextRelationSource);
         onTimelineServiceNowReferenceChange?.(timelineReference(nextRelationSource, nextIncidents));
+        onRelatedIncidentsChange?.(nextIncidents);
         setChecked(true);
         setStale(false);
       })
@@ -341,6 +333,7 @@ export function AlertRelatedIncidentsSection({
         setError("ServiceNow indisponível");
         setStale(true);
         onTimelineServiceNowReferenceChange?.(null);
+        onRelatedIncidentsChange?.([]);
         void err;
       })
       .finally(() => {
@@ -348,7 +341,7 @@ export function AlertRelatedIncidentsSection({
       });
 
     return () => { active = false; controller.abort(); };
-  }, [sourceEventId, correlationKey, tagRefs.sysIds, tagRefs.numbers, historyNumbers, alert?.first_seen_at, onTimelineServiceNowReferenceChange]);
+  }, [sourceEventId, correlationKey, tagRefs.sysIds, tagRefs.numbers, historyNumbers, alert?.first_seen_at, onTimelineServiceNowReferenceChange, onRelatedIncidentsChange]);
 
   const hasIncidents = incidents.length > 0;
   const showEmptyEligible = checked && !hasIncidents && !error && eligible && !loading;
@@ -375,7 +368,7 @@ export function AlertRelatedIncidentsSection({
               onOpenIncidentDetail={onOpenIncidentDetail}
             />
           ))}
-          {loading ? <p className="text-[11px] text-muted-foreground">Atualizando…</p> : null}
+          {loading ? <OneViewQuietRefreshIndicator className="mt-1" /> : null}
           {stale ? <p className="text-xs text-amber-700">Dados de correlação desatualizados. Atualize novamente para confirmar.</p> : null}
         </div>
       ) : error ? (

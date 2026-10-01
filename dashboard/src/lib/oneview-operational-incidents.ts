@@ -75,6 +75,8 @@ export async function fetchOperationalIncidents(params?: {
   assignedTo?: string | string[] | null;
   limit?: number;
   windowMs?: number;
+  from?: string;
+  to?: string;
   now?: number;
   signal?: AbortSignal;
   sort?: "updated" | "opened" | "number" | "client" | "description" | "state" | "priority" | "group" | "assignee";
@@ -86,8 +88,8 @@ export async function fetchOperationalIncidents(params?: {
     : parseAssignedToSysIds(params?.assignedTo);
   const assignedCsv = assignedIds.length ? assignedIds.join(",") : undefined;
   const openedFrom = params?.windowMs
-    ? openedFromForWindow(params.windowMs, params.now)
-    : undefined;
+    ? (params.from ?? openedFromForWindow(params.windowMs, params.now))
+    : params?.from;
 
   const response = await fetchIncidents({
     page: 1,
@@ -97,6 +99,7 @@ export async function fetchOperationalIncidents(params?: {
     hasAssignee: mode === INCIDENTS_QUEUE_MODE.assigned && !assignedCsv ? true : undefined,
     includeUnassigned: mode === INCIDENTS_QUEUE_MODE.all && Boolean(assignedCsv) ? true : undefined,
     openedFrom,
+    openedTo: params?.to,
     state: OPERATIONAL_INCIDENT_STATES,
     sort: params?.sort,
     order: params?.order,
@@ -123,12 +126,21 @@ export async function fetchOperationalIncidents(params?: {
 export function buildOperationalChamadosHref(params?: {
   mode?: IncidentsQueueMode | string | null;
   assignedTo?: string | string[] | null;
+  from?: string;
+  to?: string;
 }): string {
   const mode = parseIncidentsQueueMode(params?.mode);
-  if (mode === INCIDENTS_QUEUE_MODE.unassigned) return "/chamados?unassigned=true";
+  const search = new URLSearchParams();
+  if (mode === INCIDENTS_QUEUE_MODE.unassigned) search.set("unassigned", "true");
   const assignedTo = parseAssignedToSysIds(params?.assignedTo).join(",");
-  if (!assignedTo) return "/chamados";
-  return `/chamados?assigned_to=${encodeURIComponent(assignedTo)}`;
+  if (mode !== INCIDENTS_QUEUE_MODE.unassigned && assignedTo) search.set("assigned_to", assignedTo);
+  if (params?.from && params?.to) {
+    search.set("period", "custom");
+    search.set("from", params.from);
+    search.set("to", params.to);
+  }
+  const query = search.toString();
+  return `/chamados${query ? `?${query}` : ""}`;
 }
 
 export function applyIncidentsQueueToSearchParams(

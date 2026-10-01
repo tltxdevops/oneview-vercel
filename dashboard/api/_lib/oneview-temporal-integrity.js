@@ -1,4 +1,5 @@
 export const TEMPORAL_INTEGRITY_SOURCE_CLOCK_INCONSISTENT = "source_clock_inconsistent";
+export const TEMPORAL_INTEGRITY_RECOVERY_UNVERIFIED = "source_recovery_unverified";
 
 function milliseconds(value) {
   if (value instanceof Date) return value.getTime();
@@ -19,6 +20,9 @@ export function deriveAlertTemporalIntegrity(alert, now = Date.now()) {
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
 
   if (recovered(alert)) {
+    if (!String(alert?.source_recovery_event_id || "").trim()) {
+      return Object.freeze({ duration_seconds: null, temporal_integrity: TEMPORAL_INTEGRITY_RECOVERY_UNVERIFIED });
+    }
     if (!Number.isFinite(firstSeenMs) || !Number.isFinite(resolvedMs) || resolvedMs < firstSeenMs) {
       return Object.freeze({ duration_seconds: null, temporal_integrity: TEMPORAL_INTEGRITY_SOURCE_CLOCK_INCONSISTENT });
     }

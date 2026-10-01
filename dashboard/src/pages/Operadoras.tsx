@@ -14,7 +14,7 @@ import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correla
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
-import { OneViewKpiCard, OneViewSemanticStatusBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
+import { OneViewKpiCard, OneViewQuietRefreshIndicator, OneViewSemanticStatusBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentStatusBadge";
 import { Badge } from "@/components/ui/badge";
@@ -1021,7 +1021,7 @@ export default function OperadorasPage() {
     return (
       <span className="inline-flex whitespace-nowrap text-xs text-muted-foreground">
         {checkedAtLabel ? <>Última consulta: {checkedAtLabel}</> : null}
-        {refreshing ? <span title="Atualização em segundo plano" aria-label="Atualização em segundo plano" className="ml-1 inline-flex items-center"><Loader2 className="h-3 w-3 animate-spin opacity-50" /></span> : null}
+        {refreshing ? <OneViewQuietRefreshIndicator className="ml-1" /> : null}
       </span>
     );
   }, [payload?.checked_at, refreshing]);

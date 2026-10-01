@@ -255,12 +255,14 @@ test("roteamento: planilha Cliente / SDC-Resp / Grupo vira catálogo sem vazar s
   assert.doesNotMatch(shareTypes, /webhook|token/i);
 });
 
-test("transporte Teams permanece dry-run na estratégia de Incoming Webhook e sem Graph", async () => {
+test("transporte Teams usa Incoming Webhook, sem Graph, e não vaza segredo no dry-run", async () => {
   const delivery = await sendTeamsClientShare({ destination: single[0] });
   assert.equal(delivery.strategy, TEAMS_TRANSPORT_STRATEGY);
   assert.equal(delivery.external_called, false);
   assert.equal(JSON.stringify(delivery).includes(SECRET), false);
   const source = await readFile(new URL("../api/_lib/oneview-client-sharing-transports.js", import.meta.url), "utf8");
   assert.match(source, /teams_workflow_incoming_webhook/);
-  assert.doesNotMatch(source, /ChannelMessage|graph\.microsoft\.com|fetch\s*\(/);
+  assert.doesNotMatch(source, /ChannelMessage|graph\.microsoft\.com/);
+  const webex = source.slice(source.indexOf("export async function sendWebexClientShare"));
+  assert.doesNotMatch(webex, /fetch\s*\(/);
 });

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Copy, Loader2, Printer, Send, ImageIcon } from "lucide-react";
+import { Copy, ImageIcon, Loader2, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,7 +20,7 @@ export type AlertSharePreviewBundle = {
   clientPlainText: string;
 };
 
-type DialogBusy = "copyImage" | "copyInternal" | "copyClient" | "print" | null;
+type DialogBusy = "copyImage" | "copyInternal" | "print" | null;
 
 type Props = {
   open: boolean;
@@ -66,49 +66,23 @@ export function AlertSharePreviewDialog({
       if (!copied) throw new Error("copy_failed");
       toast({
         title: "Resumo copiado",
-        description: "Texto operacional pronto para colar no Teams ou Webex.",
+        description: "Texto operacional do detalhe do alerta copiado.",
       });
     } catch {
-      toast({
-        title: "Não foi possível copiar o resumo.",
-        variant: "destructive",
-      });
+      toast({ title: "Não foi possível copiar o resumo.", variant: "destructive" });
     } finally {
       setBusy(null);
     }
   }
 
-  async function runCopyClient() {
-    if (!bundle || busy) return;
-    setBusy("copyClient");
-    try {
-      const copied = await copyPlainText(bundle.clientPlainText);
-      if (!copied) throw new Error("copy_failed");
-      toast({
-        title: "Texto para o cliente copiado",
-        description: "Revise antes de enviar ao cliente.",
-      });
-    } catch {
-      toast({
-        title: "Não foi possível copiar o texto para o cliente.",
-        variant: "destructive",
-      });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function runPrint() {
+  function runPrint() {
     if (!bundle || busy) return;
     setBusy("print");
     try {
       const printed = printPngBlob(bundle.pngBlob);
       if (!printed) throw new Error("print_failed");
     } catch {
-      toast({
-        title: "Não foi possível imprimir.",
-        variant: "destructive",
-      });
+      toast({ title: "Não foi possível imprimir.", variant: "destructive" });
     } finally {
       setBusy(null);
     }
@@ -121,9 +95,7 @@ export function AlertSharePreviewDialog({
       <DialogContent className="z-[100] flex max-h-[90vh] max-w-2xl flex-col gap-0 p-0 sm:max-w-2xl">
         <DialogHeader className="space-y-1 border-b border-border px-6 py-4 text-left">
           <DialogTitle>Este print está ok?</DialogTitle>
-          <DialogDescription>
-            Revise a captura antes de compartilhar com o cliente ou a equipe.
-          </DialogDescription>
+          <DialogDescription>Revise a captura antes de compartilhar com o cliente ou a equipe.</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           {loading ? (
@@ -135,7 +107,7 @@ export function AlertSharePreviewDialog({
             <img
               src={bundle.previewUrl}
               alt="Preview do resumo operacional"
-              className="mx-auto max-h-[min(60vh,32rem)] w-full rounded-md border border-border object-contain bg-muted/30"
+              className="mx-auto max-h-[min(60vh,32rem)] w-full rounded-md border border-border bg-muted/30 object-contain"
             />
           ) : (
             <p className="py-8 text-center text-sm text-muted-foreground">
@@ -152,11 +124,7 @@ export function AlertSharePreviewDialog({
             {busy === "copyInternal" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Copy className="mr-2 h-4 w-4" />}
             Copiar resumo
           </Button>
-          <Button type="button" variant="secondary" disabled={actionsDisabled} onClick={() => void runCopyClient()}>
-            {busy === "copyClient" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-            Copiar texto do cliente
-          </Button>
-          <Button type="button" disabled={actionsDisabled} onClick={() => void runPrint()}>
+          <Button type="button" disabled={actionsDisabled} onClick={runPrint}>
             {busy === "print" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Printer className="mr-2 h-4 w-4" />}
             Imprimir
           </Button>

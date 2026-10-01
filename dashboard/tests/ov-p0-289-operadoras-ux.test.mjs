@@ -39,7 +39,7 @@ test("OV-P0-289 Operadoras keeps the operational table and browser-only columns"
   assert.match(page, /useOneViewTableColumns/);
   assert.match(preferences, /localStorage/);
   assert.match(page, /Accordion/);
-  assert.match(page, /Atualizando/);
+  assert.match(page, /OneViewQuietRefreshIndicator/);
   // Reminder history may display the persisted Theo acceptance state, but does not add a sender here.
   assert.match(page, /Theo acionado/);
 });

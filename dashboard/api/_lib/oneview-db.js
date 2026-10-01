@@ -628,6 +628,64 @@ function isoFilterDate(value) {
   return parsed.toISOString();
 }
 
+const INCIDENT_REFERENCE_TAG_ROWS_SQL = `
+  select lower(coalesce(tag->>'tag', tag->>'name', '')) as name,
+         btrim(coalesce(tag->>'value', '')) as value
+    from jsonb_array_elements(
+      case when jsonb_typeof(coalesce(a.event_tags, '[]'::jsonb)) = 'array' then coalesce(a.event_tags, '[]'::jsonb) else '[]'::jsonb end
+      || case when jsonb_typeof(coalesce(a.trigger_tags, '[]'::jsonb)) = 'array' then coalesce(a.trigger_tags, '[]'::jsonb) else '[]'::jsonb end
+      || case when jsonb_typeof(coalesce(a.host_tags, '[]'::jsonb)) = 'array' then coalesce(a.host_tags, '[]'::jsonb) else '[]'::jsonb end
+      || case when jsonb_typeof(a.payload_normalized->'tags') = 'array' then a.payload_normalized->'tags' else '[]'::jsonb end
+    ) tag
+`;
+
+/** Strict identity: one sys_id tag, else one unique INC tag, else one source event match. */
+function incidentStateCorrelationSql(stateParam) {
+  return `exists (
+    with tag_rows as (${INCIDENT_REFERENCE_TAG_ROWS_SQL}), refs as (
+      select array_agg(distinct lower(value)) filter (
+               where name = '__zbx_servicenow_sys_id' and value ~* '^[a-f0-9]{32}$'
+             ) as sys_ids,
+             array_agg(distinct upper(value)) filter (
+               where name = '__zbx_servicenow_number' and value ~* '^INC[0-9]+$'
+             ) as numbers
+        from tag_rows
+    )
+    select 1 from refs
+     where case
+       when cardinality(coalesce(sys_ids, array[]::text[])) > 0 then
+         cardinality(sys_ids) = 1 and exists (
+           select 1 from servicenow_incidents i
+            where lower(i.sys_id::text) = sys_ids[1] and i.state::text = ${stateParam}
+         )
+       when cardinality(coalesce(numbers, array[]::text[])) > 0 then
+         cardinality(numbers) = 1
+         and (select count(*) from servicenow_incidents i where upper(i.number::text) = numbers[1]) = 1
+         and exists (
+           select 1 from servicenow_incidents i
+            where upper(i.number::text) = numbers[1] and i.state::text = ${stateParam}
+         )
+       else
+         (select count(*) from servicenow_incidents i
+           where coalesce(
+             nullif(btrim(i.correlation_id::text), ''),
+             nullif(btrim(i.raw_payload->>'zabbix_event_id'), ''),
+             nullif(btrim(i.raw_payload->>'u_zabbix_event_id'), '')
+           ) = coalesce(a.source_event_id::text, a.source_problem_id::text)
+         ) = 1
+         and exists (
+           select 1 from servicenow_incidents i
+            where coalesce(
+              nullif(btrim(i.correlation_id::text), ''),
+              nullif(btrim(i.raw_payload->>'zabbix_event_id'), ''),
+              nullif(btrim(i.raw_payload->>'u_zabbix_event_id'), '')
+            ) = coalesce(a.source_event_id::text, a.source_problem_id::text)
+              and i.state::text = ${stateParam}
+         )
+     end
+  )`;
+}
+
 export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSourceNames()) {
   const params = [];
   const clauses = [];
@@ -670,6 +728,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const recurrenceKeyRaw = oneQueryValue(req, "recurrence_key");
   const recurrenceKey = recurrenceKeyRaw ? parseRecurrenceKey(recurrenceKeyRaw) : null;
   const excludeOperator = oneQueryValue(req, "exclude_operator").toLowerCase();
+  const incidentState = oneQueryValue(req, "incident_state").trim();
 
   if (severities.some((value) => !ALERT_SEVERITIES.has(value))) throw requestError("invalid_query");
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
@@ -689,6 +748,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (acknowledgedFrom && acknowledgedTo && Date.parse(acknowledgedFrom) > Date.parse(acknowledgedTo)) throw requestError("invalid_query");
   if (recurrenceKeyRaw && !recurrenceKey) throw requestError("invalid_query");
   if (excludeOperator && !["true", "false"].includes(excludeOperator)) throw requestError("invalid_query");
+  if (incidentState && !/^[1-8]$/.test(incidentState)) throw requestError("invalid_query");
   const offset = (page - 1) * pageSize;
   if (!Number.isSafeInteger(offset)) throw requestError("invalid_query");
 
@@ -719,6 +779,10 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (status === "resolved") clauses.push(RESOLVED_ALERT_SQL);
   // OV-P0-248: Home only. /alertas remains unfiltered unless it explicitly opts in.
   if (excludeOperator === "true") clauses.push(`not (${OPERATOR_TAG_EXISTS_SQL})`);
+  if (incidentState) {
+    params.push(incidentState);
+    clauses.push(incidentStateCorrelationSql(`$${params.length}`));
+  }
   if (acknowledged) {
     push(
       `(coalesce(a.acknowledged_source, false) or ${INTERNAL_ACKNOWLEDGED_SQL}) = ?`,
@@ -822,6 +886,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       sortSecondary,
       recurrenceKey: recurrenceKeyRaw || null,
       excludeOperator: excludeOperator === "true",
+      incidentState: incidentState || null,
     },
   };
 }

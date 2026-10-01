@@ -171,7 +171,72 @@ function normalizeRelatedAlert(alert) {
   };
 }
 
-export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, relatedAlert = null } = {}) {
+const TERMINAL_DURATION_STATES = new Set(["6", "7", "8"]);
+const SLA_STALE_AFTER_MS = 5 * 60_000;
+
+function incidentOpenDurationSeconds(row, now = Date.now()) {
+  const openedAt = Date.parse(String(row.opened_at || ""));
+  if (!Number.isFinite(openedAt)) return null;
+  let terminalAt = now;
+  if (TERMINAL_DURATION_STATES.has(text(row.state))) {
+    const terminal = text(row.state) === "6" ? row.resolved_at : (row.closed_at || row.resolved_at);
+    terminalAt = Date.parse(String(terminal || ""));
+    if (!Number.isFinite(terminalAt)) return null;
+  }
+  if (terminalAt < openedAt) return null;
+  return Math.floor((terminalAt - openedAt) / 1000);
+}
+
+function taskSlaState(row) {
+  const stage = String(row.stage || "").trim().toLowerCase();
+  if (row.has_breached) return "breached";
+  if (stage.includes("cancel")) return "cancelled";
+  if (stage.includes("pause") || stage.includes("hold")) return "paused";
+  if (stage.includes("complete") || stage.includes("achiev")) return "completed";
+  return row.active ? "on_track" : "completed";
+}
+
+function mapTaskSla(row, availability = "available") {
+  return {
+    availability,
+    state: taskSlaState(row),
+    name: text(row.sla_name),
+    deadline_at: row.planned_end_time ? new Date(row.planned_end_time).toISOString() : null,
+    has_breached: Boolean(row.has_breached),
+    stage: text(row.stage),
+    synced_at: row.synced_at ? new Date(row.synced_at).toISOString() : null,
+    sys_id: text(row.sys_id),
+    start_time: row.start_time ? new Date(row.start_time).toISOString() : null,
+    end_time: row.end_time ? new Date(row.end_time).toISOString() : null,
+    original_breach_time: row.original_breach_time ? new Date(row.original_breach_time).toISOString() : null,
+    time_left: text(row.time_left),
+    business_time_left: text(row.business_time_left),
+    percentage: row.percentage == null ? null : Number(row.percentage),
+    business_percentage: row.business_percentage == null ? null : Number(row.business_percentage),
+  };
+}
+
+function pickSlaSummary(slas) {
+  const breached = (slas || []).filter((sla) => sla.has_breached)
+    .sort((left, right) => Date.parse(left.deadline_at || "") - Date.parse(right.deadline_at || ""));
+  if (breached[0]) return breached[0];
+  const active = (slas || []).filter((sla) => ["on_track", "paused"].includes(sla.state) && sla.deadline_at)
+    .sort((left, right) => Date.parse(left.deadline_at) - Date.parse(right.deadline_at));
+  return active[0] || slas?.[0] || null;
+}
+
+function unavailableSla(availability, syncedAt = null) {
+  return { availability, state: null, name: null, deadline_at: null, has_breached: false, stage: null, synced_at: syncedAt };
+}
+
+export function mapReadModelIncident(row, {
+  baseUrl = SERVICENOW_PROD_BASE_URL,
+  relatedAlert = null,
+  slas = null,
+  slaAvailability = "missing",
+  slaSyncedAt = null,
+  includeSlas = false,
+} = {}) {
   const sysId = text(row.sys_id);
   const zabbixEventId = parseZabbixFieldsFromDescription(row.description).zabbix_event_id;
   const assignedTo = text(row.assigned_to);
@@ -191,6 +256,7 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
   } catch {
     // URL opcional; não interfere na leitura do read model.
   }
+  const mappedSlas = Array.isArray(slas) ? slas.map((sla) => mapTaskSla(sla, slaAvailability)) : [];
   return {
     sys_id: sysId,
     id: sysId,
@@ -219,6 +285,9 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
     opened_at: row.opened_at ? new Date(row.opened_at).toISOString() : null,
     resolved_at: row.resolved_at ? new Date(row.resolved_at).toISOString() : null,
     closed_at: row.closed_at ? new Date(row.closed_at).toISOString() : null,
+    open_duration_seconds: incidentOpenDurationSeconds(row),
+    sla_summary: pickSlaSummary(mappedSlas) || unavailableSla(slaAvailability, slaSyncedAt),
+    ...(includeSlas ? { slas: mappedSlas } : {}),
     sys_created_on: row.sys_created_on ? new Date(row.sys_created_on).toISOString() : null,
     sys_updated_on: row.sys_updated_on ? new Date(row.sys_updated_on).toISOString() : null,
     zabbix_event_id: text(zabbixEventId),
@@ -250,6 +319,43 @@ export function mapReadModelIncident(row, { baseUrl = SERVICENOW_PROD_BASE_URL, 
   };
 }
 
+async function fetchTaskSlasByTask(pool, taskSysIds) {
+  const ids = [...new Set(taskSysIds.map((value) => text(value)).filter(Boolean))];
+  if (!ids.length) return { byTask: new Map(), availability: "missing", syncedAt: null };
+  if (!["true", "1", "yes", "sim"].includes(String(process.env.SERVICENOW_SLA_SYNC_ENABLED || "").toLowerCase())) {
+    return { byTask: new Map(), availability: "disabled", syncedAt: null };
+  }
+  try {
+    const [slaResult, syncResult] = await Promise.all([
+      pool.query({
+        text: `select sys_id, task_sys_id, sla_name, stage, active, has_breached,
+                      start_time, end_time, planned_end_time, original_breach_time,
+                      time_left, business_time_left, percentage, business_percentage, synced_at
+                 from servicenow_task_slas
+                where task_sys_id = any($1::text[])
+                order by has_breached desc, active desc, planned_end_time asc nulls last, sys_id asc`,
+        values: [ids],
+      }),
+      pool.query("select last_success_at from servicenow_sync_state where sync_key = 'task_sla' limit 1"),
+    ]);
+    const syncedAtRaw = syncResult.rows?.[0]?.last_success_at || null;
+    const syncedAt = syncedAtRaw ? new Date(syncedAtRaw).toISOString() : null;
+    const stale = !syncedAtRaw || (Date.now() - Date.parse(String(syncedAtRaw))) > SLA_STALE_AFTER_MS;
+    const byTask = new Map();
+    for (const row of slaResult.rows || []) {
+      const key = String(row.task_sys_id || "").toLowerCase();
+      if (!byTask.has(key)) byTask.set(key, []);
+      byTask.get(key).push(row);
+    }
+    return { byTask, availability: stale ? "stale" : "available", syncedAt };
+  } catch (error) {
+    if (["42P01", "42501"].includes(error?.code)) {
+      return { byTask: new Map(), availability: "disabled", syncedAt: null };
+    }
+    throw error;
+  }
+}
+
 export async function fetchReadModelIncidentDetail(sysId, { pool = getOneViewDbPool() } = {}) {
   const normalized = text(sysId)?.toLowerCase();
   if (!normalized || !/^[a-z0-9._:-]{1,80}$/.test(normalized)) {
@@ -264,7 +370,14 @@ export async function fetchReadModelIncidentDetail(sysId, { pool = getOneViewDbP
       limit 1`,
     values: [normalized],
   });
-  return result.rows?.[0] ? mapReadModelIncident(result.rows[0]) : null;
+  if (!result.rows?.[0]) return null;
+  const sla = await fetchTaskSlasByTask(pool, [result.rows[0].sys_id]);
+  return mapReadModelIncident(result.rows[0], {
+    slas: sla.byTask.get(String(result.rows[0].sys_id || "").toLowerCase()) || [],
+    slaAvailability: sla.availability,
+    slaSyncedAt: sla.syncedAt,
+    includeSlas: true,
+  });
 }
 
 function addParam(values, value) {
@@ -277,6 +390,14 @@ function assignedToIds(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function temporalBoundary(value, edge) {
+  if (!value) return null;
+  if (String(value).includes("T")) return value;
+  return edge === "to"
+    ? `${value}T00:00:00.000Z`
+    : `${value}T00:00:00.000Z`;
 }
 
 function buildWhere(filters, values, { includeState = true, includeUnassigned = true } = {}) {
@@ -328,10 +449,18 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
     if (companyClauses.length === 1) clauses.push(companyClauses[0]);
     else if (companyClauses.length > 1) clauses.push(`(${companyClauses.join(" or ")})`);
   }
-  if (filters.opened_from) clauses.push(`opened_at >= ${addParam(values, `${filters.opened_from}T00:00:00.000Z`)}`);
-  if (filters.opened_to) clauses.push(`opened_at < (${addParam(values, `${filters.opened_to}T00:00:00.000Z`)}::timestamptz + interval '1 day')`);
-  if (filters.updated_from) clauses.push(`sys_updated_on >= ${addParam(values, `${filters.updated_from}T00:00:00.000Z`)}`);
-  if (filters.updated_to) clauses.push(`sys_updated_on < (${addParam(values, `${filters.updated_to}T00:00:00.000Z`)}::timestamptz + interval '1 day')`);
+  if (filters.opened_from) clauses.push(`opened_at >= ${addParam(values, temporalBoundary(filters.opened_from, "from"))}`);
+  if (filters.opened_to) {
+    clauses.push(String(filters.opened_to).includes("T")
+      ? `opened_at <= ${addParam(values, temporalBoundary(filters.opened_to, "to"))}`
+      : `opened_at < (${addParam(values, temporalBoundary(filters.opened_to, "to"))}::timestamptz + interval '1 day')`);
+  }
+  if (filters.updated_from) clauses.push(`sys_updated_on >= ${addParam(values, temporalBoundary(filters.updated_from, "from"))}`);
+  if (filters.updated_to) {
+    clauses.push(String(filters.updated_to).includes("T")
+      ? `sys_updated_on <= ${addParam(values, temporalBoundary(filters.updated_to, "to"))}`
+      : `sys_updated_on < (${addParam(values, temporalBoundary(filters.updated_to, "to"))}::timestamptz + interval '1 day')`);
+  }
   if (includeState && filters.state) clauses.push(`state::text = any(${addParam(values, String(filters.state).split(","))}::text[])`);
   if (includeUnassigned && filters.unassigned) clauses.push("coalesce(btrim(assigned_to::text), '') = ''");
   if (filters.search) {
@@ -744,6 +873,7 @@ export async function fetchReadModelIncidentsPage(filters, {
     effectiveFilters.include_facets === false ? Promise.resolve(null) : fetchFacets(pool, effectiveFilters),
     pool.query("select last_success_at, watermark_sys_updated_on from servicenow_sync_state where sync_key = 'incident' limit 1"),
   ]);
+  const sla = await fetchTaskSlasByTask(pool, pageResult.rows.map((row) => row.sys_id));
   // Tag correlation is intentionally a detail lookup: the current alerts
   // schema has no index for ServiceNow tag JSON. Running it for every recent
   // incident would turn the operational queue into a slow scan. Exact GETs
@@ -758,6 +888,9 @@ export async function fetchReadModelIncidentsPage(filters, {
   return {
     items: pageResult.rows.map((row) => mapReadModelIncident(row, {
       relatedAlert: relatedAlerts.get(String(row.sys_id || "").toLowerCase()) || null,
+      slas: sla.byTask.get(String(row.sys_id || "").toLowerCase()) || [],
+      slaAvailability: sla.availability,
+      slaSyncedAt: sla.syncedAt,
     })),
     pagination: {
       page: effectivePage,

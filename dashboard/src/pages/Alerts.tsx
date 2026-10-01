@@ -26,6 +26,7 @@ import {
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -72,10 +73,13 @@ import {
   formatDurationSeconds,
   formatNullableCount,
   formatOneViewSeverityLabel,
+  isOneViewAbortError,
   isOneViewSeverity,
+  invalidateOneViewReadCache,
   normalizeAlertSeveritySummary,
   normalizeOneViewSeverity,
   requestAlertAcknowledgement,
+  type AcknowledgeAlertResponse,
 } from "@/lib/oneview-api";
 import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
 import { ONEVIEW_SEVERITY_UI } from "@/lib/oneview-severity-visual";
@@ -878,6 +882,9 @@ export default function AlertsPage() {
     if (initialView === "all") return "all";
     return "active";
   });
+  const [incidentStateFilter, setIncidentStateFilter] = useState<"all" | "8">(() => (
+    initialQuery.get("incident_state") === "8" ? "8" : "all"
+  ));
   const [sortField, setSortField] = useState<SortField>(() => {
     if (initialQuery.get("sort")) {
       return queryEnum(initialQuery.get("sort"), ["last_seen_at", "first_seen_at", "resolved_at", "severity", "client", "datasource", "host", "problem", "duration", "status", "acknowledged_source", "acknowledged_at"] as const, "first_seen_at");
@@ -923,8 +930,6 @@ export default function AlertsPage() {
     if (initialQuery.get("updated")) return temporalPresetFromUrl(initialQuery.get("updated"));
     if (initialQuery.get("resolved")) return temporalPresetFromUrl(initialQuery.get("resolved"));
     if (initialQuery.get("ack")) return temporalPresetFromUrl(initialQuery.get("ack"));
-    if (initialView === "recent") return "24h";
-    if (initialView === "all") return "30d";
     return "all";
   });
   const [dateRange, setDateRange] = useState<DateRange | undefined>(() => {
@@ -996,6 +1001,7 @@ export default function AlertsPage() {
       datasources: selectedDatasources,
       severities: selectedSeverities,
       status: statusFilter,
+      incidentState: incidentStateFilter,
       acknowledgedSource: sourceAckFilter,
       dateField,
       datePreset,
@@ -1011,7 +1017,7 @@ export default function AlertsPage() {
       alert: requestedAlertId,
     });
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [alertsView, dateField, datePreset, dateRange, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedDatasources, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [alertsView, dateField, datePreset, dateRange, incidentStateFilter, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedDatasources, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadAlerts = useCallback(async (options?: { quiet?: boolean }) => {
     if (options?.quiet && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
@@ -1022,7 +1028,7 @@ export default function AlertsPage() {
     const searchIntent = alertSearchIntent.current?.value === debouncedSearch ? alertSearchIntent.current : null;
     if (!options?.quiet) {
       setIsAlertsLoading(true);
-      setAlertsError(null);
+      if (!hasLoadedAlerts) setAlertsError(null);
     }
     try {
       const requestTime = Date.now();
@@ -1045,6 +1051,7 @@ export default function AlertsPage() {
         datasources: selectedDatasources,
         severities: selectedSeverities,
         status: statusFilter,
+        incidentState: incidentStateFilter === "all" ? undefined : incidentStateFilter,
         acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
         sort: sortField as "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "duration" | "acknowledged_at",
         order: sortOrder,
@@ -1075,8 +1082,8 @@ export default function AlertsPage() {
       setHasLoadedAlerts(true);
       alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
     } catch (error) {
-      if (controller.signal.aborted) return;
-      setAlertsError(error instanceof Error ? error.message : "Não foi possível carregar os alertas.");
+      if (controller.signal.aborted || isOneViewAbortError(error)) return;
+      setAlertsError("Não foi possível carregar os alertas.");
     } finally {
       if (requestId === alertsRequestIdRef.current) setIsAlertsLoading(false);
       if (searchIntent && alertSearchIntent.current?.id === searchIntent.id) {
@@ -1084,7 +1091,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, health, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, hasLoadedAlerts, health, incidentStateFilter, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1232,6 +1239,7 @@ export default function AlertsPage() {
     || selectedDatasources.length
     || selectedSeverities.length
     || sourceAckFilter !== "all"
+    || incidentStateFilter !== "all"
     || statusFilter !== "active"
     || debouncedSearch
     || hasTemporalFilter
@@ -1369,6 +1377,7 @@ export default function AlertsPage() {
     selectedDatasources.length ? { label: `${selectedDatasources.length} fonte(s)`, remove: () => setSelectedDatasources([]) } : null,
     ...selectedSeverities.map((severity) => ({ label: severityCatalog[severity].label, remove: () => setSelectedSeverities((current) => current.filter((item) => item !== severity)) })),
     statusFilter !== "active" ? { label: `Status: ${statusFilter === "resolved" ? "Resolvidos" : "Todos"}`, remove: () => setStatusFilter("active") } : null,
+    incidentStateFilter === "8" ? { label: "Chamado cancelado", remove: () => setIncidentStateFilter("all") } : null,
     sourceAckFilter !== "all" ? { label: `ACK origem: ${sourceAckFilter === "acknowledged" ? "Com ACK" : "Sem ACK"}`, remove: () => setSourceAckFilter("all") } : null,
     hasTemporalFilter ? {
       label: `${ALERTS_DATE_FIELD_OPTIONS.find((item) => item.id === dateField)?.label ?? "Período"} ${temporalLabels[datePreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`,
@@ -1458,13 +1467,14 @@ export default function AlertsPage() {
     setSourceAckFilter("all");
     setAlertsView("recent");
     setStatusFilter("active");
+    setIncidentStateFilter("all");
     setSortField("first_seen_at");
     setSortOrder("desc");
     setSearchField("all");
     setSearchQuery("");
     setDebouncedSearch("");
     setDateField("first_seen");
-    setDatePreset("24h");
+    setDatePreset("all");
     setDateRange(undefined);
     setPage(1);
   };
@@ -1478,7 +1488,7 @@ export default function AlertsPage() {
       setStatusFilter("all");
       setSelectedSeverities([]);
       setDateField("first_seen");
-      setDatePreset("24h");
+      setDatePreset("all");
       setSortField("first_seen_at");
       setSortOrder("desc");
       return;
@@ -1525,7 +1535,7 @@ export default function AlertsPage() {
     setStatusFilter("all");
     setSelectedSeverities([]);
     setDateField("first_seen");
-    setDatePreset("30d");
+    setDatePreset("all");
     setSortField("last_seen_at");
     setSortOrder("desc");
   };
@@ -1678,6 +1688,18 @@ export default function AlertsPage() {
       setAckSubmitting(false);
     }
   };
+
+  const handleSourceAcknowledged = useCallback(async (alert: OneViewAlert, result: AcknowledgeAlertResponse) => {
+    invalidateOneViewReadCache("/oneview/alerts");
+    invalidateOneViewReadCache(`/oneview/alerts/${alert.id}`);
+    invalidateOneViewReadCache(`/oneview/alerts/${alert.id}/history`);
+    invalidateOneViewReadCache("/oneview/dashboard-summary");
+    await Promise.all([
+      loadSummaryResources(true, false),
+      loadAlerts({ quiet: true }),
+      selectedAlertId === alert.id ? loadSelectedAlert(alert.id) : Promise.resolve(),
+    ]);
+  }, [loadAlerts, loadSelectedAlert, loadSummaryResources, selectedAlertId]);
 
   const toggleColumnSort = (field: SortField) => {
     setSortOrder((current) => sortField === field && current === "asc" ? "desc" : "asc");
@@ -1851,6 +1873,9 @@ export default function AlertsPage() {
               <label className="space-y-1 text-xs text-muted-foreground">Estado
                 <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Ativos</SelectItem><SelectItem value="resolved">Resolvidos</SelectItem><SelectItem value="all">Todos</SelectItem></SelectContent></Select>
               </label>
+              <label className="space-y-1 text-xs text-muted-foreground">Estado do chamado
+                <Select value={incidentStateFilter} onValueChange={(value) => { setIncidentStateFilter(value as "all" | "8"); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="8">Chamado cancelado</SelectItem></SelectContent></Select>
+              </label>
               <label className="space-y-1 text-xs text-muted-foreground">Severidade
                 <Select value={severityFilterValue} onValueChange={(value) => { setSelectedSeverities(value === "all" ? [] : value === "priority" ? ["disaster", "high"] : [value as OneViewSeverity]); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todas</SelectItem><SelectItem value="priority">High e Disaster</SelectItem>{severityFilterValue === "multiple" ? <SelectItem value="multiple" disabled>Múltiplas</SelectItem> : null}{severityOrder.map((severity) => <SelectItem key={severity} value={severity}>{severityCatalog[severity].label}</SelectItem>)}</SelectContent></Select>
               </label>
@@ -1883,7 +1908,7 @@ export default function AlertsPage() {
           </div>
         ) : null}
 
-        {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} /> : null}
+        {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} onRetry={() => void loadAlerts()} /> : null}
 
         <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading}>
           {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
@@ -1973,6 +1998,11 @@ export default function AlertsPage() {
                             onActionComplete={() => void loadAlerts({ quiet: true })}
                           />
                         ) : null}
+                        <AlertSourceAckAction
+                          alert={alert}
+                          variant="icon"
+                          onAcknowledged={(result) => handleSourceAcknowledged(alert, result)}
+                        />
                         <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
                       </div>
                     </TableCell>
@@ -2020,6 +2050,7 @@ export default function AlertsPage() {
         isLoading={isDetailLoading}
         error={detailError || historyLoadError}
         description="Informações operacionais seguras e histórico do OneView."
+        onSourceAcknowledged={handleSourceAcknowledged}
       />
 
     </AppLayout>

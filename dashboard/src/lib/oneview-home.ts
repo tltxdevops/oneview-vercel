@@ -53,13 +53,64 @@ export const HOME_OPERATIONAL_WINDOW_PRESETS = {
   "2h": 2 * 60 * 60_000,
   "8h": 8 * 60 * 60_000,
   "24h": 24 * 60 * 60_000,
+  "7d": 7 * 24 * 60 * 60_000,
+  "30d": 30 * 24 * 60 * 60_000,
 } as const;
 
 export type HomeOperationalWindowPreset = keyof typeof HOME_OPERATIONAL_WINDOW_PRESETS;
+export type HomeOperationalWindow = HomeOperationalWindowPreset | "custom";
+export type HomeOperationalRange = {
+  window: HomeOperationalWindow;
+  from: string;
+  to: string;
+  fromDate?: string;
+  toDate?: string;
+};
 export const DEFAULT_HOME_OPERATIONAL_WINDOW: HomeOperationalWindowPreset = "2h";
 export const HOME_OPERATIONAL_WINDOW_OPTIONS = Object.keys(
   HOME_OPERATIONAL_WINDOW_PRESETS,
 ) as HomeOperationalWindowPreset[];
+
+const HOME_DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+function saoPauloDate(value: Date | number) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+export function parseHomeOperationalRange(params: {
+  window?: string | null;
+  from?: string | null;
+  to?: string | null;
+  now?: number;
+}): HomeOperationalRange {
+  const now = params.now ?? Date.now();
+  if (params.window === "custom") {
+    const fromDate = String(params.from || "");
+    const toDate = String(params.to || "");
+    const today = saoPauloDate(now);
+    if (HOME_DATE_ONLY.test(fromDate) && HOME_DATE_ONLY.test(toDate)
+      && fromDate <= toDate && toDate <= today) {
+      return {
+        window: "custom",
+        fromDate,
+        toDate,
+        from: new Date(`${fromDate}T00:00:00.000-03:00`).toISOString(),
+        to: new Date(`${toDate}T23:59:59.999-03:00`).toISOString(),
+      };
+    }
+  }
+  const window = parseHomeOperationalWindow(params.window);
+  return {
+    window,
+    from: new Date(now - homeOperationalWindowMs(window)).toISOString(),
+    to: new Date(now).toISOString(),
+  };
+}
 
 export function parseHomeOperationalWindow(value?: string | null): HomeOperationalWindowPreset {
   if (value && Object.prototype.hasOwnProperty.call(HOME_OPERATIONAL_WINDOW_PRESETS, value)) {
@@ -79,7 +130,7 @@ export function homeOperationalWindowActiveLabel(preset: HomeOperationalWindowPr
 /** Mapeia janela Home → date_preset conhecido em /alertas (8h ≈ 6h). */
 export function homeWindowToAlertsDatePreset(preset: string): string {
   if (preset === "8h") return "6h";
-  if (preset === "30m" || preset === "2h" || preset === "24h") return preset;
+  if (["30m", "2h", "24h", "7d", "30d"].includes(preset)) return preset;
   return "2h";
 }
 
@@ -113,28 +164,82 @@ export function homeAlertArrivalAt(alert: Pick<OneViewAlert, "first_seen_at" | "
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-/** Resolve severidades da lista Home (toggle + filtro opcional). */
+/** Normaliza lista de severidades vindas do filtro / strip (multi-select). */
+export function parseHomeSeveritySelection(
+  values?: string | string[] | null,
+): HomeAlertSeverity[] {
+  const raw = Array.isArray(values)
+    ? values
+    : String(values || "")
+      .split(",")
+      .map((item) => item.trim());
+  const seen = new Set<HomeAlertSeverity>();
+  for (const item of raw) {
+    const normalized = String(item || "").trim().toLowerCase();
+    if (!(HOME_ALL_SEVERITIES as readonly string[]).includes(normalized)) continue;
+    seen.add(normalized as HomeAlertSeverity);
+  }
+  return [...seen];
+}
+
+/** Seleção visível ao entrar no modo: Prioritários = Average/High/Disaster; Todos = vazio. */
+export function homeModeDefaultSeverities(mode: HomeAlertMode): HomeAlertSeverity[] {
+  return mode === HOME_ALERT_MODE.prioritary ? [...HOME_PRIORITARY_SEVERITIES] : [];
+}
+
+export function isHomePrioritarySeveritySelection(
+  selection?: string | string[] | null,
+): boolean {
+  const selected = parseHomeSeveritySelection(selection);
+  if (selected.length !== HOME_PRIORITARY_SEVERITIES.length) return false;
+  return HOME_PRIORITARY_SEVERITIES.every((severity) => selected.includes(severity));
+}
+
+function homeSeverityOptionLabel(severity: HomeAlertSeverity) {
+  return HOME_SEVERITY_FILTER_OPTIONS.find((option) => option.value === severity)?.label ?? severity;
+}
+
+/**
+ * Resolve severidades da lista Home (modo + seleção multi).
+ * Sem seleção explícita → base do modo (Todos / Prioritários).
+ */
 export function resolveHomeAlertSeverities(
   mode: HomeAlertMode,
-  severityFilter?: string | null,
+  severityFilter?: string | string[] | null,
 ): HomeAlertSeverity[] {
   const base = mode === HOME_ALERT_MODE.all
     ? [...HOME_ALL_SEVERITIES]
     : [...HOME_PRIORITARY_SEVERITIES];
-  const raw = String(severityFilter || "").trim().toLowerCase();
-  if (!raw || raw === "all") return base;
-  if ((HOME_ALL_SEVERITIES as readonly string[]).includes(raw)) {
-    return [raw as HomeAlertSeverity];
-  }
-  return base;
+  const selected = parseHomeSeveritySelection(severityFilter);
+  if (!selected.length) return base;
+  return selected;
 }
 
-/** Toggle do Resumo operacional (OV-P0-103): clique novamente remove o filtro. */
-export function toggleHomeSeverityFilter(
-  current: string,
-  next: HomeAlertSeverity,
-): "all" | HomeAlertSeverity {
-  return current === next ? "all" : next;
+/** Toggle multi-select: adiciona/remove; lista vazia em Prioritários volta ao default do modo. */
+export function toggleHomeSeveritySelection(
+  current: readonly string[],
+  severity: HomeAlertSeverity,
+  mode?: HomeAlertMode,
+): HomeAlertSeverity[] {
+  const selected = parseHomeSeveritySelection([...current]);
+  const next = selected.includes(severity)
+    ? selected.filter((item) => item !== severity)
+    : [...selected, severity];
+  if (!next.length && mode === HOME_ALERT_MODE.prioritary) return homeModeDefaultSeverities(mode);
+  return next;
+}
+
+/** Label do trigger: Todas | nomes Zabbix (até 3) | N severidades. */
+export function homeSeverityFilterTriggerLabel(
+  selection?: string | string[] | null,
+): string {
+  const selected = parseHomeSeveritySelection(selection);
+  if (!selected.length) return "Todas";
+  const ordered = HOME_ALL_SEVERITIES.filter((severity) => selected.includes(severity));
+  if (ordered.length <= 3) {
+    return ordered.map(homeSeverityOptionLabel).join(", ");
+  }
+  return `${ordered.length} severidades`;
 }
 
 /** OV-P0-246 — fila operacional: chegada DESC. Sem severity-first e sem duração. */
@@ -153,27 +258,35 @@ export type HomeAlertsResult = {
 
 export function homeAlertsFetchParams(params: {
   mode: HomeAlertMode;
-  severity?: string | null;
+  severity?: string | string[] | null;
   customers?: string[];
   datasources?: string[];
   status?: HomeAlertStatus;
   limit?: number;
-  windowMs: number;
+  windowMs?: number;
+  from?: string;
+  to?: string;
   now?: number;
   sort?: FetchAlertsParams["sort"];
   order?: "asc" | "desc";
 }): FetchAlertsParams {
   const now = params.now ?? bucketOneViewReadNow();
   const limit = Math.min(Math.max(params.limit ?? HOME_ALERTS_PAGE_SIZE, 1), 50);
-  const severities = resolveHomeAlertSeverities(params.mode, params.severity);
+  const selected = parseHomeSeveritySelection(params.severity);
+  const severities = resolveHomeAlertSeverities(params.mode, selected);
+  const allUnrestricted = params.mode === HOME_ALERT_MODE.all && selected.length === 0;
   return {
     page: 1,
     pageSize: limit,
-    severities: [...severities],
+    severities: allUnrestricted ? undefined : [...severities],
     customers: params.customers?.length ? params.customers : undefined,
     datasources: params.datasources?.length ? params.datasources : undefined,
     status: params.status ?? "active",
-    firstSeenFrom: isoAgo(params.windowMs, now),
+    firstSeenFrom: params.from ?? isoAgo(
+      params.windowMs ?? homeOperationalWindowMs(DEFAULT_HOME_OPERATIONAL_WINDOW),
+      now,
+    ),
+    firstSeenTo: params.to,
     sort: "first_seen_at",
     order: "desc",
     excludeOperator: true,
@@ -213,12 +326,14 @@ export function homeAlertsResultFromResponse(response: {
 
 export async function fetchHomeAlerts(params: {
   mode: HomeAlertMode;
-  severity?: string | null;
+  severity?: string | string[] | null;
   customers?: string[];
   datasources?: string[];
   status?: HomeAlertStatus;
   limit?: number;
-  windowMs: number;
+  windowMs?: number;
+  from?: string;
+  to?: string;
   signal?: AbortSignal;
   now?: number;
   sort?: FetchAlertsParams["sort"];
@@ -349,20 +464,30 @@ export function buildHomeUnassignedChamadosHref() {
 /** Deep-link /alertas a partir dos filtros atuais da Home. */
 export function buildHomeAlertsHref(options: {
   mode: HomeAlertMode;
-  severity?: string | null;
+  severity?: string | string[] | null;
   customers?: string[];
   datasources?: string[];
   status?: HomeAlertStatus;
   windowPreset: string;
+  fromDate?: string;
+  toDate?: string;
 }) {
   const params = new URLSearchParams();
   params.set("status", options.status ?? "active");
   params.set("date_field", "first_seen");
-  params.set("date_preset", homeWindowToAlertsDatePreset(options.windowPreset));
-  const severities = resolveHomeAlertSeverities(options.mode, options.severity);
-  for (const severity of severities) {
-    params.append("severity", severity);
-    if (severity === "high") params.append("severity", "critical");
+  if (options.windowPreset === "custom" && options.fromDate && options.toDate) {
+    params.set("date_from", options.fromDate);
+    params.set("date_to", options.toDate);
+  } else {
+    params.set("date_preset", homeWindowToAlertsDatePreset(options.windowPreset));
+  }
+  const selected = parseHomeSeveritySelection(options.severity);
+  if (options.mode !== HOME_ALERT_MODE.all || selected.length) {
+    const severities = resolveHomeAlertSeverities(options.mode, selected);
+    for (const severity of severities) {
+      params.append("severity", severity);
+      if (severity === "high") params.append("severity", "critical");
+    }
   }
   for (const customer of options.customers ?? []) {
     if (customer) params.append("customer", customer);
@@ -370,7 +495,7 @@ export function buildHomeAlertsHref(options: {
   for (const datasource of options.datasources ?? []) {
     if (datasource) params.append("datasource", datasource);
   }
-  if (options.mode === HOME_ALERT_MODE.prioritary && (!options.severity || options.severity === "all")) {
+  if (options.mode === HOME_ALERT_MODE.prioritary && (!selected.length || isHomePrioritarySeveritySelection(selected))) {
     params.set("view", "priority");
   }
   return `/alertas?${params.toString()}`;

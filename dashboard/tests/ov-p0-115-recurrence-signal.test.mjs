@@ -101,9 +101,9 @@ test("OV-P0-115 drawer: bloco discreto abaixo do problema, sem Monitoramento", a
 
   const problemIdx = drawer.indexOf("Alerta sem descrição");
   const signalIdx = drawer.indexOf("<AlertRecurrenceSignal alert={alert} />");
-  const chamadoIdx = drawer.indexOf("<AlertRelatedIncidentsSection");
   assert.ok(problemIdx > 0 && signalIdx > problemIdx, "sinal deve ficar abaixo do problema");
-  assert.ok(chamadoIdx > signalIdx, "sinal deve ficar antes do chamado");
+  assert.match(drawer, /<div hidden>/);
+  assert.match(drawer, /AlertRelatedIncidentsSection/);
 
   assert.match(component, /text-xs text-muted-foreground/);
   assert.match(component, /Última ocorrência anterior/);

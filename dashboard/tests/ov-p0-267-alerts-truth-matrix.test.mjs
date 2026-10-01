@@ -243,13 +243,14 @@ test("OV-P0-267: KPI summary high aggregates critical legado; disaster stays sep
 
 test("OV-P0-267: Alerts tabs apply only the documented filters", async () => {
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
-  assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDatePreset\("24h"\)/);
-  assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDateField\("last_seen"\)/);
+  assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDatePreset\("all"\)/);
+  assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDateField\("first_seen"\)/);
   assert.match(alerts, /if \(view === "open"\) \{[\s\S]*setDatePreset\("all"\)/);
   assert.match(alerts, /if \(view === "priority"\) \{[\s\S]*setSelectedSeverities\(\["disaster", "high"\]\)/);
   assert.match(alerts, /if \(view === "forgotten"\) \{[\s\S]*setSourceAckFilter\("unacknowledged"\)/);
   assert.match(alerts, /if \(view === "resolved"\) \{[\s\S]*setStatusFilter\("resolved"\)/);
-  assert.match(alerts, /setDatePreset\("30d"\)/);
+  assert.doesNotMatch(alerts, /setDatePreset\("24h"\)/);
+  assert.doesNotMatch(alerts, /setDatePreset\("30d"\)/);
   assert.match(alerts, /customers: selectedCustomerKeys/);
   assert.match(alerts, /writeAlertsUrlParams/);
   assert.match(alerts, /options\?\.quiet && alertsRequestRef\.current && !alertsRequestRef\.current\.signal\.aborted/);

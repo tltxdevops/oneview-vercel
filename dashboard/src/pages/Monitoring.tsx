@@ -58,6 +58,7 @@ import {
   formatNullableCount,
   formatOneViewSeverityLabel,
   bucketOneViewReadNow,
+  isOneViewAbortError,
 } from "@/lib/oneview-api";
 import {
   activeFreshAttentionIds,
@@ -550,7 +551,6 @@ export default function MonitoringPage() {
   const [sectionErrors, setSectionErrors] = useState<SectionErrors>({});
   const [isUpdating, setIsUpdating] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
 
   const requestedAlertId = searchParams.get("alert");
   const requestedIncidentId = searchParams.get("incident");
@@ -821,9 +821,6 @@ export default function MonitoringPage() {
       ? `${unassignedTitleCount.toLocaleString("pt-BR")} chamados`
       : `${unassignedTitleCount.toLocaleString("pt-BR")} sem responsável`;
   const queuePanelDescription = `${modeLabel} · últimas ${windowLabel}`;
-  const lastUpdatedLabel = lastUpdatedAt
-    ? new Date(lastUpdatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", hour12: false })
-    : "—";
   const selectedIncidentKey = selectedIncident ? incidentKey(selectedIncident) : null;
 
   const toggleCustomer = (key: string) => {
@@ -868,8 +865,11 @@ export default function MonitoringPage() {
 
   const refreshAll = useCallback(async () => {
     if (inFlight.current) {
-      queryGenerationRef.current.deferCurrentIfDifferent();
-      return inFlight.current;
+      const generation = queryGenerationRef.current;
+      if (generation.inFlightGeneration() === generation.peek()) {
+        return inFlight.current;
+      }
+      listsAbort.current?.abort();
     }
     pollGenerationRef.current += 1;
     const pollGeneration = pollGenerationRef.current;
@@ -924,7 +924,7 @@ export default function MonitoringPage() {
         setRecentMetrics(metricsResult.value as RecentOperationalMetrics);
         setSectionError("summary", null);
         anySuccess = true;
-      } else {
+      } else if (!isOneViewAbortError(metricsResult.reason)) {
         setSectionError(
           "summary",
           isInitial ? "Não foi possível carregar as métricas." : "Falha ao atualizar métricas. Valores anteriores mantidos.",
@@ -995,7 +995,7 @@ export default function MonitoringPage() {
         setQueueTotal(payload.total);
         setSectionError("queue", null);
         anySuccess = true;
-      } else {
+      } else if (!isOneViewAbortError(queueResult.reason)) {
         setSectionError(
           "queue",
           isInitial ? "Não foi possível carregar a fila." : "Falha ao atualizar a fila. Valores anteriores mantidos.",
@@ -1076,6 +1076,8 @@ export default function MonitoringPage() {
         });
         setSectionError("incidents", null);
         anySuccess = true;
+      } else if (isOneViewAbortError(incidentsResult?.reason)) {
+        /* timeout/abort da troca de filtro não gera erro falso */
       } else if (isInitial && !hasDataRef.current) {
         setSectionError("incidents", "Chamados indisponíveis");
       } else {
@@ -1085,7 +1087,6 @@ export default function MonitoringPage() {
       if (anySuccess) {
         hasDataRef.current = true;
         setHasLoaded(true);
-        setLastUpdatedAt(Date.now());
       }
     })().finally(() => {
       const refreshCurrentQuery = queryGenerationRef.current.complete(queryGeneration);
@@ -1388,12 +1389,6 @@ export default function MonitoringPage() {
           <SectionAccentTitle level={1}>Monitoramento</SectionAccentTitle>
         </div>
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
-          {isUpdating ? (
-            <span className="inline-flex shrink-0 items-center gap-1 ov-type-caption text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Atualizando
-            </span>
-          ) : <span className="hidden shrink-0 ov-type-caption text-muted-foreground sm:inline">Atualizado: {lastUpdatedLabel}</span>}
           <PlatformHealthStrip />
         </div>
       </header>

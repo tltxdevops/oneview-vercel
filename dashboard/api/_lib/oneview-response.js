@@ -64,7 +64,15 @@ function routeTemplate(routeName) {
   return `/api/oneview/${routeName}`;
 }
 
-function writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode = null) {
+function requestErrorClass(status) {
+  const code = Number(status);
+  if (code >= 500) return "http_5xx";
+  if (code >= 400) return "http_4xx";
+  return "none";
+}
+
+function writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode = null, status = 200) {
+  const code = Number(status);
   logger(JSON.stringify({
     event: "oneview_request",
     route: routeTemplate(routeName),
@@ -72,6 +80,8 @@ function writeRequestLog(logger, routeName, startedAt, source, payload, fallback
     duration_ms: Math.max(Date.now() - startedAt, 0),
     rows: responseRows(payload),
     fallback_code: fallbackCode,
+    status: Number.isInteger(code) ? code : 0,
+    error_class: requestErrorClass(code),
   }));
 }
 
@@ -94,7 +104,7 @@ export function createOneViewHandler(routeName, dependencies = {}) {
     if (!(await authorize(req, res, route.role))) return undefined;
 
     const finish = (status, payload, source, fallbackCode = null) => {
-      writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode);
+      writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode, status);
       return sendOneViewJson(res, status, payload, source, fallbackCode);
     };
 

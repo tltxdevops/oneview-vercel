@@ -24,14 +24,27 @@ function compareHomeAlerts(left, right) {
   return String(right.id || "").localeCompare(String(left.id || ""));
 }
 
+function parseHomeSeveritySelection(values) {
+  const raw = Array.isArray(values)
+    ? values
+    : String(values || "").split(",").map((item) => item.trim());
+  const all = ["information", "warning", "average", "high", "disaster"];
+  const seen = new Set();
+  for (const item of raw) {
+    const normalized = String(item || "").trim().toLowerCase();
+    if (!all.includes(normalized)) continue;
+    seen.add(normalized);
+  }
+  return [...seen];
+}
+
 function resolveHomeAlertSeverities(mode, severityFilter) {
   const all = ["information", "warning", "average", "high", "disaster"];
   const prioritary = ["average", "high", "disaster"];
   const base = mode === "all" ? [...all] : [...prioritary];
-  const raw = String(severityFilter || "").trim().toLowerCase();
-  if (!raw || raw === "all") return base;
-  if (all.includes(raw)) return [raw];
-  return base;
+  const selected = parseHomeSeveritySelection(severityFilter);
+  if (!selected.length) return base;
+  return selected;
 }
 
 function formatDurationSeconds(seconds) {
@@ -58,6 +71,14 @@ test("OV-P0-246 default is Todos; Prioritários stays opt-in with canonical seve
   );
   assert.deepEqual(resolveHomeAlertSeverities("prioritary", "warning"), ["warning"]);
   assert.deepEqual(resolveHomeAlertSeverities("all", "disaster"), ["disaster"]);
+  assert.deepEqual(
+    resolveHomeAlertSeverities("all", ["average", "high"]),
+    ["average", "high"],
+  );
+  assert.deepEqual(
+    resolveHomeAlertSeverities("prioritary", []),
+    ["average", "high", "disaster"],
+  );
 });
 
 test("OV-P0-246 newest Warning ranks above older Disaster; Sanepar Disaster is not frozen on top", () => {
@@ -93,23 +114,31 @@ test("OV-P0-246 Home sources: default Todos, arrival sort, filters and drawer pr
   assert.match(home, /order: "desc"/);
   assert.doesNotMatch(home, /sort: "severity"/);
   assert.doesNotMatch(home, /sort: "duration"/);
-  assert.match(home, /homeAlertArrivalAt\(right\) - homeAlertArrivalAt\(left\)/);
+  assert.match(home, /parseHomeSeveritySelection/);
+  assert.match(home, /toggleHomeSeveritySelection/);
+  assert.match(home, /homeSeverityFilterTriggerLabel/);
   assert.match(home, /first_seen_at \|\| alert\.started_at/);
 
   assert.match(index, /useState<HomeAlertMode>\(DEFAULT_HOME_ALERT_MODE\)/);
   assert.match(index, /label: "Todos"/);
   assert.match(index, /label: "Prioritários"/);
   assert.match(index, /ClientFilterCombobox/);
-  assert.match(index, /Filtrar por severidade/);
-  assert.match(index, /HOME_SEVERITY_FILTER_OPTIONS/);
+  assert.match(index, /toggleHomeSeveritySelection/);
+  assert.match(index, /homeSeverityFilterTriggerLabel/);
+  assert.match(index, /selectedSeverities/);
+  assert.match(index, /Popover/);
+  assert.match(home, /homeModeDefaultSeverities/);
+  assert.match(home, /isHomePrioritarySeveritySelection/);
+  assert.match(index, /changeAlertMode/);
+  assert.match(index, /homeModeDefaultSeverities/);
   assert.match(index, /loadLists\("quiet"\)/);
-  assert.doesNotMatch(index, /setAlertMode\(HOME_ALERT_MODE\.all\)/);
+  assert.match(index, /setAlertMode\(HOME_ALERT_MODE\.all\)/);
   assert.doesNotMatch(index, /setSeverityFilter\("all"\)/);
   assert.match(index, /searchParams\.get\("alert"\)/);
   assert.match(index, /next\.set\("alert", alert\.id\)/);
   assert.match(index, /AlertDetailDrawer/);
   assert.match(index, /canonicalHostName\(alert\)/);
-  assert.match(index, /formatClock\(startedAt\)/);
+  assert.match(index, /formatCompactFirstSeen\(alert\.first_seen_at \|\| alert\.started_at\)/);
   assert.match(index, /seconds < 0\) return "—"/);
-  assert.match(index, /SeverityBadge severity=\{alert\.severity\}/);
+  assert.match(index, /OneViewSeverityBadge severity=\{alert\.severity\}/);
 });

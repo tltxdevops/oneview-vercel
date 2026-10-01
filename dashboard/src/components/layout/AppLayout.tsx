@@ -4,7 +4,7 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 import { Badge } from "@/components/ui/badge";
 import { PlatformHealthStrip } from "@/components/oneview/PlatformHealthStrip";
-import { SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
+import { OneViewQuietRefreshIndicator, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { OneViewDataSourceKind } from "@/lib/oneview-api";
@@ -109,12 +109,14 @@ export function AppLayout({
     const nextUpdateLabel = enableAutoRefresh ? `${countdown}s` : null;
 
     return (
-      <div className="flex flex-col items-end gap-1 text-xs text-muted-foreground sm:text-sm">
-        <span>
+      <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground sm:text-sm">
+        <span className="inline-flex items-center gap-1">
           Última atualização: <span className="font-semibold text-foreground">{formattedLastUpdate}</span>
+          {isRefreshing ? <OneViewQuietRefreshIndicator /> : null}
         </span>
-        {nextUpdateLabel ? <span>Próxima atualização: {nextUpdateLabel}</span> : null}
-        {isRefreshing ? <span>Atualizando...</span> : null}
+        {nextUpdateLabel ? (
+          <span className="text-[11px] text-muted-foreground/80">Próxima atualização: {nextUpdateLabel}</span>
+        ) : null}
       </div>
     );
   }, [showRefreshMeta, enableAutoRefresh, countdown, formattedLastUpdate, isRefreshing]);

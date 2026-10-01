@@ -597,6 +597,8 @@ test("log oneview_request é estruturado e não contém detalhes sensíveis", as
     duration_ms: entries[0].duration_ms,
     rows: 1,
     fallback_code: "database_timeout",
+    status: 200,
+    error_class: "none",
   }]);
   assert.equal(Number.isInteger(entries[0].duration_ms), true);
   assert.doesNotMatch(JSON.stringify(entries), /nao-vazar|interno|password/i);

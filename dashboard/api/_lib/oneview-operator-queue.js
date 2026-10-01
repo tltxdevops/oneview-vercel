@@ -83,6 +83,14 @@ function isoDate(value) {
   return date.toISOString();
 }
 
+function isoFilter(value) {
+  if (!value) return null;
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(String(value))) throw invalidQuery();
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw invalidQuery();
+  return parsed.toISOString();
+}
+
 export function operatorTagLabel(alertOrTags) {
   const tags = extractOperatorTags(alertOrTags);
   if (!tags.length) return null;
@@ -181,6 +189,10 @@ export function parseOperatorQueueFilters(req) {
   const datasource = text(oneQuery(req, "datasource"));
   if (datasource && !SAFE_FILTER.test(datasource)) throw invalidQuery();
 
+  const firstSeenFrom = isoFilter(oneQuery(req, "first_seen_from"));
+  const firstSeenTo = isoFilter(oneQuery(req, "first_seen_to"));
+  if (firstSeenFrom && firstSeenTo && Date.parse(firstSeenFrom) > Date.parse(firstSeenTo)) throw invalidQuery();
+
   return {
     tab,
     operator_tag: operatorTag,
@@ -190,6 +202,8 @@ export function parseOperatorQueueFilters(req) {
     state,
     severity: severity ? severity.toLowerCase() : null,
     alert_status: alertStatus,
+    first_seen_from: firstSeenFrom,
+    first_seen_to: firstSeenTo,
     page: asPageInt(oneQuery(req, "page"), DEFAULT_PAGE, { min: 1, max: 10_000 }),
     page_size: asPageInt(oneQuery(req, "page_size"), DEFAULT_PAGE_SIZE, { min: 1, max: MAX_PAGE_SIZE }),
   };
@@ -370,6 +384,8 @@ export async function fetchOperatorTaggedAlerts({
   pool = getOneViewDbPool(),
   dataSourceNames = getOperationalDataSourceNames(),
   alertStatus = "all",
+  firstSeenFrom = null,
+  firstSeenTo = null,
 } = {}) {
   const allowedDataSourceNames = new Set(getOperationalDataSourceNames());
   const scopedDataSourceNames = (Array.isArray(dataSourceNames) ? dataSourceNames : [dataSourceNames])
@@ -408,12 +424,14 @@ export async function fetchOperatorTaggedAlerts({
           or ($2 = 'active' and a.resolved_at is null and coalesce(a.status_source, 'active') = 'active')
           or ($2 = 'resolved' and (a.resolved_at is not null or coalesce(a.status_source, '') = 'resolved'))
         )
+        and ($3::timestamptz is null or a.first_seen_at >= $3::timestamptz)
+        and ($4::timestamptz is null or a.first_seen_at <= $4::timestamptz)
       -- Truth set is intentionally uncapped. Pagination is applied only after
       -- correlation/filtering, so counts and facets cannot silently reflect
       -- just the first 500 tagged alerts.
       order by a.last_seen_at desc nulls last, a.id desc
     `,
-    values: [scopedDataSourceNames, alertStatus],
+    values: [scopedDataSourceNames, alertStatus, firstSeenFrom, firstSeenTo],
   });
   return result.rows || [];
 }
@@ -497,7 +515,11 @@ export function createOperatorQueueHandler({
     }
 
     try {
-      const alerts = await listAlerts({ alertStatus: filters.alert_status });
+      const alerts = await listAlerts({
+        alertStatus: filters.alert_status,
+        firstSeenFrom: filters.first_seen_from,
+        firstSeenTo: filters.first_seen_to,
+      });
       let incidents = [];
       try {
         incidents = await listIncidents(alerts);

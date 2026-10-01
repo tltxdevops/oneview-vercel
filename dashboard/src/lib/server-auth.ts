@@ -13,6 +13,17 @@ export type ServerAuthUser = {
 
 const API_BASE = typeof window !== "undefined" ? `${window.location.origin}/api` : "/api";
 const OAUTH_STATE_KEY = "oneview_oauth_state";
+const AUTH_FETCH_TIMEOUT_MS = 15_000;
+
+async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs = AUTH_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function randomState() {
   if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
@@ -88,10 +99,14 @@ export async function completeServerMicrosoftLoginFromUrl(): Promise<ServerAuthU
 
 /** Cookie HttpOnly is the sole browser credential; no auth token reaches storage. */
 export async function fetchServerAuthUser(): Promise<ServerAuthUser | null> {
-  const response = await fetch(`${API_BASE}/auth/me`, { credentials: "include", cache: "no-store" });
-  if (!response.ok) return null;
-  const payload = (await response.json()) as { user?: ServerAuthUser | null };
-  return payload.user?.id ? payload.user : null;
+  try {
+    const response = await fetchWithTimeout(`${API_BASE}/auth/me`, { credentials: "include", cache: "no-store" });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as { user?: ServerAuthUser | null };
+    return payload.user?.id ? payload.user : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function logoutServerAuth() {

@@ -169,7 +169,7 @@ export const DEFAULT_ALERTS_FETCH = {
   view: "recent",
   status: "active" as const,
   dateField: "first_seen" as const,
-  datePreset: "24h" as const,
+  datePreset: "all" as const,
   sort: "first_seen_at" as const,
   order: "desc" as const,
   page: 1,
@@ -222,6 +222,7 @@ export type AlertsUrlState = {
   datasources?: string[];
   severities: OneViewSeverity[];
   status: AlertsStatusFilter;
+  incidentState?: "all" | "8";
   acknowledgedSource: AlertsAckFilter;
   dateField: AlertsDateField;
   datePreset: AlertsDatePreset;
@@ -242,6 +243,7 @@ export function writeAlertsUrlParams(state: AlertsUrlState) {
   for (const datasource of state.datasources ?? []) next.append("datasource", datasource);
   for (const severity of state.severities) next.append("severity", severity);
   if (state.status) next.set("status", state.status);
+  if (state.incidentState && state.incidentState !== "all") next.set("incident_state", state.incidentState);
   if (state.acknowledgedSource === "acknowledged") next.set("acknowledged_source", "true");
   if (state.acknowledgedSource === "unacknowledged") next.set("acknowledged_source", "false");
   if (state.acknowledgedSource === "all") {

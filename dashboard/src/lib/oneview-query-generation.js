@@ -19,6 +19,12 @@ export function createOneViewQueryGeneration() {
     isCurrent(generation) {
       return generation === current;
     },
+    peek() {
+      return current;
+    },
+    inFlightGeneration() {
+      return inFlight;
+    },
     deferCurrentIfDifferent() {
       if (inFlight !== null && inFlight !== current) pending = current;
     },
