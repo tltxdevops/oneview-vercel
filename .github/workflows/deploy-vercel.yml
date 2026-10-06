@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    uses: tltxdevops/org-actions/.github/workflows/vercel-reusable.yml@main
+    uses: tltxdevops/pipelines/.github/workflows/vercel-deploy.yml@main
     with:
       production_branch: main
       working_directory: dashboard
