@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { createSourceAcknowledgeHandler, getSourceAcknowledgeConfig } from "../api/_lib/oneview-source-acknowledge.js";
 
-const operator = { id: "operator-1", name: "Operador NOC" };
+const operator = { id: "operator-1", name: "Operador NOC", preferred_username: "operador.noc@teletex.com.br" };
 
 function response() {
   return { statusCode: 200, body: null, headers: {}, status(code) { this.statusCode = code; return this; }, setHeader(key, value) { this.headers[key] = value; }, end(value) { this.body = value ? JSON.parse(value) : null; } };
@@ -43,7 +43,7 @@ function fakeDatabase({ alert = {}, failAt = null } = {}) {
       }
       if (sql.startsWith("insert into integration_outbox")) {
         if (failAt === "outbox") throw new Error("forced_outbox_failure");
-        working.outboxes.push({ id: values[0], action_type: values[4], acknowledgement_id: values[1] });
+        working.outboxes.push({ id: values[0], action_type: values[4], acknowledgement_id: values[1], payload: JSON.parse(values[5]) });
         return { rows: [] };
       }
       throw new Error(`unexpected query: ${sql.slice(0, 80)}`);
@@ -55,9 +55,55 @@ function fakeDatabase({ alert = {}, failAt = null } = {}) {
   return { state, transaction };
 }
 
-function handler(database) {
+function concurrentDatabase() {
+  const state = {
+    alert: {
+      id: "alert-1", data_source_id: "ds-1", source_event_id: "event-1", status_source: "active",
+      resolved_at: null, acknowledged_source: false, datasource_name: "teletex-http", sync_enabled: true,
+    },
+    acknowledgements: [],
+    outboxes: [],
+  };
+  let lockTail = Promise.resolve();
+  const transaction = async (work) => {
+    let releaseLock;
+    const client = { query: async (statement, values = []) => {
+      const sql = statement.replace(/\s+/g, " ").trim().toLowerCase();
+      if (sql.includes("pg_advisory_xact_lock")) {
+        const previous = lockTail;
+        lockTail = new Promise((resolve) => { releaseLock = resolve; });
+        await previous;
+        return { rows: [] };
+      }
+      if (sql.startsWith("select a.id") && sql.includes("from alerts a")) return { rows: [state.alert] };
+      if (sql.startsWith("select id, status from alert_acknowledgements")) {
+        return { rows: state.acknowledgements.filter((row) => row.idempotency_key === values[0]).slice(0, 1) };
+      }
+      if (sql.startsWith("select id from alert_acknowledgements")) {
+        return { rows: state.acknowledgements.filter((row) => row.alert_id === values[0] && ["pending", "processing"].includes(row.status)).slice(0, 1) };
+      }
+      if (sql.startsWith("insert into alert_acknowledgements")) {
+        state.acknowledgements.push({ id: values[0], alert_id: values[1], status: "pending", idempotency_key: values[9] });
+        return { rows: [] };
+      }
+      if (sql.startsWith("insert into integration_outbox")) {
+        state.outboxes.push({ id: values[0], action_type: values[4], acknowledgement_id: values[1], payload: JSON.parse(values[5]) });
+        return { rows: [] };
+      }
+      throw new Error(`unexpected query: ${sql.slice(0, 80)}`);
+    }};
+    try {
+      return await work(client);
+    } finally {
+      releaseLock?.();
+    }
+  };
+  return { state, transaction };
+}
+
+function handler(database, authorized = operator) {
   let n = 0;
-  return createSourceAcknowledgeHandler({ authorize: async () => operator, transaction: database.transaction, configProvider: enabledConfig, idFactory: () => `id-${++n}`, logger: () => undefined });
+  return createSourceAcknowledgeHandler({ authorize: async () => authorized, transaction: database.transaction, configProvider: enabledConfig, idFactory: () => `id-${++n}`, logger: () => undefined });
 }
 
 test("source ACK: inexistente, resolvido e event id ausente são bloqueados", async () => {
@@ -92,6 +138,19 @@ test("source ACK: válido cria pending + outbox, sem alterar ACK da origem", asy
   assert.equal(database.state.acknowledgements[0].status, "pending");
   assert.equal(database.state.outboxes.length, 1);
   assert.equal(database.state.outboxes[0].action_type, "zabbix_event_acknowledge");
+  assert.equal(database.state.outboxes[0].payload.actor_id, operator.id);
+  assert.equal(database.state.outboxes[0].payload.actor_name, operator.name);
+  assert.equal(database.state.outboxes[0].payload.actor_username, operator.preferred_username);
+});
+
+test("source ACK: actor_username/UPN é obrigatório antes de criar outbox", async () => {
+  const database = fakeDatabase();
+  const res = response();
+  await handler(database, { id: "operator-1", name: "Operador NOC" })(request(), res);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.body.error, "authentication_required");
+  assert.equal(database.state.acknowledgements.length, 0);
+  assert.equal(database.state.outboxes.length, 0);
 });
 
 test("source ACK: repetição/idempotência e dois operadores não duplicam outbox", async () => {
@@ -123,4 +182,25 @@ test("source ACK: flag fail-closed e produtor não chama Zabbix", () => {
   const source = fs.readFileSync(fileURLToPath(new URL("../api/_lib/oneview-source-acknowledge.js", import.meta.url)), "utf8");
   assert.match(source, /integration_outbox/);
   assert.doesNotMatch(source, /event\.acknowledge|api_jsonrpc|\bfetch\s*\(|\baxios\b/i);
+});
+
+test("source ACK: advisory lock protege pedidos concorrentes sem UPDATE em alerts", async () => {
+  const source = fs.readFileSync(fileURLToPath(new URL("../api/_lib/oneview-source-acknowledge.js", import.meta.url)), "utf8");
+  assert.doesNotMatch(source, /\bfor\s+update\b/i);
+  assert.ok(source.indexOf("pg_advisory_xact_lock") < source.lastIndexOf("where a.id = $1"));
+
+  const database = concurrentDatabase();
+  const acknowledge = handler(database);
+  const first = response();
+  const second = response();
+  await Promise.all([
+    acknowledge(request(), first),
+    acknowledge(request({ headers: { "idempotency-key": "source-ack-other-123" } }), second),
+  ]);
+  assert.equal(first.statusCode, 202);
+  assert.equal(second.statusCode, 202);
+  assert.equal(second.body.idempotent, true);
+  assert.equal(database.state.acknowledgements.length, 1);
+  assert.equal(database.state.outboxes.length, 1);
+  assert.equal(database.state.outboxes[0].action_type, "zabbix_event_acknowledge");
 });

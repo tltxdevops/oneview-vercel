@@ -88,7 +88,8 @@ export function createSourceAcknowledgeHandler({
 
     const actorId = String(auth.id || "").trim().slice(0, 120);
     const actorName = String(auth.name || auth.email || "Usuário SSO").trim().slice(0, 120);
-    if (!actorId) return sendJson(res, 401, { error: "authentication_required" });
+    const actorUsername = String(auth.preferred_username || auth.email || "").trim().slice(0, 255);
+    if (!actorId || !actorUsername) return sendJson(res, 401, { error: "authentication_required" });
     const config = configProvider();
     if (!config.enabled) return sendJson(res, 403, { error: "source_acknowledge_disabled" });
     const key = idempotencyKey(req, alertId, actorId, comment);
@@ -113,7 +114,7 @@ export function createSourceAcknowledgeHandler({
           `select a.id, a.data_source_id, a.source_event_id, a.status_source, a.resolved_at,
                   a.acknowledged_source, d.name as datasource_name, d.sync_enabled
              from alerts a join data_sources d on d.id = a.data_source_id
-            where a.id = $1 for update`,
+            where a.id = $1`,
           [alertId],
         );
         const alert = alertResult.rows[0];
@@ -151,6 +152,7 @@ export function createSourceAcknowledgeHandler({
           source_event_id: alert.source_event_id,
           actor_id: actorId,
           actor_name: actorName,
+          actor_username: actorUsername,
           comment,
         };
         await client.query(
