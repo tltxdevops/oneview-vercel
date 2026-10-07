@@ -587,6 +587,21 @@ export interface OneViewAlert {
   source_problem_id: string | null;
   source_trigger_id: string | null;
   source_host_id: string | null;
+  operator_link?: {
+    id: string;
+    circuit_key: string | null;
+    resolution_status: "resolved" | "unresolved" | "ambiguous";
+    data_source_id: string;
+    source_host_id: string;
+    source_trigger_id: string;
+    service_name: string | null;
+    carrier_name: string | null;
+    link_type: string | null;
+    member_key: string | null;
+    uplink_key: string | null;
+    site_name: string | null;
+    operational_subject: OperationalSubject;
+  } | null;
   host_name: string | null;
   host_visible_name: string | null;
   host_technical_name: string | null;
@@ -2230,7 +2245,7 @@ export type CanonicalLink = {
   is_recurrent?: boolean;
 };
 export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; recent_episodes?: Array<{ started_at: string | null; resolved_at: string | null; active: boolean; duration_seconds: number | null; incident_number: string | null; incident_sys_id: string | null; incident_state: string | null; source_trigger_ids: string[]; alert_titles: string[]; severities: string[] }>; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
-export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; normalized?: number; without_incident?: number; without_open_incident: number; with_open_incident: number; recurrent?: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[]; carriers: OperatorQueueFacet[] } };
+export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; recent_severe?: CanonicalLink[]; recent_disasters?: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; normalized?: number; without_incident?: number; without_open_incident: number; with_open_incident: number; recurrent?: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[]; carriers: OperatorQueueFacet[] } };
 export type CanonicalLinksQuery = Record<string, string | number | undefined> & { signal?: AbortSignal };
 export const DEFAULT_CANONICAL_LINKS_QUERY = {
   tab: "open",
@@ -2272,6 +2287,8 @@ export type OperatorReminder = {
   initial_incident_sys_id: string | null;
   initial_incident_number: string | null;
   context_snapshot: Record<string, unknown>;
+  message?: string | null;
+  notify_webex?: boolean;
   created_at: string | null;
   updated_at: string | null;
   sent_at: string | null;
@@ -2366,15 +2383,30 @@ export async function fetchOperatorReminders(link: ReminderLinkIdentity, options
   operatorReminderInFlightTyped.set(cacheKey, request);
   return request;
 }
-export async function createOperatorReminder(link: ReminderLinkIdentity, scheduledFor: string): Promise<OperatorReminder> {
-  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), { method: "POST", body: JSON.stringify({ scheduled_for: scheduledFor }) })).item;
+export type OperatorReminderWriteOptions = {
+  message?: string | null;
+  notifyWebex?: boolean;
+};
+
+function reminderWriteBody(scheduledFor: string, options?: OperatorReminderWriteOptions) {
+  const body: Record<string, unknown> = { scheduled_for: scheduledFor };
+  if (options && "message" in options) body.message = options.message || null;
+  if (options && "notifyWebex" in options) body.notify_webex = Boolean(options.notifyWebex);
+  return body;
+}
+
+export async function createOperatorReminder(link: ReminderLinkIdentity, scheduledFor: string, options?: OperatorReminderWriteOptions): Promise<OperatorReminder> {
+  const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), {
+    method: "POST",
+    body: JSON.stringify(reminderWriteBody(scheduledFor, { notifyWebex: false, ...options })),
+  })).item;
   replaceOperatorReminders(link, [item]);
   return item;
 }
-export async function updateOperatorReminder(link: ReminderLinkIdentity, reminderId: string, scheduledFor: string): Promise<OperatorReminder> {
+export async function updateOperatorReminder(link: ReminderLinkIdentity, reminderId: string, scheduledFor: string, options?: OperatorReminderWriteOptions): Promise<OperatorReminder> {
   const item = (await fetchApi<{ item: OperatorReminder }>(operatorReminderPath(link), {
     method: "POST",
-    body: JSON.stringify({ action: "update", reminder_id: reminderId, scheduled_for: scheduledFor }),
+    body: JSON.stringify({ action: "update", reminder_id: reminderId, ...reminderWriteBody(scheduledFor, options) }),
   })).item;
   replaceOperatorReminders(link, [item]);
   return item;
@@ -2440,6 +2472,7 @@ export type OperatorReminderInboxItem = {
   id: string;
   phase: "fired" | "delivered";
   occurred_at: string;
+  scheduled_for?: string;
   title: string;
   body: string;
   link: OperatorReminderInboxLink;
@@ -2448,6 +2481,7 @@ export type OperatorReminderInboxItem = {
 
 export type OperatorReminderInboxResponse = {
   items: OperatorReminderInboxItem[];
+  upcoming?: OperatorReminderInboxItem[];
   data_source?: string;
   checked_at?: string;
 };

@@ -235,7 +235,7 @@ test("OV-P0-268: Monitoring wires engine, stale guard, CSS and reduced motion", 
   assert.match(page, /mergeLiveTransitionQueue/);
   assert.match(page, /pollGenerationRef/);
   assert.match(page, /ov-live-transition/);
-  assert.match(page, /Reconhecido|Resolvido|Assumido/);
+  assert.match(engine, /Reconhecido|Resolvido|Assumido/);
   assert.match(css, /ov-live-transition-pulse/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(page, /REFRESH_MS\s*=\s*10_000/);

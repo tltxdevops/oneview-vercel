@@ -1,4 +1,4 @@
-import { forwardRef, useState, type ReactNode } from "react";
+import { forwardRef, useEffect, useState, type ReactNode } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button, type ButtonProps } from "@/components/ui/button";
@@ -20,6 +20,24 @@ type OperationalFilterPanelProps = {
 };
 
 type FilterTriggerProps = ButtonProps & { activeFilterCount?: number };
+
+const COMPACT_FILTER_BREAKPOINT = 1120;
+
+function useCompactFilterSurface() {
+  const [isCompact, setIsCompact] = useState(() => (
+    typeof window !== "undefined" && window.innerWidth < COMPACT_FILTER_BREAKPOINT
+  ));
+
+  useEffect(() => {
+    const media = window.matchMedia(`(max-width: ${COMPACT_FILTER_BREAKPOINT - 1}px)`);
+    const update = () => setIsCompact(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return isCompact;
+}
 
 const FilterTrigger = forwardRef<HTMLButtonElement, FilterTriggerProps>(function FilterTrigger(
   { activeFilterCount = 0, className, ...props },
@@ -76,6 +94,7 @@ export function OperationalFilterPanel({
   footer,
 }: OperationalFilterPanelProps) {
   const isMobile = useIsMobile();
+  const isCompact = useCompactFilterSurface();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = (next: boolean) => {
@@ -83,11 +102,11 @@ export function OperationalFilterPanel({
     onOpenChange?.(next);
   };
 
-  if (isMobile) {
+  if (isMobile || isCompact) {
     return (
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild><FilterTrigger activeFilterCount={activeFilterCount} /></SheetTrigger>
-        <SheetContent side="bottom" className="flex max-h-[90dvh] min-h-0 w-full flex-col gap-3 overflow-hidden rounded-t-2xl p-4">
+        <SheetContent side="bottom" className="flex max-h-[90dvh] min-h-0 w-full flex-col gap-3 overflow-hidden rounded-t-2xl p-4 sm:max-w-none">
           <SheetHeader className="shrink-0 pr-8 text-left">
             <SheetTitle className="text-base">{title}</SheetTitle>
             <SheetDescription className="text-xs">{description}</SheetDescription>
@@ -105,7 +124,11 @@ export function OperationalFilterPanel({
         align="end"
         sideOffset={8}
         collisionPadding={8}
-        className={cn("flex max-h-[min(80dvh,46rem)] w-[min(56rem,calc(100vw-1rem))] min-w-0 flex-col gap-3 overflow-hidden p-4", className)}
+        style={{
+          width: "min(48rem, calc(100vw - 2rem))",
+          maxHeight: "min(80dvh, var(--radix-popover-content-available-height))",
+        }}
+        className={cn("flex min-w-0 flex-col gap-3 overflow-hidden p-4", className)}
       >
         <div className="shrink-0">
           <p className="text-sm font-semibold">{title}</p>
@@ -119,7 +142,7 @@ export function OperationalFilterPanel({
 
 export function OperationalFilterGrid({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn("grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3", className)}>
+    <div className={cn("grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,14.5rem),1fr))] gap-3", className)}>
       {children}
     </div>
   );

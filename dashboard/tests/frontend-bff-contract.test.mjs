@@ -403,8 +403,8 @@ test("Home filtra eventos técnicos e preserva dados no refresh parcial", async 
   assert.match(index, /isAllowedHomeEvent/);
   assert.match(index, /Promise\.allSettled/);
   assert.doesNotMatch(index.match(/loadLists[\s\S]*?finally/)?.[0] ?? "", /setHomeAlerts\(\[\]\)|setPriorityAlerts\(\[\]\)/);
-  assert.doesNotMatch(index.match(/loadSummary[\s\S]*?finally/)?.[0] ?? "", /setMetrics\(null\)/);
-  assert.doesNotMatch(index.match(/loadSummary[\s\S]*?finally/)?.[0] ?? "", /closeAlert/);
+  assert.doesNotMatch(index.match(/loadCriticalHomeAlerts[\s\S]*?finally/)?.[0] ?? "", /setRecentMetrics\(null\)/);
+  assert.doesNotMatch(index.match(/loadCriticalHomeAlerts[\s\S]*?finally/)?.[0] ?? "", /closeAlert/);
   assert.match(index, /Os valores anteriores foram mantidos/);
   assert.match(index, /Tentar novamente/);
 });
@@ -674,7 +674,8 @@ test("OV-P0-23 Home/Monitoramento usam janelas recentes server-side", async () =
   assert.match(recent, /\+ \$\{extra\.toLocaleString\("pt-BR"\)\} na fila/);
 
   assert.match(index, /fetchHomeAlerts/);
-  assert.match(index, /fetchRecentOperationalMetrics/);
+  assert.match(index, /recentOperationalMetricsFromAlertSummary/);
+  assert.doesNotMatch(index, /fetchRecentOperationalMetrics/);
   assert.match(index, /fetchRecentOperationalEvents/);
   assert.match(index, /HOME_ALERTS_PAGE_SIZE|fetchHomeAlerts/);
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|ConfigurableMetricStrip/);
@@ -1898,8 +1899,7 @@ test("OV-P0-33 Home usa janela temporal explícita e server-side", async () => {
   assert.match(index, /next\.set\("window",/);
   assert.match(index, /label="Janela temporal"|Janela temporal/);
   assert.match(index, /HOME_OPERATIONAL_WINDOW_OPTIONS\.map/);
-  assert.match(index, /fetchRecentOperationalMetrics\(\{ now, windowMs \}\)/);
-  assert.match(index, /windowMs,/);
+  assert.match(index, /recentOperationalMetricsFromAlertSummary\(summaryPayload\)/);
   assert.match(index, /homeOperationalWindowActiveLabel\(homeWindow\)/);
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP/);
   assert.doesNotMatch(index, /Novos nas últimas \$\{windowLabel\}/);
@@ -1912,8 +1912,8 @@ test("OV-P0-33 Home usa janela temporal explícita e server-side", async () => {
   assert.match(index, /open=\{selectedAlertId !== null\}/);
   assert.match(index, /hasValidSummary \? recentMetrics\?\.by_severity/);
   assert.doesNotMatch(index, /recentMetrics\?\.not_classified/);
-  assert.match(index, /loadSummary\(hasSummaryRef\.current \? "quiet" : "initial"\)/);
-  assert.match(index, /loadLists\(hasListsRef\.current \? "quiet" : "initial"\)/);
+  assert.match(index, /void loadCriticalHomeAlerts\(\)/);
+  assert.match(index, /loadLists\(hasSecondaryListsRef\.current \? "quiet" : "initial"\)/);
 });
 
 test("OV-P0-42A Home: faixa de 5 severidades via filtered_summary (1 consulta)", async () => {
@@ -1956,7 +1956,8 @@ test("OV-P0-42A Home: faixa de 5 severidades via filtered_summary (1 consulta)",
   assert.match(recent, /params\?\.windowMs != null/);
   assert.match(recent, /pageSize: 1/);
   assert.match(recent, /status: "active"/);
-  assert.match(recent, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
+  assert.match(recent, /firstSeenFrom: params\.from \?\? isoAgo\(params\.windowMs \?\? RECENT_PRIORITY_WINDOW_MS, now\)/);
+  assert.match(recent, /include: "summary"/);
   assert.match(recent, /filtered_summary/);
   assert.match(recent, /normalizeAlertSeveritySummary|severityCountsFromSummary|by_severity/);
   assert.match(recent, /not_classified/);
@@ -2250,4 +2251,37 @@ test("faixa de saúde compacta à direita, hover e strip de métricas centrado",
   assert.match(compact, /flex-col items-center justify-center/);
   assert.match(settings, /RUNTIME_CATEGORY_LABELS/);
   assert.doesNotMatch(chamados, /Sync ServiceNow:/);
+});
+
+test("alertas de link de operadora, pop-up por severidade e lembrete pontual", async () => {
+  const [alerts, drawer, controls, db, links, api, prefs, provider, execution, settings] = await Promise.all([
+    read("src/pages/Alerts.tsx"),
+    read("src/components/oneview/AlertDetailDrawer.tsx"),
+    read("src/components/oneview/AlertOperatorLinkControls.tsx"),
+    read("api/_lib/oneview-db.js"),
+    read("api/_lib/oneview-links.js"),
+    read("src/lib/oneview-api.ts"),
+    read("src/lib/oneview-notification-preferences.ts"),
+    read("src/providers/OperatorReminderInboxProvider.tsx"),
+    read("api/_lib/oneview-operator-reminder-execution.js"),
+    read("src/pages/Settings.tsx"),
+  ]);
+
+  assert.match(db, /operator_link: operatorLinkReadModel\(row\)/);
+  assert.match(api, /operator_link\?:/);
+  assert.match(alerts, /AlertOperatorLinkControls/);
+  assert.match(alerts, /Link de operadora/);
+  assert.match(drawer, /AlertOperatorLinkControls alert=\{alert\}/);
+  assert.match(controls, /if \(value === "critical"\) return "high"/);
+  assert.match(controls, /notifyWebex/);
+  assert.match(controls, /Pop-up no horário exato; Webex pode sair até 30s antes/);
+  assert.match(links, /recent_severe:/);
+  assert.match(prefs, /severities: \["disaster"\]/);
+  assert.match(prefs, /operatorDisasterPopup/);
+  assert.match(settings, /Pop-up de novos alertas/);
+  assert.match(provider, /const POLL_MS = 20_000/);
+  assert.match(execution, /interval '30 seconds'/);
+  assert.match(execution, /notify_webex !== false/);
+  assert.match(api, /notify_webex = Boolean\(options.notifyWebex\)/);
+  assert.match(api, /notifyWebex: false/);
 });

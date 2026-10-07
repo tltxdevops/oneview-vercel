@@ -56,10 +56,14 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   readOneViewNotificationPreferences,
+  SEVERITY_POPUP_LEVELS,
   setOneViewReminderLinkPopup,
   setOneViewReminderLinkSound,
+  setOneViewSeverityPopupEnabled,
+  toggleOneViewSeverityPopupLevel,
   type OneViewNotificationPreferences,
 } from "@/lib/oneview-notification-preferences";
+import { SEVERITY_POPUP_LABELS } from "@/lib/oneview-severity-popup";
 import { playReminderLinkSound } from "@/lib/oneview-operator-reminder-notification";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -390,6 +394,41 @@ export default function SettingsPage() {
           description="O Webex/Theo segue independente. O pop-up aparece somente para quem criou o lembrete, em qualquer tela desta conta."
           bodyClassName="space-y-4 p-4"
         >
+          <div className="space-y-3">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-foreground">Pop-up de novos alertas</p>
+                <p className="text-xs text-muted-foreground">
+                  Avisa em Links e Alertas quando chegar um alerta Disaster, High ou Average nas severidades escolhidas.
+                </p>
+              </div>
+              <Switch
+                checked={notificationPreferences.severityPopup.enabled}
+                onCheckedChange={(checked) => {
+                  setNotificationPreferences(setOneViewSeverityPopupEnabled(checked, actorId));
+                }}
+                aria-label="Exibir pop-up de novos alertas"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {SEVERITY_POPUP_LEVELS.map((level) => {
+                const selected = notificationPreferences.severityPopup.severities.includes(level);
+                return (
+                  <Button
+                    key={level}
+                    type="button"
+                    size="sm"
+                    variant={selected ? "default" : "outline"}
+                    disabled={!notificationPreferences.severityPopup.enabled}
+                    onClick={() => setNotificationPreferences(toggleOneViewSeverityPopupLevel(level, actorId))}
+                    aria-pressed={selected}
+                  >
+                    {SEVERITY_POPUP_LABELS[level]}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <p className="text-sm font-medium text-foreground">Exibir pop-up de lembrete</p>

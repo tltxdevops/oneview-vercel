@@ -15,6 +15,7 @@ import {
   safeHostIp,
 } from "@/components/oneview/AlertOperationalSummary";
 import { AlertOperationalShareActions } from "@/components/oneview/AlertOperationalShareActions";
+import { AlertOperatorLinkControls } from "@/components/oneview/AlertOperatorLinkControls";
 import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
 import { AlertRecurrenceSignal } from "@/components/oneview/AlertRecurrenceSignal";
 import { AlertSameProblemContext } from "@/components/oneview/AlertRecurrenceInvestigation";
@@ -797,7 +798,9 @@ export function AlertDetailDrawer({
                     </dl>
                   </section>
 
-                  {operatorTag ? (
+                  {alert.operator_link ? (
+                    <AlertOperatorLinkControls alert={alert} />
+                  ) : operatorTag ? (
                     <section aria-label="Operadora" className="space-y-2">
                       <h3 className="text-sm font-semibold">Operadora</h3>
                       <dl className="grid gap-3 text-sm sm:grid-cols-2">

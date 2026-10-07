@@ -156,7 +156,9 @@ test("OV-P0-116 Monitoramento aplica pulse só na fila; outras telas intactas", 
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(css, /ov-fresh-attention[\s\S]{0,80}background-color:\s*hsl\(0/);
 
-  assert.doesNotMatch(alerts, /ov-fresh-attention|reconcileFreshAttention/);
+  assert.match(alerts, /reconcileFreshAttention/);
+  assert.match(alerts, /ov-alert-fresh-attention-high/);
+  assert.match(alerts, /ov-alert-fresh-attention-disaster/);
   assert.doesNotMatch(historico, /ov-fresh-attention|reconcileFreshAttention/);
   assert.doesNotMatch(index, /ov-fresh-attention|reconcileFreshAttention/);
 });

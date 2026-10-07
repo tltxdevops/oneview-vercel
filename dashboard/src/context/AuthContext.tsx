@@ -19,6 +19,7 @@ import {
 } from "@/lib/server-auth";
 import { clearOneViewSessionCaches } from "@/lib/oneview-api";
 import { clearOneViewFacetsStore } from "@/lib/oneview-facets-store";
+import { clearRuntimeHealthSnapshot } from "@/lib/oneview-health-snapshot";
 import { clearOneViewRouteDataPrefetch } from "@/lib/oneview-route-data-prefetch";
 
 type AuthUser = {
@@ -121,6 +122,7 @@ function persistUser(user: AuthUser | null) {
       clearOneViewSessionCaches();
       clearOneViewFacetsStore();
       clearOneViewRouteDataPrefetch();
+      clearRuntimeHealthSnapshot();
     }
   } catch (error) {
     console.warn("[auth] Falha ao persistir usuário", error);
@@ -230,6 +232,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           clearOneViewSessionCaches();
           clearOneViewFacetsStore();
           clearOneViewRouteDataPrefetch();
+          clearRuntimeHealthSnapshot();
         }
         return normalized;
       });
@@ -373,6 +376,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     clearOneViewSessionCaches();
     clearOneViewFacetsStore();
     clearOneViewRouteDataPrefetch();
+    clearRuntimeHealthSnapshot();
     if (serverAuthEnabled()) {
       await logoutServerAuth();
       persistUser(null);

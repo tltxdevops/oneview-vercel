@@ -103,7 +103,7 @@ test("OV-P0-267B: Home, Monitoramento and Alertas share explicit datasource quer
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
 
   assert.match(home, /datasources: params\.datasources/);
-  assert.match(home, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
+  assert.match(home, /firstSeenFrom: params\.from \?\? isoAgo\(/);
   assert.match(home, /excludeOperator: true/);
   assert.match(monitoring, /customers: params\.customers/);
   assert.match(monitoring, /datasources: params\.datasources/);

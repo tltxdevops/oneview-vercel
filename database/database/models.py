@@ -21,6 +21,10 @@ class DataSource(Base):
     CheckConstraint("status in ('active','inactive','error')", name="ck_data_sources_status"),
     CheckConstraint("environment in ('internal','external')", name="ck_data_sources_environment"),
     CheckConstraint("sync_interval_seconds >= 15", name="ck_data_sources_sync_interval_min"),
+    CheckConstraint(
+      "full_reconciliation_interval_seconds IS NULL OR full_reconciliation_interval_seconds >= 15",
+      name="ck_data_sources_full_reconciliation_interval_min",
+    ),
     CheckConstraint("rate_limit_per_minute > 0", name="ck_data_sources_rate_limit_positive"),
     CheckConstraint("failure_count >= 0", name="ck_data_sources_failure_count_nonnegative"),
     Index("ix_data_sources_health", "status", "sync_enabled", "display_order"),
@@ -40,6 +44,7 @@ class DataSource(Base):
   status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
   sync_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
   sync_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+  full_reconciliation_interval_seconds: Mapped[int | None] = mapped_column(Integer)
   via_vpn: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
   observation: Mapped[str | None] = mapped_column(Text)
   last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -56,6 +61,7 @@ class DataSource(Base):
   last_worker_id: Mapped[str | None] = mapped_column(String(120))
   last_worker_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   last_sync_duration_ms: Mapped[int | None] = mapped_column(Integer)
+  last_fast_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   rate_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
   display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

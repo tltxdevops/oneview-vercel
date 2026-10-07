@@ -122,7 +122,8 @@ test("OV-P0-69 Home layout: Alertas|Chamados|Eventos; drawer/?alert=; sem Client
   assert.match(index, /Chamados indisponíveis|ServiceNow indisponível/);
   assert.match(index, /HOME_OPERATIONAL_WINDOW_OPTIONS/);
   assert.match(index, /HOME_VISUAL_SEVERITY_STRIP|CompactMetricStrip/);
-  assert.match(index, /fetchRecentOperationalMetrics/);
+  assert.match(index, /recentOperationalMetricsFromAlertSummary/);
+  assert.doesNotMatch(index, /fetchRecentOperationalMetrics/);
   assert.match(index, /fetchRecentOperationalEvents/);
 
   assert.doesNotMatch(index, /Clientes mais impactados/);

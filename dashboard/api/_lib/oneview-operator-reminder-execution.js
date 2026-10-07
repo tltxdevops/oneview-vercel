@@ -17,6 +17,20 @@ function integer(value, fallback, min, max) {
   return Number.isFinite(parsed) ? Math.min(Math.max(parsed, min), max) : fallback;
 }
 function safe(value, fallback = "") { return text(value).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 600) || fallback; }
+export const OPERATOR_REMINDER_CLAIM_LEAD_SECONDS = 30;
+
+function reminderSnapshot(reminder) {
+  if (typeof reminder?.context_snapshot === "string") {
+    try { return JSON.parse(reminder.context_snapshot); } catch { return {}; }
+  }
+  return reminder?.context_snapshot || {};
+}
+function reminderMessage(reminder) {
+  return safe(reminderSnapshot(reminder)?.reminder?.message);
+}
+export function reminderShouldNotifyWebex(reminder) {
+  return reminderSnapshot(reminder)?.reminder?.notify_webex !== false;
+}
 function time(value) { const parsed = Date.parse(String(value || "")); return Number.isFinite(parsed) ? parsed : null; }
 function active(link) { return Number(link?.active_alerts) > 0 || link?.has_active_alert === true; }
 function errorCode(error) {
@@ -73,6 +87,7 @@ export function buildOperatorReminderTheoPayload(reminder, link, now = new Date(
   const startedAt = alert?.started_at || link?.active_since_at || link?.alert_started_at;
   const circuit = linkLabel(link, reminder);
   const createdByName = safe(reminder?.created_by_name, "Operador OneView");
+  const customMessage = reminderMessage(reminder);
   const incidentLine = hasIncident
     ? `INC: ${safe(incident.number)}${incident?.state_display ? ` · ${safe(incident.state_display)}` : ""}.`
     : "INC: Nenhum chamado aberto correlacionado.";
@@ -83,7 +98,7 @@ export function buildOperatorReminderTheoPayload(reminder, link, now = new Date(
     ip: "N/A",
     data_hora: now.toISOString(),
     acao: `Link: ${circuit}. Em falha há: ${durationLabel(startedAt, now)}. ${incidentLine} Criado por: ${createdByName}`,
-    proximos_passos: "Verificar acompanhamento do circuito/chamado.",
+    proximos_passos: customMessage || "Verificar acompanhamento do circuito/chamado.",
     acompanhamento: "Equipe NOC",
     severidade: safe(alert?.severity || link?.max_severity, "not_classified"),
     ...(hasIncident ? { chamado: safe(incident.number) } : {}),
@@ -96,10 +111,10 @@ export async function claimDueOperatorReminders(client, { batchSize = DEFAULT_BA
   const result = await client.query(
     `
       select id, subject_type, subject_key, circuit_key, data_source_id, source_host_id, source_trigger_id, scheduled_for, status,
-             created_by_name, initial_alert_id, initial_incident_number
+             created_by_name, initial_alert_id, initial_incident_number, context_snapshot
         from operator_reminders
        where status = 'scheduled'
-         and scheduled_for <= now()
+         and scheduled_for <= now() + interval '30 seconds'
        order by scheduled_for asc, id asc
        limit $1
        for update skip locked
@@ -107,6 +122,27 @@ export async function claimDueOperatorReminders(client, { batchSize = DEFAULT_BA
     [integer(batchSize, DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE)],
   );
   return result.rows || [];
+}
+
+async function markPopupOnlySent(client, reminder, now, audit, req) {
+  const result = await client.query(
+    `update operator_reminders
+        set status = 'sent', sent_at = $2, updated_at = $2, last_error = null
+      where id = $1 and status = 'scheduled'
+      returning id, status`,
+    [reminder.id, now],
+  );
+  const row = result.rows[0] || null;
+  if (row) {
+    await audit(client, {
+      actorName: "Theo Dispatcher", actorId: "theo_dispatcher", actorType: "system",
+      action: "REMINDER_SENT", entityType: "operator_reminder", entityId: reminder.id,
+      dataSourceId: reminder.data_source_id, alertId: reminder.initial_alert_id || null,
+      beforeData: { status: "scheduled" }, afterData: { status: "sent", notify_webex: false },
+      metadata: { subject_type: reminder.subject_type, subject_key: reminder.subject_key, circuit_key: reminder.circuit_key, source_host_id: reminder.source_host_id || null, source_trigger_id: reminder.source_trigger_id || null }, req,
+    });
+  }
+  return row;
 }
 
 async function markSkipped(client, reminder, reason, now, audit, req) {
@@ -193,7 +229,7 @@ export async function processDueOperatorReminders({
   logger = (entry) => console.info(JSON.stringify(entry)),
   req = null,
 } = {}) {
-  const summary = { due_found: 0, skipped: 0, enqueued: 0, already_processing: 0, failed: 0 };
+  const summary = { due_found: 0, skipped: 0, enqueued: 0, already_processing: 0, failed: 0, sent_without_webex: 0 };
   const config = configProvider();
   await transaction(async (client) => {
     const reminders = await claimDueOperatorReminders(client, { batchSize: config.batchSize });
@@ -245,6 +281,13 @@ export async function processDueOperatorReminders({
         continue;
       }
       try {
+        if (!reminderShouldNotifyWebex(reminder)) {
+          const sent = await markPopupOnlySent(client, reminder, now(), audit, req);
+          if (sent) summary.sent_without_webex += 1;
+          else summary.failed += 1;
+          executionLog(logger, { reminder_id: reminder.id, phase: "popup_only", status_before: "scheduled", status_after: sent?.status, has_active_alert: true, has_open_incident: Boolean(link.current_incident?.number), outbox_created: false, error_code: sent ? null : "claim_lost", duration_ms: Date.now() - startedAt });
+          continue;
+        }
         const enqueued = await enqueueReminder(client, reminder, link, { idFactory, now: now(), audit, req });
         if (enqueued.created) summary.enqueued += 1;
         else summary.already_processing += 1;

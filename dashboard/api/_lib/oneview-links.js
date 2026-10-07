@@ -970,8 +970,8 @@ export async function fetchCanonicalLinks({ pool = getOneViewDbPool() } = {}) {
 export async function fetchCanonicalLinkDetail({ id, dataSourceId, sourceHostId, pool = getOneViewDbPool(), composition = "host" } = {}) {
   const model = await fetchCanonicalLinkModel({ pool, dataSourceId, sourceHostId, includeIncidents: false, composition });
   const candidate = model.rows.find((row) => String(row.id) === String(id));
-  if (!candidate) return null;
   const circuit = model.circuits.find((item) => String(item.circuit_key) === String(id));
+  if (!candidate && !circuit) return null;
   const relatedAlerts = circuit ? alertsForCircuit(circuit, model.alerts) : model.alerts;
   let incidents = []; let servicenowStatus = "available";
   const serviceNowStartedAt = Date.now();
@@ -1054,6 +1054,11 @@ export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, d
 export function buildLinksPayload(rows, filters, now = Date.now(), integrationStatus = { servicenow: "available" }) {
   const resolvedWindow = resolvedWindowStart(filters.resolved_window, now);
   const all = rows.map((row) => operationalRow(row, now, resolvedWindow));
+  const recentSevere = all
+    .filter((row) => row.has_active_alert && ["disaster", "high", "average"].includes(String(row.max_severity || "").toLowerCase()))
+    .sort((left, right) => (timestamp(right.current_alert?.started_at || right.active_since_at) || 0) - (timestamp(left.current_alert?.started_at || left.active_since_at) || 0))
+    .slice(0, 20);
+  const recentDisasters = recentSevere.filter((row) => String(row.max_severity || "").toLowerCase() === "disaster" || Number(row.disaster_alerts) > 0);
   const base = filteredBase(all, filters);
   const scoped = ordered(filteredOperational(base, filters, now), filters); const start=(filters.page-1)*filters.page_size;
   const facets = (field) => [...new Map(all.map((row) => [String(row[field] || ""), row[field]]).filter(([value]) => value)).entries()].map(([value,label])=>({value,label})).sort((a,b)=>String(a.label).localeCompare(String(b.label),"pt-BR"));
@@ -1069,7 +1074,7 @@ export function buildLinksPayload(rows, filters, now = Date.now(), integrationSt
     divergence_b: base.filter((row) => row.divergence_type === "b").length,
     resolved_today: base.filter((row) => !row.has_active_alert && (timestamp(row.latest_activity_at || row.resolved_at || row.updated_at) || 0) >= resolvedWindowStart("today", now)).length,
   };
-  return { items: scoped.slice(start,start+filters.page_size), pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:integrationStatus.servicenow === "degraded" ? null : base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, integration_status:integrationStatus, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification"),carriers:facets("carrier_name")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
+  return { items: scoped.slice(start,start+filters.page_size), recent_severe: recentSevere, recent_disasters: recentDisasters, pagination:{page:filters.page,page_size:filters.page_size,total_items:scoped.length,total_pages:Math.ceil(scoped.length/filters.page_size),has_next:start+filters.page_size<scoped.length,has_previous:filters.page>1}, totals:{links:base.length,active_alert_links:base.filter(x=>x.active_alerts>0).length,incident_links:integrationStatus.servicenow === "degraded" ? null : base.filter(x=>x.incident_count>0).length,known_carriers:base.filter(x=>x.carrier_name).length,pending_classification:base.filter(x=>x.resolution_status!=="resolved").length,operational}, integration_status:integrationStatus, facets:{customers:facets("customer_name"),datasources:facets("datasource"),classifications:facets("classification"),carriers:facets("carrier_name")}, filters, data_source:"database", fallback_code:null, checked_at:new Date(now).toISOString() };
 }
 const LINKS_SUGGEST_CACHE_MS = 30_000;
 const LINK_SEARCH_FIELDS = ["service_name", "customer_name", "source_host_id", "host_name", "site_name", "link_type", "carrier_name", "circuit_key"];

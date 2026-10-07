@@ -28,6 +28,8 @@ import {
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { AlertOperatorLinkControls } from "@/components/oneview/AlertOperatorLinkControls";
+import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
 import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
@@ -86,6 +88,34 @@ import {
 import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
 import { getOneViewFacets } from "@/lib/oneview-facets-store";
 import type { SourceAckTerminalStatus } from "@/lib/oneview-alert-source-ack";
+import {
+  activeFreshAttentionIds,
+  freshAttentionTone,
+  reconcileFreshAttention,
+  sameStringSet,
+} from "@/lib/oneview-fresh-attention";
+import {
+  ONEVIEW_NOTIFICATION_PREFERENCES_EVENT,
+  readOneViewNotificationPreferences,
+  setOneViewSeverityPopupEnabled,
+} from "@/lib/oneview-notification-preferences";
+import {
+  normalizeSeverityPopupLevel,
+  readSeverityPopupSeen,
+  severityPopupMatches,
+  writeSeverityPopupSeen,
+} from "@/lib/oneview-severity-popup";
+import {
+  detectLiveTransitions,
+  isLiveTransitionActive,
+  mergeLiveTransitionQueue,
+  prunePinnedByTransitions,
+  reconcileLiveTransitions,
+  sameLiveTransitionMap,
+  snapshotFromAlert,
+  toLiveSnapshotMap,
+  type LiveTransition,
+} from "@/lib/oneview-live-transition";
 import { ONEVIEW_SEVERITY_UI } from "@/lib/oneview-severity-visual";
 import {
   ALERTS_DATE_PRESET_OPTIONS,
@@ -249,6 +279,11 @@ const ALERTS_METRIC_OPTIONS = [
 const SUMMARY_REFRESH_MS = 10_000;
 const ALERTS_REFRESH_MS = 10_000;
 const STABLE_SUMMARY_REFRESH_MS = 30_000;
+/** Dez pulsos verdes de 900ms após ACK/resolução comprovados. */
+const ALERTS_SUCCESS_PULSE_DURATION_MS = 9_000;
+const ALERTS_MISSING_PROOF_LIMIT = 3;
+/** Quinze ciclos vermelhos de 1.2s para alertas novos. */
+const ALERTS_FRESH_ATTENTION_DURATION_MS = 18_000;
 
 const emptyPagination: AlertPagination = {
   page: 1,
@@ -941,6 +976,8 @@ export default function AlertsPage() {
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [alertsError, setAlertsError] = useState<string | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [severityPopups, setSeverityPopups] = useState<OperatorSeverityPopupItem[]>([]);
+  const [severityPopupEnabled, setSeverityPopupEnabled] = useState(() => readOneViewNotificationPreferences(actorId).severityPopup.enabled);
 
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<OneViewAlert | null>(null);
@@ -956,6 +993,8 @@ export default function AlertsPage() {
   const [ackSubmitting, setAckSubmitting] = useState(false);
   const [ackError, setAckError] = useState<string | null>(null);
   const [pendingAckRequests, setPendingAckRequests] = useState<Record<string, string>>({});
+  const [freshAttentionIds, setFreshAttentionIds] = useState<Set<string>>(new Set());
+  const [alertTransitions, setAlertTransitions] = useState<Map<string, LiveTransition>>(new Map());
 
   const [alertsMeta, setAlertsMeta] = useState<MetaState>({});
   const [metricsMeta, setMetricsMeta] = useState<MetaState>({});
@@ -975,6 +1014,17 @@ export default function AlertsPage() {
   const summaryDeadlineRef = useRef(Date.now() + SUMMARY_REFRESH_MS);
   const stableSummaryDeadlineRef = useRef(Date.now());
   const alertsDeadlineRef = useRef(Date.now() + ALERTS_REFRESH_MS);
+  const feedbackQueryKeyRef = useRef("");
+  const freshKnownIdsRef = useRef<Set<string>>(new Set());
+  const freshStartedAtRef = useRef<Map<string, number>>(new Map());
+  const freshSeededRef = useRef(false);
+  const severityPopupSeenRef = useRef<Set<string>>(readSeverityPopupSeen("alerts", actorId));
+  const severityPopupAlertsRef = useRef(new Map<string, OneViewAlert>());
+  const alertSnapshotReadyRef = useRef(false);
+  const previousAlertsRef = useRef<Map<string, OneViewAlert>>(new Map());
+  const alertConsumedKeysRef = useRef<Set<string>>(new Set());
+  const alertTransitionsRef = useRef<Map<string, LiveTransition>>(new Map());
+  const alertPinnedRef = useRef<Map<string, OneViewAlert>>(new Map());
 
   const commitAlertSearchValue = useCallback((value: string) => {
     if (value === debouncedSearch) return;
@@ -986,6 +1036,24 @@ export default function AlertsPage() {
     searchQuery,
     commitAlertSearchValue,
   );
+  const feedbackQueryKey = useMemo(() => JSON.stringify({
+    alertsView,
+    page,
+    pageSize,
+    selectedCustomerKeys,
+    selectedSeverities,
+    statusFilter,
+    incidentStateFilter,
+    sourceAckFilter,
+    oneviewAckFilter,
+    datePreset,
+    dateFrom: dateRange?.from?.toISOString() ?? null,
+    dateTo: dateRange?.to?.toISOString() ?? null,
+    searchField,
+    debouncedSearch,
+    sortField,
+    sortOrder,
+  }), [alertsView, datePreset, dateRange?.from, dateRange?.to, debouncedSearch, incidentStateFilter, oneviewAckFilter, page, pageSize, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   useEffect(() => {
     const next = writeAlertsUrlParams({
@@ -1012,8 +1080,33 @@ export default function AlertsPage() {
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
   }, [alertsView, datePreset, dateRange, incidentStateFilter, oneviewAckFilter, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
+  useEffect(() => {
+    severityPopupSeenRef.current = readSeverityPopupSeen("alerts", actorId);
+    const sync = () => {
+      const enabled = readOneViewNotificationPreferences(actorId).severityPopup.enabled;
+      setSeverityPopupEnabled(enabled);
+      if (!enabled) setSeverityPopups([]);
+    };
+    sync();
+    window.addEventListener(ONEVIEW_NOTIFICATION_PREFERENCES_EVENT, sync);
+    return () => window.removeEventListener(ONEVIEW_NOTIFICATION_PREFERENCES_EVENT, sync);
+  }, [actorId]);
+
   const loadAlerts = useCallback(async (options?: { quiet?: boolean }) => {
     if (options?.quiet && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
+    if (feedbackQueryKeyRef.current !== feedbackQueryKey) {
+      feedbackQueryKeyRef.current = feedbackQueryKey;
+      freshKnownIdsRef.current = new Set();
+      freshStartedAtRef.current = new Map();
+      freshSeededRef.current = false;
+      alertSnapshotReadyRef.current = false;
+      previousAlertsRef.current = new Map();
+      alertConsumedKeysRef.current = new Set();
+      alertTransitionsRef.current = new Map();
+      alertPinnedRef.current = new Map();
+      setFreshAttentionIds(new Set());
+      setAlertTransitions(new Map());
+    }
     alertsRequestRef.current?.abort();
     const controller = new AbortController();
     alertsRequestRef.current = controller;
@@ -1082,6 +1175,105 @@ export default function AlertsPage() {
         setPage(normalized.pagination.total_pages);
         return;
       }
+
+      const serverAlerts = normalized.items;
+      const previousAlerts = previousAlertsRef.current;
+      const nextAlertMap = new Map(serverAlerts.map((item) => [item.id, item]));
+      const provenAlerts = new Map(nextAlertMap);
+      const provenSnapshots = toLiveSnapshotMap(serverAlerts.map((item) => snapshotFromAlert(item)));
+      const missingIds = [...previousAlerts.keys()].filter((id) => !nextAlertMap.has(id));
+      const shouldProveMissing = statusFilter === "active"
+        || sourceAckFilter === "unacknowledged"
+        || oneviewAckFilter === "pending";
+
+      if (alertSnapshotReadyRef.current && shouldProveMissing && missingIds.length) {
+        const proofs = await Promise.allSettled(
+          missingIds.slice(0, ALERTS_MISSING_PROOF_LIMIT).map(async (id) => {
+            const detailResponse = await fetchAlert(id, controller.signal);
+            return detailResponse?.item ?? null;
+          }),
+        );
+        if (controller.signal.aborted || requestId !== alertsRequestIdRef.current) return;
+        for (const proof of proofs) {
+          if (proof.status !== "fulfilled" || !proof.value?.id) continue;
+          provenAlerts.set(proof.value.id, proof.value);
+          const snapshot = snapshotFromAlert(proof.value);
+          if (snapshot) provenSnapshots.set(snapshot.id, snapshot);
+        }
+      }
+
+      const detectedTransitions = detectLiveTransitions({
+        previousById: toLiveSnapshotMap([...previousAlerts.values()].map((item) => snapshotFromAlert(item))),
+        nextById: provenSnapshots,
+        previousSnapshotReady: alertSnapshotReadyRef.current,
+        consumedVersionKeys: alertConsumedKeysRef.current,
+        now: Date.now(),
+        durationMs: ALERTS_SUCCESS_PULSE_DURATION_MS,
+      }).filter((transition) => transition.kind !== "assigned");
+      const reconciledTransitions = reconcileLiveTransitions({
+        current: alertTransitionsRef.current,
+        detected: detectedTransitions,
+        consumedVersionKeys: alertConsumedKeysRef.current,
+        now: Date.now(),
+      });
+      const nextPinnedAlerts = new Map(alertPinnedRef.current);
+      for (const transition of reconciledTransitions.active.values()) {
+        if (nextAlertMap.has(transition.id)) continue;
+        const previous = previousAlerts.get(transition.id);
+        const proven = provenAlerts.get(transition.id);
+        if (!previous || !proven) continue;
+        nextPinnedAlerts.set(transition.id, { ...previous, ...proven });
+      }
+      alertTransitionsRef.current = reconciledTransitions.active;
+      alertConsumedKeysRef.current = reconciledTransitions.consumedVersionKeys;
+      alertPinnedRef.current = prunePinnedByTransitions(nextPinnedAlerts, reconciledTransitions.active, Date.now());
+      previousAlertsRef.current = nextAlertMap;
+      alertSnapshotReadyRef.current = true;
+      setAlertTransitions(new Map(reconciledTransitions.active));
+
+      const isFirstAlertSnapshot = !freshSeededRef.current;
+      const nextFresh = reconcileFreshAttention({
+        alerts: serverAlerts,
+        knownIds: freshKnownIdsRef.current,
+        attentionStartedAt: freshStartedAtRef.current,
+        isFirstSnapshot: isFirstAlertSnapshot,
+      });
+      freshKnownIdsRef.current = nextFresh.knownIds;
+      freshStartedAtRef.current = nextFresh.attentionStartedAt;
+      freshSeededRef.current = true;
+      const activeFreshIds = activeFreshAttentionIds(
+        nextFresh.attentionStartedAt,
+        Date.now(),
+        ALERTS_FRESH_ATTENTION_DURATION_MS,
+      );
+      setFreshAttentionIds((current) => sameStringSet(current, activeFreshIds) ? current : activeFreshIds);
+
+      if (!isFirstAlertSnapshot) {
+        const nextPopups: OperatorSeverityPopupItem[] = [];
+        for (const alert of serverAlerts) {
+          if (!activeFreshIds.has(alert.id) || severityPopupSeenRef.current.has(alert.id)) continue;
+          const level = normalizeSeverityPopupLevel(alert.severity);
+          if (!severityPopupMatches(level, actorId) || !level) continue;
+          severityPopupSeenRef.current.add(alert.id);
+          severityPopupAlertsRef.current.set(alert.id, alert);
+          nextPopups.push({
+            key: alert.id,
+            severity: level,
+            customer: alert.customer_name || alert.client_name || "Cliente",
+            title: alert.operator_link
+              ? `Link de operadora · ${alert.operator_link.service_name || alert.problem_name}`
+              : alert.problem_name,
+          });
+        }
+        if (nextPopups.length) {
+          writeSeverityPopupSeen("alerts", severityPopupSeenRef.current, actorId);
+          setSeverityPopups((current) => [...nextPopups, ...current].slice(0, 4));
+        }
+      } else {
+        for (const alert of serverAlerts) severityPopupSeenRef.current.add(alert.id);
+        writeSeverityPopupSeen("alerts", severityPopupSeenRef.current, actorId);
+      }
+
       setAlerts(normalized.items);
       setPagination(normalized.pagination);
       setFilteredSummary(safeResponse.filtered_summary);
@@ -1101,7 +1293,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [alertsView, datePreset, dateRange, debouncedSearch, hasLoadedAlerts, health, incidentStateFilter, oneviewAckFilter, page, pageSize, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hasLoadedAlerts, health, incidentStateFilter, oneviewAckFilter, page, pageSize, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1232,16 +1424,44 @@ export default function AlertsPage() {
     };
   }, [loadAlerts, loadSummaryResources]);
 
+  useEffect(() => {
+    if (!freshAttentionIds.size) return undefined;
+    const timer = window.setInterval(() => {
+      const active = activeFreshAttentionIds(
+        freshStartedAtRef.current,
+        Date.now(),
+        ALERTS_FRESH_ATTENTION_DURATION_MS,
+      );
+      setFreshAttentionIds((current) => sameStringSet(current, active) ? current : active);
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [freshAttentionIds.size]);
+
+  useEffect(() => {
+    if (!alertTransitions.size) return undefined;
+    const timer = window.setInterval(() => {
+      const tick = Date.now();
+      const active = new Map(
+        [...alertTransitionsRef.current].filter(([, transition]) => isLiveTransitionActive(transition, tick)),
+      );
+      alertTransitionsRef.current = active;
+      alertPinnedRef.current = prunePinnedByTransitions(alertPinnedRef.current, active, tick);
+      if (!sameLiveTransitionMap(alertTransitions, active)) setAlertTransitions(active);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [alertTransitions]);
+
   useEffect(() => () => {
     alertsRequestRef.current?.abort();
     detailRequestRef.current?.abort();
   }, []);
 
   const baseMetas = [alertsMeta, metricsMeta, healthMeta, sourcesMeta, facetsMeta, operationsMeta];
-  const hasSnapshot = baseMetas.some((meta) => meta.source === "snapshot")
+  const primaryMetas = [alertsMeta, metricsMeta];
+  const hasSnapshot = primaryMetas.some((meta) => meta.source === "snapshot")
     || (selectedAlertId !== null && [detailMeta, historyMeta].some((meta) => meta.source === "snapshot"));
   const lastCheckedAt = latestCheckedAt(...baseMetas.map((meta) => meta.checkedAt), detailMeta.checkedAt, historyMeta.checkedAt);
-  const fallbackCode = [...baseMetas, detailMeta, historyMeta].find((meta) => meta.source === "snapshot" && meta.fallbackCode)?.fallbackCode;
+  const fallbackCode = [...primaryMetas, detailMeta, historyMeta].find((meta) => meta.source === "snapshot" && meta.fallbackCode)?.fallbackCode;
 
   const severityCounts = Object.fromEntries((metrics?.by_severity ?? []).map((item) => [item.severity, item.count]));
   const hasTemporalFilter = alertsView !== "forgotten" && alertsDateActive(datePreset, dateRange);
@@ -1409,8 +1629,20 @@ export default function AlertsPage() {
     } : null,
   ].filter((chip): chip is { key?: string; label: string; remove: () => void } => Boolean(chip));
 
+  const displayedAlerts = mergeLiveTransitionQueue({
+    serverItems: alerts,
+    pinnedById: alertPinnedRef.current,
+    transitions: alertTransitions,
+    passesFilter: () => true,
+    filter: {
+      hideAcknowledged: sourceAckFilter === "unacknowledged" || oneviewAckFilter === "pending",
+      hideResolved: statusFilter === "active",
+      hideAssigned: false,
+    },
+  }).slice(0, pageSize);
+
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
-  const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + alerts.length - 1, pagination.total_items);
+  const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
   const selectedAlert = detail?.item ?? selectedPreview;
   const selectedCustomer = selectedAlert ? customerPresentation(selectedAlert) : null;
   const selectedClassificationTags = selectedAlert ? safeClassificationTags(selectedAlert) : [];
@@ -1975,7 +2207,7 @@ export default function AlertsPage() {
             <TableBody>
               {showAlertsSkeleton ? Array.from({ length: 8 }).map((_, index) => (
                 <TableRow key={index}>{Array.from({ length: tableColumnCount }).map((__, cell) => <TableCell key={cell} className="py-4"><Skeleton className="h-4 w-full" /></TableCell>)}</TableRow>
-              )) : alerts.length === 0 ? (
+              )) : displayedAlerts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={tableColumnCount} className="p-0">
                     <OperationalEmptyState
@@ -1985,10 +2217,14 @@ export default function AlertsPage() {
                     />
                   </TableCell>
                 </TableRow>
-              ) : alerts.map((alert) => {
+              ) : displayedAlerts.map((alert) => {
                 const severityKey = normalizeOneViewSeverity(alert.severity);
                 const isResolved = isResolvedAlert(alert);
                 const isActive = !isResolved;
+                const liveTransition = alertTransitions.get(alert.id) ?? null;
+                const attentionTone = isActive && !acknowledged(alert) && !liveTransition && freshAttentionIds.has(alert.id)
+                  ? freshAttentionTone(alert.severity)
+                  : null;
                 const hostLabel = canonicalHostName(alert);
                 const technicalHost = displayHostField(alert.host_technical_name, "");
                 const clientLabel = operationalClientLabel({
@@ -2003,7 +2239,14 @@ export default function AlertsPage() {
                   ? formatDurationSeconds(Number(alert.duration_seconds))
                   : "—";
                 const alertCells: Record<AlertTableColumnId, ReactNode> = {
-                  severity: <TableCell key="severity" className="text-left"><OneViewSeverityBadge severity={severityKey} /></TableCell>,
+                  severity: (
+                    <TableCell key="severity" className="text-left">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <OneViewSeverityBadge severity={severityKey} />
+                        {liveTransition ? <span className="ov-live-transition-badge" aria-live="polite">{liveTransition.label}</span> : null}
+                      </span>
+                    </TableCell>
+                  ),
                   client: (
                     <TableCell key="client" className="text-left"><Tooltip><TooltipTrigger asChild><span className="inline-flex max-w-full justify-center"><ClientIdentity customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source }} operationalScope={alert.operational_scope} operationalScopeLabel={alert.operational_scope_label} showName nameClassName="max-w-[9rem] truncate text-left ov-type-body font-semibold" /></span></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{clientLabel}</TooltipContent></Tooltip></TableCell>
                   ),
@@ -2011,7 +2254,23 @@ export default function AlertsPage() {
                     <TableCell key="host" className="text-left"><Tooltip><TooltipTrigger asChild><p className="truncate ov-type-body font-semibold">{hostLabel}</p></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{technicalHost && technicalHost !== hostLabel ? `${hostLabel} · ${technicalHost}` : hostLabel}</TooltipContent></Tooltip></TableCell>
                   ),
                   problem: (
-                    <TableCell key="problem" className="text-left"><Tooltip><TooltipTrigger asChild><p className="truncate ov-type-body font-medium">{problemLabel}</p></TooltipTrigger><TooltipContent side="top" className="max-w-sm break-words">{safeDisplayText(alert.problem_name, "Alerta sem descrição")}</TooltipContent></Tooltip></TableCell>
+                    <TableCell key="problem" className="text-left">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="min-w-0">
+                            <p className="truncate ov-type-body font-medium">{problemLabel}</p>
+                            {alert.operator_link ? (
+                              <p className="mt-0.5 truncate text-[11px] font-medium text-primary">
+                                Link de operadora{[alert.operator_link.carrier_name, alert.operator_link.link_type, alert.operator_link.site_name].filter(Boolean).length
+                                  ? ` · ${[alert.operator_link.carrier_name, alert.operator_link.link_type, alert.operator_link.site_name].filter(Boolean).join(" · ")}`
+                                  : ""}
+                              </p>
+                            ) : null}
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-sm break-words">{safeDisplayText(alert.problem_name, "Alerta sem descrição")}</TooltipContent>
+                      </Tooltip>
+                    </TableCell>
                   ),
                   started: <TableCell key="started" className="text-left font-mono ov-type-caption text-muted-foreground">{alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}</TableCell>,
                   duration: <TableCell key="duration" className="text-right font-mono ov-type-caption tabular-nums text-muted-foreground">{durationLabel}</TableCell>,
@@ -2035,6 +2294,7 @@ export default function AlertsPage() {
                             onActionComplete={() => void loadAlerts({ quiet: true })}
                           />
                         ) : null}
+                        {alert.operator_link ? <AlertOperatorLinkControls alert={alert} compact /> : null}
                         <AlertSourceAckAction
                           alert={alert}
                           variant="icon"
@@ -2052,9 +2312,16 @@ export default function AlertsPage() {
                     role="button"
                     tabIndex={0}
                     aria-selected={selectedAlertId === alert.id}
+                    aria-label={`${problemLabel}${liveTransition ? ` · ${liveTransition.label}` : attentionTone ? " · Novo alerta" : ""}`}
                     onClick={() => openAlert(alert)}
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openAlert(alert); } }}
-                    className={cn("cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60", selectedAlertId === alert.id && "bg-muted/60")}
+                    className={cn(
+                      "cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60",
+                      selectedAlertId === alert.id && "bg-muted/60",
+                      attentionTone === "high" && "ov-alert-fresh-attention-high",
+                      attentionTone === "disaster" && "ov-alert-fresh-attention-disaster",
+                      liveTransition && "ov-alert-success-transition",
+                    )}
                   >
                     {alertTableColumns.visibleColumns.map((column) => alertCells[column.id])}
                   </TableRow>
@@ -2090,6 +2357,20 @@ export default function AlertsPage() {
         description="Informações operacionais seguras e histórico do OneView."
         onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
         onSourceAcknowledged={handleSourceAcknowledged}
+      />
+      <OperatorDisasterPopup
+        items={severityPopupEnabled ? severityPopups : []}
+        onOpen={(item) => {
+          const alert = severityPopupAlertsRef.current.get(item.key) || alerts.find((row) => row.id === item.key);
+          setSeverityPopups((current) => current.filter((entry) => entry.key !== item.key));
+          if (alert) openAlert(alert);
+        }}
+        onDismiss={(key) => setSeverityPopups((current) => current.filter((item) => item.key !== key))}
+        onDisable={() => {
+          setSeverityPopups([]);
+          setSeverityPopupEnabled(false);
+          setOneViewSeverityPopupEnabled(false, actorId);
+        }}
       />
 
     </AppLayout>

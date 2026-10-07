@@ -14,7 +14,7 @@ import {
   reminderInboxEventKey,
 } from "@/lib/oneview-operator-reminder-notification";
 
-const POLL_MS = 45_000;
+const POLL_MS = 20_000;
 
 function inboxSinceStorageKey(actorId: string) {
   return `oneview.reminder-inbox.since.${actorId}`;
@@ -99,6 +99,8 @@ export function OperatorReminderInboxProvider({ children }: { children: React.Re
   const seenRef = useRef<Set<string>>(new Set());
   const sinceRef = useRef<string>("");
   const pollingRef = useRef(false);
+  const serverOffsetRef = useRef(0);
+  const upcomingTimersRef = useRef(new Map<string, { scheduledFor: string; timer: number }>());
 
   useEffect(() => {
     if (!actorId) {
@@ -110,6 +112,10 @@ export function OperatorReminderInboxProvider({ children }: { children: React.Re
     const preferences = readOneViewNotificationPreferences(actorId);
     setPopupEnabled(preferences.reminderLinkPopup);
     setToasts(preferences.reminderLinkPopup ? readOpen(actorId) : []);
+    return () => {
+      for (const entry of upcomingTimersRef.current.values()) window.clearTimeout(entry.timer);
+      upcomingTimersRef.current.clear();
+    };
   }, [actorId]);
 
   useEffect(() => {
@@ -138,20 +144,59 @@ export function OperatorReminderInboxProvider({ children }: { children: React.Re
     playReminderLinkSound(actorId);
   }, [actorId, popupEnabled]);
 
+  const fireUpcoming = useCallback((item: OperatorReminderInboxItem) => {
+    const key = reminderInboxEventKey(item.id, "fired");
+    upcomingTimersRef.current.delete(item.id);
+    if (seenRef.current.has(key)) return;
+    seenRef.current.add(key);
+    seenRef.current.add(reminderInboxEventKey(item.id, "delivered"));
+    writeSeen(actorId, seenRef.current);
+    pushToast({ ...item, phase: "fired", occurred_at: item.scheduled_for || item.occurred_at });
+  }, [actorId, pushToast]);
+
+  const scheduleUpcoming = useCallback((item: OperatorReminderInboxItem) => {
+    const scheduledFor = item.scheduled_for || item.occurred_at;
+    const scheduledAt = Date.parse(scheduledFor);
+    if (!Number.isFinite(scheduledAt)) return;
+    const existing = upcomingTimersRef.current.get(item.id);
+    if (existing?.scheduledFor === scheduledFor) return;
+    if (existing) window.clearTimeout(existing.timer);
+    const serverNow = Date.now() + serverOffsetRef.current;
+    const delay = Math.max(0, scheduledAt - serverNow);
+    const timer = window.setTimeout(() => fireUpcoming(item), delay);
+    upcomingTimersRef.current.set(item.id, { scheduledFor, timer });
+  }, [fireUpcoming]);
+
   const poll = useCallback(async () => {
     if (!actorId || pollingRef.current) return;
     pollingRef.current = true;
     const since = sinceRef.current || readSince(actorId);
     try {
       const result = await fetchOperatorReminderInbox({ since });
+      const checkedAt = Date.parse(String(result.checked_at || ""));
+      if (Number.isFinite(checkedAt)) serverOffsetRef.current = checkedAt - Date.now();
       const seen = seenRef.current;
       let advanced = since;
       for (const item of result.items) {
         const key = reminderInboxEventKey(item.id, item.phase);
         if (seen.has(key)) continue;
+        const scheduledAt = Date.parse(String(item.scheduled_for || ""));
+        if (Number.isFinite(scheduledAt) && scheduledAt > Date.now() + serverOffsetRef.current) {
+          scheduleUpcoming({ ...item, scheduled_for: item.scheduled_for || item.occurred_at, phase: "fired" });
+          continue;
+        }
         seen.add(key);
         pushToast(item);
         advanced = advanceSince(advanced, [item], result.checked_at);
+      }
+      const upcomingIds = new Set((result.upcoming || []).map((item) => item.id));
+      for (const item of result.upcoming || []) scheduleUpcoming(item);
+      for (const [id, entry] of upcomingTimersRef.current) {
+        if (upcomingIds.has(id)) continue;
+        const scheduledAt = Date.parse(entry.scheduledFor);
+        if (Number.isFinite(scheduledAt) && scheduledAt > Date.now() + serverOffsetRef.current) continue;
+        window.clearTimeout(entry.timer);
+        upcomingTimersRef.current.delete(id);
       }
       if (!result.items.length && result.checked_at) {
         advanced = advanceSince(advanced, [], result.checked_at);
@@ -165,7 +210,7 @@ export function OperatorReminderInboxProvider({ children }: { children: React.Re
     } finally {
       pollingRef.current = false;
     }
-  }, [actorId, pushToast]);
+  }, [actorId, pushToast, scheduleUpcoming]);
 
   useEffect(() => {
     if (!actorId) return;

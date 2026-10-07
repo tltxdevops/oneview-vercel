@@ -33,7 +33,16 @@ function database(initial = []) {
     }
     if (/from operator_reminders/i.test(sql) && /for update/i.test(sql)) return { rows: rows.filter((item) => item.id === values[0] && item.data_source_id === values[1] && item.created_by === values[2] && item.status === "scheduled" && matches(item, values[3], values[4], values[5])) };
     if (/from operator_reminders/i.test(sql)) return { rows: rows.filter((item) => item.data_source_id === values[0] && values[1].includes(item.status) && matches(item, values[2], values[3], values[4])) };
-    if (/update operator_reminders set scheduled_for/i.test(sql)) { const item = rows.find((candidate) => candidate.id === values[2]); item.scheduled_for = values[0]; item.updated_at = values[1]; return { rows: [item] }; }
+    if (/update operator_reminders set scheduled_for/i.test(sql)) {
+      const item = rows.find((candidate) => candidate.id === values[values.length - 1]);
+      item.scheduled_for = values[0];
+      item.updated_at = values.length >= 5 ? values[3] : values[1];
+      if (values.length >= 5) {
+        const snapshot = typeof item.context_snapshot === "string" ? JSON.parse(item.context_snapshot) : (item.context_snapshot || {});
+        item.context_snapshot = { ...snapshot, reminder: { message: values[1], notify_webex: values[2] } };
+      }
+      return { rows: [item] };
+    }
     if (/update operator_reminders set status = 'cancelled'/i.test(sql)) { const item = rows.find((candidate) => candidate.id === values[1]); item.status = "cancelled"; item.cancelled_at = values[0]; item.updated_at = values[0]; return { rows: [item] }; }
     if (/insert into audit_logs/i.test(sql)) return { rows: [] };
     throw new Error(`unexpected query: ${sql}`);
@@ -50,7 +59,9 @@ test("OV-P0-290 creates future reminder from backend actor and snapshots a circu
   await route(request("POST", { scheduled_for: "2026-09-04T12:30:00-03:00", created_by: "forged" }), res);
   assert.equal(res.statusCode, 201); assert.equal(res.body.item.created_by, actor.id); assert.equal(res.body.item.created_by_name, actor.name);
   assert.equal(res.body.item.initial_incident_number, "INC001"); assert.equal(res.body.item.scheduled_for, "2026-09-04T15:30:00.000Z");
+  assert.equal(res.body.item.notify_webex, false);
   assert.equal(db.rows[0].context_snapshot.customer.name, "Havan"); assert.equal(db.rows[0].subject_key, `circuit:${CIRCUIT.id}`);
+  assert.equal(db.rows[0].context_snapshot.reminder.notify_webex, false);
   assert.ok(db.queries.some(({ sql }) => /REMINDER_CREATED/.test(sql) || /insert into audit_logs/i.test(sql)));
 });
 

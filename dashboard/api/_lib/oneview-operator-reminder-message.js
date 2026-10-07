@@ -46,6 +46,11 @@ export function severityFromReminder(reminder) {
   return text(snap.alert?.severity) || null;
 }
 
+export function messageFromReminder(reminder) {
+  const snap = snapshotBag(reminder?.context_snapshot);
+  return safe(snap.reminder?.message) || null;
+}
+
 /**
  * @param {object} reminder — linha operator_reminders (context_snapshot objeto ou JSON)
  * @param {"fired"|"delivered"} phase
@@ -56,17 +61,19 @@ export function buildOperatorReminderInAppCopy(reminder, phase) {
   const circuit = circuitLabelFromSnapshot(snap, reminder);
   const inc = incidentNumberFromReminder(reminder);
   const hasInc = Boolean(inc);
+  const customMessage = messageFromReminder(reminder);
+  const messageSuffix = customMessage ? ` Mensagem: ${customMessage}` : "";
 
   if (phase === "fired") {
     return {
       title: hasInc ? "Lembrete: link ainda pendente" : "Lembrete: link continua em falha",
-      body: `${customer} · ${circuit}. ${hasInc ? `INC ${inc} em aberto.` : "Sem chamado correlacionado."}`,
+      body: `${customer} · ${circuit}. ${hasInc ? `INC ${inc} em aberto.` : "Sem chamado correlacionado."}${messageSuffix}`,
     };
   }
 
   return {
     title: "Lembrete enviado no Webex",
-    body: `${customer} · ${circuit}. ${hasInc ? `INC ${inc}.` : "Sem chamado correlacionado."} Confirme o acompanhamento na fila de links.`,
+    body: `${customer} · ${circuit}. ${hasInc ? `INC ${inc}.` : "Sem chamado correlacionado."}${messageSuffix} Confirme o acompanhamento na fila de links.`,
   };
 }
 

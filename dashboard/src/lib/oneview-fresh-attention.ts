@@ -43,18 +43,24 @@ export function isFreshByFirstSeen(
   return age >= 0 && age < windowMs;
 }
 
-export function remainingFreshAttentionMs(startedAt: number, now = Date.now()): number {
+export function remainingFreshAttentionMs(
+  startedAt: number,
+  now = Date.now(),
+  durationMs = FRESH_ATTENTION_DURATION_MS,
+): number {
   if (!Number.isFinite(startedAt)) return 0;
-  return Math.max(0, FRESH_ATTENTION_DURATION_MS - (now - startedAt));
+  const safeDuration = Number.isFinite(durationMs) ? Math.max(0, durationMs) : FRESH_ATTENTION_DURATION_MS;
+  return Math.max(0, safeDuration - (now - startedAt));
 }
 
 export function activeFreshAttentionIds(
   attentionStartedAt: Map<string, number>,
   now = Date.now(),
+  durationMs = FRESH_ATTENTION_DURATION_MS,
 ): Set<string> {
   const active = new Set<string>();
   for (const [id, startedAt] of attentionStartedAt) {
-    if (remainingFreshAttentionMs(startedAt, now) > 0) active.add(id);
+    if (remainingFreshAttentionMs(startedAt, now, durationMs) > 0) active.add(id);
   }
   return active;
 }

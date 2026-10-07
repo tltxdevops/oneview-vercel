@@ -13,7 +13,7 @@ test("route data prefetch warms cookie-authenticated defaults without AbortSigna
   assert.match(prefetch, /getOneViewFacets\(\)/);
   assert.match(prefetch, /fetchHomeAlerts\(/);
   assert.match(prefetch, /fetchMonitoringAlerts\(/);
-  assert.match(prefetch, /fetchAlerts\(defaultAlertsFetchParams\(now\)\)/);
+  assert.match(prefetch, /fetchAlerts\(firstAlertsFetchParams\(now\)\)/);
   assert.match(prefetch, /fetchIncidents\(DEFAULT_INCIDENTS_FETCH_PARAMS\)/);
   assert.match(prefetch, /fetchCanonicalLinks/);
   assert.doesNotMatch(prefetch, /signal:/);
@@ -49,7 +49,7 @@ test("peek cache and facets store are wired for instant paint", async () => {
     read("src/pages/Index.tsx"),
   ]);
   assert.match(api, /export function peekOneViewReadCache/);
-  assert.match(api, /const shared = inFlightReads\.get\(key\);/);
+  assert.match(api, /const shared = oneViewFresh \? undefined : inFlightReads\.get\(key\);/);
   assert.match(api, /cached\.freshUntil <= Date\.now\(\)/);
   assert.match(api, /export function bucketOneViewReadNow/);
   assert.match(api, /ONEVIEW_READ_CACHE_TTL_MS = 8_000/);
@@ -61,17 +61,20 @@ test("peek cache and facets store are wired for instant paint", async () => {
   assert.match(alerts, /useOneViewWarmRead<AlertListResponse>/);
   assert.match(alerts, /bucketOneViewReadNow\(\)/);
   assert.match(alerts, /getOneViewFacets\(\)/);
-  assert.match(chamados, /oneViewIncidentsPath\(DEFAULT_INCIDENTS_FETCH_PARAMS\)/);
-  assert.match(operadoras, /oneViewLinksPath\(\{ \.\.\.DEFAULT_CANONICAL_LINKS_QUERY \}\)/);
+  assert.match(chamados, /includeCounts: false/);
+  assert.match(operadoras, /fetchCanonicalLinks/);
   assert.match(index, /defaultHomeAlertsFetchParams/);
   assert.match(index, /getOneViewFacets\(\)/);
 });
 
-test("Home paints its alert queue before secondary panels", async () => {
+test("Home paints alerts first and keeps secondary panels off the first wave", async () => {
   const index = await read("src/pages/Index.tsx");
   assert.match(index, /const loadCriticalHomeAlerts = useCallback/);
-  assert.match(index, /setCriticalHomeReady\(true\)/);
-  assert.match(index, /if \(!criticalHomeReady\) return;\s*void loadSummary/);
-  assert.match(index, /if \(!criticalHomeReady\) return;\s*void loadLists/);
-  assert.ok(index.indexOf("void loadCriticalHomeAlerts()") < index.indexOf("void loadSummary("));
+  assert.match(index, /await loadCriticalHomeAlerts\(\)/);
+  assert.match(index, /void loadLists\(hasSecondaryListsRef\.current \? "quiet" : "initial"\)/);
+  assert.doesNotMatch(index, /criticalHomeReady/);
+  assert.match(index, /recentOperationalMetricsFromAlertSummary\(summaryPayload\)/);
+  assert.match(index, /include: "items"/);
+  assert.match(index, /include: "summary"/);
+  assert.doesNotMatch(index, /fetchRecentOperationalMetrics/);
 });

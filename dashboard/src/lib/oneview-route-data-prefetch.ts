@@ -1,4 +1,4 @@
-import { defaultAlertsFetchParams } from "@/lib/alerts-query";
+import { firstAlertsFetchParams } from "@/lib/alerts-query";
 import {
   bucketOneViewReadNow,
   DEFAULT_CANONICAL_LINKS_QUERY,
@@ -53,7 +53,6 @@ async function warmRouteData(path: PrefetchRoute) {
   const now = bucketOneViewReadNow();
   if (path === "/") {
     await Promise.allSettled([
-      getOneViewFacets(),
       fetchHomeAlerts({
         mode: DEFAULT_HOME_ALERT_MODE,
         status: "active",
@@ -79,7 +78,7 @@ async function warmRouteData(path: PrefetchRoute) {
   if (path === "/alertas") {
     await Promise.allSettled([
       getOneViewFacets(),
-      fetchAlerts(defaultAlertsFetchParams(now)),
+      fetchAlerts(firstAlertsFetchParams(now)),
     ]);
     return;
   }

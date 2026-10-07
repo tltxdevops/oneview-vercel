@@ -1,4 +1,4 @@
-import type { OperatorReminderInboxItem, OperatorReminderInboxLink } from "@/lib/oneview-api";
+import type { OneViewAlert, OperatorReminderInboxItem, OperatorReminderInboxLink } from "@/lib/oneview-api";
 import { readOneViewNotificationPreferences } from "@/lib/oneview-notification-preferences";
 
 let audioContext: AudioContext | null = null;
@@ -18,6 +18,17 @@ export function operadorasReminderLinkSearchParams(item: Pick<OperatorReminderIn
 
 export function operadorasReminderLinkPath(item: Pick<OperatorReminderInboxItem, "id" | "link">) {
   return `/operadoras?${operadorasReminderLinkSearchParams(item).toString()}`;
+}
+
+export function operadorasAlertLinkPath(alert: Pick<OneViewAlert, "operator_link">) {
+  const link = alert.operator_link;
+  if (!link) return "/operadoras";
+  const params = new URLSearchParams({ ds: link.data_source_id, host: link.source_host_id });
+  if (link.circuit_key) params.set("circuit", link.circuit_key);
+  params.set("subject_type", link.operational_subject.subject_type);
+  params.set("subject_key", link.operational_subject.subject_key);
+  if (link.source_trigger_id) params.set("trigger", link.source_trigger_id);
+  return `/operadoras?${params.toString()}`;
 }
 
 export function reminderInboxEventKey(reminderId: string, phase: "fired" | "delivered") {

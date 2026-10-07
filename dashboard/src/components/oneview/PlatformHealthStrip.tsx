@@ -1,32 +1,46 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { RuntimeHealthResponse, fetchRuntimeHealth } from "@/lib/oneview-api";
+import {
+  readRuntimeHealthSnapshot,
+  writeRuntimeHealthSnapshot,
+} from "@/lib/oneview-health-snapshot";
 import { operationalToneDotClass, operationalToneLabel, runtimeSummary } from "@/lib/runtime-health";
+import { formatRelativePtBr } from "@/lib/platform-health";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { runAfterOneViewFirstUseful } from "@/lib/oneview-performance";
 
 const REFRESH_MS = 30_000;
 
 export function PlatformHealthStrip({ className }: { className?: string }) {
-  const [health, setHealth] = useState<RuntimeHealthResponse | null>(null);
+  const [health, setHealth] = useState<RuntimeHealthResponse | null>(() => readRuntimeHealthSnapshot());
+  const [usingSnapshot, setUsingSnapshot] = useState(() => Boolean(health));
   const inFlight = useRef<Promise<void> | null>(null);
   const tipId = useId();
   const refresh = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
-    const request = fetchRuntimeHealth().then(setHealth).finally(() => { inFlight.current = null; });
+    const request = fetchRuntimeHealth()
+      .then((payload) => {
+        setHealth(payload);
+        writeRuntimeHealthSnapshot(payload);
+        setUsingSnapshot(false);
+      })
+      .finally(() => { inFlight.current = null; });
     inFlight.current = request;
     return request;
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => runAfterOneViewFirstUseful(() => void refresh()), [refresh]);
   useEffect(() => {
     const timer = window.setInterval(() => void refresh(), REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
   const items = useMemo(() => runtimeSummary(health), [health]);
+  const snapshotAge = usingSnapshot ? formatRelativePtBr(health?.checked_at) : null;
   return (
     <TooltipProvider delayDuration={150}>
       <div
         className={cn("inline-flex shrink-0 flex-nowrap items-center gap-2 rounded-md border border-border/60 bg-background/80 px-2 py-1", className)}
-        aria-label="Saúde operacional"
+        aria-label={snapshotAge ? `Saúde operacional · snapshot ${snapshotAge}` : "Saúde operacional"}
       >
         {items.map((item, index) => {
           const label = operationalToneLabel(item.tone);

@@ -15,6 +15,7 @@ import {
   GLOBAL_HISTORY_EVENT_TYPES,
   historyTitle,
   historyValueIsMeaningful,
+  operatorLinkReadModel,
   resolveAckActorName,
   resolveSourceAck,
   safeCustomerIdentity,
@@ -989,6 +990,35 @@ test("saúde operacional classifica healthy, error, stale e disabled", () => {
   assert.equal(classifyOperationalSource({ ...base, status: "error" }, now).status, "error");
   assert.equal(classifyOperationalSource({ ...base, last_activity_at: "2026-07-14T11:55:00.000Z" }, now).status, "stale");
   assert.equal(classifyOperationalSource({ ...base, sync_enabled: false, status: "error" }, now).status, "disabled");
+});
+
+test("alertas de operadora expõem operator_link no read-model", () => {
+  const link = operatorLinkReadModel({
+    id: "alert-1",
+    data_source_id: "ds-1",
+    datasource: "teletex-http",
+    source_host_id: "havan-aggregator",
+    source_trigger_id: "trigger-1",
+    host_name: "HAVAN",
+    customer_key: "havan",
+    customer_name: "Havan",
+    item_key: "meraki.uplink.status[143-marilia, wan1, primary]",
+    event_tags: [{ tag: "escalation", value: "Operator" }, { tag: "carrier", value: "Vivo" }],
+    trigger_tags: [],
+    host_tags: [],
+    template_tags: [],
+    severity: "disaster",
+    status_source: "active",
+    is_active: true,
+  });
+  assert.ok(link);
+  assert.equal(link.data_source_id, "ds-1");
+  assert.equal(link.source_host_id, "havan-aggregator");
+  assert.equal(link.source_trigger_id, "trigger-1");
+  assert.equal(link.carrier_name, "Vivo");
+  assert.equal(link.operational_subject.subject_type, "circuit");
+  assert.ok(link.operational_subject.subject_key);
+  assert.equal(operatorLinkReadModel({ id: "plain", data_source_id: "ds-1", source_host_id: "host", source_trigger_id: "t1", event_tags: [] }), null);
 });
 
 for (const route of ["alert-detail", "alert-history", "operations-health"]) {

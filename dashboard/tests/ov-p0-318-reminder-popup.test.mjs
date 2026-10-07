@@ -9,6 +9,7 @@ test("OV-P0-318: lembrete Webex é independente e a inbox é limitada ao solicit
   assert.match(inbox, /where created_by = \$1/);
   assert.match(inbox, /status = 'processing'/);
   assert.match(inbox, /status = 'sent'/);
+  assert.match(inbox, /status = 'sent' and scheduled_for between now\(\) and now\(\) \+ interval '5 minutes'/);
   assert.doesNotMatch(inbox, /created_by_name = \$1/);
 });
 
@@ -30,7 +31,16 @@ test("OV-P0-318: popup persistente é centrado, opcional e não possui auto-dism
   assert.match(preferences, /reminderLinkPopup: true/);
   assert.match(preferences, /setOneViewReminderLinkPopup/);
   assert.match(preferences, /ONEVIEW_NOTIFICATION_PREFERENCES_EVENT/);
+  assert.match(preferences, /severityPopup:/);
+  assert.match(preferences, /operatorDisasterPopup/);
+  assert.match(preferences, /setOneViewSeverityPopupEnabled/);
   assert.match(settings, /Exibir pop-up de lembrete/);
   assert.match(settings, /Som nos lembretes de link/);
   assert.match(settings, /Webex\/Theo segue independente/);
+  assert.match(settings, /Pop-up de novos alertas/);
+  assert.match(settings, /SEVERITY_POPUP_LABELS/);
+  assert.match(settings, /toggleOneViewSeverityPopupLevel/);
+  assert.match(provider, /const POLL_MS = 20_000/);
+  assert.match(provider, /if \(seenRef.current.has\(key\)\) return/);
+  assert.match(provider, /reminderInboxEventKey\(item.id, "delivered"\)/);
 });

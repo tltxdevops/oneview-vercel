@@ -172,6 +172,54 @@ for (const route of routes) {
   });
 }
 
+test("falha transitória do database repete uma vez e mantém resposta live", async () => {
+  const res = response();
+  const logs = [];
+  let calls = 0;
+  const database = async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error = new Error("conexão interrompida");
+      error.code = "database_unavailable";
+      throw error;
+    }
+    return { items: [{ id: "live-after-retry" }] };
+  };
+  await createOneViewHandler("alerts", {
+    authorize: authenticated,
+    configProvider: liveDbConfig,
+    database,
+    fallback,
+    logger: (entry) => logs.push(JSON.parse(entry)),
+  })(request(), res);
+  assert.equal(calls, 2);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data_source, "database");
+  assert.equal(logs.some((entry) => entry.event === "oneview_database_read_retry" && entry.attempt === 2), true);
+});
+
+test("erro não transitório não repete leitura do database", async () => {
+  const res = response();
+  let calls = 0;
+  const database = async () => {
+    calls += 1;
+    const error = new Error("credencial inválida");
+    error.code = "database_authentication_failed";
+    throw error;
+  };
+  await createOneViewHandler("alerts", {
+    authorize: authenticated,
+    configProvider: liveDbConfig,
+    database,
+    fallback,
+    logger: noLog,
+  })(request(), res);
+  assert.equal(calls, 1);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data_source, "snapshot");
+  assert.equal(res.body.fallback_code, "database_authentication_failed");
+});
+
 test("provider database com falha usa snapshot", async () => {
   const res = response();
   const database = async () => {

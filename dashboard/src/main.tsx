@@ -1,5 +1,8 @@
 import "./index.css";
 import "./styles/oneview-design-tokens.css";
+import { markOneViewPerformance } from "@/lib/oneview-performance";
+
+markOneViewPerformance("oneview:bootstrap:start");
 
 declare global {
   interface Window {
@@ -79,19 +82,27 @@ async function loadRuntimeConfig() {
 }
 
 async function bootstrap() {
+  const reactDomPromise = import("react-dom/client");
   await loadRuntimeConfig();
+  markOneViewPerformance("oneview:runtime-config:ready");
 
-  const [{ createRoot }, { default: App }, { AuthProvider }] = await Promise.all([
-    import("react-dom/client"),
+  // App/Auth evaluate only after runtime config because MSAL reads it at module load.
+  const appModulesPromise = Promise.all([
     import("./App.tsx"),
     import("@/context/AuthContext"),
   ]);
+  const [{ createRoot }, [{ default: App }, { AuthProvider }]] = await Promise.all([
+    reactDomPromise,
+    appModulesPromise,
+  ]);
+  markOneViewPerformance("oneview:app-modules:ready");
 
   createRoot(document.getElementById("root")!).render(
     <AuthProvider>
       <App />
     </AuthProvider>
   );
+  markOneViewPerformance("oneview:app:render-requested");
 }
 
 bootstrap();

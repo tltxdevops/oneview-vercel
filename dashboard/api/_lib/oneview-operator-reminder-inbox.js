@@ -43,7 +43,7 @@ function rowValue(value) {
   }
 }
 
-function inboxRowToEvents(row) {
+function inboxRowToEvents(row, now = new Date()) {
   const reminder = {
     ...row,
     context_snapshot: rowValue(row.context_snapshot) || row.context_snapshot || {},
@@ -57,6 +57,7 @@ function inboxRowToEvents(row) {
         id: row.id,
         phase: "fired",
         occurred_at: occurred,
+        scheduled_for: row.scheduled_for ? new Date(row.scheduled_for).toISOString() : undefined,
         title: copy.title,
         body: copy.body,
         link: reminderLinkLocator(reminder),
@@ -65,6 +66,8 @@ function inboxRowToEvents(row) {
     }
   }
   if (row.status === "sent") {
+    const scheduledAt = Date.parse(String(row.scheduled_for || ""));
+    if (Number.isFinite(scheduledAt) && scheduledAt > now.getTime()) return events;
     const occurred = row.sent_at ? new Date(row.sent_at).toISOString() : null;
     if (occurred) {
       const copy = buildOperatorReminderInAppCopy(reminder, "delivered");
@@ -72,6 +75,7 @@ function inboxRowToEvents(row) {
         id: row.id,
         phase: "delivered",
         occurred_at: occurred,
+        scheduled_for: row.scheduled_for ? new Date(row.scheduled_for).toISOString() : undefined,
         title: copy.title,
         body: copy.body,
         link: reminderLinkLocator(reminder),
@@ -80,6 +84,28 @@ function inboxRowToEvents(row) {
     }
   }
   return events;
+}
+
+function upcomingRowToEvent(row, now = new Date()) {
+  if (!row.scheduled_for) return null;
+  const scheduledAt = Date.parse(String(row.scheduled_for));
+  if (!Number.isFinite(scheduledAt)) return null;
+  const stillScheduled = row.status === "scheduled";
+  const sentWaitingForPopup = row.status === "sent" && scheduledAt > now.getTime();
+  if (!stillScheduled && !sentWaitingForPopup) return null;
+  const reminder = { ...row, context_snapshot: rowValue(row.context_snapshot) || row.context_snapshot || {} };
+  const occurredAt = new Date(scheduledAt).toISOString();
+  const copy = buildOperatorReminderInAppCopy(reminder, "fired");
+  return {
+    id: row.id,
+    phase: "fired",
+    occurred_at: occurredAt,
+    scheduled_for: occurredAt,
+    title: copy.title,
+    body: copy.body,
+    link: reminderLinkLocator(reminder),
+    severity: severityFromReminder(reminder),
+  };
 }
 
 function publicDatabaseError(error) {
@@ -129,14 +155,16 @@ export function createOperatorReminderInboxHandler({
         const result = await client.query(
           `
             select id, subject_type, subject_key, circuit_key, data_source_id, source_host_id, source_trigger_id,
-                   status, context_snapshot, initial_incident_number, updated_at, sent_at
+                   status, scheduled_for, context_snapshot, initial_incident_number, updated_at, sent_at
               from operator_reminders
              where created_by = $1
                and (
                  (status = 'processing' and updated_at > $2::timestamptz)
                  or (status = 'sent' and sent_at > $2::timestamptz)
+                 or (status = 'scheduled' and scheduled_for between now() - interval '2 minutes' and now() + interval '5 minutes')
+                 or (status = 'sent' and scheduled_for between now() and now() + interval '5 minutes')
                )
-             order by coalesce(sent_at, updated_at) asc, id asc
+             order by coalesce(sent_at, updated_at, scheduled_for) asc, id asc
              limit $3
           `,
           [user.id, since, limit],
@@ -144,11 +172,14 @@ export function createOperatorReminderInboxHandler({
         return result.rows || [];
       });
 
-      const items = rows.flatMap((row) => inboxRowToEvents(row));
+      const checkedAt = now();
+      const items = rows.flatMap((row) => inboxRowToEvents(row, checkedAt));
+      const upcoming = rows.map((row) => upcomingRowToEvent(row, checkedAt)).filter(Boolean);
       return reply(200, {
         items,
+        upcoming,
         data_source: "postgresql",
-        checked_at: now().toISOString(),
+        checked_at: checkedAt.toISOString(),
       });
     } catch (error) {
       return reply(503, { error: publicDatabaseError(error) }, { cause: classifyActionsFailure(error) });

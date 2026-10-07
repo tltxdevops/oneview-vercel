@@ -21,13 +21,15 @@ test("Alerts removes Fonte Zabbix and date-field controls while preserving canon
   assert.match(drawer, /Fonte Zabbix/);
 });
 
-test("Operational filters use bounded desktop popover and mobile bottom sheet", async () => {
+test("Operational filters adapt between bounded desktop popover and compact bottom sheet", async () => {
   const panel = await read("src/components/oneview/OperationalFilterPanel.tsx");
   const tools = await read("src/components/oneview/ConfigurableTableTools.tsx");
   assert.match(panel, /side="bottom"/);
   assert.match(panel, /max-h-\[90dvh\]/);
-  assert.match(panel, /max-h-\[min\(80dvh,46rem\)\]/);
-  assert.match(panel, /repeat\(auto-fit,minmax\(min\(100%,13rem\),1fr\)\)/);
+  assert.match(panel, /COMPACT_FILTER_BREAKPOINT = 1120/);
+  assert.match(panel, /width: "min\(48rem, calc\(100vw - 2rem\)\)"/);
+  assert.match(panel, /maxHeight: "min\(80dvh, var\(--radix-popover-content-available-height\)\)"/);
+  assert.match(panel, /repeat\(auto-fit,minmax\(min\(100%,14\.5rem\),1fr\)\)/);
   assert.match(tools, /OperationalFilterPanel/);
 });
 

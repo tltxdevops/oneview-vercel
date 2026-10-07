@@ -15,6 +15,8 @@ import {
 } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
 import { OPERATOR_TAG_EXISTS_SQL } from "./oneview-operator-tags.js";
+import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
+import { buildOperationalSubject } from "./oneview-operational-subject.js";
 import { getAckRequestConfig } from "./oneview-ack-request.js";
 import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
 import {
@@ -352,6 +354,15 @@ const INTERNAL_ACKNOWLEDGED_SQL = `(coalesce(a.acknowledged_internal, false) or 
      and internal_ack.status in ('recorded','pending','processing','success','completed')
 ))`;
 
+// ACK OneView Ã© a Ãºltima aÃ§Ã£o delegada criada pelo OneView. NÃ£o altera nem
+// deriva o estado do alerta, que continua vindo de status_source/acknowledged_source.
+const LATEST_ONEVIEW_ACK_STATUS_SQL = `(select ack.status
+  from alert_acknowledgements ack
+ where ack.alert_id = a.id
+   and ack.acknowledgement_type = 'source'
+ order by ack.requested_at desc, ack.id desc
+ limit 1)`;
+
 export function isResolvedAlert(alert) {
   const sourceStatus = textValue(alert?.status_source).toLowerCase();
   const internalStatus = textValue(alert?.status_internal).toLowerCase();
@@ -686,6 +697,21 @@ function incidentStateCorrelationSql(stateParam) {
   )`;
 }
 
+const ALERT_LIST_INCLUDE_PARTS = Object.freeze(["items", "summary", "temporal"]);
+
+export function parseAlertListInclude(raw) {
+  const value = textValue(raw).trim().toLowerCase();
+  if (!value) return { items: true, summary: true, temporal: true };
+  const parts = [...new Set(value.split(",").map((part) => part.trim()).filter(Boolean))];
+  if (!parts.length) return { items: true, summary: true, temporal: true };
+  if (parts.some((part) => !ALERT_LIST_INCLUDE_PARTS.includes(part))) throw requestError("invalid_query");
+  return {
+    items: parts.includes("items"),
+    summary: parts.includes("summary"),
+    temporal: parts.includes("temporal"),
+  };
+}
+
 export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSourceNames()) {
   const params = [];
   const clauses = [];
@@ -708,6 +734,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const acknowledged = oneQueryValue(req, "acknowledged").toLowerCase();
   const acknowledgedSource = oneQueryValue(req, "acknowledged_source").toLowerCase();
   const acknowledgedInternal = oneQueryValue(req, "acknowledged_internal").toLowerCase();
+  const oneviewAckStatus = oneQueryValue(req, "oneview_ack_status").toLowerCase();
   const search = oneQueryValue(req, "search").slice(0, 200);
   const searchField = (oneQueryValue(req, "search_field") || "all").toLowerCase();
   const hostSearch = oneQueryValue(req, "host_search").slice(0, 200);
@@ -736,6 +763,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (acknowledged && !["true", "false"].includes(acknowledged)) throw requestError("invalid_query");
   if (acknowledgedSource && !["true", "false"].includes(acknowledgedSource)) throw requestError("invalid_query");
   if (acknowledgedInternal && !["true", "false"].includes(acknowledgedInternal)) throw requestError("invalid_query");
+  if (oneviewAckStatus && !["pending", "success", "cancelled", "failed"].includes(oneviewAckStatus)) throw requestError("invalid_query");
   if (!["all", "host", "problem", "customer", "eventid"].includes(searchField)) throw requestError("invalid_query");
   if (!Object.hasOwn(ALERT_SORTS, sort) || !["asc", "desc"].includes(order)) throw requestError("invalid_query");
   if (sortSecondary && (!Object.hasOwn(ALERT_SORTS, sortSecondary) || sortSecondary === sort)) {
@@ -791,6 +819,10 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   }
   if (acknowledgedSource) push("coalesce(a.acknowledged_source, false) = ?", acknowledgedSource === "true");
   if (acknowledgedInternal) push(`${INTERNAL_ACKNOWLEDGED_SQL} = ?`, acknowledgedInternal === "true");
+  if (oneviewAckStatus === "pending") clauses.push(`${LATEST_ONEVIEW_ACK_STATUS_SQL} in ('pending','processing')`);
+  if (["success", "cancelled", "failed"].includes(oneviewAckStatus)) {
+    push(`${LATEST_ONEVIEW_ACK_STATUS_SQL} = ?`, oneviewAckStatus);
+  }
   if (search) {
     if (searchField === "host") {
       push(
@@ -867,6 +899,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       acknowledged,
       acknowledgedSource,
       acknowledgedInternal,
+      oneviewAckStatus,
       search,
       searchField,
       hostSearch,
@@ -888,6 +921,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       excludeOperator: excludeOperator === "true",
       incidentState: incidentState || null,
     },
+    include: parseAlertListInclude(oneQueryValue(req, "include")),
   };
 }
 
@@ -977,6 +1011,61 @@ export function classifyAlertEnrichment(alert) {
   return textValue(alert?.customer_confidence).toLowerCase() === "high" ? "complete" : "partial";
 }
 
+export function oneViewAckReadModel(row = {}) {
+  const status = textValue(row.oneview_ack_status);
+  return {
+    status: ["pending", "processing", "success", "cancelled", "failed"].includes(status) ? status : "none",
+    requested_at: isoDate(row.oneview_ack_requested_at),
+    processed_at: isoDate(row.oneview_ack_processed_at),
+    actor_name: resolveAckActorName(row.oneview_ack_actor_name),
+    reason: nullableText(sanitizeText(row.oneview_ack_reason, "", 160)),
+    message: nullableText(sanitizeText(row.oneview_ack_message, "", 500)),
+  };
+}
+
+// Estado do alerta vem da origem/read-model; nunca do resultado da ação ACK.
+export function alertStatusReadModel(row = {}) {
+  const sourceStatus = textValue(row.status_source).toLowerCase();
+  const internalStatus = textValue(row.status_internal).toLowerCase();
+  if (["cancelled", "canceled"].includes(sourceStatus)) return "cancelled";
+  if (sourceStatus === "active") return "active";
+  if (sourceStatus === "resolved" || Boolean(row.resolved_at) || ["resolved", "normalized"].includes(internalStatus)) return "resolved";
+  return sourceStatus || "unknown";
+}
+
+export function operatorLinkReadModel(row = {}) {
+  const candidate = discoverOperatorCircuits([row])[0] || null;
+  if (!candidate) return null;
+  const sourceHostId = nullableText(row.source_host_id ?? candidate.source_host_id);
+  const sourceTriggerId = nullableText(row.source_trigger_id);
+  const dataSourceId = textValue(row.data_source_id ?? candidate.data_source_id);
+  if (!dataSourceId || !sourceHostId || !sourceTriggerId) return null;
+  const operationalSubject = buildOperationalSubject({
+    ...candidate,
+    data_source_id: dataSourceId,
+    source_host_id: sourceHostId,
+    current_alert: { source_trigger_id: sourceTriggerId },
+  });
+  if (!operationalSubject) return null;
+  return {
+    id: textValue(candidate.circuit_key, sourceHostId),
+    circuit_key: nullableText(candidate.circuit_key),
+    resolution_status: ["resolved", "unresolved", "ambiguous"].includes(candidate.resolution_status)
+      ? candidate.resolution_status
+      : "unresolved",
+    data_source_id: dataSourceId,
+    source_host_id: sourceHostId,
+    source_trigger_id: sourceTriggerId,
+    service_name: nullableText(sanitizeText(candidate.service_name, "", 240)),
+    carrier_name: nullableText(sanitizeText(candidate.carrier_name, "", 120)),
+    link_type: nullableText(sanitizeText(candidate.link_type, "", 120)),
+    member_key: nullableText(sanitizeText(candidate.member_key, "", 120)),
+    uplink_key: nullableText(sanitizeText(candidate.uplink_key, "", 120)),
+    site_name: nullableText(sanitizeText(candidate.site_name, "", 160)),
+    operational_subject: operationalSubject,
+  };
+}
+
 function mapAlertRows(rows) {
   // OV-P0-109 — URL deep-link a partir do baseUrl local (sem HTTP ServiceNow por row).
   // Aceita base URL mesmo sem credenciais API (link abre no browser do usuário).
@@ -1028,7 +1117,8 @@ function mapAlertRows(rows) {
       source_event_id: textValue(row.source_event_id, textValue(row.id)),
       source_problem_id: nullableText(row.source_problem_id),
       source_trigger_id: nullableText(row.source_trigger_id),
-      source_host_id: null,
+      source_host_id: nullableText(row.source_host_id),
+      operator_link: operatorLinkReadModel(row),
       recurrence_key: buildRecurrenceKey(row),
       host_name: hosts.host_name,
       host_visible_name: hosts.host_visible_name,
@@ -1049,6 +1139,7 @@ function mapAlertRows(rows) {
       severity: textValue(row.severity, "not_classified"),
       status_source: textValue(row.status_source, "active"),
       status_internal: textValue(row.status_internal, "new"),
+      alert_status: alertStatusReadModel(row),
       acknowledged_source: Boolean(row.acknowledged_source),
       acknowledged_internal: Boolean(row.acknowledged_internal),
       acknowledged_source_at: isoDate(row.acknowledged_source_at ?? row.acknowledged_at),
@@ -1061,6 +1152,10 @@ function mapAlertRows(rows) {
       ack_request_status: ["pending", "processing"].includes(textValue(row.ack_request_status))
         ? textValue(row.ack_request_status)
         : null,
+      source_ack_status: ["pending", "processing", "failed", "cancelled"].includes(textValue(row.oneview_ack_status ?? row.source_ack_status))
+        ? textValue(row.oneview_ack_status ?? row.source_ack_status)
+        : null,
+      oneview_ack: oneViewAckReadModel(row),
       suppressed: Boolean(row.suppressed),
       suppressed_until: isoDate(row.suppressed_until),
       maintenance_status: nullableText(sanitizeText(row.maintenance_status, "", 80)),
@@ -1204,13 +1299,13 @@ function alertTemporalCounts(row) {
 }
 
 async function fetchAlertList(req, config, dataSourceNames) {
-  const { page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql } = buildAlertListQuery(
+  const { page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql, include } = buildAlertListQuery(
     req,
     dataSourceNames,
   );
 
   const [summaryRow, temporalRow, itemRows] = await Promise.all([
-    queryRow(config, `
+    include.summary ? queryRow(config, `
       select
         count(*)::int as total,
         count(*) filter (where ${ACTIVE_ALERT_SQL})::int as active,
@@ -1226,8 +1321,8 @@ async function fetchAlertList(req, config, dataSourceNames) {
       from alerts a
       join data_sources d on d.id = a.data_source_id
       ${whereSql}
-    `, params),
-    queryRow(config, `
+    `, params) : Promise.resolve(null),
+    include.temporal ? queryRow(config, `
       select
         count(*) filter (where a.first_seen_at >= now() - interval '15 minutes')::int as created_15m,
         count(*) filter (where a.first_seen_at >= now() - interval '1 hour')::int as created_1h,
@@ -1248,8 +1343,8 @@ async function fetchAlertList(req, config, dataSourceNames) {
       from alerts a
       join data_sources d on d.id = a.data_source_id
       ${baseWhereSql}
-    `, baseParams),
-    queryRows(
+    `, baseParams) : Promise.resolve(null),
+    include.items ? queryRows(
       config,
       `
         select
@@ -1273,6 +1368,10 @@ async function fetchAlertList(req, config, dataSourceNames) {
           a.trigger_tags,
           a.host_tags,
           a.service_name,
+          a.item_name,
+          a.item_key,
+          a.trigger_description,
+          a.operational_data,
           a.problem_name,
           a.severity,
           a.status_source,
@@ -1307,6 +1406,12 @@ async function fetchAlertList(req, config, dataSourceNames) {
             where ack.alert_id = a.id and ack.status in ('pending','processing')
             order by ack.requested_at desc, ack.id desc
             limit 1) as ack_request_status,
+          oneview_ack.status as oneview_ack_status,
+          oneview_ack.requested_at as oneview_ack_requested_at,
+          oneview_ack.processed_at as oneview_ack_processed_at,
+          oneview_ack.operator_name as oneview_ack_actor_name,
+          oneview_ack.result_payload ->> 'reason' as oneview_ack_reason,
+          oneview_ack.message as oneview_ack_message,
           a.suppressed,
           a.suppressed_until,
           a.maintenance_status,
@@ -1318,35 +1423,51 @@ async function fetchAlertList(req, config, dataSourceNames) {
           a.updated_at
         from alerts a
         join data_sources d on d.id = a.data_source_id
+        left join lateral (
+          select ack.status, ack.requested_at, ack.processed_at, ack.operator_name, ack.result_payload, ack.message
+            from alert_acknowledgements ack
+           where ack.alert_id = a.id and ack.acknowledgement_type = 'source'
+           order by ack.requested_at desc, ack.id desc
+           limit 1
+        ) oneview_ack on true
         ${whereSql}
         order by ${orderSql}
         limit $${params.length + 1}
         offset $${params.length + 2}
       `,
       [...params, pageSize, offset],
-    ),
+    ) : Promise.resolve([]),
   ]);
 
-  const totalItems = integerValue(summaryRow?.total, 0);
-  const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize);
+  const items = include.items ? mapAlertRows(itemRows) : [];
+  if (items.length) await enrichMapsServiceNowReferences(items, config);
 
-  const items = mapAlertRows(itemRows);
-  await enrichMapsServiceNowReferences(items, config);
+  const itemCount = items.length;
+  const totalItems = include.summary
+    ? integerValue(summaryRow?.total, 0)
+    : offset + itemCount;
+  const hasNext = include.summary
+    ? (totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize)) > page
+    : include.items && itemCount === pageSize;
+  const totalPages = include.summary
+    ? (totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize))
+    : (itemCount === 0 && page === 1 ? 0 : page + (hasNext ? 1 : 0));
 
-  return {
+  const payload = {
     generated_at: generatedAt(),
     items,
-    filtered_summary: alertFilteredSummary(summaryRow),
-    temporal_counts: alertTemporalCounts(temporalRow),
     pagination: {
       page,
       page_size: pageSize,
       total_items: totalItems,
       total_pages: totalPages,
-      has_next: page < totalPages,
-      has_previous: page > 1 && totalPages > 0,
+      has_next: hasNext,
+      has_previous: page > 1 && (include.summary ? totalPages > 0 : true),
     },
   };
+  if (include.summary) payload.filtered_summary = alertFilteredSummary(summaryRow);
+  if (include.temporal) payload.temporal_counts = alertTemporalCounts(temporalRow);
+  return payload;
 }
 
 function attentionThresholdPayload(thresholds) {
@@ -1535,6 +1656,12 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
           where ack.alert_id = a.id and ack.status in ('pending','processing')
           order by ack.requested_at desc, ack.id desc
           limit 1) as ack_request_status,
+        oneview_ack.status as oneview_ack_status,
+        oneview_ack.requested_at as oneview_ack_requested_at,
+        oneview_ack.processed_at as oneview_ack_processed_at,
+        oneview_ack.operator_name as oneview_ack_actor_name,
+        oneview_ack.result_payload ->> 'reason' as oneview_ack_reason,
+        oneview_ack.message as oneview_ack_message,
         a.suppressed, a.suppressed_until, a.maintenance_status,
         a.first_seen_at, a.last_seen_at, a.resolved_at, a.duration_seconds,
         a.created_at, a.updated_at,
@@ -1546,6 +1673,13 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
         (select count(*)::int from alert_acknowledgements ack where ack.alert_id = a.id) as acknowledgement_count
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      left join lateral (
+        select ack.status, ack.requested_at, ack.processed_at, ack.operator_name, ack.result_payload, ack.message
+          from alert_acknowledgements ack
+         where ack.alert_id = a.id and ack.acknowledgement_type = 'source'
+         order by ack.requested_at desc, ack.id desc
+         limit 1
+      ) oneview_ack on true
       where a.id = $1
         and d.name = any($2::text[])
       limit 1
@@ -1718,6 +1852,11 @@ const HISTORY_TITLES = Object.freeze({
   severity_changed: "Severidade alterada",
   acknowledged: "Alerta reconhecido na origem",
   internal_acknowledged: "Reconhecido no OneView",
+  oneview_ack_requested: "Solicita\u00e7\u00e3o de ACK criada",
+  oneview_ack_processing: "Processamento do ACK iniciado",
+  oneview_ack_confirmed: "ACK confirmado na origem",
+  oneview_ack_cancelled: "ACK cancelado",
+  oneview_ack_failed: "ACK falhou",
   ack_message: "Comentário adicionado ao reconhecimento",
   suppressed: "Alerta suprimido",
   unsuppressed: "Supressão encerrada",
@@ -1735,6 +1874,7 @@ export function historyTitle(eventType) {
   if (normalized.includes("severity")) return "Severidade alterada";
   if (normalized.includes("recovery") || normalized.includes("resolved")) return "Alerta resolvido";
   if (normalized === "internal_acknowledged") return "Reconhecido no OneView";
+  if (normalized.startsWith("oneview_ack_")) return HISTORY_TITLES[normalized] || "AÃ§Ã£o de ACK OneView";
   if (normalized.includes("ack")) return "Alerta reconhecido na origem";
   if (normalized.includes("status")) return "Status alterado";
   return "Atualização do alerta";
@@ -1750,10 +1890,34 @@ function historyHasRecovery(eventType) {
 
 function historyHasAcknowledgement(eventType) {
   const normalized = textValue(eventType).toLowerCase();
+  if (normalized.startsWith("oneview_ack_")) return false;
   return normalized === "acknowledged" || normalized === "ack_message" || normalized.includes("ack");
 }
 
-function historyDescription(_eventType, value) {
+export function humanizeOneViewAckReason(reason) {
+  const normalized = textValue(reason).toLowerCase();
+  const reasons = {
+    alert_resolved_before_ack: "Alerta resolvido antes do reconhecimento",
+    source_event_resolved_before_ack: "Alerta resolvido antes do reconhecimento",
+    source_already_acknowledged: "Alerta j\u00e1 estava reconhecido na origem",
+    delegated_zabbix_user_not_found: "Usu\u00e1rio n\u00e3o dispon\u00edvel nesta origem",
+    delegated_zabbix_user_ambiguous: "Usu\u00e1rio amb\u00edguo nesta origem",
+    delegated_zabbix_user_not_permitted: "Usu\u00e1rio sem permiss\u00e3o nesta origem",
+    delegated_ack_datasource_not_allowed: "Reconhecimento delegado n\u00e3o homologado para esta origem",
+    delegated_ack_version_unsupported: "Vers\u00e3o da origem n\u00e3o compat\u00edvel com reconhecimento delegado",
+    delegated_token_verification_failed: "N\u00e3o foi poss\u00edvel validar a identidade delegada",
+    zabbix_event_not_found: "Evento n\u00e3o encontrado na origem",
+    zabbix_event_not_active: "Evento n\u00e3o est\u00e1 mais ativo na origem",
+    zabbix_permission_denied: "Sem permiss\u00e3o para reconhecer na origem",
+    source_ack_not_confirmed: "Reconhecimento n\u00e3o foi confirmado pela origem",
+  };
+  return reasons[normalized] || null;
+}
+
+function historyDescription(eventType, value, reason) {
+  const normalized = textValue(eventType).toLowerCase();
+  const humanReason = humanizeOneViewAckReason(reason);
+  if (["oneview_ack_cancelled", "oneview_ack_failed"].includes(normalized) && humanReason) return humanReason;
   return nullableText(sanitizeText(value, "", 500));
 }
 
@@ -1943,8 +2107,8 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
     config,
     `select a.id, a.source_event_id, a.host_name, a.acknowledged_source,
             a.acknowledged_at, a.acknowledged_by
-       from alerts a
-       join data_sources d on d.id = a.data_source_id
+      from alerts a
+      join data_sources d on d.id = a.data_source_id
       where a.id = $1 and d.name = any($2::text[])
       limit 1`,
     [id, operationalDataSourceNames(dataSourceNames)],
@@ -1973,7 +2137,8 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
         )::text as acknowledge_id,
         nullif(h.actor_type, '')::text as actor_type,
         coalesce(h.action_source, 'legacy')::text as action_source,
-        coalesce(h.source, 'legacy')::text as source
+        coalesce(h.source, 'legacy')::text as source,
+        null::text as result_reason
       from alert_history h
       join alerts a on a.id = h.alert_id
       join data_sources d on d.id = a.data_source_id
@@ -1995,7 +2160,8 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
         ack.id::text as acknowledge_id,
         nullif(ack.actor_type, '')::text as actor_type,
         'oneview_internal'::text as action_source,
-        'oneview'::text as source
+        'oneview'::text as source,
+        null::text as result_reason
       from alert_acknowledgements ack
       join alerts a on a.id = ack.alert_id
       join data_sources d on d.id = a.data_source_id
@@ -2003,6 +2169,60 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
         and d.name = any($2::text[])
         and ack.acknowledgement_type in ('internal','internal_acknowledgement')
         and ack.status in ('recorded','pending','processing','success','completed')
+      union all
+      select
+        (ack.id::text || ':request') as id,
+        'oneview_ack_requested'::text as event_type,
+        nullif(ack.message, '')::text as description,
+        null::jsonb as previous_value,
+        null::jsonb as current_value,
+        ack.source_event_id,
+        ack.requested_at as occurred_at,
+        ack.created_at,
+        nullif(ack.operator_name, '')::text as actor_name_candidate,
+        nullif(ack.operator_name, '')::text as operator_name_candidate,
+        null::text as acknowledged_by_candidate,
+        ack.id::text as acknowledge_id,
+        nullif(ack.actor_type, '')::text as actor_type,
+        'oneview_source_ack'::text as action_source,
+        'oneview'::text as source,
+        null::text as result_reason
+      from alert_acknowledgements ack
+      join alerts a on a.id = ack.alert_id
+      join data_sources d on d.id = a.data_source_id
+      where ack.alert_id = $1
+        and d.name = any($2::text[])
+        and ack.acknowledgement_type = 'source'
+      union all
+      select
+        (ack.id::text || ':status') as id,
+        case ack.status
+          when 'processing' then 'oneview_ack_processing'
+          when 'success' then 'oneview_ack_confirmed'
+          when 'cancelled' then 'oneview_ack_cancelled'
+          when 'failed' then 'oneview_ack_failed'
+        end::text as event_type,
+        nullif(ack.message, '')::text as description,
+        null::jsonb as previous_value,
+        null::jsonb as current_value,
+        ack.source_event_id,
+        coalesce(ack.processed_at, ack.updated_at, ack.requested_at) as occurred_at,
+        ack.created_at,
+        nullif(ack.operator_name, '')::text as actor_name_candidate,
+        nullif(ack.operator_name, '')::text as operator_name_candidate,
+        null::text as acknowledged_by_candidate,
+        ack.id::text as acknowledge_id,
+        nullif(ack.actor_type, '')::text as actor_type,
+        'oneview_source_ack'::text as action_source,
+        'oneview'::text as source,
+        ack.result_payload ->> 'reason' as result_reason
+      from alert_acknowledgements ack
+      join alerts a on a.id = ack.alert_id
+      join data_sources d on d.id = a.data_source_id
+      where ack.alert_id = $1
+        and d.name = any($2::text[])
+        and ack.acknowledgement_type = 'source'
+        and ack.status in ('processing','success','cancelled','failed')
       order by occurred_at desc nulls last, created_at desc, id desc
     `,
     [id, operationalDataSourceNames(dataSourceNames)],
@@ -2027,6 +2247,7 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
       description: historyDescription(
         eventType,
         replaceInternalHost(row.description, alert.host_name, alias, "", 500),
+        row.result_reason,
       ),
       previous_value: legacy && !historyValueIsMeaningful(previousValue) ? null : previousValue,
       current_value: legacy && !historyValueIsMeaningful(currentValue) ? null : currentValue,

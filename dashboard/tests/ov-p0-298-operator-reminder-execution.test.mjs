@@ -5,7 +5,9 @@ import {
   buildOperatorReminderTheoPayload,
   finalizeOperatorReminderDispatch,
   OPERATOR_REMINDER_AGGREGATE_TYPE,
+  OPERATOR_REMINDER_CLAIM_LEAD_SECONDS,
   processDueOperatorReminders,
+  reminderShouldNotifyWebex,
   THEO_OPERATOR_REMINDER_ACTION_TYPE,
 } from "../api/_lib/oneview-operator-reminder-execution.js";
 import { createTheoDispatchHandler } from "../api/_lib/oneview-theo-dispatch.js";
@@ -59,7 +61,7 @@ function memoryStore(initial = [reminder()]) {
       queries.push({ sql, values });
       if (/from operator_reminders/i.test(sql) && /for update skip locked/i.test(sql)) {
         if (claimed) return { rows: [] };
-        const due = rows.filter((item) => item.status === "scheduled" && Date.parse(item.scheduled_for) <= NOW.getTime()).slice(0, values[0]);
+        const due = rows.filter((item) => item.status === "scheduled" && Date.parse(item.scheduled_for) <= NOW.getTime() + OPERATOR_REMINDER_CLAIM_LEAD_SECONDS * 1000).slice(0, values[0]);
         if (due.length) claimed = true;
         return { rows: due };
       }
@@ -87,7 +89,7 @@ function memoryStore(initial = [reminder()]) {
         return { rows: [item] };
       }
       if (/set status = 'sent'/i.test(sql)) {
-        const item = rows.find((row) => row.id === values[0] && row.status === "processing");
+        const item = rows.find((row) => row.id === values[0] && (row.status === "processing" || row.status === "scheduled"));
         if (!item) return { rows: [] };
         item.status = "sent"; item.sent_at = values[1]; item.updated_at = values[1]; item.last_error = null;
         return { rows: [item] };
@@ -153,7 +155,7 @@ test("OV-P0-298 due active reminder with INC enqueues exactly one Theo outbox th
   const store = memoryStore();
   const calls = [];
   const summary = await processor(store, async (identity) => { calls.push(identity); return activeLink(); });
-  assert.deepEqual(summary, { due_found: 1, skipped: 0, enqueued: 1, already_processing: 0, failed: 0 });
+  assert.deepEqual(summary, { due_found: 1, skipped: 0, enqueued: 1, already_processing: 0, failed: 0, sent_without_webex: 0 });
   assert.deepEqual(calls[0], { id: "ds-1:havan-host:meraki:143-marilia:wan1", dataSourceId: "ds-1", sourceHostId: "havan-host" });
   assert.equal(store.rows[0].status, "processing");
   assert.equal(store.outbox.length, 1);
@@ -247,6 +249,23 @@ test("OV-P0-298 future and cancelled reminders are ignored", async () => {
   assert.equal((await processor(future, async () => activeLink())).due_found, 0);
   assert.equal((await processor(cancelled, async () => activeLink())).due_found, 0);
   assert.equal(future.outbox.length + cancelled.outbox.length, 0);
+});
+
+test("OV-P0-298 claims reminders up to 30s early and skips Webex when notify_webex is false", async () => {
+  assert.equal(OPERATOR_REMINDER_CLAIM_LEAD_SECONDS, 30);
+  assert.equal(reminderShouldNotifyWebex(reminder()), true);
+  assert.equal(reminderShouldNotifyWebex(reminder({ context_snapshot: { reminder: { notify_webex: false } } })), false);
+
+  const upcoming = memoryStore([reminder({ scheduled_for: "2026-09-10T15:00:20.000Z" })]);
+  assert.equal((await processor(upcoming, async () => activeLink())).due_found, 1);
+  assert.equal(upcoming.outbox.length, 1);
+
+  const popupOnly = memoryStore([reminder({ context_snapshot: { reminder: { notify_webex: false } } })]);
+  const summary = await processor(popupOnly, async () => activeLink());
+  assert.deepEqual(summary, { due_found: 1, skipped: 0, enqueued: 0, already_processing: 0, failed: 0, sent_without_webex: 1 });
+  assert.equal(popupOnly.rows[0].status, "sent");
+  assert.equal(popupOnly.outbox.length, 0);
+  assert.ok(upcoming.queries.some(({ sql }) => /interval '30 seconds'/i.test(sql)));
 });
 
 test("OV-P0-298 concurrent/repeated cron processing creates one outbox only", async () => {

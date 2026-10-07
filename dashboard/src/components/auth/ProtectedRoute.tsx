@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { authReturnToFromLocation } from "@/lib/auth/return-url";
 import { prefetchOneViewRoute } from "@/lib/oneview-route-prefetch";
 import { OperatorReminderInboxProvider } from "@/providers/OperatorReminderInboxProvider";
+import { markOneViewPerformance } from "@/lib/oneview-performance";
 
 interface ProtectedRouteProps {
   children?: ReactNode;
@@ -17,6 +18,9 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     if (!user) return;
     prefetchOneViewRoute(location.pathname, { dataImmediate: true });
   }, [user, location.pathname]);
+  useEffect(() => {
+    if (!isLoading && user) markOneViewPerformance("oneview:auth:ready");
+  }, [isLoading, user]);
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-foreground">

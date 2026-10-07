@@ -21,6 +21,9 @@ function requestBody(req) {
 function publicDatabaseError(error) { return error?.code === "actions_database_not_configured" ? "actions_database_not_configured" : "database_unavailable"; }
 function rowValue(value) { if (!value || typeof value !== "string") return value || null; try { return JSON.parse(value); } catch { return null; } }
 function reminderRecord(row) {
+  const contextSnapshot = rowValue(row.context_snapshot) || {};
+  const reminderMessage = text(contextSnapshot?.reminder?.message).slice(0, 500) || null;
+  const notifyWebex = contextSnapshot?.reminder?.notify_webex === true;
   const subjectType = row.subject_type || "circuit";
   const subjectKey = row.subject_key || (row.circuit_key ? buildCircuitSubjectKey(row.circuit_key) : null);
   return {
@@ -29,7 +32,7 @@ function reminderRecord(row) {
     scheduled_for: new Date(row.scheduled_for).toISOString(), status: row.status,
     created_by: row.created_by, created_by_name: row.created_by_name,
     initial_alert_id: row.initial_alert_id || null, initial_incident_sys_id: row.initial_incident_sys_id || null,
-    initial_incident_number: row.initial_incident_number || null, context_snapshot: rowValue(row.context_snapshot) || {},
+    initial_incident_number: row.initial_incident_number || null, context_snapshot: contextSnapshot, message: reminderMessage, notify_webex: notifyWebex,
     created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
     updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
     sent_at: row.sent_at ? new Date(row.sent_at).toISOString() : null,
@@ -57,8 +60,18 @@ function futureTimestamp(value, now) {
   const date = new Date(raw);
   return Number.isFinite(date.getTime()) && date.getTime() > now.getTime() ? date : null;
 }
+function reminderMessage(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || value.length > 500) return undefined;
+  return value.trim().replace(/[\u0000-\u001f\u007f]/g, " ") || null;
+}
+function reminderNotifyWebex(value) {
+  if (value === undefined || value === null) return null;
+  if (value === true || value === false) return value;
+  return undefined;
+}
 function reminderId(req, body) { const value = text(body.reminder_id || queryValue(req, "reminder_id")); return UUID.test(value) ? value : ""; }
-function actor(auth) { return { id: text(auth?.id).slice(0, 120), name: text(auth?.name || auth?.email || "UsuÃ¡rio SSO").slice(0, 120) }; }
+function actor(auth) { return { id: text(auth?.id).slice(0, 120), name: text(auth?.name || auth?.email || "Usuário SSO").slice(0, 120) }; }
 function currentOperationalLink(link, requested) {
   if (!link || text(link.id) !== requested.id || text(link.data_source_id) !== requested.dataSourceId || text(link.source_host_id) !== requested.sourceHostId) return null;
   if (!(Number(link.active_alerts) > 0 || link.has_active_alert === true)) return null;
@@ -177,13 +190,17 @@ export function createOperatorReminderHandler({
       operation = text(body.action).toLowerCase() || "create";
       if (!["create", "update", "cancel"].includes(operation)) return reply(400, { error: "invalid_reminder_action" });
       const scheduledFor = futureTimestamp(body.scheduled_for, now());
+      const customMessage = reminderMessage(body.message);
+      const notifyWebex = reminderNotifyWebex(body.notify_webex);
+      if (customMessage === undefined) return reply(400, { error: "invalid_reminder_message" });
+      if (notifyWebex === undefined) return reply(400, { error: "invalid_notify_webex" });
       if (operation === "create") {
         if (!scheduledFor) return reply(400, { error: "invalid_scheduled_for" });
         const link = currentOperationalLink(await resolveLink(requested), requested);
         if (!link) return reply(409, { error: "operational_subject_not_active" });
         const subject = buildOperationalSubject(link);
         if (!subject) return reply(409, { error: "unstable_operational_subject" });
-        const context = snapshot(link, subject, requested.id); const id = idFactory(); const createdAt = now();
+        const context = { ...snapshot(link, subject, requested.id), reminder: { message: customMessage, notify_webex: notifyWebex === true } }; const id = idFactory(); const createdAt = now();
         const result = await transaction(async (client) => {
           await lockOperationalSubject(client, subject);
           const lookup = subjectLookup(subject);
@@ -225,8 +242,10 @@ export function createOperatorReminderHandler({
         );
         const existing = existingResult.rows[0];
         if (!existing) return null;
+        const existingNotify = reminderNotifyWebex(rowValue(existing.context_snapshot)?.reminder?.notify_webex);
+        const nextNotify = notifyWebex != null ? notifyWebex : existingNotify !== false;
         const changed = operation === "update"
-          ? await client.query(`update operator_reminders set scheduled_for = $1, updated_at = $2 where id = $3 returning ${SELECT_COLUMNS}`, [scheduledFor, now(), id])
+          ? await client.query(`update operator_reminders set scheduled_for = $1, context_snapshot = jsonb_set(coalesce(context_snapshot, '{}'::jsonb), '{reminder}', jsonb_build_object('message', $2::text, 'notify_webex', $3::boolean), true), updated_at = $4 where id = $5 returning ${SELECT_COLUMNS}`, [scheduledFor, customMessage, nextNotify, now(), id])
           : await client.query(`update operator_reminders set status = 'cancelled', cancelled_at = $1, updated_at = $1 where id = $2 returning ${SELECT_COLUMNS}`, [now(), id]);
         const row = changed.rows[0];
         await insertAuditLog(client, {

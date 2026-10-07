@@ -114,6 +114,7 @@ function snapshotAlert(alert, generatedAt) {
     acknowledged_at: alert.acknowledged_at || null,
     acknowledged_by: null,
     ack_request_status: null,
+    source_ack_status: null,
     suppressed: Boolean(alert.suppressed),
     suppressed_until: alert.suppressed_until || null,
     maintenance_status: alert.maintenance_status || null,
@@ -242,7 +243,7 @@ function snapshotLog(log, generatedAt) {
 
 function filteredAlerts(snapshot, req, dataSourceNames) {
   let items = snapshotAlerts(snapshot);
-  const { page, pageSize, offset, filters } = buildAlertListQuery(req, dataSourceNames);
+  const { page, pageSize, offset, filters, include } = buildAlertListQuery(req, dataSourceNames);
 
   if (filters.clients.length) items = items.filter((item) => filters.clients.includes(item.client_name));
   if (filters.customers.length) items = items.filter((item) => filters.customers.includes(item.customer_key || "unclassified"));
@@ -386,13 +387,15 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
 
   return {
     generated_at: snapshot.generated_at,
-    items: filteredItems.slice(offset, offset + pageSize),
-    filtered_summary: filteredSummary,
-    temporal_counts: {
-      created: temporalGroup("first_seen_at"),
-      updated: temporalGroup("last_seen_at"),
-      resolved: temporalGroup("resolved_at", true),
-    },
+    items: include.items ? filteredItems.slice(offset, offset + pageSize) : [],
+    ...(include.summary ? { filtered_summary: filteredSummary } : {}),
+    ...(include.temporal ? {
+      temporal_counts: {
+        created: temporalGroup("first_seen_at"),
+        updated: temporalGroup("last_seen_at"),
+        resolved: temporalGroup("resolved_at", true),
+      },
+    } : {}),
     pagination: {
       page,
       page_size: pageSize,

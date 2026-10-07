@@ -279,6 +279,15 @@ All colors MUST be HSL.
     animation: ov-fresh-ring-disaster 1.55s ease-in-out infinite;
   }
 
+  /* Alertas: 15 pulsos e fim. Monitoramento mantém destaque contínuo próprio. */
+  .ov-alert-fresh-attention-high {
+    animation: ov-fresh-ring-high 1.2s ease-in-out 15;
+  }
+
+  .ov-alert-fresh-attention-disaster {
+    animation: ov-fresh-ring-disaster 1.2s ease-in-out 15;
+  }
+
   .dark .ov-fresh-attention-high {
     animation-name: ov-fresh-ring-high;
   }
@@ -314,6 +323,8 @@ All colors MUST be HSL.
   @media (prefers-reduced-motion: reduce) {
     .ov-fresh-attention-high,
     .ov-fresh-attention-disaster,
+    .ov-alert-fresh-attention-high,
+    .ov-alert-fresh-attention-disaster,
     .ov-fresh-dot {
       animation: none;
     }
@@ -323,6 +334,14 @@ All colors MUST be HSL.
     }
 
     .ov-fresh-attention-disaster {
+      box-shadow: inset 0 0 0 1px hsl(0 72% 40% / 0.7);
+    }
+
+    .ov-alert-fresh-attention-high {
+      box-shadow: inset 0 0 0 1px hsl(0 84% 62% / 0.55);
+    }
+
+    .ov-alert-fresh-attention-disaster {
       box-shadow: inset 0 0 0 1px hsl(0 72% 40% / 0.7);
     }
   }
@@ -341,6 +360,11 @@ All colors MUST be HSL.
 
   .ov-live-transition {
     animation: ov-live-transition-pulse 0.9s ease-in-out 3;
+  }
+
+  /* /alertas: ACK/resolução confirmados permanecem visíveis por dez pulsos. */
+  .ov-alert-success-transition {
+    animation: ov-live-transition-pulse 0.9s ease-in-out 10;
   }
 
   .ov-live-transition-badge {
@@ -365,7 +389,8 @@ All colors MUST be HSL.
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .ov-live-transition {
+    .ov-live-transition,
+    .ov-alert-success-transition {
       animation: none;
       box-shadow: inset 0 0 0 1px hsl(152 60% 36% / 0.45);
       background-color: hsl(152 45% 45% / 0.08);

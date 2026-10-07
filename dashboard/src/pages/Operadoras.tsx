@@ -14,6 +14,7 @@ import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correla
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { SectionPanel } from "@/components/oneview/SectionPanel";
+import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
 import { OneViewKpiCard, OneViewQuietRefreshIndicator, OneViewSemanticStatusBadge, SectionAccentTitle } from "@/components/oneview/OneViewDesignSystem";
 import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { OneViewIncidentStatusBadge } from "@/components/badges/OneViewIncidentStatusBadge";
@@ -21,6 +22,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,13 +37,37 @@ import { useAuthContext } from "@/context/AuthContext";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
+import {
+  ONEVIEW_NOTIFICATION_PREFERENCES_EVENT,
+  readOneViewNotificationPreferences,
+  setOneViewSeverityPopupEnabled,
+} from "@/lib/oneview-notification-preferences";
+import {
+  normalizeSeverityPopupLevel,
+  readSeverityPopupSeen,
+  severityPopupMatches,
+  writeSeverityPopupSeen,
+} from "@/lib/oneview-severity-popup";
 
 const ALL = "all";
 const REFRESH_MS = 10_000;
 const REMINDERS_REFRESH_MS = 30_000;
 const RECENT_EPISODE_PREVIEW = 5;
 const DETAIL_CACHE_TTL_MS = 60_000;
+const DISASTER_RECENT_WINDOW_MS = 2 * 60_000;
 let drawerOpenedAt = 0;
+
+function operatorDisasterKey(link: CanonicalLink) {
+  return `${link.id}:${link.current_alert?.id || link.active_since_at || "active"}`;
+}
+
+function reminderWebexState(item?: { notify_webex?: boolean; message?: string | null; context_snapshot?: unknown } | null) {
+  const snapshot = item?.context_snapshot as { reminder?: { notify_webex?: unknown; message?: unknown } } | undefined;
+  return {
+    notifyWebex: snapshot?.reminder?.notify_webex === true || item?.notify_webex === true,
+    message: String(item?.message || snapshot?.reminder?.message || "").trim(),
+  };
+}
 const LINK_TABLE_COLUMNS = [
   { id: "link_local", label: "Link / local", required: true },
   { id: "situation", label: "Situação" },
@@ -609,6 +636,7 @@ export default function OperadorasPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const reminderDeepLinkRef = useRef<string | null>(null);
   const { user } = useAuthContext();
+  const actorId = user?.id || user?.email || "";
   const dashboard = useOneViewDashboardLayout({
     page: "operators",
     actorId: user?.id || user?.email,
@@ -617,6 +645,8 @@ export default function OperadorasPage() {
   const linkTableColumns = useOneViewTableColumns({ tableId: "operator-links", actorId: user?.id || user?.email, definitions: LINK_TABLE_COLUMNS });
   const operatorQueuePageSize = dashboard.layout.widgets.find((item) => item.id === "operators-queue")?.itemLimit ?? 50;
   const [payload, setPayload] = useState<CanonicalLinksResponse | null>(null);
+  const [disasterPopups, setDisasterPopups] = useState<OperatorSeverityPopupItem[]>([]);
+  const [disasterPopupEnabled, setDisasterPopupEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [initialError, setInitialError] = useState<string | null>(null);
@@ -672,6 +702,9 @@ export default function OperadorasPage() {
   const reminderDeepLinkVersion = useRef(0);
   const linkSearchIntent = useRef<{ id: number; value: string } | null>(null);
   const linkSearchIntentId = useRef(0);
+  const disasterSeeded = useRef(false);
+  const disasterSeen = useRef<Set<string>>(new Set());
+  const severityPopupLinksRef = useRef(new Map<string, CanonicalLink>());
   const commitLinkSearch = useCallback((value: string) => {
     if (value === search) return;
     linkSearchIntent.current = { id: ++linkSearchIntentId.current, value };
@@ -836,6 +869,67 @@ export default function OperadorasPage() {
     });
     void loadDetail(link);
   }, [loadDetail]);
+
+  useEffect(() => {
+    disasterSeeded.current = false;
+    disasterSeen.current = actorId ? readSeverityPopupSeen("links", actorId) : new Set();
+    setDisasterPopups([]);
+    const sync = () => {
+      const enabled = readOneViewNotificationPreferences(actorId).severityPopup.enabled;
+      setDisasterPopupEnabled(enabled);
+      if (!enabled) setDisasterPopups([]);
+    };
+    sync();
+    window.addEventListener(ONEVIEW_NOTIFICATION_PREFERENCES_EVENT, sync);
+    return () => window.removeEventListener(ONEVIEW_NOTIFICATION_PREFERENCES_EVENT, sync);
+  }, [actorId]);
+
+  useEffect(() => {
+    if (!actorId || !payload) return;
+    const feed = payload.recent_severe || payload.recent_disasters || [];
+    const seen = disasterSeen.current;
+    if (!disasterSeeded.current) {
+      for (const link of feed) seen.add(operatorDisasterKey(link));
+      disasterSeeded.current = true;
+      writeSeverityPopupSeen("links", seen, actorId);
+      return;
+    }
+    const next: OperatorSeverityPopupItem[] = [];
+    for (const link of feed) {
+      const key = operatorDisasterKey(link);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const level = normalizeSeverityPopupLevel(link.max_severity);
+      const startedAt = Date.parse(String(link.current_alert?.started_at || link.active_since_at || ""));
+      const fresh = !Number.isFinite(startedAt) || (Date.now() - startedAt >= 0 && Date.now() - startedAt <= DISASTER_RECENT_WINDOW_MS);
+      if (disasterPopupEnabled && fresh && severityPopupMatches(level, actorId) && level) {
+        severityPopupLinksRef.current.set(key, link);
+        next.push({
+          key,
+          severity: level,
+          customer: link.customer_name || "Cliente",
+          title: link.service_name || link.host_name || "Link de operadora",
+        });
+      }
+    }
+    writeSeverityPopupSeen("links", seen, actorId);
+    if (next.length) setDisasterPopups((current) => [...next, ...current].slice(0, 4));
+  }, [actorId, disasterPopupEnabled, payload]);
+
+  const dismissDisaster = useCallback((key: string) => {
+    setDisasterPopups((current) => current.filter((item) => item.key !== key));
+  }, []);
+
+  const disableDisasterPopups = useCallback(() => {
+    setDisasterPopups([]);
+    setDisasterPopupEnabled(false);
+    setOneViewSeverityPopupEnabled(false, actorId);
+  }, [actorId]);
+
+  const openDisasterLink = useCallback((link: CanonicalLink) => {
+    dismissDisaster(operatorDisasterKey(link));
+    openLink(link);
+  }, [dismissDisaster, openLink]);
 
   const openReminderDeepLink = useCallback(async (input: ReminderDeepLinkInput) => {
     const version = ++reminderDeepLinkVersion.current;
@@ -1409,6 +1503,15 @@ export default function OperadorasPage() {
       </div>
 
       <QueueLinkDrawer key={selected ? `${selected.id}:${selected.data_source_id}:${selected.source_host_id}` : "closed"} link={selected} detail={detail} loading={detailLoading} error={detailError} unavailableMessage={reminderUnavailable} reminderRequest={reminderRequest} onClose={closeLink} onRetry={() => reminderDeepLink ? void openReminderDeepLink(reminderDeepLink) : selected && void loadDetail(selected)} />
+      <OperatorDisasterPopup
+        items={disasterPopups}
+        onOpen={(item) => {
+          const link = severityPopupLinksRef.current.get(item.key);
+          if (link) openDisasterLink(link);
+        }}
+        onDismiss={dismissDisaster}
+        onDisable={disableDisasterPopups}
+      />
     </AppLayout>
   );
 }
@@ -1996,6 +2099,8 @@ function CircuitReminderPanel({ link, requestOpen }: { link: CanonicalLink; requ
   const [saving, setSaving] = useState(false);
   const [date, setDate] = useState(() => reminderDateTime().date);
   const [time, setTime] = useState(() => reminderDateTime().time);
+  const [notifyWebex, setNotifyWebex] = useState(false);
+  const [message, setMessage] = useState("");
   const requestVersion = useRef(0);
   const clickStartedAt = useRef<number | null>(null);
   const drawerMetricSent = useRef(false);
@@ -2077,9 +2182,10 @@ function CircuitReminderPanel({ link, requestOpen }: { link: CanonicalLink; requ
     }
     setSaving(true); setMutationError(null);
     try {
+      const options = { message: notifyWebex ? message.trim() : "", notifyWebex };
       const saved = reminder
-        ? await updateOperatorReminder(reminderLink, reminder.id, scheduledFor.toISOString())
-        : await createOperatorReminder(reminderLink, scheduledFor.toISOString());
+        ? await updateOperatorReminder(reminderLink, reminder.id, scheduledFor.toISOString(), options)
+        : await createOperatorReminder(reminderLink, scheduledFor.toISOString(), options);
       setReminders([saved]); setOpen(false);
     } catch (cause) {
       setMutationError(reminderMutationError(cause, reminder ? "alterar" : "criar"));
@@ -2101,11 +2207,21 @@ function CircuitReminderPanel({ link, requestOpen }: { link: CanonicalLink; requ
     catch (cause) { setMutationError(reminderMutationError(cause, "cancelar")); }
     finally { setSaving(false); }
   };
-  const edit = () => { const initial = reminderDateTime(reminder?.scheduled_for); setDate(initial.date); setTime(initial.time); setOpen(true); };
+  const edit = () => {
+    const initial = reminderDateTime(reminder?.scheduled_for);
+    const webex = reminderWebexState(reminder);
+    setDate(initial.date);
+    setTime(initial.time);
+    setNotifyWebex(webex.notifyWebex);
+    setMessage(webex.message);
+    setOpen(true);
+  };
   const create = () => {
     const initial = reminderDateTime();
     setDate(initial.date);
     setTime(initial.time);
+    setNotifyWebex(false);
+    setMessage("");
     setMutationError(null);
     clickStartedAt.current = performance.now();
     setOpen(true);
@@ -2117,22 +2233,75 @@ function CircuitReminderPanel({ link, requestOpen }: { link: CanonicalLink; requ
     const initial = reminderDateTime();
     setDate(initial.date);
     setTime(initial.time);
+    setNotifyWebex(false);
+    setMessage("");
     setMutationError(null);
     clickStartedAt.current = performance.now();
     setOpen(true);
   }, [canSchedule, requestOpen]);
 
   return <section><h3 className="mb-2 text-sm font-semibold">Lembrete</h3><div className="rounded-lg border border-border/60 p-3 text-sm">
-    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-medium">{reminderLabel(reminder.scheduled_for)}</p><p className="mt-1 text-xs text-muted-foreground">Agendado por {text(reminder.created_by_name, "Operador não identificado")}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div>{reminderUnavailableReason ? <p className="text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}>Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover></div>}
+    {reminder ? <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-medium">{reminderLabel(reminder.scheduled_for)}</p><p className="mt-1 text-xs text-muted-foreground">Agendado por {text(reminder.created_by_name, "Operador não identificado")}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={edit} disabled={saving}>Alterar</Button><Button size="sm" variant="ghost" onClick={() => void cancel()} disabled={saving}>Cancelar</Button></div></div> : <div className="flex flex-wrap items-center justify-between gap-3"><div>{reminderUnavailableReason ? <p className="text-xs text-muted-foreground">{reminderUnavailableReason}</p> : null}</div><Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}><PopoverTrigger asChild><Button size="sm" variant="outline" disabled={!canSchedule || saving} onClick={create}>Lembrar</Button></PopoverTrigger><PopoverContent align="end" className="w-[min(22rem,calc(100vw-2rem))]"><ReminderForm date={date} time={time} saving={saving} submitLabel="Agendar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} notifyWebex={notifyWebex} onNotifyWebex={setNotifyWebex} message={message} onMessage={setMessage} /></PopoverContent></Popover></div>}
     {loading ? <p className="mt-2 text-xs text-muted-foreground">Carregando lembrete…</p> : null}
     {loadFailed ? <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Não foi possível carregar o lembrete.</span><Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => void loadReminderState(true)}>Tentar novamente</Button></div> : null}
     {mutationError ? <p role="alert" className="mt-2 text-xs text-destructive">{mutationError}</p> : null}
-    {reminder ? <Popover open={open} onOpenChange={setOpen}><PopoverContent className="w-80"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} /></PopoverContent></Popover> : null}
+    {reminder ? <Popover open={open} onOpenChange={setOpen}><PopoverContent className="w-[min(22rem,calc(100vw-2rem))]"><ReminderForm date={date} time={time} saving={saving} submitLabel="Salvar" onDate={setDate} onTime={setTime} onCancel={() => setOpen(false)} onSubmit={() => void save()} notifyWebex={notifyWebex} onNotifyWebex={setNotifyWebex} message={message} onMessage={setMessage} /></PopoverContent></Popover> : null}
   </div></section>;
 }
 
-function ReminderForm({ date, time, saving, submitLabel, onDate, onTime, onCancel, onSubmit }: { date: string; time: string; saving: boolean; submitLabel: string; onDate: (value: string) => void; onTime: (value: string) => void; onCancel: () => void; onSubmit: () => void }) {
-  return <div className="space-y-3"><div><p className="font-medium">Lembrar se continuar pendente</p><p className="text-xs text-muted-foreground">O horário é salvo no seu fuso local.</p></div><label className="grid gap-1 text-sm">Data<Input aria-label="Data do lembrete" type="date" value={date} onChange={(event) => onDate(event.target.value)} /></label><label className="grid gap-1 text-sm">Horário<Input aria-label="Horário do lembrete" type="time" value={time} onChange={(event) => onTime(event.target.value)} /></label><div className="flex justify-end gap-2"><Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button><Button size="sm" onClick={onSubmit} disabled={saving}>{submitLabel}</Button></div></div>;
+function ReminderForm({
+  date,
+  time,
+  saving,
+  submitLabel,
+  onDate,
+  onTime,
+  onCancel,
+  onSubmit,
+  notifyWebex = false,
+  onNotifyWebex,
+  message = "",
+  onMessage,
+}: {
+  date: string;
+  time: string;
+  saving: boolean;
+  submitLabel: string;
+  onDate: (value: string) => void;
+  onTime: (value: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+  notifyWebex?: boolean;
+  onNotifyWebex?: (value: boolean) => void;
+  message?: string;
+  onMessage?: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="font-medium">Lembrar no horário exato</p>
+        <p className="text-xs text-muted-foreground">Pop-up no horário exato; Webex pode sair até 30s antes.</p>
+      </div>
+      <label className="grid gap-1 text-sm">Data<Input aria-label="Data do lembrete" type="date" value={date} onChange={(event) => onDate(event.target.value)} /></label>
+      <label className="grid gap-1 text-sm">Horário<Input aria-label="Horário do lembrete" type="time" value={time} onChange={(event) => onTime(event.target.value)} /></label>
+      {onNotifyWebex ? (
+        <label className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          Enviar mensagem Webex/Theo
+          <Switch checked={notifyWebex} onCheckedChange={onNotifyWebex} aria-label="Enviar mensagem Webex/Theo" />
+        </label>
+      ) : null}
+      {onNotifyWebex && notifyWebex ? (
+        <label className="grid gap-1 text-xs text-muted-foreground">
+          Mensagem opcional
+          <Textarea value={message} maxLength={500} onChange={(event) => onMessage?.(event.target.value)} placeholder="Ex.: Validar retorno com a operadora e atualizar o chamado." />
+        </label>
+      ) : null}
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button>
+        <Button size="sm" onClick={onSubmit} disabled={saving}>{submitLabel}</Button>
+      </div>
+    </div>
+  );
 }
 
 function Field({ label, value }: { label: string; value: string }) {

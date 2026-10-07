@@ -8,6 +8,7 @@ import { invalidateOneViewSummaryCache, withOneViewSummaryCache } from "./onevie
 const FORBIDDEN_KEY = /(?:authorization|cookie|token|password|senha|secret|credential|dsn|api_url|payload_raw|payload_normalized)/i;
 const PRIVATE_VALUE = /(?:https?:\/\/[^\s]+|\blocalhost\b|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[a-f0-9]{1,4}:){2,7}[a-f0-9]{1,4}\b)/i;
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
+const TRANSIENT_DATABASE_RETRY_CODE = "database_unavailable";
 
 export function sanitizeOneViewPayload(value) {
   if (Array.isArray(value)) return value.map(sanitizeOneViewPayload);
@@ -46,6 +47,23 @@ function safeFallbackCode(error) {
   const code = String(error?.code || "");
   if (code === "unsafe_database_user") return code;
   return code.startsWith("database_") ? code : "database_unavailable";
+}
+
+async function readDatabaseWithTransientRetry({ database, routeName, req, config, logger, startedAt }) {
+  try {
+    return await database(routeName, req, config);
+  } catch (error) {
+    const code = safeFallbackCode(error);
+    if (error?.code !== TRANSIENT_DATABASE_RETRY_CODE) throw error;
+    logger(JSON.stringify({
+      event: "oneview_database_read_retry",
+      route: routeTemplate(routeName),
+      code,
+      attempt: 2,
+      elapsed_ms: Math.max(Date.now() - startedAt, 0),
+    }));
+    return database(routeName, req, config);
+  }
 }
 
 function applicationErrorStatus(error) {
@@ -156,9 +174,17 @@ export function createOneViewHandler(routeName, dependencies = {}) {
       const forceSummaryRefresh = routeName === "dashboard-summary"
         && String(Array.isArray(req.query?.refresh) ? req.query.refresh[0] : req.query?.refresh || "") === "1";
       if (forceSummaryRefresh) invalidateOneViewSummaryCache();
+      const loadDatabase = () => readDatabaseWithTransientRetry({
+        database,
+        routeName,
+        req,
+        config,
+        logger,
+        startedAt,
+      });
       const payload = routeName === "dashboard-summary" && runtimeSummaryCacheEnabled
-        ? await withOneViewSummaryCache(() => database(routeName, req, config), { bypass: forceSummaryRefresh })
-        : await database(routeName, req, config);
+        ? await withOneViewSummaryCache(loadDatabase, { bypass: forceSummaryRefresh })
+        : await loadDatabase();
       return finish(200, payload, "database");
     } catch (error) {
       const applicationStatus = applicationErrorStatus(error);
