@@ -67,7 +67,7 @@ export function ClientFilterCombobox({
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[320px] p-0">
+      <PopoverContent align="start" collisionPadding={8} className="w-[min(22rem,calc(100vw-1rem))] p-0">
         <Command>
           <CommandInput placeholder="Buscar cliente..." className="h-10" />
           <CommandList>
@@ -100,7 +100,10 @@ export function ClientFilterCombobox({
                         </span>
                       ) : null}
                     </span>
-                    <Check className={cn("h-4 w-4 text-primary", selected ? "opacity-100" : "opacity-0")} />
+                    <span className={cn("inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold", selected ? "text-primary" : "text-muted-foreground")}>
+                      <Check className={cn("h-4 w-4", selected ? "opacity-100" : "opacity-0")} />
+                      {selected ? "Selecionado" : customer.key === "all" ? "Limpar" : "Aplicar Cliente"}
+                    </span>
                   </CommandItem>
                 );
               })}

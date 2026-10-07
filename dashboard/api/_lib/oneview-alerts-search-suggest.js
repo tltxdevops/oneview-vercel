@@ -68,15 +68,7 @@ export async function searchAlertReadModelSuggestions(req, config) {
   const params = [...built.params, `%${q}%`];
   const like = `$${params.length}`;
   const scopeWhere = built.whereSql || "where true";
-  const textMatch = `(
-    ${CUSTOMER_EXPR} ilike ${like}
-    or ${HOST_EXPR} ilike ${like}
-    or ${PROBLEM_EXPR} ilike ${like}
-    or coalesce(a.service_name, '') ilike ${like}
-    or coalesce(a.client_name, '') ilike ${like}
-  )`;
-
-  const runBucket = async (kind, labelExpr, hintField, cap, customerKeyExpr = null) => {
+  const runBucket = async (kind, labelExpr, matchExpr, hintField, cap, customerKeyExpr = null) => {
     const customerKeySql = customerKeyExpr ? `, ${customerKeyExpr} as customer_key` : "";
     const customerKeyGroupSql = customerKeyExpr ? `, ${customerKeyExpr}` : "";
     const rows = await queryRows(
@@ -89,7 +81,7 @@ export async function searchAlertReadModelSuggestions(req, config) {
           ${fromJoin}
          ${scopeWhere}
            and ${labelExpr} <> ''
-           and ${textMatch}
+           and (${matchExpr}) ilike ${like}
          group by ${labelExpr}${customerKeyGroupSql}
          order by max(a.last_seen_at) desc nulls last
          limit $${params.length + 1}`,
@@ -110,9 +102,9 @@ export async function searchAlertReadModelSuggestions(req, config) {
   };
 
   const [customers, hosts, problems] = await Promise.all([
-    runBucket("customer", CUSTOMER_EXPR, HOST_EXPR, 6, SAFE_CUSTOMER_KEY_SQL),
-    runBucket("host", HOST_EXPR, CUSTOMER_EXPR, 6),
-    runBucket("problem", PROBLEM_EXPR, HOST_EXPR, 4),
+    runBucket("customer", CUSTOMER_EXPR, CUSTOMER_EXPR, HOST_EXPR, 6, SAFE_CUSTOMER_KEY_SQL),
+    runBucket("host", HOST_EXPR, HOST_EXPR, CUSTOMER_EXPR, 6),
+    runBucket("problem", PROBLEM_EXPR, PROBLEM_EXPR, HOST_EXPR, 4),
   ]);
 
   const suggestions = mergeRankedSuggestions([...customers, ...hosts, ...problems], q, limit);
@@ -125,6 +117,7 @@ export function createAlertsSearchSuggestHandler({
   suggest = searchAlertReadModelSuggestions,
 } = {}) {
   return async function alertsSearchSuggestHandler(req, res) {
+    const startedAt = Date.now();
     res.setHeader("Cache-Control", NO_CACHE);
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
@@ -139,8 +132,10 @@ export function createAlertsSearchSuggestHandler({
 
     try {
       const payload = await suggest(req, config);
+      res.setHeader("Server-Timing", `oneview_search_suggest;dur=${Date.now() - startedAt}`);
       return sendJson(res, 200, { ...payload, data_source: "database", checked_at: new Date().toISOString() });
     } catch (error) {
+      res.setHeader("Server-Timing", `oneview_search_suggest;dur=${Date.now() - startedAt}`);
       if (error?.code === "invalid_query") {
         return sendJson(res, 400, { error: "invalid_query", data_source: "database" });
       }

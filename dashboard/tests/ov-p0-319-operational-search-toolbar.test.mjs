@@ -58,12 +58,14 @@ test("P0 shared search field uses 250ms result commit and 150ms suggestions", ()
   assert.match(field, /ONEVIEW_SEARCH_SUGGEST_DEBOUNCE_MS/);
 });
 
-test("P0 operational pages use shared commit; Links keeps autocomplete disabled", () => {
+test("P0 operational pages use shared commit; Links enables scoped autocomplete", () => {
   const pages = ["Alerts.tsx", "Historico.tsx", "Chamados.tsx", "Operadoras.tsx"]
     .map((name) => readFileSync(new URL(`../src/pages/${name}`, import.meta.url), "utf8"));
   for (const page of pages) assert.match(page, /useOneViewCommittedSearch/);
   const links = pages[3];
   assert.match(links, /searchDraft/);
-assert.match(links, /onSearchSubmit=\{\(value\) => commitLinkSearchNow\(value\)\}/);
-  assert.doesNotMatch(links, /fetchLinkSearchSuggestions|fetchLinkTableSuggestions/);
+  assert.match(links, /onSearchSubmit=\{\(value\) => commitLinkSearchNow\(value\)\}/);
+  assert.match(links, /fetchLinkSearchSuggestions/);
+  assert.match(links, /fetchSearchSuggestions=\{fetchLinkTableSuggestions\}/);
+  assert.match(links, /localSearchSuggestions=\{localCustomerSearchSuggestions\}/);
 });

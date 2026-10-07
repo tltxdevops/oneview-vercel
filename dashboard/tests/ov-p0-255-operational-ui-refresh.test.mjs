@@ -55,14 +55,14 @@ test("OV-P0-255 dedup: request equivalente não empilha; quiet não reseta UI", 
     read("src/pages/Operadoras.tsx"),
   ]);
 
-  assert.match(home, /if \(summaryInFlight\.current\) return summaryInFlight\.current/);
+  assert.match(home, /if \(facetsInFlight\.current\) return facetsInFlight\.current/);
   assert.match(home, /mode === "quiet" && listsRequest\.current && !listsRequest\.current\.signal\.aborted/);
   assert.match(monitoring, /if \(inFlight\.current\) return inFlight\.current/);
   assert.match(alerts, /if \(summaryRequestRef\.current\) return summaryRequestRef\.current/);
   assert.match(alerts, /options\?\.quiet && alertsRequestRef\.current && !alertsRequestRef\.current\.signal\.aborted/);
   assert.match(operators, /mode === "quiet" && request\.current && !request\.current\.signal\.aborted/);
 
-  assert.match(home, /loadSummary\("quiet"\)/);
+  assert.match(home, /loadCriticalHomeAlerts\(\)/);
   assert.match(home, /loadLists\("quiet"\)/);
   assert.match(alerts, /loadAlerts\(\{ quiet: true \}\)/);
   assert.match(operators, /load\("quiet"\)/);

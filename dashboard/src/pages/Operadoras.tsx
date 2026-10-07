@@ -25,7 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchOperatorReminderDeepLink, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem, type OperatorReminderInboxLink } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchLinkSearchSuggestions, fetchOperatorReminderDeepLink, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem, type OperatorReminderInboxLink } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
@@ -1032,6 +1032,34 @@ export default function OperadorasPage() {
     { key: ALL, name: "Todos" },
     ...(payload?.facets.customers || []).map((item) => ({ key: item.value, name: item.label })),
   ], [payload?.facets.customers]);
+  const localCustomerSearchSuggestions = useMemo(() => customerOptions
+    .filter((item) => item.key !== ALL)
+    .map((item) => ({ kind: "customer", value: item.name, label: item.name, customer_key: item.key, hint: "Aplicar filtro de cliente" })), [customerOptions]);
+  const fetchLinkTableSuggestions = useCallback((q: string, signal: AbortSignal) => fetchLinkSearchSuggestions({
+    q,
+    limit: 12,
+    customer,
+    datasource,
+    classification,
+    state,
+    ack,
+    severity,
+    incident,
+    incident_state: incidentState,
+    carrier,
+    operator_escalation: operatorEscalation,
+    tab,
+    resolved_window: resolvedWindow,
+    divergence: divergence || undefined,
+    recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
+    operational_situation: operationalSituation,
+    activity_period: activityPeriod,
+    sort,
+    order: sortOrder,
+    page: 1,
+    page_size: operatorQueuePageSize,
+    signal,
+  }).then((response) => response.suggestions ?? []), [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, operatorEscalation, operatorQueuePageSize, recurrence, resolvedWindow, severity, sort, sortOrder, state, tab]);
   const selectedCustomerKeys = customer === ALL ? [] : [customer];
   const selectedCustomerLabel = customer === ALL
     ? "TODOS"
@@ -1189,7 +1217,7 @@ export default function OperadorasPage() {
           {filtersOpen ? (
             <div aria-label="Mais filtros" className="border-t border-border/60 pt-3">
               <p className="mb-2 text-xs font-medium text-muted-foreground">Filtros complementares</p>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
                   <Filter
                     label="Estado"
                     value={state}
@@ -1236,6 +1264,28 @@ export default function OperadorasPage() {
             search={searchDraft}
             onSearchChange={setSearchDraft}
             onSearchSubmit={(value) => commitLinkSearchNow(value)}
+            fetchSearchSuggestions={fetchLinkTableSuggestions}
+            localSearchSuggestions={localCustomerSearchSuggestions}
+            onSearchSuggestionPick={(suggestion) => {
+              if (suggestion.kind === "customer") {
+                const customerKey = suggestion.customer_key
+                  || customerOptions.find((item) => item.name === suggestion.label || item.name === suggestion.value)?.key;
+                if (customerKey && customerKey !== ALL) {
+                  cancelLinkSearch();
+                  linkSearchIntent.current = null;
+                  setLinkSearchLoading(false);
+                  setCustomer(customerKey);
+                  setSearchDraft("");
+                  setSearch("");
+                  setPage(1);
+                  return;
+                }
+              }
+              setSearchDraft(suggestion.value);
+              commitLinkSearchNow(suggestion.value);
+            }}
+            getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+            isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && customerOptions.some((item) => item.key === customer && (item.key === suggestion.customer_key || item.name === suggestion.label))}
             searchPlaceholder="Buscar link, host ou cliente…"
             searchLabel="Buscar na tabela de links"
             columns={linkTableColumns}
@@ -1250,7 +1300,7 @@ export default function OperadorasPage() {
               label: "Ordenar links",
             }}
             filters={(
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
                 <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerOptions} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={(key) => { setCustomer(key === ALL || key === customer ? ALL : key); setCustomerFilterOpen(false); setPage(1); }} countNoun="neste filtro" /></div>
                 <Filter label="Recorrência" value={recurrence} options={[{ value: "all", label: "Todos" }, { value: "recurrent", label: "Recorrentes" }]} onChange={(value) => { setRecurrence(value === "recurrent" ? "recurrent" : "all"); setPage(1); }} />
                 <Filter label="Estado" value={state} options={[{ value: ALL, label: "Todos" }, { value: "critical", label: "Crítico" }, { value: "alert", label: "Alerta" }, { value: "attention", label: "Atenção" }, { value: "normal", label: "Normal" }]} onChange={setFilter(setState)} />
@@ -1262,7 +1312,21 @@ export default function OperadorasPage() {
             )}
           />
           {loading && !payload ? (
-            <div className="space-y-2 p-3"><Skeleton className="h-16 w-full" /><Skeleton className="h-16 w-full" /></div>
+            <>
+              <div className="divide-y divide-border/60 md:hidden" aria-label="Carregando a primeira página de links">
+                {Array.from({ length: 10 }, (_, index) => (
+                  <div key={`link-skeleton-m-${index}`} className="space-y-2 p-3">
+                    <Skeleton className="h-4 w-2/3" />
+                    <Skeleton className="h-3 w-1/2" />
+                  </div>
+                ))}
+              </div>
+              <div className="hidden space-y-2 p-3 md:block" aria-label="Carregando a primeira página de links">
+                {Array.from({ length: 10 }, (_, index) => (
+                  <Skeleton key={`link-skeleton-d-${index}`} className="h-10 w-full" />
+                ))}
+              </div>
+            </>
           ) : !items.length ? (
             <OperationalEmptyState
               compact

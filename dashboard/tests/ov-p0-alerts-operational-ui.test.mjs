@@ -7,7 +7,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 test("Alertas consumes only frozen Operational UI primitives for its migrated shell", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
 
-  assert.match(alerts, /OneViewKpiCard/);
+  assert.match(alerts, /ConfigurableMetricStrip/);
   assert.match(alerts, /TabsList/);
   assert.match(alerts, /ConfigurableTableToolbar/);
   assert.match(alerts, /OneViewPill/);
@@ -34,7 +34,7 @@ test("Alertas keeps all nine KPI filters in one official KPI row", async () => {
   ]) assert.match(alerts, new RegExp(label, "i"));
 
   assert.match(alerts, /const summaryCards = \[\.\.\.operationalCards, \.\.\.severityCards, notClassifiedCard\]/);
-  assert.match(alerts, /2xl:grid-cols-9/);
+  assert.match(alerts, /gridProfile="twelve"/);
   assert.doesNotMatch(alerts, /Severidade fora da faixa visual|border-dashed/);
 });
 
@@ -70,6 +70,8 @@ test("Alertas leaves data, ACK and BFF behavior on the existing paths", async ()
   assert.match(alerts, /fetchAlerts\(/);
   assert.match(alerts, /requestAlertAcknowledgement\(/);
   assert.match(alerts, /sourceAckPresentation\(alert\)/);
-  assert.match(alerts, /datasources: selectedDatasources/);
+  assert.doesNotMatch(alerts, /datasources: selectedDatasources|ZabbixSourceFilter|Campo de data/);
+  assert.match(alerts, /dateField: "first_seen"/);
+  assert.match(alerts, /OperationalFacetMultiSelect/);
   assert.match(alerts, /writeAlertsUrlParams/);
 });

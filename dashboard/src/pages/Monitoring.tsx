@@ -780,6 +780,15 @@ export default function MonitoringPage() {
     const selected = customerCards.find((customer) => customer.key === selectedCustomerKeys[0]);
     return (selected?.name || "CLIENTE").toUpperCase();
   }, [customerCards, selectedCustomerKeys]);
+  const localCustomerSearchSuggestions = useMemo(() => customerCards
+    .filter((customer) => customer.key !== "all")
+    .map((customer) => ({
+      kind: "customer",
+      value: customer.name,
+      label: customer.name,
+      customer_key: customer.key,
+      hint: "Adicionar aos clientes selecionados",
+    })), [customerCards]);
 
   const hasValidSummary = Boolean(recentMetrics);
   const severityStripLoading = isUpdating && !recentMetrics;
@@ -885,59 +894,7 @@ export default function MonitoringPage() {
       const datasources = selectedDatasources.length ? selectedDatasources : undefined;
       const now = bucketOneViewReadNow();
 
-      const tasks: Array<Promise<unknown>> = [
-        fetchRecentOperationalMetrics({ customers, datasources, signal: controller.signal, now, windowMs }),
-        getOneViewFacets(),
-        fetchMonitoringAlerts({
-          mode: alertMode,
-          severity: severitySelection,
-          customers,
-          datasources,
-          limit: monitoringQueueItemLimit,
-          windowMs,
-          sort: queueSort,
-          tableSort: alertTableSort,
-          tableOrder: alertTableOrder,
-          signal: controller.signal,
-          now,
-        }),
-        fetchMonitoringUnassignedIncidents({
-          mode: incidentsMode,
-          assignedTo: incidentsAssignedTo,
-          windowMs,
-          now,
-          limit: monitoringIncidentItemLimit,
-          sort: incidentTableSort,
-          order: incidentTableOrder,
-          signal: controller.signal,
-        }),
-      ];
-
-      const results = await Promise.allSettled(tasks);
-
-      if (controller.signal.aborted || !queryGenerationRef.current.isCurrent(queryGeneration)) return;
-
-      const [metricsResult, facetsResult, queueResult, incidentsResult] = results;
-      let anySuccess = false;
-
-      if (metricsResult.status === "fulfilled") {
-        setRecentMetrics(metricsResult.value as RecentOperationalMetrics);
-        setSectionError("summary", null);
-        anySuccess = true;
-      } else if (!isOneViewAbortError(metricsResult.reason)) {
-        setSectionError(
-          "summary",
-          isInitial ? "Não foi possível carregar as métricas." : "Falha ao atualizar métricas. Valores anteriores mantidos.",
-        );
-      }
-
-      if (facetsResult.status === "fulfilled") {
-        setFacets(facetsResult.value as OneViewFacetsResponse);
-        anySuccess = true;
-      }
-
-      if (queueResult.status === "fulfilled") {
-        const payload = queueResult.value as Awaited<ReturnType<typeof fetchMonitoringAlerts>>;
+      const applyQueuePayload = async (payload: Awaited<ReturnType<typeof fetchMonitoringAlerts>>) => {
         /* OV-P0-268 alert transitions */
         const serverAlerts = payload.items ?? [];
         const previousAlerts = previousAlertsRef.current;
@@ -994,12 +951,73 @@ export default function MonitoringPage() {
         setQueueAlerts(serverAlerts);
         setQueueTotal(payload.total);
         setSectionError("queue", null);
+      };
+
+      let anySuccess = false;
+      try {
+        const payload = await fetchMonitoringAlerts({
+          mode: alertMode,
+          severity: severitySelection,
+          customers,
+          datasources,
+          limit: monitoringQueueItemLimit,
+          windowMs,
+          sort: queueSort,
+          tableSort: alertTableSort,
+          tableOrder: alertTableOrder,
+          signal: controller.signal,
+          now,
+          include: "items",
+        });
+        if (controller.signal.aborted || !queryGenerationRef.current.isCurrent(queryGeneration)) return;
+        await applyQueuePayload(payload);
         anySuccess = true;
-      } else if (!isOneViewAbortError(queueResult.reason)) {
+        hasDataRef.current = true;
+        setHasLoaded(true);
+      } catch (reason) {
+        if (!isOneViewAbortError(reason)) {
+          setSectionError(
+            "queue",
+            isInitial ? "Não foi possível carregar a fila." : "Falha ao atualizar a fila. Valores anteriores mantidos.",
+          );
+        }
+      }
+
+      if (controller.signal.aborted || !queryGenerationRef.current.isCurrent(queryGeneration)) return;
+
+      const results = await Promise.allSettled([
+        fetchRecentOperationalMetrics({ customers, datasources, signal: controller.signal, now, windowMs }),
+        getOneViewFacets(),
+        fetchMonitoringUnassignedIncidents({
+          mode: incidentsMode,
+          assignedTo: incidentsAssignedTo,
+          windowMs,
+          now,
+          limit: monitoringIncidentItemLimit,
+          sort: incidentTableSort,
+          order: incidentTableOrder,
+          signal: controller.signal,
+        }),
+      ]);
+
+      if (controller.signal.aborted || !queryGenerationRef.current.isCurrent(queryGeneration)) return;
+
+      const [metricsResult, facetsResult, incidentsResult] = results;
+
+      if (metricsResult.status === "fulfilled") {
+        setRecentMetrics(metricsResult.value as RecentOperationalMetrics);
+        setSectionError("summary", null);
+        anySuccess = true;
+      } else if (!isOneViewAbortError(metricsResult.reason)) {
         setSectionError(
-          "queue",
-          isInitial ? "Não foi possível carregar a fila." : "Falha ao atualizar a fila. Valores anteriores mantidos.",
+          "summary",
+          isInitial ? "Não foi possível carregar as métricas." : "Falha ao atualizar métricas. Valores anteriores mantidos.",
         );
+      }
+
+      if (facetsResult.status === "fulfilled") {
+        setFacets(facetsResult.value as OneViewFacetsResponse);
+        anySuccess = true;
       }
 
       if (incidentsResult?.status === "fulfilled") {
@@ -1511,6 +1529,17 @@ export default function MonitoringPage() {
               <ConfigurableTableToolbar
                 search={alertSearch}
                 onSearchChange={setAlertSearch}
+                localSearchSuggestions={localCustomerSearchSuggestions}
+                onSearchSuggestionPick={(suggestion) => {
+                  if (suggestion.kind === "customer" && suggestion.customer_key) {
+                    setSelectedCustomerKeys((current) => current.includes(suggestion.customer_key!) ? current : [...current, suggestion.customer_key!]);
+                    setAlertSearch("");
+                    return;
+                  }
+                  setAlertSearch(suggestion.value);
+                }}
+                getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+                isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && selectedCustomerKeys.includes(suggestion.customer_key!)}
                 searchPlaceholder="Buscar nos alertas carregados…"
                 searchLabel="Buscar na fila operacional"
               columns={monitorAlertColumns}
@@ -1541,7 +1570,7 @@ export default function MonitoringPage() {
                 </label>
               )}
               filters={(
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
                   <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerCards} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={toggleCustomer} triggerClassName="h-9 w-full" countNoun={customerFilterCountNoun(alertMode === MONITOR_ALERT_MODE.prioritary ? "prioritary" : "filter")} /></div>
                   <div className="space-y-1 text-xs text-muted-foreground">Fonte<ZabbixSourceFilter value={selectedDatasources[0] || "all"} options={zabbixSourceFilterOptions} onValueChange={(value) => setSelectedDatasources(value === "all" ? [] : [value])} triggerClassName="h-9 w-full" /></div>
                   <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={homeWindow} onValueChange={(value) => setMonitorWindow(parseMonitorWindow(value))}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{MONITOR_WINDOW_OPTIONS.map((preset) => <SelectItem key={preset} value={preset}>{preset}</SelectItem>)}</SelectContent></Select></label>
@@ -1682,6 +1711,13 @@ export default function MonitoringPage() {
         historyItems={historyItems}
         isLoading={isDetailLoading}
         error={detailError}
+        onSourceAckRequestAccepted={(alert, result) => {
+          if (result.status !== "pending" || result.acknowledged_source) return;
+          const pending = (item: OneViewAlert) => ({ ...item, source_ack_status: "pending" as const, oneview_ack: { status: "pending" as const, requested_at: new Date().toISOString(), processed_at: null, actor_name: result.actor_name || null, reason: null, message: null } });
+          setSelectedPreview((current) => current?.id === alert.id ? pending(current) : current);
+          setDetail((current) => current?.item.id === alert.id ? { ...current, item: pending(current.item) } : current);
+        }}
+        onSourceAcknowledged={(alert) => loadSelectedAlert(alert.id)}
         description="Consulta rápida sem sair do Monitoramento."
       />
 

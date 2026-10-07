@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { format, subDays } from "date-fns";
-import { SlidersHorizontal } from "lucide-react";
 import { ChamadosSearchField } from "@/components/chamados/ChamadosSearchField";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableColumns, OneViewSortableHeader, OneViewTableSortMenu } from "@/components/oneview/ConfigurableTableTools";
 import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { OperationalFilterPanel } from "@/components/oneview/OperationalFilterPanel";
 import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -19,7 +19,6 @@ import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -345,8 +344,7 @@ export default function ChamadosPage() {
     // Poll de 15 s atualiza somente a tabela. Metadados globais são renovados
     // no primeiro load, em mudanças de filtro e após actions relevantes.
     const includeMetadata = !payloadRef.current || metadataRefreshRef.current !== metadataRefreshVersion;
-
-    fetchIncidents({
+    const listParams = {
       page,
       pageSize: incidentTablePageSize,
       search: searchParams.search,
@@ -354,11 +352,9 @@ export default function ChamadosPage() {
       company: applied.company.trim() || undefined,
       state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
       priority: applied.priority !== "all" ? applied.priority : undefined,
-      // SN-P0-28: assigned_to opcional (Analista).
       assignedTo: applied.unassigned
         ? undefined
         : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
-      // OV-P0-265: caller e canal opcionais; "Todos" preserva o universo do read-model.
       callerId: applied.callerId !== "all" ? applied.callerId : undefined,
       contactType: applied.contactType !== "all" ? applied.contactType : undefined,
       assignmentGroup: applied.assignmentGroup !== "all" ? applied.assignmentGroup : undefined,
@@ -367,17 +363,19 @@ export default function ChamadosPage() {
       unassigned: applied.unassigned || undefined,
       openedFrom: period.openedFrom,
       openedTo: period.openedTo,
-      // KPI clicks always filter server-side. Reuse the already-rendered
-      // global KPIs/facets, which are unrelated to the selected table filter.
-      includeCounts: includeMetadata,
-      includeGlobalCounts: includeMetadata,
-      includeFacets: includeMetadata,
       sort: sortField,
       order: sortOrder,
       signal: controller.signal,
+    } as const;
+
+    fetchIncidents({
+      ...listParams,
+      includeCounts: false,
+      includeGlobalCounts: false,
+      includeFacets: false,
     })
       .then((response) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted) return null;
         const previous = payloadRef.current;
         const next = {
           ...response,
@@ -385,9 +383,28 @@ export default function ChamadosPage() {
           global_counts: response.global_counts ?? previous?.global_counts,
           facets: response.facets ?? previous?.facets,
         };
-        if (includeMetadata) metadataRefreshRef.current = metadataRefreshVersion;
         payloadRef.current = next;
         setPayload(next);
+        setLoading(false);
+        if (!includeMetadata) return null;
+        return fetchIncidents({
+          ...listParams,
+          includeCounts: true,
+          includeGlobalCounts: true,
+          includeFacets: true,
+        });
+      })
+      .then((meta) => {
+        if (!meta || controller.signal.aborted) return;
+        const table = payloadRef.current;
+        const combined = {
+          ...meta,
+          items: table?.items ?? meta.items,
+          pagination: table?.pagination ?? meta.pagination,
+        };
+        metadataRefreshRef.current = metadataRefreshVersion;
+        payloadRef.current = combined;
+        setPayload(combined);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
@@ -767,25 +784,41 @@ export default function ChamadosPage() {
                 setDraft(next);
                 applyFilters(next);
               }}
+              onSuggestionSelect={(suggestion) => {
+                cancelIncidentSearch();
+                if (suggestion.kind === "company") {
+                  incidentSearchIntent.current = null;
+                  setIncidentSearchLoading(false);
+                  const next = { ...draft, company: suggestion.value, search: "" };
+                  setDraft(next);
+                  applyFilters(next);
+                  return;
+                }
+                const next = { ...draft, search: suggestion.value };
+                incidentSearchIntent.current = { id: ++incidentSearchIntentId.current, value: suggestion.value };
+                setIncidentSearchLoading(true);
+                setDraft(next);
+                applyFilters(next);
+              }}
               scope={searchSuggestScope}
+              selectedCompany={draft.company}
               activity={incidentSearchActivity}
               activityQuery={applied.search}
             />
 
-            <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
-              <PopoverTrigger asChild>
-                <Button type="button" size="sm" variant={activeFilterCount ? "default" : "outline"} className="h-9">
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
-                  Filtros
-                  {activeFilterCount > 0 ? <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge> : null}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-[min(44rem,calc(100vw-2rem))] space-y-3 p-4">
-                <div>
-                  <p className="text-sm font-semibold">Filtros específicos</p>
-                  <p className="text-[11px] text-muted-foreground">Abra somente quando precisar refinar a fila.</p>
+            <OperationalFilterPanel
+              open={filtersOpen}
+              onOpenChange={setFiltersOpen}
+              activeFilterCount={activeFilterCount}
+              description="Abra somente quando precisar refinar a fila."
+              footer={(
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button type="button" size="sm" variant="ghost" onClick={clearFilters}>Limpar</Button>
+                  <Button type="button" size="sm" onClick={() => { applyFilters(); setFiltersOpen(false); }}>Aplicar filtros</Button>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              )}
+            >
+                <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
                   <label className="space-y-1 text-xs text-muted-foreground">
                     Cliente
                     <Input value={draft.company} onChange={(event) => setDraft((prev) => ({ ...prev, company: event.target.value }))} placeholder="Nome do cliente" className="ov-filter-control" />
@@ -862,12 +895,7 @@ export default function ChamadosPage() {
                     </Button>
                   </div>
                 </div>
-                <div className="flex flex-wrap justify-end gap-2 border-t border-border/60 pt-3">
-                  <Button type="button" size="sm" variant="ghost" onClick={clearFilters}>Limpar</Button>
-                  <Button type="button" size="sm" onClick={() => { applyFilters(); setFiltersOpen(false); }}>Aplicar filtros</Button>
-                </div>
-              </PopoverContent>
-            </Popover>
+            </OperationalFilterPanel>
 
             <OneViewTableSortMenu
               value={`${sortField}:${sortOrder}`}

@@ -216,6 +216,7 @@ export function monitoringAlertsFetchParams(params: {
   tableSort?: FetchAlertsParams["sort"];
   tableOrder?: "asc" | "desc";
   now?: number;
+  include?: FetchAlertsParams["include"];
 }): FetchAlertsParams {
   const now = params.now ?? bucketOneViewReadNow();
   const limit = Math.min(Math.max(params.limit ?? MONITOR_QUEUE_LIMIT, 1), 50);
@@ -232,6 +233,7 @@ export function monitoringAlertsFetchParams(params: {
     firstSeenFrom: isoAgo(params.windowMs, now),
     sort: params.tableSort || sortParams.sort,
     order: params.tableOrder || sortParams.order,
+    include: params.include ?? "items",
   };
 }
 
@@ -264,6 +266,7 @@ export async function fetchMonitoringAlerts(params: {
   tableOrder?: "asc" | "desc";
   signal?: AbortSignal;
   now?: number;
+  include?: FetchAlertsParams["include"];
 }): Promise<MonitorAlertsResult> {
   const limit = Math.min(Math.max(params.limit ?? MONITOR_QUEUE_LIMIT, 1), 50);
   const response = await fetchAlerts({

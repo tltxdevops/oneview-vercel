@@ -102,6 +102,7 @@ export function createHistorySearchSuggestHandler({
   suggest = searchHistoryReadModelSuggestions,
 } = {}) {
   return async function historySearchSuggestHandler(req, res) {
+    const startedAt = Date.now();
     res.setHeader("Cache-Control", NO_CACHE);
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
@@ -116,8 +117,10 @@ export function createHistorySearchSuggestHandler({
 
     try {
       const payload = await suggest(req, config);
+      res.setHeader("Server-Timing", `oneview_search_suggest;dur=${Date.now() - startedAt}`);
       return sendJson(res, 200, { ...payload, data_source: "database", checked_at: new Date().toISOString() });
     } catch (error) {
+      res.setHeader("Server-Timing", `oneview_search_suggest;dur=${Date.now() - startedAt}`);
       if (error?.code === "invalid_query") {
         return sendJson(res, 400, { error: "invalid_query", data_source: "database" });
       }

@@ -69,6 +69,13 @@ export default function CertificadosPage() {
   const [sort, setSort] = useState<CertificateSortKey>("expiration");
   const [order, setOrder] = useState<SortOrder>("asc");
   const { commitNow: commitSearchNow } = useOneViewCommittedSearch(searchDraft, setSearch);
+  const localSearchSuggestions = useMemo(() => [
+    ...mockClients.filter((client) => client.id !== "all").map((client) => ({ kind: "customer", value: client.name, label: client.name, customer_key: client.id, hint: "Aplicar filtro de cliente" })),
+    ...mockCertificates.flatMap((certificate) => [
+      { kind: "description", value: certificate.name, label: certificate.name, hint: `Certificado · ${resolveClientName(certificate.clientId)}` },
+      { kind: "link", value: certificate.domain, label: certificate.domain, hint: `Domínio · ${resolveClientName(certificate.clientId)}` },
+    ]),
+  ], []);
 
   const handleRefresh = useCallback(async () => {
     // Attach data fetching logic here when integrating with backend
@@ -267,7 +274,27 @@ export default function CertificadosPage() {
                 )}
               </div>
               <div className="flex flex-col gap-2 border-b border-border/60 p-3 sm:flex-row">
-                <OneViewTableSearchField value={searchDraft} onChange={setSearchDraft} onSubmit={commitSearchNow} placeholder="Buscar certificado, domínio ou cliente…" ariaLabel="Buscar certificados" activity={searchDraft !== search ? "pending" : "idle"} />
+                <OneViewTableSearchField
+                  value={searchDraft}
+                  onChange={setSearchDraft}
+                  onSubmit={commitSearchNow}
+                  onSuggestionSelect={(suggestion) => {
+                    if (suggestion.kind === "customer" && suggestion.customer_key) {
+                      setSelectedClient(suggestion.customer_key);
+                      setSearchDraft("");
+                      setSearch("");
+                      return;
+                    }
+                    setSearchDraft(suggestion.value);
+                    setSearch(suggestion.value);
+                  }}
+                  localSuggestions={localSearchSuggestions}
+                  getSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+                  isSuggestionSelected={(suggestion) => suggestion.kind === "customer" && suggestion.customer_key === selectedClient}
+                  placeholder="Buscar certificado, domínio ou cliente…"
+                  ariaLabel="Buscar certificados"
+                  activity={searchDraft !== search ? "pending" : "idle"}
+                />
                 <OneViewTableSortMenu value={`${sort}:${order}`} options={CERTIFICATE_SORT_OPTIONS} onChange={applySort} label="Ordenar certificados" />
               </div>
               <Table className="min-w-full text-sm">

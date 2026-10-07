@@ -15,6 +15,7 @@ import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
 import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -56,7 +57,7 @@ import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
-import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
+import { FIRST_ALERTS_PAGE_SIZE } from "@/lib/alerts-query";
 import {
   applyHistoryRiskPreset,
   HISTORY_RISK_PRESETS,
@@ -85,6 +86,7 @@ import {
   ONEVIEW_V1_FILTER_SEVERITIES,
   OneViewAlert,
   OneViewFacetsResponse,
+  type OneViewSearchSuggestion,
   type OneViewSeverity,
 } from "@/lib/oneview-api";
 
@@ -698,6 +700,14 @@ export default function HistoricoPage() {
       }
       request = { ...request, sort: alertSort, order: sortOrder, sortSecondary: undefined };
 
+      if (!quiet && page === 1) {
+        const primed = await fetchAlerts({ ...request, page: 1, pageSize: FIRST_ALERTS_PAGE_SIZE, include: "items" });
+        if (controller.signal.aborted) return;
+        setAlertItems(primed.items ?? []);
+        alertsLoadedRef.current = true;
+        setAlertsLoaded(true);
+      }
+
       const response = await fetchAlerts(request);
       if (controller.signal.aborted) return;
       setAlertItems(response.items ?? []);
@@ -828,6 +838,13 @@ export default function HistoricoPage() {
       facets?.datasources,
     )
   ), [facets?.customers, facets?.datasources]);
+  const localCustomerSearchSuggestions = useMemo(() => customerOptions.map((customer) => ({
+    kind: "customer",
+    value: customer.name,
+    label: customer.name,
+    customer_key: customer.key,
+    hint: "Aplicar filtro de cliente",
+  })), [customerOptions]);
 
   const countLabel = tab === "alertas"
     ? (alertsError || alertTotal === null ? "— alertas registrados" : `${alertTotal.toLocaleString("pt-BR")} alertas registrados`)
@@ -991,6 +1008,22 @@ export default function HistoricoPage() {
     setSearchDraft(value);
     commitHistorySearch(value.trim());
   }, [cancelHistorySearch, commitHistorySearch]);
+
+  const pickHistoricoSuggestion = useCallback((suggestion: OneViewSearchSuggestion) => {
+    if (suggestion.kind === "customer") {
+      const customerKey = suggestion.customer_key
+        || customerOptions.find((customer) => customer.name === suggestion.label || customer.name === suggestion.value)?.key;
+      if (customerKey) {
+        cancelHistorySearch();
+        historySearchIntent.current = null;
+        setHistorySearchLoading(false);
+        setSearchDraft("");
+        patchParams({ customer: customerKey, search: null }, { resetPage: true });
+        return;
+      }
+    }
+    pickHistoricoSearch(suggestion.value);
+  }, [cancelHistorySearch, customerOptions, patchParams, pickHistoricoSearch]);
 
   const applyHistorySort = useCallback((value: string) => {
     const [sort, order] = value.split(":");
@@ -1324,6 +1357,10 @@ export default function HistoricoPage() {
                 onSearchChange={setSearchDraft}
                 fetchSearchSuggestions={fetchHistoricoSearchSuggestions}
                 onSearchPick={pickHistoricoSearch}
+                onSearchSuggestionPick={pickHistoricoSuggestion}
+                localSearchSuggestions={localCustomerSearchSuggestions}
+                getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+                isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && cliente === suggestion.customer_key}
                 onSearchSubmit={(value) => commitHistorySearchNow(value)}
                 searchPlaceholder="Buscar host, problema ou cliente…"
                 searchLabel="Buscar na tabela do histórico de alertas"
@@ -1339,12 +1376,12 @@ export default function HistoricoPage() {
                   label: "Ordenar histórico de alertas",
                 }}
                 filters={(
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
                     <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Risco<Select value={risk} onValueChange={(value) => applyRiskPreset(value as HistoryRiskPreset)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{HISTORY_RISK_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={zabbixSourceFilterOptions} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
-                    <label className="space-y-1 text-xs text-muted-foreground">Severidade<Select value={severitySelectValue(severities)} onValueChange={(value) => changeFilter("severity", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{SEVERITY_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Severidade<OperationalFacetMultiSelect label="Severidade" options={ONEVIEW_V1_FILTER_SEVERITIES.map((value) => ({ value, label: formatOneViewSeverityLabel(value) }))} selectedValues={severities} onChange={(values) => patchParams({ severity: values, risk: "all" }, { resetPage: true })} allLabel="Todas" searchPlaceholder="Buscar severidade..." /></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Estado<Select value={alertStatus} onValueChange={(value) => changeFilter("status", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERT_STATUS_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">ACK<Select value={ackFilter} onValueChange={(value) => changeFilter("acknowledged_source", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ACK_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     {period === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={customRange} onSelect={applyCustomRange} /></div> : null}
@@ -1589,6 +1626,10 @@ export default function HistoricoPage() {
                 onSearchChange={setSearchDraft}
                 fetchSearchSuggestions={fetchHistoricoSearchSuggestions}
                 onSearchPick={pickHistoricoSearch}
+                onSearchSuggestionPick={pickHistoricoSuggestion}
+                localSearchSuggestions={localCustomerSearchSuggestions}
+                getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+                isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && cliente === suggestion.customer_key}
                 onSearchSubmit={(value) => commitHistorySearchNow(value)}
                 searchPlaceholder="Buscar evento, host, cliente ou ator…"
                 searchLabel="Buscar na tabela do histórico de eventos"
@@ -1604,7 +1645,7 @@ export default function HistoricoPage() {
                   label: "Ordenar histórico de eventos",
                 }}
                 filters={(
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
                     <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={zabbixSourceFilterOptions} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>

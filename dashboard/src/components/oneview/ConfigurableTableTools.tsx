@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
-import { ArrowUpDown, Check, ChevronDown, ChevronUp, Columns3, GripVertical, RotateCcw, SlidersHorizontal } from "lucide-react";
+import { ArrowUpDown, Check, ChevronDown, ChevronUp, Columns3, GripVertical, RotateCcw } from "lucide-react";
 import { OneViewTableSearchField } from "@/components/oneview/OneViewTableSearchField";
-import { Badge } from "@/components/ui/badge";
+import { OperationalFilterPanel } from "@/components/oneview/OperationalFilterPanel";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -184,6 +184,9 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   normalizeIncSearch = true,
   searchActivity = "idle",
   searchActivityQuery,
+  localSearchSuggestions,
+  getSearchSuggestionActionLabel,
+  isSearchSuggestionSelected,
   sort,
 }: {
   search: string;
@@ -205,6 +208,9 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   normalizeIncSearch?: boolean;
   searchActivity?: "idle" | "pending" | "searching";
   searchActivityQuery?: string;
+  localSearchSuggestions?: OneViewSearchSuggestion[];
+  getSearchSuggestionActionLabel?: (item: OneViewSearchSuggestion) => string | null;
+  isSearchSuggestionSelected?: (item: OneViewSearchSuggestion) => boolean;
   sort?: {
     value: string;
     options: OneViewTableSortOption[];
@@ -214,7 +220,7 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
 }) {
   return (
     <div className={cn("border-b border-border/60 bg-background/75 px-3 py-2", className)}>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <OneViewTableSearchField
           value={search}
           onChange={onSearchChange}
@@ -227,33 +233,21 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
           normalizeInc={normalizeIncSearch}
           activity={searchActivity}
           activityQuery={searchActivityQuery}
+          localSuggestions={localSearchSuggestions}
+          getSuggestionActionLabel={getSearchSuggestionActionLabel}
+          isSuggestionSelected={isSearchSuggestionSelected}
+          className="w-full basis-full sm:min-w-[20rem] sm:basis-0"
         />
-        {filters ? (
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button type="button" size="sm" variant={activeFilterCount ? "default" : "outline"} className="h-9 gap-1.5">
-                <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
-                Filtros
-                {activeFilterCount ? <Badge variant="secondary" className="ml-0.5 h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge> : null}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-[min(42rem,calc(100vw-2rem))] space-y-3 p-4">
-              <div>
-                <p className="text-sm font-semibold">Filtros específicos</p>
-                <p className="text-[11px] text-muted-foreground">Use somente quando precisar refinar os resultados.</p>
-              </div>
-              {filters}
-              {activeFilterCount && onClearFilters ? (
-                <div className="flex justify-end border-t border-border/60 pt-3">
-                  <Button type="button" size="sm" variant="ghost" onClick={onClearFilters}>Limpar filtros</Button>
-                </div>
-              ) : null}
-            </PopoverContent>
-          </Popover>
-        ) : null}
-        {sort ? <OneViewTableSortMenu {...sort} /> : null}
-        <ConfigurableTableColumns controller={columns} />
-        {trailing}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {filters ? (
+          <OperationalFilterPanel activeFilterCount={activeFilterCount} onClearFilters={onClearFilters}>
+            {filters}
+          </OperationalFilterPanel>
+          ) : null}
+          {sort ? <OneViewTableSortMenu {...sort} /> : null}
+          <ConfigurableTableColumns controller={columns} />
+          {trailing}
+        </div>
       </div>
       {scopeHint ? <p className="mt-1 text-[10px] text-muted-foreground">{scopeHint}</p> : null}
     </div>

@@ -6,6 +6,8 @@ import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
 import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
+import { OperationalFilterSection } from "@/components/oneview/OperationalFilterPanel";
 import {
   OneViewButton,
   OneViewPill,
@@ -32,12 +34,10 @@ import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActi
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
-import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { PageHeader } from "@/components/oneview/PageHeader";
 import { Calendar } from "@/components/ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -45,6 +45,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
+import { useOneViewWarmRead } from "@/hooks/useOneViewWarmRead";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
@@ -68,7 +69,6 @@ import {
   fetchAlerts,
   fetchDataSourcesWithMeta,
   fetchOneViewHealth,
-  fetchOneViewFacets,
   fetchOperationsHealth,
   formatDurationSeconds,
   formatNullableCount,
@@ -76,15 +76,18 @@ import {
   isOneViewAbortError,
   isOneViewSeverity,
   invalidateOneViewReadCache,
+  bucketOneViewReadNow,
+  oneViewAlertsPath,
   normalizeAlertSeveritySummary,
   normalizeOneViewSeverity,
   requestAlertAcknowledgement,
   type AcknowledgeAlertResponse,
 } from "@/lib/oneview-api";
 import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
+import { getOneViewFacets } from "@/lib/oneview-facets-store";
+import type { SourceAckTerminalStatus } from "@/lib/oneview-alert-source-ack";
 import { ONEVIEW_SEVERITY_UI } from "@/lib/oneview-severity-visual";
 import {
-  ALERTS_DATE_FIELD_OPTIONS,
   ALERTS_DATE_PRESET_OPTIONS,
   ALERTS_SEARCH_FIELD_OPTIONS,
   ALERTS_SORT_OPTIONS,
@@ -92,11 +95,12 @@ import {
   alertsDateBounds,
   applyDateFieldToFetchParams,
   applySearchToFetchParams,
+  firstAlertsFetchParams,
+  FIRST_ALERTS_PAGE_SIZE,
   parseAlertsDateUrlValue,
-  sortOptionKey,
   writeAlertsUrlParams,
   type AlertsAckFilter,
-  type AlertsDateField,
+  type AlertsOneViewAckFilter,
   type AlertsDatePreset,
   type AlertsSearchField,
   type AlertsSortKey,
@@ -105,9 +109,7 @@ import {
   augmentCustomerFacetsWithDedicatedDatasources,
   customerFilterCountNoun,
   isDatasourceOnlyFilterValue,
-  mergeOperationalZabbixSourceFilterOptions,
   splitLegacyCustomerQuery,
-  zabbixSourceKey,
 } from "@/lib/oneview-zabbix-source";
 import {
   Activity,
@@ -129,6 +131,7 @@ import {
 import { toast } from "sonner";
 
 type RecognitionFilter = AlertsAckFilter;
+type OneViewAckFilter = AlertsOneViewAckFilter;
 type StatusFilter = "active" | "resolved" | "all";
 type AlertsView = "recent" | "open" | "priority" | "forgotten" | "resolved" | "all";
 type SortField = AlertsSortKey | "client" | "datasource" | "host" | "problem" | "status" | "acknowledged_source" | "last_seen_at";
@@ -802,10 +805,6 @@ function temporalPresetFromUrl(value: string | null): ResolvedTemporalPreset {
   return allowed.includes(value ?? "") ? value as ResolvedTemporalPreset : "all";
 }
 
-function dateFieldFromUrl(value: string | null): AlertsDateField {
-  return queryEnum(value, ["first_seen", "last_seen", "acknowledged", "resolved"] as const, "first_seen");
-}
-
 function searchFieldFromUrl(value: string | null): AlertsSearchField {
   return queryEnum(value, ["all", "host", "problem", "customer", "eventid"] as const, "all");
 }
@@ -847,7 +846,10 @@ export default function AlertsPage() {
   const initialQueryRef = useRef(new URLSearchParams(searchParams));
   const initialQuery = initialQueryRef.current;
   const requestedAlertId = searchParams.get("alert");
-  const [alerts, setAlerts] = useState<OneViewAlert[]>([]);
+  const warmedAlerts = useOneViewWarmRead<AlertListResponse>({
+    cachePath: oneViewAlertsPath(firstAlertsFetchParams(bucketOneViewReadNow())),
+  });
+  const [alerts, setAlerts] = useState<OneViewAlert[]>(() => warmedAlerts.data?.items ?? []);
   const [metrics, setMetrics] = useState<AlertMetrics | null>(null);
   const [health, setHealth] = useState<OneViewHealthResponse | null>(null);
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
@@ -859,11 +861,6 @@ export default function AlertsPage() {
   const [page, setPage] = useState(() => positiveQueryInteger(initialQuery.get("page"), 1, Number.MAX_SAFE_INTEGER));
   const [pageSize, setPageSize] = useState(() => Number(queryEnum(initialQuery.get("page_size"), ["25", "50", "100"] as const, "50")));
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(() => splitLegacyCustomerQuery(initialQuery.getAll("customer")).customers);
-  const [selectedDatasources, setSelectedDatasources] = useState<string[]>(() => {
-    const migrated = splitLegacyCustomerQuery(initialQuery.getAll("customer")).datasources;
-    const fromQuery = initialQuery.getAll("datasource").map((value) => zabbixSourceKey(value)).filter(Boolean);
-    return [...new Set([...fromQuery, ...migrated])];
-  });
   const initialView = inferAlertsView(initialQuery);
   const [sourceAckFilter, setSourceAckFilter] = useState<RecognitionFilter>(() => {
     const ackSource = initialQuery.get("acknowledged_source");
@@ -875,6 +872,9 @@ export default function AlertsPage() {
     if (initialView === "priority" || initialView === "forgotten") return "unacknowledged";
     return "all";
   });
+  const [oneviewAckFilter, setOneviewAckFilter] = useState<OneViewAckFilter>(() => (
+    queryEnum(initialQuery.get("oneview_ack_status"), ["all", "pending", "success", "cancelled", "failed"] as const, "all")
+  ));
   const [alertsView, setAlertsView] = useState<AlertsView>(() => initialView);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => {
     if (initialQuery.get("status")) return queryEnum(initialQuery.get("status"), ["active", "resolved", "all"] as const, "active");
@@ -915,14 +915,6 @@ export default function AlertsPage() {
   const [searchQuery, setSearchQuery] = useState(() => initialQuery.get("search") ?? initialQuery.get("host") ?? initialQuery.get("problem") ?? "");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [alertSearchLoading, setAlertSearchLoading] = useState(false);
-  const [dateField, setDateField] = useState<AlertsDateField>(() => {
-    if (initialQuery.get("date_field")) return dateFieldFromUrl(initialQuery.get("date_field"));
-    if (initialQuery.get("updated") && initialQuery.get("updated") !== "all") return "last_seen";
-    if (initialQuery.get("resolved") && initialQuery.get("resolved") !== "all") return "resolved";
-    if (initialQuery.get("ack") && initialQuery.get("ack") !== "all") return "acknowledged";
-    if (initialView === "recent") return "first_seen";
-    return "first_seen";
-  });
   const [datePreset, setDatePreset] = useState<AlertsDatePreset>(() => {
     if (initialQuery.get("date_preset")) return temporalPresetFromUrl(initialQuery.get("date_preset"));
     if (initialQuery.get("date_from") || initialQuery.get("date_to")) return "custom";
@@ -944,7 +936,8 @@ export default function AlertsPage() {
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
 
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
-  const [hasLoadedAlerts, setHasLoadedAlerts] = useState(false);
+  const [hasLoadedAlerts, setHasLoadedAlerts] = useState(() => Boolean(warmedAlerts.data?.items?.length));
+  const [isAlertsFilling, setIsAlertsFilling] = useState(() => Boolean(warmedAlerts.data?.items?.length));
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [alertsError, setAlertsError] = useState<string | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -998,12 +991,12 @@ export default function AlertsPage() {
     const next = writeAlertsUrlParams({
       view: alertsView,
       customers: selectedCustomerKeys,
-      datasources: selectedDatasources,
       severities: selectedSeverities,
       status: statusFilter,
       incidentState: incidentStateFilter,
       acknowledgedSource: sourceAckFilter,
-      dateField,
+      oneviewAckStatus: oneviewAckFilter,
+      dateField: "first_seen",
       datePreset,
       dateRange,
       searchField,
@@ -1017,7 +1010,7 @@ export default function AlertsPage() {
       alert: requestedAlertId,
     });
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [alertsView, dateField, datePreset, dateRange, incidentStateFilter, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedDatasources, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [alertsView, datePreset, dateRange, incidentStateFilter, oneviewAckFilter, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadAlerts = useCallback(async (options?: { quiet?: boolean }) => {
     if (options?.quiet && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
@@ -1048,11 +1041,11 @@ export default function AlertsPage() {
         page,
         pageSize,
         customers: selectedCustomerKeys,
-        datasources: selectedDatasources,
         severities: selectedSeverities,
         status: statusFilter,
         incidentState: incidentStateFilter === "all" ? undefined : incidentStateFilter,
         acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+        oneviewAckStatus: oneviewAckFilter === "all" ? undefined : oneviewAckFilter,
         sort: sortField as "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "duration" | "acknowledged_at",
         order: sortOrder,
         signal: controller.signal,
@@ -1062,7 +1055,23 @@ export default function AlertsPage() {
       if (alertsView === "forgotten") {
         request.firstSeenTo = dateBounds.to;
       } else if (alertsDateActive(datePreset, dateRange)) {
-        request = applyDateFieldToFetchParams(request, dateField, dateBounds);
+        request = applyDateFieldToFetchParams(request, "first_seen", dateBounds);
+      }
+
+      const shouldPrime = !options?.quiet && page === 1;
+      if (shouldPrime) {
+        const primed = await fetchAlerts({
+          ...request,
+          page: 1,
+          pageSize: FIRST_ALERTS_PAGE_SIZE,
+          include: "items",
+        });
+        if (requestId !== alertsRequestIdRef.current) return;
+        const primedNormalized = normalizeAlertResponse(primed, 1, FIRST_ALERTS_PAGE_SIZE);
+        setAlerts(primedNormalized.items);
+        setHasLoadedAlerts(true);
+        setIsAlertsFilling(true);
+        setAlertsMeta(metaOf(primed));
       }
 
       const response = await fetchAlerts(request);
@@ -1080,6 +1089,7 @@ export default function AlertsPage() {
       setSnapshotCoverage(safeResponse.snapshot_coverage ?? null);
       setAlertsMeta(metaOf(safeResponse));
       setHasLoadedAlerts(true);
+      setIsAlertsFilling(false);
       alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
     } catch (error) {
       if (controller.signal.aborted || isOneViewAbortError(error)) return;
@@ -1091,7 +1101,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [alertsView, dateField, datePreset, dateRange, debouncedSearch, hasLoadedAlerts, health, incidentStateFilter, page, pageSize, searchField, selectedCustomerKeys, selectedDatasources, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [alertsView, datePreset, dateRange, debouncedSearch, hasLoadedAlerts, health, incidentStateFilter, oneviewAckFilter, page, pageSize, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1103,7 +1113,7 @@ export default function AlertsPage() {
         fetchOneViewHealth(),
         ...(includeStable ? [
           fetchDataSourcesWithMeta(),
-          fetchOneViewFacets(),
+          getOneViewFacets(),
           fetchOperationsHealth(),
         ] : []),
       ]);
@@ -1185,8 +1195,9 @@ export default function AlertsPage() {
   }, [loadAlerts, loadSelectedAlert, loadSummaryResources, selectedAlertId]);
 
   useEffect(() => {
+    if (alertsView !== "forgotten" && !hasLoadedAlerts) return;
     void loadSummaryResources();
-  }, [loadSummaryResources]);
+  }, [alertsView, hasLoadedAlerts, loadSummaryResources]);
 
   useEffect(() => {
     void loadAlerts();
@@ -1236,9 +1247,9 @@ export default function AlertsPage() {
   const hasTemporalFilter = alertsView !== "forgotten" && alertsDateActive(datePreset, dateRange);
   const hasActiveListFilters = Boolean(
     selectedCustomerKeys.length
-    || selectedDatasources.length
     || selectedSeverities.length
     || sourceAckFilter !== "all"
+    || oneviewAckFilter !== "all"
     || incidentStateFilter !== "all"
     || statusFilter !== "active"
     || debouncedSearch
@@ -1319,11 +1330,6 @@ export default function AlertsPage() {
     return "neutral";
   };
 
-  const zabbixSourceFilterOptions = useMemo(
-    () => mergeOperationalZabbixSourceFilterOptions(facets?.datasources),
-    [facets?.datasources],
-  );
-
   const customerCards = useMemo(() => {
     const allCount = hasTemporalFilter ? null : (metrics?.active_total ?? health?.counts.active_alerts ?? null);
     const customers = augmentCustomerFacetsWithDedicatedDatasources(
@@ -1364,37 +1370,44 @@ export default function AlertsPage() {
       q,
       limit: 10,
       customers: selectedCustomerKeys,
-      datasources: selectedDatasources,
       severities: selectedSeverities,
       status: statusFilter,
       acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      oneviewAckStatus: oneviewAckFilter === "all" ? undefined : oneviewAckFilter,
       signal,
     }).then((response) => response.suggestions ?? [])
-  ), [selectedCustomerKeys, selectedDatasources, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [oneviewAckFilter, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+
+  const localCustomerSearchSuggestions = useMemo(() => customerCards
+    .filter((customer) => customer.key !== "all")
+    .map((customer) => ({
+      kind: "customer",
+      value: customer.name,
+      label: customer.name,
+      customer_key: customer.key,
+      hint: "Adicionar aos clientes selecionados",
+    })), [customerCards]);
 
   const activeFilterChips = [
-    selectedCustomerKeys.length ? { label: `${selectedCustomerKeys.length} cliente(s)`, remove: () => setSelectedCustomerKeys([]) } : null,
-    selectedDatasources.length ? { label: `${selectedDatasources.length} fonte(s)`, remove: () => setSelectedDatasources([]) } : null,
-    ...selectedSeverities.map((severity) => ({ label: severityCatalog[severity].label, remove: () => setSelectedSeverities((current) => current.filter((item) => item !== severity)) })),
+    ...selectedCustomerKeys.map((customerKey) => ({
+      key: `customer:${customerKey}`,
+      label: customerCards.find((customer) => customer.key === customerKey)?.name ?? customerKey,
+      remove: () => setSelectedCustomerKeys((current) => current.filter((item) => item !== customerKey)),
+    })),
+    ...selectedSeverities.map((severity) => ({ key: `severity:${severity}`, label: severityCatalog[severity].label, remove: () => setSelectedSeverities((current) => current.filter((item) => item !== severity)) })),
     statusFilter !== "active" ? { label: `Status: ${statusFilter === "resolved" ? "Resolvidos" : "Todos"}`, remove: () => setStatusFilter("active") } : null,
     incidentStateFilter === "8" ? { label: "Chamado cancelado", remove: () => setIncidentStateFilter("all") } : null,
     sourceAckFilter !== "all" ? { label: `ACK origem: ${sourceAckFilter === "acknowledged" ? "Com ACK" : "Sem ACK"}`, remove: () => setSourceAckFilter("all") } : null,
+    oneviewAckFilter !== "all" ? { label: `ACK OneView: ${{ pending: "Pendente", success: "Reconhecido", cancelled: "Cancelado", failed: "Falhou" }[oneviewAckFilter]}`, remove: () => setOneviewAckFilter("all") } : null,
     hasTemporalFilter ? {
-      label: `${ALERTS_DATE_FIELD_OPTIONS.find((item) => item.id === dateField)?.label ?? "Período"} ${temporalLabels[datePreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`,
+      label: `Período ${temporalLabels[datePreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`,
       remove: () => { setDatePreset("all"); setDateRange(undefined); },
     } : null,
     debouncedSearch ? {
       label: `${ALERTS_SEARCH_FIELD_OPTIONS.find((item) => item.id === searchField)?.label ?? "Busca"}: ${debouncedSearch}`,
       remove: () => setSearchQuery(""),
     } : null,
-  ].filter((chip): chip is { label: string; remove: () => void } => Boolean(chip));
-  const severityFilterValue = selectedSeverities.length === 0
-    ? "all"
-    : selectedSeverities.length === 2 && selectedSeverities.includes("disaster") && selectedSeverities.includes("high")
-      ? "priority"
-      : selectedSeverities.length === 1
-        ? selectedSeverities[0]
-        : "multiple";
+  ].filter((chip): chip is { key?: string; label: string; remove: () => void } => Boolean(chip));
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + alerts.length - 1, pagination.total_items);
@@ -1462,9 +1475,9 @@ export default function AlertsPage() {
     alertSearchIntent.current = null;
     setAlertSearchLoading(false);
     setSelectedCustomerKeys([]);
-    setSelectedDatasources([]);
     setSelectedSeverities([]);
     setSourceAckFilter("all");
+    setOneviewAckFilter("all");
     setAlertsView("recent");
     setStatusFilter("active");
     setIncidentStateFilter("all");
@@ -1473,7 +1486,6 @@ export default function AlertsPage() {
     setSearchField("all");
     setSearchQuery("");
     setDebouncedSearch("");
-    setDateField("first_seen");
     setDatePreset("all");
     setDateRange(undefined);
     setPage(1);
@@ -1487,7 +1499,6 @@ export default function AlertsPage() {
     if (view === "recent") {
       setStatusFilter("all");
       setSelectedSeverities([]);
-      setDateField("first_seen");
       setDatePreset("all");
       setSortField("first_seen_at");
       setSortOrder("desc");
@@ -1496,7 +1507,6 @@ export default function AlertsPage() {
     if (view === "open") {
       setStatusFilter("active");
       setSelectedSeverities([]);
-      setDateField("first_seen");
       setDatePreset("all");
       setSortField("last_seen_at");
       setSortOrder("desc");
@@ -1507,7 +1517,6 @@ export default function AlertsPage() {
       setStatusFilter("active");
       setSelectedSeverities(["disaster", "high"]);
       setSourceAckFilter("unacknowledged");
-      setDateField("first_seen");
       setDatePreset("all");
       setSortField("severity");
       setSortOrder("desc");
@@ -1517,7 +1526,6 @@ export default function AlertsPage() {
       setStatusFilter("active");
       setSelectedSeverities([]);
       setSourceAckFilter("unacknowledged");
-      setDateField("first_seen");
       setDatePreset("all");
       setSortField("first_seen_at");
       setSortOrder("asc");
@@ -1526,7 +1534,6 @@ export default function AlertsPage() {
     if (view === "resolved") {
       setStatusFilter("resolved");
       setSelectedSeverities([]);
-      setDateField("resolved");
       setDatePreset("all");
       setSortField("resolved_at");
       setSortOrder("desc");
@@ -1534,7 +1541,6 @@ export default function AlertsPage() {
     }
     setStatusFilter("all");
     setSelectedSeverities([]);
-    setDateField("first_seen");
     setDatePreset("all");
     setSortField("last_seen_at");
     setSortOrder("desc");
@@ -1599,7 +1605,6 @@ export default function AlertsPage() {
   const applyDatePreset = (preset: AlertsDatePreset) => {
     setDatePreset(preset);
     if (preset !== "custom") setDateRange(undefined);
-    if (dateField === "resolved" && preset !== "all") setStatusFilter("resolved");
     setPage(1);
   };
 
@@ -1689,17 +1694,34 @@ export default function AlertsPage() {
     }
   };
 
-  const handleSourceAcknowledged = useCallback(async (alert: OneViewAlert, result: AcknowledgeAlertResponse) => {
+  const handleSourceAckRequestAccepted = useCallback((alert: OneViewAlert, result: AcknowledgeAlertResponse) => {
+    if (result.status !== "pending" || result.acknowledged_source) return;
+    const pending = (item: OneViewAlert) => item.id === alert.id ? {
+      ...item,
+      source_ack_status: "pending" as const,
+      oneview_ack: {
+        status: "pending",
+        requested_at: new Date().toISOString(),
+        processed_at: null,
+        actor_name: result.actor_name || null,
+        reason: null,
+        message: null,
+      },
+    } : item;
+    setAlerts((current) => current.map(pending));
+    setSelectedPreview((current) => current ? pending(current) : current);
+    setDetail((current) => current?.item.id === alert.id ? { ...current, item: pending(current.item) } : current);
+  }, []);
+
+  const handleSourceAcknowledged = useCallback(async (alert: OneViewAlert, _status: SourceAckTerminalStatus) => {
     invalidateOneViewReadCache("/oneview/alerts");
     invalidateOneViewReadCache(`/oneview/alerts/${alert.id}`);
     invalidateOneViewReadCache(`/oneview/alerts/${alert.id}/history`);
-    invalidateOneViewReadCache("/oneview/dashboard-summary");
     await Promise.all([
-      loadSummaryResources(true, false),
       loadAlerts({ quiet: true }),
       selectedAlertId === alert.id ? loadSelectedAlert(alert.id) : Promise.resolve(),
     ]);
-  }, [loadAlerts, loadSelectedAlert, loadSummaryResources, selectedAlertId]);
+  }, [loadAlerts, loadSelectedAlert, selectedAlertId]);
 
   const toggleColumnSort = (field: SortField) => {
     setSortOrder((current) => sortField === field && current === "asc" ? "desc" : "asc");
@@ -1802,9 +1824,11 @@ export default function AlertsPage() {
                 {alertsView === "forgotten"
                   ? "Alertas ativos sem ACK acima do tempo esperado."
                   : "Fila por cliente para ação imediata"}
-                {isAlertsLoading && hasTemporalFilter
-                  ? " · Aplicando filtro de período…"
-                  : ` · Exibindo ${firstVisible.toLocaleString("pt-BR")}–${lastVisible.toLocaleString("pt-BR")} de ${listTotal.toLocaleString("pt-BR")} ${statusFilter === "resolved" ? "alertas resolvidos" : "alertas"}`}
+                {isAlertsFilling
+                  ? " · Exibindo os mais recentes · carregando o restante…"
+                  : isAlertsLoading && hasTemporalFilter
+                    ? " · Aplicando filtro de período…"
+                    : ` · Exibindo ${firstVisible.toLocaleString("pt-BR")}–${lastVisible.toLocaleString("pt-BR")} de ${listTotal.toLocaleString("pt-BR")} ${statusFilter === "resolved" ? "alertas resolvidos" : "alertas"}`}
                 {snapshotCoverage?.partial ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos` : ""}
               </p>
             </div>
@@ -1832,7 +1856,9 @@ export default function AlertsPage() {
               setAlertSearchLoading(false);
               setSearchQuery("");
               setDebouncedSearch("");
-              setSelectedCustomerKeys([suggestion.customer_key]);
+              setSelectedCustomerKeys((current) => current.includes(suggestion.customer_key!)
+                ? current
+                : [...current, suggestion.customer_key!]);
               setPage(1);
               return;
             }
@@ -1841,13 +1867,17 @@ export default function AlertsPage() {
             commitAlertSearch(suggestion.value);
           }}
           onSearchSubmit={(value) => commitAlertSearch(value)}
-          searchPlaceholder="Buscar alerta, host ou cliente…"
+          searchPlaceholder="Buscar alerta/host ou adicionar clientes…"
           searchLabel="Buscar na tabela de alertas"
           columns={alertTableColumns}
           activeFilterCount={activeFilterChips.length}
           onClearFilters={clearFilters}
           searchActivity={alertSearchActivity}
           searchActivityQuery={debouncedSearch}
+          localSearchSuggestions={localCustomerSearchSuggestions}
+          getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+          isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && selectedCustomerKeys.includes(suggestion.customer_key!)}
+          scopeHint="Para filtrar clientes: digite 2 ou mais caracteres, escolha Aplicar Cliente e repita para adicionar outros."
           sort={{
             value: `${sortField}:${sortOrder}`,
             options: [...ALERT_TABLE_SORT_OPTIONS],
@@ -1860,58 +1890,65 @@ export default function AlertsPage() {
             label: "Ordenar alertas",
           }}
           filters={(
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <label className="space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
-              <label className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix
-                <ZabbixSourceFilter
-                  value={selectedDatasources[0] || "all"}
-                  options={zabbixSourceFilterOptions}
-                  onValueChange={(value) => { setSelectedDatasources(value === "all" ? [] : [value]); setPage(1); }}
-                  triggerClassName="h-9 w-full"
-                />
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Estado
-                <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Ativos</SelectItem><SelectItem value="resolved">Resolvidos</SelectItem><SelectItem value="all">Todos</SelectItem></SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Estado do chamado
-                <Select value={incidentStateFilter} onValueChange={(value) => { setIncidentStateFilter(value as "all" | "8"); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="8">Chamado cancelado</SelectItem></SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Severidade
-                <Select value={severityFilterValue} onValueChange={(value) => { setSelectedSeverities(value === "all" ? [] : value === "priority" ? ["disaster", "high"] : [value as OneViewSeverity]); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todas</SelectItem><SelectItem value="priority">High e Disaster</SelectItem>{severityFilterValue === "multiple" ? <SelectItem value="multiple" disabled>Múltiplas</SelectItem> : null}{severityOrder.map((severity) => <SelectItem key={severity} value={severity}>{severityCatalog[severity].label}</SelectItem>)}</SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Campo da busca
-                <Select value={searchField} onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SEARCH_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Campo de data
-                <Select value={dateField} onValueChange={(value) => { setDateField(value as AlertsDateField); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_DATE_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Período
-                <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado</SelectItem></SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">ACK da origem
-                <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="acknowledged">Com ACK</SelectItem><SelectItem value="unacknowledged">Sem ACK</SelectItem></SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Ordenação
-                <Select value={sortOptionKey((sortField === "acknowledged_at" || sortField === "duration" || sortField === "first_seen_at" || sortField === "last_seen_at" || sortField === "resolved_at" || sortField === "severity" ? sortField : "first_seen_at") as AlertsSortKey, sortOrder)} onValueChange={(value) => { const [sort, order] = value.split(":") as [AlertsSortKey, SortOrder]; setSortField(sort); setSortOrder(order); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SORT_OPTIONS.map((option) => <SelectItem key={`${option.id}:${option.order}`} value={`${option.id}:${option.order}`}>{option.label}</SelectItem>)}</SelectContent></Select>
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">Itens por página
-                <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
-              </label>
-              {datePreset === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={dateRange} onSelect={(range) => { setDateRange(range); setPage(1); }} /></div> : null}
+            <div className="space-y-4">
+              <OperationalFilterSection title="Escopo">
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Severidade
+                  <OperationalFacetMultiSelect
+                    label="Severidade"
+                    options={severityOrder.map((severity) => ({ value: severity, label: severityCatalog[severity].label }))}
+                    selectedValues={selectedSeverities}
+                    onChange={(values) => { setSelectedSeverities(values); setPage(1); }}
+                    allLabel="Todas"
+                    searchPlaceholder="Buscar severidade..."
+                  />
+                </label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Estado
+                  <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Ativos</SelectItem><SelectItem value="resolved">Resolvidos</SelectItem><SelectItem value="all">Todos</SelectItem></SelectContent></Select>
+                </label>
+              </OperationalFilterSection>
+
+              <OperationalFilterSection title="Chamado e ACK">
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Estado do chamado
+                  <Select value={incidentStateFilter} onValueChange={(value) => { setIncidentStateFilter(value as "all" | "8"); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="8">Chamado cancelado</SelectItem></SelectContent></Select>
+                </label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">ACK da origem
+                  <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="acknowledged">Com ACK</SelectItem><SelectItem value="unacknowledged">Sem ACK</SelectItem></SelectContent></Select>
+                </label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Status do ACK OneView
+                  <Select value={oneviewAckFilter} onValueChange={(value) => { setOneviewAckFilter(value as OneViewAckFilter); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="pending">Pendente</SelectItem><SelectItem value="success">Reconhecido</SelectItem><SelectItem value="cancelled">Cancelado</SelectItem><SelectItem value="failed">Falhou</SelectItem></SelectContent></Select>
+                </label>
+              </OperationalFilterSection>
+
+              <OperationalFilterSection title="Busca e período">
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Campo da busca
+                  <Select value={searchField} onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SEARCH_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
+                </label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Período do início
+                  <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado</SelectItem></SelectContent></Select>
+                </label>
+                {datePreset === "custom" ? <div className="min-w-0 [grid-column:1/-1]"><Calendar className="mx-auto max-w-full" mode="range" numberOfMonths={1} locale={ptBR} selected={dateRange} onSelect={(range) => { setDateRange(range); setPage(1); }} /></div> : null}
+              </OperationalFilterSection>
+
+              <OperationalFilterSection title="Exibição">
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Itens por página
+                  <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
+                </label>
+              </OperationalFilterSection>
             </div>
           )}
         />
         {activeFilterChips.length ? (
           <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-3 py-1.5" aria-label="Filtros ativos">
-            {activeFilterChips.map((chip) => <OneViewPill key={chip.label} className="h-7 px-2" onClick={() => { chip.remove(); setPage(1); }}>{chip.label}<X className="h-3 w-3" /></OneViewPill>)}
+            {activeFilterChips.map((chip) => <OneViewPill key={chip.key ?? chip.label} className="h-7 px-2" onClick={() => { chip.remove(); setPage(1); }}>{chip.label}<X className="h-3 w-3" /></OneViewPill>)}
             <OneViewTextAction className="text-xs" onClick={clearFilters}>Limpar todos</OneViewTextAction>
           </div>
         ) : null}
 
         {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} onRetry={() => void loadAlerts()} /> : null}
 
-        <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading}>
-          {isAlertsLoading && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
+        <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading || isAlertsFilling}>
+          {(isAlertsLoading || isAlertsFilling) && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
           <TooltipProvider delayDuration={250}>
           <Table className={cn("ov-operational-table w-full table-fixed", tableColumnCount > 7 ? "min-w-[1240px]" : "min-w-[760px]")}>
             <colgroup>
@@ -2001,7 +2038,8 @@ export default function AlertsPage() {
                         <AlertSourceAckAction
                           alert={alert}
                           variant="icon"
-                          onAcknowledged={(result) => handleSourceAcknowledged(alert, result)}
+                          onRequestAccepted={handleSourceAckRequestAccepted}
+                          onAcknowledged={handleSourceAcknowledged}
                         />
                         <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
                       </div>
@@ -2050,6 +2088,7 @@ export default function AlertsPage() {
         isLoading={isDetailLoading}
         error={detailError || historyLoadError}
         description="Informações operacionais seguras e histórico do OneView."
+        onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
         onSourceAcknowledged={handleSourceAcknowledged}
       />
 

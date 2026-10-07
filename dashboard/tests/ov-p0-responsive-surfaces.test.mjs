@@ -13,11 +13,22 @@ test("cancelable GET requests are never shared across mounted screens", async ()
   assert.match(api, /if \(canShare\) inFlightReads\.delete\(key\)/);
 });
 
-test("Alerts exposes Fonte Zabbix filter while preserving datasource URL/BFF scope", async () => {
+test("Alerts removes Fonte Zabbix and date-field controls while preserving canonical source details", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
-  assert.match(alerts, /ZabbixSourceFilter/);
-  assert.match(alerts, /mergeOperationalZabbixSourceFilterOptions/);
-  assert.match(alerts, /datasources: selectedDatasources/);
+  const drawer = await read("src/components/oneview/AlertDetailDrawer.tsx");
+  assert.doesNotMatch(alerts, /ZabbixSourceFilter|mergeOperationalZabbixSourceFilterOptions|datasources: selectedDatasources|Campo de data/);
+  assert.match(alerts, /dateField: "first_seen"/);
+  assert.match(drawer, /Fonte Zabbix/);
+});
+
+test("Operational filters use bounded desktop popover and mobile bottom sheet", async () => {
+  const panel = await read("src/components/oneview/OperationalFilterPanel.tsx");
+  const tools = await read("src/components/oneview/ConfigurableTableTools.tsx");
+  assert.match(panel, /side="bottom"/);
+  assert.match(panel, /max-h-\[90dvh\]/);
+  assert.match(panel, /max-h-\[min\(80dvh,46rem\)\]/);
+  assert.match(panel, /repeat\(auto-fit,minmax\(min\(100%,13rem\),1fr\)\)/);
+  assert.match(tools, /OperationalFilterPanel/);
 });
 
 test("Monitoring, History and platform health have narrow viewport escape paths", async () => {

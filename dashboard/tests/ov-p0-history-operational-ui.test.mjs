@@ -28,7 +28,7 @@ test("Histórico mantém busca direta e filtros recolhidos nas tabelas", async (
   assert.match(source, /activeFilterCount=\{activeFilterChips\.length\}/);
   assert.match(source, /filters=\{\(/);
   assert.match(source, /Fonte Zabbix/);
-  assert.match(source, />Severidade<Select/);
+  assert.match(source, />Severidade<OperationalFacetMultiSelect/);
   assert.match(source, />Estado<Select/);
   assert.match(source, />ACK<Select/);
 });

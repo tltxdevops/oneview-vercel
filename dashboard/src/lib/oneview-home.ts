@@ -3,6 +3,7 @@
  * Não altera oneview-recent.ts (Monitoramento / janelas legadas).
  */
 import {
+  AlertListResponse,
   IncidentListResponse,
   OneViewAlert,
   OneViewIncident,
@@ -252,6 +253,7 @@ export function compareHomeAlerts(left: OneViewAlert, right: OneViewAlert) {
 export type HomeAlertsResult = {
   items: OneViewAlert[];
   total: number;
+  filtered_summary?: AlertListResponse["filtered_summary"];
   data_source?: string;
   checked_at?: string;
 };
@@ -269,6 +271,7 @@ export function homeAlertsFetchParams(params: {
   now?: number;
   sort?: FetchAlertsParams["sort"];
   order?: "asc" | "desc";
+  include?: FetchAlertsParams["include"];
 }): FetchAlertsParams {
   const now = params.now ?? bucketOneViewReadNow();
   const limit = Math.min(Math.max(params.limit ?? HOME_ALERTS_PAGE_SIZE, 1), 50);
@@ -290,6 +293,7 @@ export function homeAlertsFetchParams(params: {
     sort: "first_seen_at",
     order: "desc",
     excludeOperator: true,
+    include: params.include ?? "items",
     ...(params.sort ? { sort: params.sort } : {}),
     ...(params.order ? { order: params.order } : {}),
   };
@@ -312,6 +316,7 @@ export function defaultHomeAlertsFetchParams(now = bucketOneViewReadNow()): Fetc
 export function homeAlertsResultFromResponse(response: {
   items?: OneViewAlert[] | null;
   pagination?: { total_items?: number } | null;
+  filtered_summary?: AlertListResponse["filtered_summary"];
   data_source?: string;
   checked_at?: string;
 }, limit = HOME_ALERTS_PAGE_SIZE): HomeAlertsResult {
@@ -319,6 +324,7 @@ export function homeAlertsResultFromResponse(response: {
   return {
     items,
     total: Number(response.pagination?.total_items) || items.length,
+    filtered_summary: response.filtered_summary,
     data_source: response.data_source,
     checked_at: response.checked_at,
   };
@@ -338,6 +344,7 @@ export async function fetchHomeAlerts(params: {
   now?: number;
   sort?: FetchAlertsParams["sort"];
   order?: "asc" | "desc";
+  include?: FetchAlertsParams["include"];
 }): Promise<HomeAlertsResult> {
   const request = homeAlertsFetchParams(params);
   const response = await fetchAlerts({
@@ -346,7 +353,13 @@ export async function fetchHomeAlerts(params: {
   });
   if (params.sort) {
     const items = (response.items ?? []).slice(0, request.pageSize ?? HOME_ALERTS_PAGE_SIZE);
-    return { items, total: Number(response.pagination?.total_items) || items.length, data_source: response.data_source, checked_at: response.checked_at };
+    return {
+      items,
+      total: Number(response.pagination?.total_items) || items.length,
+      filtered_summary: response.filtered_summary,
+      data_source: response.data_source,
+      checked_at: response.checked_at,
+    };
   }
   return homeAlertsResultFromResponse(response, request.pageSize ?? HOME_ALERTS_PAGE_SIZE);
 }

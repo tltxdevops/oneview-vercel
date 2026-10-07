@@ -2,6 +2,33 @@ import type { OneViewAlert } from "@/lib/oneview-api";
 
 export type AlertSourceAckPhase = "idle" | "confirming" | "submitting" | "success" | "error";
 export type AlertSourceAckVisualState = "pending" | "acknowledged" | "resolved";
+export type SourceAckTerminalStatus = "confirmed" | "failed" | "cancelled";
+export type OneViewAckStatus = "none" | "pending" | "processing" | "success" | "cancelled" | "failed";
+
+export function oneViewAckStatusLabel(status: OneViewAckStatus | string | null | undefined): string {
+  if (["pending", "processing"].includes(String(status))) return "Pendente";
+  if (status === "success") return "Reconhecido";
+  if (status === "cancelled") return "Cancelado";
+  if (status === "failed") return "Falhou";
+  return "NÃ£o reconhecido";
+}
+
+export function sourceAckIsPending(alert: OneViewAlert | null | undefined): boolean {
+  return !alert?.acknowledged_source && ["pending", "processing"].includes(String(alert?.source_ack_status || ""));
+}
+
+export function sourceAckTerminalStatus(alert: OneViewAlert | null | undefined): SourceAckTerminalStatus | null {
+  if (alert?.acknowledged_source) return "confirmed";
+  const status = String(alert?.source_ack_status || "");
+  if (status === "failed" || status === "cancelled") return status;
+  return null;
+}
+
+export function sourceAckTerminalMessage(status: SourceAckTerminalStatus): string {
+  if (status === "confirmed") return "Reconhecido";
+  if (status === "cancelled") return "Reconhecimento cancelado: o alerta foi resolvido antes da confirmação na origem.";
+  return "O reconhecimento no Zabbix não foi concluído.";
+}
 
 export function isSourceResolvedAlert(alert: OneViewAlert | null | undefined): boolean {
   if (!alert) return false;
@@ -44,5 +71,5 @@ export function sourceAckTooltip(alert: OneViewAlert | null | undefined): string
 }
 
 export function sourceAckCanOpen(alert: OneViewAlert | null | undefined): boolean {
-  return sourceAckVisualState(alert) === "pending";
+  return sourceAckVisualState(alert) === "pending" && !sourceAckIsPending(alert);
 }

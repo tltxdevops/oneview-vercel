@@ -26,7 +26,8 @@ test("OV-P0-119 aplica polling operacional pelo BFF sem perder estado local", as
   assert.match(settings, /if \(loadRequestRef\.current\) return loadRequestRef\.current/);
   assert.doesNotMatch(settings, /void loadPage\(\);\s*\}, \[loadPage\]\)/);
 
-  assert.match(home, /summaryInFlight\.current/);
+  assert.match(home, /facetsInFlight\.current/);
+  assert.match(home, /criticalAlertsRequest\.current\?\.abort\(\)/);
   assert.match(monitoring, /if \(inFlight\.current\) \{\s*queryGenerationRef\.current\.deferCurrentIfDifferent\(\);\s*return inFlight\.current/);
   assert.match(alerts, /alertsRequestRef\.current\?\.abort\(\)/);
   assert.match(history, /eventsRequestRef\.current\?\.abort\(\)/);

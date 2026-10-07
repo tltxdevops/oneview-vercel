@@ -111,9 +111,14 @@ import {
 import {
   RecentOperationalMetrics,
   fetchRecentOperationalEvents,
-  fetchRecentOperationalMetrics,
   queueOverflowLabel,
+  recentOperationalMetricsFromAlertSummary,
 } from "@/lib/oneview-recent";
+import {
+  announceOneViewHomeFirstUseful,
+  markOneViewPerformance,
+  runAfterOneViewFirstUseful,
+} from "@/lib/oneview-performance";
 import { toast } from "sonner";
 import {
   customerFilterCountNoun,
@@ -273,6 +278,25 @@ const HOME_EVENT_BLOCKLIST = /upsert|backfill|reconcil|retry|outbox|cache|payloa
 
 type ResourceMeta = { source?: OneViewDataSourceKind; checkedAt?: string };
 type SectionKey = "summary" | "alerts" | "incidents" | "operators" | "events";
+type ListSectionKey = Exclude<SectionKey, "summary">;
+
+function homeCustomerOptionsFromFacets(facets?: OneViewFacetsResponse | null): ClientFilterOption[] {
+  if (!facets) return [{ key: "all", name: "Todos" }];
+  const customers = augmentCustomerFacetsWithDedicatedDatasources(
+    (facets.customers ?? [])
+      .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
+      .map((customer) => ({
+        key: customer.key,
+        name: facetCustomerDisplayName(customer),
+        alerts_count: customer.alerts_count ?? null,
+      })),
+    facets.datasources,
+  );
+  return [
+    { key: "all", name: "Todos" },
+    ...customers.map((customer) => ({ key: customer.key, name: customer.name, alerts_count: null })),
+  ];
+}
 
 function safeActorName(value?: string | null) {
   const actor = String(value || "").trim();
@@ -527,11 +551,14 @@ export default function Index() {
   const eventItemLimit = configuredWidgetItemLimit(dashboard.layout.widgets, "recent-events", HOME_EVENTS_LIMIT);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedAlertId = searchParams.get("alert");
-  const homeRange = parseHomeOperationalRange({
-    window: searchParams.get("window"),
-    from: searchParams.get("from"),
-    to: searchParams.get("to"),
-  });
+  const homeWindowParam = searchParams.get("window");
+  const homeFromParam = searchParams.get("from");
+  const homeToParam = searchParams.get("to");
+  const homeRange = useMemo(() => parseHomeOperationalRange({
+    window: homeWindowParam,
+    from: homeFromParam,
+    to: homeToParam,
+  }), [homeFromParam, homeToParam, homeWindowParam]);
   const homeWindow = homeRange.window;
   const warmedHomeAlerts = useOneViewWarmRead<AlertListResponse>({
     cachePath: (!searchParams.get("window") || searchParams.get("window") === DEFAULT_HOME_OPERATIONAL_WINDOW)
@@ -541,6 +568,9 @@ export default function Index() {
   const warmedFacets = useOneViewWarmRead<OneViewFacetsResponse>({ cachePath: ONEVIEW_FACETS_PATH });
   const warmedHome = warmedHomeAlerts.data
     ? homeAlertsResultFromResponse(warmedHomeAlerts.data, alertItemLimit)
+    : null;
+  const warmedMetrics = warmedHome
+    ? recentOperationalMetricsFromAlertSummary(warmedHome)
     : null;
 
   const [alertMode, setAlertMode] = useState<HomeAlertMode>(DEFAULT_HOME_ALERT_MODE);
@@ -558,11 +588,11 @@ export default function Index() {
   const [operatorOrder, setOperatorOrder] = useState<SortOrder>("desc");
   const [eventSort, setEventSort] = useState<HomeEventSort>("occurred");
   const [eventOrder, setEventOrder] = useState<SortOrder>("desc");
-  const [customerOptions, setCustomerOptions] = useState<ClientFilterOption[]>([
-    { key: "all", name: "Todos" },
-  ]);
+  const [customerOptions, setCustomerOptions] = useState<ClientFilterOption[]>(() => (
+    homeCustomerOptionsFromFacets(warmedFacets.data)
+  ));
 
-  const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(null);
+  const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(warmedMetrics);
   const [homeAlerts, setHomeAlerts] = useState<OneViewAlert[]>(() => warmedHome?.items ?? []);
   const [alertsTotal, setAlertsTotal] = useState(warmedHome?.total ?? 0);
   const [incidentsMode, setIncidentsMode] = useState<IncidentsQueueMode>(INCIDENTS_QUEUE_MODE.unassigned);
@@ -575,9 +605,13 @@ export default function Index() {
   const [recentEvents, setRecentEvents] = useState<GlobalHistoryItem[]>([]);
   const [eventsTotal, setEventsTotal] = useState(0);
 
-  const [isSummaryLoading, setIsSummaryLoading] = useState(!warmedFacets.peekHit);
-  const [isListsLoading, setIsListsLoading] = useState(!warmedHomeAlerts.peekHit);
-  const [criticalHomeReady, setCriticalHomeReady] = useState(() => warmedHomeAlerts.peekHit);
+  const [isSummaryLoading, setIsSummaryLoading] = useState(!warmedMetrics?.by_severity);
+  const [sectionLoading, setSectionLoading] = useState<Record<ListSectionKey, boolean>>({
+    alerts: !warmedHomeAlerts.peekHit,
+    incidents: true,
+    operators: true,
+    events: true,
+  });
   const [metas, setMetas] = useState<ResourceMeta[]>([]);
   const [listsMeta, setListsMeta] = useState<ResourceMeta>({});
   const [sectionErrors, setSectionErrors] = useState<Partial<Record<SectionKey, string>>>({});
@@ -589,13 +623,13 @@ export default function Index() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
-  const summaryInFlight = useRef<Promise<void> | null>(null);
+  const facetsInFlight = useRef<Promise<void> | null>(null);
   const listsRequest = useRef<AbortController | null>(null);
   const criticalAlertsRequest = useRef<AbortController | null>(null);
-  const reuseCriticalAlertsForInitialListsRef = useRef(false);
   const listsRequestIdRef = useRef(0);
-  const hasSummaryRef = useRef(Boolean(warmedFacets.peekHit));
-  const hasListsRef = useRef(Boolean(warmedHomeAlerts.peekHit));
+  const hasSummaryRef = useRef(Boolean(warmedMetrics?.by_severity));
+  const hasFacetsRef = useRef(Boolean(warmedFacets.peekHit));
+  const hasSecondaryListsRef = useRef(false);
   const quietUpdatesRef = useRef(0);
   const detailRequest = useRef<AbortController | null>(null);
 
@@ -614,6 +648,10 @@ export default function Index() {
       else delete next[key];
       return next;
     });
+  }, []);
+
+  const setListSectionLoading = useCallback((key: ListSectionKey, loading: boolean) => {
+    setSectionLoading((current) => (current[key] === loading ? current : { ...current, [key]: loading }));
   }, []);
 
   const setHomeWindow = useCallback((preset: HomeOperationalWindowPreset) => {
@@ -683,6 +721,15 @@ export default function Index() {
     const selected = customerOptions.find((customer) => customer.key === selectedCustomerKeys[0]);
     return String(selected?.name || "CLIENTE").toUpperCase();
   }, [customerOptions, selectedCustomerKeys]);
+  const localCustomerSearchSuggestions = useMemo(() => customerOptions
+    .filter((customer) => customer.key !== "all")
+    .map((customer) => ({
+      kind: "customer",
+      value: customer.name,
+      label: customer.name,
+      customer_key: customer.key,
+      hint: "Adicionar aos clientes selecionados",
+    })), [customerOptions]);
 
   const toggleCustomer = useCallback((key: string) => {
     if (key === "all") {
@@ -694,103 +741,46 @@ export default function Index() {
     ));
   }, []);
 
-  const loadSummary = useCallback((mode: "initial" | "quiet" | "manual" = "quiet") => {
-    if (summaryInFlight.current) return summaryInFlight.current;
-    const isInitial = mode === "initial" || !hasSummaryRef.current;
-    if (isInitial) setIsSummaryLoading(true);
-    else if (mode === "quiet") beginQuietUpdate();
-
-    const request = (async () => {
-      const now = bucketOneViewReadNow();
-      const results = await Promise.allSettled([
-        fetchRecentOperationalMetrics({ now, from: homeRange.from, to: homeRange.to }),
-        getOneViewFacets(),
-      ]);
-
-      const [metricsResult, facetsResult] = results;
-      const nextMetas: ResourceMeta[] = [];
-      let summaryFailed = true;
-
-      if (metricsResult.status === "fulfilled") {
-        setRecentMetrics(metricsResult.value);
-        nextMetas.push({
-          source: metricsResult.value.data_source as OneViewDataSourceKind | undefined,
-          checkedAt: metricsResult.value.checked_at,
-        });
-        setSectionError("summary", null);
-        summaryFailed = false;
-      } else if (isInitial && !hasSummaryRef.current) {
-        setSectionError("summary", "Não foi possível carregar o resumo operacional.");
-      } else {
-        setSectionError("summary", "Falha ao atualizar o resumo. Os valores anteriores foram mantidos.");
-      }
-
-      if (facetsResult.status === "fulfilled") {
-        const customers = augmentCustomerFacetsWithDedicatedDatasources(
-          (facetsResult.value.customers ?? [])
-            .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
-            .map((customer) => ({
-              key: customer.key,
-              name: facetCustomerDisplayName(customer),
-              alerts_count: customer.alerts_count ?? null,
-            })),
-          facetsResult.value.datasources,
-        );
-        setCustomerOptions([
-          { key: "all", name: "Todos" },
-          ...customers.map((customer) => ({
-            key: customer.key,
-            name: customer.name,
-            alerts_count: null,
-          })),
-        ]);
-        nextMetas.push({
-          source: facetsResult.value.data_source as OneViewDataSourceKind | undefined,
-          checkedAt: facetsResult.value.checked_at,
-        });
-      }
-
-      if (nextMetas.length) setMetas(nextMetas);
-      if (!summaryFailed) hasSummaryRef.current = true;
-
-      if (summaryFailed && metricsResult.status === "rejected" && facetsResult.status === "rejected") {
-        toast.error("Não foi possível atualizar a visão operacional.");
-      }
-    })().catch((error) => {
-      toast.error(error instanceof Error ? error.message : "Não foi possível atualizar a visão operacional.");
+  const loadFacets = useCallback(() => {
+    if (hasFacetsRef.current) return Promise.resolve();
+    if (facetsInFlight.current) return facetsInFlight.current;
+    const request = getOneViewFacets().then((facets) => {
+      setCustomerOptions(homeCustomerOptionsFromFacets(facets));
+      setMetas([{
+        source: facets.data_source as OneViewDataSourceKind | undefined,
+        checkedAt: facets.checked_at,
+      }]);
+      hasFacetsRef.current = true;
+    }).catch(() => {
+      // Facets are non-critical; opening the filter retries the same read.
     }).finally(() => {
-      setIsSummaryLoading(false);
-      if (!isInitial && mode === "quiet") endQuietUpdate();
-      summaryInFlight.current = null;
+      facetsInFlight.current = null;
     });
-
-    summaryInFlight.current = request;
+    facetsInFlight.current = request;
     return request;
-  }, [beginQuietUpdate, endQuietUpdate, homeRange.from, homeRange.to, setSectionError]);
+  }, []);
 
   const loadCriticalHomeAlerts = useCallback(async () => {
-    if (hasListsRef.current) {
-      setCriticalHomeReady(true);
-      return;
-    }
     criticalAlertsRequest.current?.abort();
     const controller = new AbortController();
     criticalAlertsRequest.current = controller;
-    setIsListsLoading(true);
+    setListSectionLoading("alerts", true);
+    if (!hasSummaryRef.current) setIsSummaryLoading(true);
+    const request = {
+      mode: alertMode,
+      severity: selectedSeverities,
+      customers: selectedCustomerKeys,
+      status: alertStatus,
+      limit: alertItemLimit,
+      from: homeRange.from,
+      to: homeRange.to,
+      signal: controller.signal,
+      now: bucketOneViewReadNow(),
+      sort: alertSort,
+      order: alertOrder,
+    } as const;
     try {
-      const payload = await fetchHomeAlerts({
-        mode: alertMode,
-        severity: selectedSeverities,
-        customers: selectedCustomerKeys,
-        status: alertStatus,
-        limit: alertItemLimit,
-        from: homeRange.from,
-        to: homeRange.to,
-        signal: controller.signal,
-        now: bucketOneViewReadNow(),
-        sort: alertSort,
-        order: alertOrder,
-      });
+      const payload = await fetchHomeAlerts({ ...request, include: "items" });
       if (controller.signal.aborted || criticalAlertsRequest.current !== controller) return;
       setHomeAlerts(payload.items);
       setAlertsTotal(payload.total);
@@ -799,20 +789,32 @@ export default function Index() {
         checkedAt: payload.checked_at,
       });
       setSectionError("alerts", null);
-      hasListsRef.current = true;
-      reuseCriticalAlertsForInitialListsRef.current = true;
+      markOneViewPerformance("oneview:home:alerts-ready");
+      window.requestAnimationFrame(() => window.requestAnimationFrame(announceOneViewHomeFirstUseful));
+      setListSectionLoading("alerts", false);
+
+      const summaryPayload = await fetchHomeAlerts({ ...request, include: "summary" });
+      if (controller.signal.aborted || criticalAlertsRequest.current !== controller) return;
+      const metrics = recentOperationalMetricsFromAlertSummary(summaryPayload);
+      setRecentMetrics(metrics);
+      setSectionError("summary", metrics.by_severity ? null : "Resumo operacional indisponível.");
+      hasSummaryRef.current = Boolean(metrics.by_severity);
+      markOneViewPerformance("oneview:home:summary-ready");
     } catch {
       if (!controller.signal.aborted && criticalAlertsRequest.current === controller) {
         setSectionError("alerts", "Falha ao carregar alertas.");
+        setSectionError("summary", hasSummaryRef.current
+          ? "Falha ao atualizar o resumo. Os valores anteriores foram mantidos."
+          : "Não foi possível carregar o resumo operacional.");
       }
     } finally {
       if (criticalAlertsRequest.current === controller) {
         criticalAlertsRequest.current = null;
-        setIsListsLoading(false);
-        setCriticalHomeReady(true);
+        setListSectionLoading("alerts", false);
+        setIsSummaryLoading(false);
       }
     }
-  }, [alertItemLimit, alertMode, alertOrder, alertSort, alertStatus, homeRange.from, homeRange.to, selectedCustomerKeys, setSectionError, selectedSeverities]);
+  }, [alertItemLimit, alertMode, alertOrder, alertSort, alertStatus, homeRange.from, homeRange.to, selectedCustomerKeys, setListSectionLoading, setSectionError, selectedSeverities]);
 
   const loadLists = useCallback(async (mode: "initial" | "quiet" | "manual" = "quiet") => {
     if (mode === "quiet" && listsRequest.current && !listsRequest.current.signal.aborted) return;
@@ -820,154 +822,124 @@ export default function Index() {
     const controller = new AbortController();
     const requestId = ++listsRequestIdRef.current;
     listsRequest.current = controller;
-    const isInitial = mode === "initial" || !hasListsRef.current;
-    const reuseCriticalAlerts = reuseCriticalAlertsForInitialListsRef.current;
-    reuseCriticalAlertsForInitialListsRef.current = false;
+    const isInitial = mode === "initial" || !hasSecondaryListsRef.current;
     const beganQuiet = !isInitial && mode === "quiet";
-    if (isInitial) setIsListsLoading(true);
-    else if (beganQuiet) beginQuietUpdate();
+    if (beganQuiet) beginQuietUpdate();
+    setListSectionLoading("events", true);
+    setListSectionLoading("incidents", true);
+    setListSectionLoading("operators", true);
+
+    const isCurrent = () => !controller.signal.aborted && requestId === listsRequestIdRef.current;
+    const now = bucketOneViewReadNow();
+
+    const eventsTask = fetchRecentOperationalEvents({
+      limit: eventItemLimit,
+      customers: selectedCustomerKeys,
+      signal: controller.signal,
+      now,
+      from: homeRange.from,
+      to: homeRange.to,
+    }).then((payload) => {
+      if (!isCurrent()) return false;
+      const events = (payload.items ?? []).filter(isAllowedHomeEvent).slice(0, eventItemLimit);
+      setRecentEvents(events);
+      setEventsTotal(payload.total);
+      setListsMeta((current) => ({
+        source: current.source || (payload.data_source as OneViewDataSourceKind | undefined),
+        checkedAt: latestCheckedAt(current.checkedAt, payload.checked_at) ?? undefined,
+      }));
+      setSectionError("events", null);
+      markOneViewPerformance("oneview:home:events-ready");
+      return true;
+    }).catch(() => {
+      if (isCurrent()) {
+        setSectionError("events", isInitial
+          ? "Não foi possível carregar os eventos recentes."
+          : "Falha ao atualizar eventos. Os valores anteriores foram mantidos.");
+      }
+      return false;
+    }).finally(() => {
+      if (isCurrent()) setListSectionLoading("events", false);
+    });
+
+    const incidentsTask = fetchOperationalIncidents({
+      mode: incidentsMode,
+      assignedTo: incidentsAssignedTo,
+      limit: incidentItemLimit,
+      from: homeRange.from,
+      to: homeRange.to,
+      sort: incidentSort,
+      order: incidentOrder,
+      signal: controller.signal,
+      now,
+    }).then((payload) => {
+      if (!isCurrent()) return false;
+      setHomeIncidents(payload.items ?? []);
+      setIncidentsTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
+      setIncidentAssignees((current) => {
+        const nextOptions = analystFacetOptions(payload.facets?.assignees);
+        if (!incidentsAssignedTo.length) return nextOptions.length ? nextOptions : current;
+        const map = new Map(current.map((item) => [item.value, item]));
+        for (const item of nextOptions) map.set(item.value, item);
+        for (const id of incidentsAssignedTo) {
+          if (!map.has(id)) map.set(id, { value: id, label: id, count: 0 });
+        }
+        return [...map.values()];
+      });
+      setListsMeta((current) => ({
+        source: current.source || (payload.data_source as OneViewDataSourceKind | undefined),
+        checkedAt: latestCheckedAt(current.checkedAt, payload.checked_at) ?? undefined,
+      }));
+      setSectionError("incidents", null);
+      markOneViewPerformance("oneview:home:incidents-ready");
+      return true;
+    }).catch((error) => {
+      if (isCurrent()) {
+        if (isInitial) setHomeIncidents([]);
+        setSectionError("incidents", incidentLoadErrorMessage(error));
+      }
+      return false;
+    }).finally(() => {
+      if (isCurrent()) setListSectionLoading("incidents", false);
+    });
+
+    const operatorsTask = fetchOperatorQueue({
+      tab: "all",
+      alertStatus: "active",
+      firstSeenFrom: homeRange.from,
+      firstSeenTo: homeRange.to,
+      pageSize: operatorItemLimit,
+      signal: controller.signal,
+    }).then((payload) => {
+      if (!isCurrent()) return false;
+      setOperatorQueue(payload);
+      setSectionError("operators", null);
+      markOneViewPerformance("oneview:home:operators-ready");
+      return true;
+    }).catch(() => {
+      if (isCurrent()) {
+        if (isInitial) setOperatorQueue(null);
+        setSectionError("operators", isInitial
+          ? "Fila de operadoras indisponível."
+          : "Falha ao atualizar operadoras. Os dados anteriores foram mantidos.");
+      }
+      return false;
+    }).finally(() => {
+      if (isCurrent()) setListSectionLoading("operators", false);
+    });
 
     try {
-      const now = bucketOneViewReadNow();
-      const tasks: Array<Promise<unknown>> = [
-        reuseCriticalAlerts
-          ? Promise.resolve(null)
-          : fetchHomeAlerts({
-            mode: alertMode,
-            severity: selectedSeverities,
-            customers: selectedCustomerKeys,
-            status: alertStatus,
-            limit: alertItemLimit,
-            from: homeRange.from,
-            to: homeRange.to,
-            signal: controller.signal,
-            now,
-            sort: alertSort,
-            order: alertOrder,
-          }),
-        fetchRecentOperationalEvents({
-          limit: eventItemLimit,
-          customers: selectedCustomerKeys,
-          signal: controller.signal,
-          now,
-          from: homeRange.from,
-          to: homeRange.to,
-        }),
-        fetchOperationalIncidents({
-          mode: incidentsMode,
-          assignedTo: incidentsAssignedTo,
-          limit: incidentItemLimit,
-          from: homeRange.from,
-          to: homeRange.to,
-          sort: incidentSort,
-          order: incidentOrder,
-          signal: controller.signal,
-          now,
-        }),
-        fetchOperatorQueue({
-          tab: "all",
-          alertStatus: "active",
-          firstSeenFrom: homeRange.from,
-          firstSeenTo: homeRange.to,
-          pageSize: operatorItemLimit,
-          signal: controller.signal,
-        }),
-      ];
-
-      const results = await Promise.allSettled(tasks);
-      if (controller.signal.aborted || requestId !== listsRequestIdRef.current) return;
-
-      const [alertsResult, historyResult, incidentsResult, operatorsResult] = results;
-      let anySuccess = false;
-
-      if (reuseCriticalAlerts) {
-        setSectionError("alerts", null);
-        anySuccess = true;
-      } else if (alertsResult.status === "fulfilled") {
-        const payload = alertsResult.value as Awaited<ReturnType<typeof fetchHomeAlerts>>;
-        setHomeAlerts(payload.items);
-        setAlertsTotal(payload.total);
-        setListsMeta({
-          source: payload.data_source as OneViewDataSourceKind | undefined,
-          checkedAt: payload.checked_at,
-        });
-        setSectionError("alerts", null);
-        anySuccess = true;
-      } else if (isInitial && !hasListsRef.current) {
-        setSectionError("alerts", "Não foi possível carregar os alertas.");
-      } else {
-        setSectionError("alerts", "Falha ao atualizar alertas. Os valores anteriores foram mantidos.");
-      }
-
-      if (historyResult.status === "fulfilled") {
-        const payload = historyResult.value as Awaited<ReturnType<typeof fetchRecentOperationalEvents>>;
-        const events = (payload.items ?? []).filter(isAllowedHomeEvent).slice(0, eventItemLimit);
-        setRecentEvents(events);
-        setEventsTotal(payload.total);
-        setListsMeta((current) => ({
-          source: current.source || (payload.data_source as OneViewDataSourceKind | undefined),
-          checkedAt: latestCheckedAt(current.checkedAt, payload.checked_at) ?? undefined,
-        }));
-        setSectionError("events", null);
-        anySuccess = true;
-      } else if (isInitial && !hasListsRef.current) {
-        setSectionError("events", "Não foi possível carregar os eventos recentes.");
-      } else {
-        setSectionError("events", "Falha ao atualizar eventos. Os valores anteriores foram mantidos.");
-      }
-
-      if (incidentsResult?.status === "fulfilled") {
-        const payload = incidentsResult.value as Awaited<ReturnType<typeof fetchOperationalIncidents>>;
-        setHomeIncidents(payload.items ?? []);
-        setIncidentsTotal(Number(payload.pagination?.total_items) || (payload.items?.length ?? 0));
-        setIncidentAssignees((current) => {
-          const next = analystFacetOptions(payload.facets?.assignees);
-          if (!incidentsAssignedTo.length) return next.length ? next : current;
-          const map = new Map(current.map((item) => [item.value, item]));
-          for (const item of next) map.set(item.value, item);
-          for (const id of incidentsAssignedTo) {
-            if (!map.has(id)) {
-              map.set(id, { value: id, label: id, count: 0 });
-            }
-          }
-          return [...map.values()];
-        });
-        setSectionError("incidents", null);
-        anySuccess = true;
-      } else if (isInitial && !hasListsRef.current) {
-        setHomeIncidents([]);
-        setSectionError("incidents", incidentLoadErrorMessage(incidentsResult?.reason));
-      } else {
-        setSectionError("incidents", incidentLoadErrorMessage(incidentsResult?.reason));
-      }
-
-      if (operatorsResult?.status === "fulfilled") {
-        const payload = operatorsResult.value as OperatorQueueResponse;
-        setOperatorQueue(payload);
-        setSectionError("operators", null);
-        anySuccess = true;
-      } else if (isInitial && !hasListsRef.current) {
-        setOperatorQueue(null);
-        setSectionError("operators", "Fila de operadoras indisponível.");
-      } else {
-        setSectionError("operators", "Falha ao atualizar operadoras. Os dados anteriores foram mantidos.");
-      }
-
-      if (anySuccess) hasListsRef.current = true;
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        toast.error(error instanceof Error ? error.message : "Não foi possível carregar as listas operacionais.");
+      const results = await Promise.allSettled([eventsTask, incidentsTask, operatorsTask]);
+      if (!isCurrent()) return;
+      const anySuccess = results.some((result) => result.status === "fulfilled" && result.value);
+      if (anySuccess) {
+        hasSecondaryListsRef.current = true;
       }
     } finally {
-      if (requestId === listsRequestIdRef.current) setIsListsLoading(false);
+      if (requestId === listsRequestIdRef.current) listsRequest.current = null;
       if (beganQuiet) endQuietUpdate();
     }
   }, [
-    alertMode,
-    alertItemLimit,
-    alertOrder,
-    alertSort,
-    alertStatus,
     beginQuietUpdate,
     endQuietUpdate,
     incidentsAssignedTo,
@@ -978,12 +950,11 @@ export default function Index() {
     eventItemLimit,
     operatorItemLimit,
     selectedCustomerKeys,
+    setListSectionLoading,
     setSectionError,
-    selectedSeverities,
     homeRange.from,
     homeRange.to,
   ]);
-
   const loadSelectedAlert = useCallback(async (alertId: string) => {
     detailRequest.current?.abort();
     const controller = new AbortController();
@@ -1073,42 +1044,49 @@ export default function Index() {
   }, [loadSelectedAlert, requestedAlertId, selectedAlertId]);
 
   useEffect(() => {
-    void loadCriticalHomeAlerts();
-    return () => criticalAlertsRequest.current?.abort();
-  }, [loadCriticalHomeAlerts]);
+    markOneViewPerformance("oneview:home:mounted");
+  }, []);
   useEffect(() => {
-    if (!criticalHomeReady) return;
-    void loadSummary(hasSummaryRef.current ? "quiet" : "initial");
-  }, [criticalHomeReady, loadSummary]);
+    let cancelled = false;
+    void (async () => {
+      await loadCriticalHomeAlerts();
+      if (!cancelled) void loadLists(hasSecondaryListsRef.current ? "quiet" : "initial");
+    })();
+    return () => {
+      cancelled = true;
+      criticalAlertsRequest.current?.abort();
+      listsRequest.current?.abort();
+    };
+  }, [loadCriticalHomeAlerts, loadLists]);
+  useEffect(() => runAfterOneViewFirstUseful(() => void loadFacets()), [loadFacets]);
   useEffect(() => {
-    if (!criticalHomeReady) return;
-    void loadLists(hasListsRef.current ? "quiet" : "initial");
-    return () => listsRequest.current?.abort();
-  }, [criticalHomeReady, loadLists]);
+    if (clientFilterOpen) void loadFacets();
+  }, [clientFilterOpen, loadFacets]);
   useEffect(() => {
-    const summaryTimer = window.setInterval(() => {
-      if (!document.hidden) void loadSummary("quiet");
-    }, SUMMARY_REFRESH_MS);
     const listTimer = window.setInterval(() => {
-      if (!document.hidden) void loadLists("quiet");
-    }, LIST_REFRESH_MS);
+      if (!document.hidden) {
+        void loadCriticalHomeAlerts();
+        void loadLists("quiet");
+      }
+    }, Math.min(SUMMARY_REFRESH_MS, LIST_REFRESH_MS));
     const onVisibility = () => {
       if (document.hidden) return;
-      void Promise.all([loadSummary("quiet"), loadLists("quiet")]);
+      void loadCriticalHomeAlerts();
+      void loadLists("quiet");
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      window.clearInterval(summaryTimer);
       window.clearInterval(listTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [loadLists, loadSummary]);
+  }, [loadCriticalHomeAlerts, loadLists]);
   useEffect(() => () => detailRequest.current?.abort(), []);
 
   const lastCheckedAt = latestCheckedAt(...metas.map((meta) => meta.checkedAt), listsMeta.checkedAt);
   const selectedAlert = detail?.item ?? selectedPreview;
   const historyItems = (history?.items ?? []).filter((item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal");
-  const showInitialLoading = (isSummaryLoading && !hasSummaryRef.current) || (isListsLoading && !hasListsRef.current);
+  const showInitialLoading = (isSummaryLoading && !hasSummaryRef.current)
+    || (sectionLoading.alerts && !homeAlerts.length);
   const showIncidentAnalysts = incidentsMode !== INCIDENTS_QUEUE_MODE.unassigned;
   const selectedIncidentKey = selectedIncident ? operationalIncidentKey(selectedIncident) : null;
   const incidentsTitleCount = Math.max(0, Math.trunc(Number(incidentsTotal) || homeIncidents.length || 0));
@@ -1299,7 +1277,7 @@ export default function Index() {
           headerClassName="px-4 py-3"
           bodyClassName="p-4"
           aside={sectionErrors.summary ? (
-            <Button type="button" size="sm" variant="outline" className="ov-error-action h-7 px-2 text-xs" onClick={() => void loadSummary("manual")}>
+            <Button type="button" size="sm" variant="outline" className="ov-error-action h-7 px-2 text-xs" onClick={() => void loadCriticalHomeAlerts()}>
               Tentar novamente
             </Button>
           ) : null}
@@ -1429,11 +1407,11 @@ export default function Index() {
             ) : null}
             <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
               <SectionState
-                loading={isListsLoading && !homeAlerts.length}
+                loading={sectionLoading.alerts && !homeAlerts.length}
                 error={sectionErrors.alerts ?? null}
                 empty={!homeAlerts.length}
                 emptyMessage="Nenhum alerta recente na fila operacional com os filtros atuais."
-                onRetry={() => void loadLists("manual")}
+                onRetry={() => void loadCriticalHomeAlerts()}
               >
                 <div style={{ minWidth: HOME_ALERT_TABLE_MIN_WIDTH }}>
                   <div
@@ -1512,7 +1490,7 @@ export default function Index() {
                 columnLabels={homeIncidentColumns.visibleColumns}
                 selectedKey={selectedIncidentKey}
                 showAnalyst={showIncidentAnalysts}
-                loading={isListsLoading && !homeIncidents.length}
+                loading={sectionLoading.incidents && !homeIncidents.length}
                 empty={!homeIncidents.length}
                 emptyMessage={
                   incidentsMode === INCIDENTS_QUEUE_MODE.assigned
@@ -1556,7 +1534,7 @@ export default function Index() {
             </div>
           ) : null}
           <SectionState
-            loading={isListsLoading && !operatorQueue && !sectionErrors.operators}
+            loading={sectionLoading.operators && !operatorQueue && !sectionErrors.operators}
             error={sectionErrors.operators ?? null}
             empty={!operatorItems.length}
             emptyMessage="Nenhum alerta ativo de operadora."
@@ -1602,7 +1580,7 @@ export default function Index() {
           bodyClassName="px-0 pb-0"
         >
           <SectionState
-            loading={isListsLoading && !recentEvents.length && !sectionErrors.events}
+            loading={sectionLoading.events && !recentEvents.length && !sectionErrors.events}
             error={sectionErrors.events ?? null}
             empty={!recentEvents.length}
             emptyMessage="Nenhum evento operacional recente disponível."
@@ -1611,6 +1589,17 @@ export default function Index() {
             <ConfigurableTableToolbar
               search={eventSearch}
               onSearchChange={setEventSearch}
+              localSearchSuggestions={localCustomerSearchSuggestions}
+              onSearchSuggestionPick={(suggestion) => {
+                if (suggestion.kind === "customer" && suggestion.customer_key) {
+                  setSelectedCustomerKeys((current) => current.includes(suggestion.customer_key!) ? current : [...current, suggestion.customer_key!]);
+                  setEventSearch("");
+                  return;
+                }
+                setEventSearch(suggestion.value);
+              }}
+              getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+              isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && selectedCustomerKeys.includes(suggestion.customer_key!)}
               searchPlaceholder="Buscar nos eventos carregados…"
               searchLabel="Buscar na tabela de eventos recentes"
               columns={homeEventColumns}
@@ -1675,6 +1664,13 @@ export default function Index() {
         historyItems={historyItems}
         isLoading={isDetailLoading}
         error={detailError}
+        onSourceAckRequestAccepted={(alert, result) => {
+          if (result.status !== "pending" || result.acknowledged_source) return;
+          const pending = (item: OneViewAlert) => ({ ...item, source_ack_status: "pending" as const, oneview_ack: { status: "pending" as const, requested_at: new Date().toISOString(), processed_at: null, actor_name: result.actor_name || null, reason: null, message: null } });
+          setSelectedPreview((current) => current?.id === alert.id ? pending(current) : current);
+          setDetail((current) => current?.item.id === alert.id ? { ...current, item: pending(current.item) } : current);
+        }}
+        onSourceAcknowledged={(alert) => loadSelectedAlert(alert.id)}
         description="Consulta rápida sem sair da Home."
       />
     </AppLayout>

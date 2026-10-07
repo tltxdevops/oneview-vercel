@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Building2,
+  Check,
   FileText,
   Hash,
   Link2,
   Loader2,
+  Plus,
   Search,
   Server,
   User,
@@ -35,10 +37,56 @@ export type OneViewTableSearchFieldProps = {
   fetchSuggestions?: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
   activity?: "idle" | "pending" | "searching";
   activityQuery?: string;
+  localSuggestions?: OneViewSearchSuggestion[];
+  getSuggestionActionLabel?: (item: OneViewSearchSuggestion) => string | null;
+  isSuggestionSelected?: (item: OneViewSearchSuggestion) => boolean;
 };
 
 const MIN_QUERY_LENGTH = 2;
 const CACHE_MAX = 64;
+const CACHE_TTL_MS = 30_000;
+const MAX_VISIBLE_SUGGESTIONS = 15;
+
+type CachedSuggestions = { items: OneViewSearchSuggestion[]; storedAt: number };
+
+function normalizeSuggestionText(value: unknown) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("pt-BR");
+}
+
+function suggestionKey(item: OneViewSearchSuggestion) {
+  return `${item.kind || "description"}:${item.customer_key || ""}:${normalizeSuggestionText(item.value || item.label)}`;
+}
+
+function localSuggestionRank(item: OneViewSearchSuggestion, query: string) {
+  const label = normalizeSuggestionText(item.label || item.value);
+  const value = normalizeSuggestionText(item.value);
+  if (label === query || value === query) return 0;
+  if (label.startsWith(query) || value.startsWith(query)) return 1;
+  if (label.includes(query) || value.includes(query)) return 2;
+  return Number.POSITIVE_INFINITY;
+}
+
+function mergeSuggestions(local: OneViewSearchSuggestion[], remote: OneViewSearchSuggestion[]) {
+  const seen = new Set<string>();
+  return [...local, ...remote].filter((item) => {
+    const key = suggestionKey(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, MAX_VISIBLE_SUGGESTIONS);
+}
+
+function defaultSuggestionAction(item: OneViewSearchSuggestion) {
+  if (item.kind === "customer" || item.kind === "company") return "Aplicar Cliente";
+  if (item.kind === "host") return "Aplicar Host";
+  if (item.kind === "number") return "Aplicar Chamado";
+  if (item.kind === "link") return "Aplicar Link";
+  return "Pesquisar";
+}
 
 /** Shared main-search commit policy. Keeps typing local until debounce or Enter. */
 export function useOneViewCommittedSearch(
@@ -105,14 +153,14 @@ const DEFAULT_HINT: Record<string, string> = {
 
 function HighlightLabel({ text, query }: { text: string; query: string }) {
   const needle = query.trim();
-  if (!needle) return <span className="truncate font-medium text-foreground">{text}</span>;
+  if (!needle) return <span className="truncate font-semibold">{text}</span>;
 
   const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const parts = text.split(new RegExp(`(${escaped})`, "i"));
-  if (parts.length < 2) return <span className="truncate font-medium text-foreground">{text}</span>;
+  if (parts.length < 2) return <span className="truncate font-semibold">{text}</span>;
 
   return (
-    <span className="truncate font-medium text-foreground">
+    <span className="truncate font-semibold">
       {parts.map((part, index) => (
         index % 2 === 1
           ? <span key={index} className="rounded-sm bg-primary/20">{part}</span>
@@ -149,63 +197,105 @@ export function OneViewTableSearchField({
   fetchSuggestions,
   activity = "idle",
   activityQuery,
+  localSuggestions = [],
+  getSuggestionActionLabel,
+  isSuggestionSelected,
 }: OneViewTableSearchFieldProps) {
   const [focused, setFocused] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [suggestions, setSuggestions] = useState<OneViewSearchSuggestion[]>([]);
+  const [remoteSuggestions, setRemoteSuggestions] = useState<OneViewSearchSuggestion[]>([]);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const abortRef = useRef<AbortController | null>(null);
-  const cacheRef = useRef(new Map<string, OneViewSearchSuggestion[]>());
+  const cacheRef = useRef(new Map<string, CachedSuggestions>());
   const fetchRef = useRef(fetchSuggestions);
   fetchRef.current = fetchSuggestions;
-  const suggestionsEnabled = typeof fetchSuggestions === "function";
+  const remoteSuggestionsEnabled = typeof fetchSuggestions === "function";
+  const suggestionsEnabled = remoteSuggestionsEnabled || localSuggestions.length > 0;
+
+  useEffect(() => {
+    abortRef.current?.abort();
+    cacheRef.current.clear();
+    setRemoteSuggestions([]);
+  }, [fetchSuggestions]);
 
   useEffect(() => {
     const trimmed = value.trim();
-    if (!suggestionsEnabled || !focused || trimmed.length < MIN_QUERY_LENGTH) {
+    if (!remoteSuggestionsEnabled || !focused || trimmed.length < MIN_QUERY_LENGTH) {
       abortRef.current?.abort();
       setLoading(false);
-      if (!focused) setSuggestions([]);
+      if (!focused || trimmed.length < MIN_QUERY_LENGTH) setRemoteSuggestions([]);
       return;
     }
 
     const cacheKey = trimmed.toLowerCase();
     const cached = cacheRef.current.get(cacheKey);
-    if (cached) {
-      setSuggestions(cached);
+    if (cached && Date.now() - cached.storedAt < CACHE_TTL_MS) {
+      setRemoteSuggestions(cached.items);
       setLoading(false);
+      return;
+    }
+
+    if (cached) {
+      setRemoteSuggestions(cached.items);
+    } else {
+      const prefix = [...cacheRef.current.entries()]
+        .filter(([key]) => cacheKey.startsWith(key))
+        .sort(([left], [right]) => right.length - left.length)[0]?.[1];
+      if (prefix) {
+        const needle = normalizeSuggestionText(trimmed);
+        setRemoteSuggestions(prefix.items.filter((item) => (
+          normalizeSuggestionText(item.label).includes(needle)
+          || normalizeSuggestionText(item.value).includes(needle)
+        )));
+      }
     }
 
     const timer = window.setTimeout(() => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
-      if (!cached) setLoading(true);
+      setLoading(true);
 
       fetchRef.current(trimmed, controller.signal)
         .then((items) => {
           if (controller.signal.aborted) return;
-          cacheRef.current.set(cacheKey, items);
+          cacheRef.current.set(cacheKey, { items, storedAt: Date.now() });
           if (cacheRef.current.size > CACHE_MAX) {
             const first = cacheRef.current.keys().next().value;
             if (first) cacheRef.current.delete(first);
           }
-          setSuggestions(items);
+          setRemoteSuggestions(items);
         })
         .catch(() => {
           if (controller.signal.aborted) return;
-          if (!cached) setSuggestions([]);
+          if (!cached) setRemoteSuggestions([]);
         })
         .finally(() => {
           if (!controller.signal.aborted) setLoading(false);
         });
-    }, cached ? 0 : ONEVIEW_SEARCH_SUGGEST_DEBOUNCE_MS);
+    }, ONEVIEW_SEARCH_SUGGEST_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [focused, suggestionsEnabled, value]);
+  }, [focused, remoteSuggestionsEnabled, value]);
 
   const trimmed = value.trim();
   const showPopover = suggestionsEnabled && focused && trimmed.length >= MIN_QUERY_LENGTH;
+  const localMatches = useMemo(() => {
+    const query = normalizeSuggestionText(trimmed);
+    if (query.length < MIN_QUERY_LENGTH) return [];
+    return localSuggestions
+      .map((item) => ({ item, rank: localSuggestionRank(item, query) }))
+      .filter(({ rank }) => Number.isFinite(rank))
+      .sort((left, right) => left.rank - right.rank || left.item.label.localeCompare(right.item.label, "pt-BR"))
+      .map(({ item }) => item);
+  }, [localSuggestions, trimmed]);
+  const suggestions = useMemo(() => mergeSuggestions(localMatches, remoteSuggestions), [localMatches, remoteSuggestions]);
   const grouped = useMemo(() => groupByKindOrdered(suggestions), [suggestions]);
+  const orderedSuggestions = useMemo(() => grouped.flatMap(([, items]) => items), [grouped]);
+
+  useEffect(() => {
+    setActiveSuggestionIndex(orderedSuggestions.length ? 0 : -1);
+  }, [trimmed, orderedSuggestions]);
   const activityLabel = activity === "pending"
     ? "Preparando busca…"
     : activity === "searching"
@@ -220,6 +310,7 @@ export function OneViewTableSearchField({
     if (onSuggestionSelect) onSuggestionSelect(item);
     else if (onSelect) onSelect(item.value);
     else onChange(item.value);
+    setActiveSuggestionIndex(-1);
     setFocused(false);
   }
 
@@ -247,9 +338,21 @@ export function OneViewTableSearchField({
               window.setTimeout(() => setFocused(false), 100);
             }}
             onKeyDown={(event) => {
+              if (event.key === "ArrowDown" && showPopover && orderedSuggestions.length) {
+                event.preventDefault();
+                setActiveSuggestionIndex((current) => Math.min(orderedSuggestions.length - 1, current + 1));
+                return;
+              }
+              if (event.key === "ArrowUp" && showPopover && orderedSuggestions.length) {
+                event.preventDefault();
+                setActiveSuggestionIndex((current) => Math.max(0, current <= 0 ? orderedSuggestions.length - 1 : current - 1));
+                return;
+              }
               if (event.key === "Enter") {
                 event.preventDefault();
-                pickFreeText();
+                const activeSuggestion = orderedSuggestions[activeSuggestionIndex];
+                if (showPopover && activeSuggestion) pickSuggestion(activeSuggestion);
+                else pickFreeText();
               }
               if (event.key === "Escape") setFocused(false);
             }}
@@ -285,7 +388,7 @@ export function OneViewTableSearchField({
                 value={`search-all-${trimmed}`}
                 onMouseDown={(event) => event.preventDefault()}
                 onSelect={pickFreeText}
-                className="gap-2 py-2"
+                className="gap-2 py-2 data-[selected=true]:!bg-muted data-[selected=true]:!text-foreground"
               >
                 <Search className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
                 <span className="min-w-0 flex-1 text-xs">
@@ -310,16 +413,38 @@ export function OneViewTableSearchField({
                 <div key={kind}>
                   {groupIndex > 0 || !loading ? <CommandSeparator /> : null}
                   <CommandGroup heading={GROUP_LABELS[kind] ?? kind}>
-                    {items.map((item) => (
+                    {items.map((item) => {
+                      const itemIndex = orderedSuggestions.findIndex((candidate) => suggestionKey(candidate) === suggestionKey(item));
+                      const selected = isSuggestionSelected?.(item) ?? false;
+                      const isClient = kind === "customer" || kind === "company";
+                      const actionLabel = selected
+                        ? "Selecionado"
+                        : getSuggestionActionLabel?.(item) ?? defaultSuggestionAction(item);
+                      return (
                       <CommandItem
                         key={`${kind}-${item.value}`}
                         value={item.value}
+                        aria-label={`${isClient ? "Cliente" : GROUP_LABELS[kind] ?? kind}: ${item.label}. ${actionLabel}`}
                         onMouseDown={(event) => event.preventDefault()}
+                        onMouseEnter={() => setActiveSuggestionIndex(itemIndex)}
                         onSelect={() => pickSuggestion(item)}
-                        className="gap-2 py-2"
+                        className={cn(
+                          "gap-2 rounded-md border border-transparent py-2.5 data-[selected=true]:!bg-muted data-[selected=true]:!text-foreground",
+                          itemIndex === activeSuggestionIndex && "!border-border !bg-muted !text-foreground",
+                        )}
                       >
-                        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <span className={cn(
+                          "grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground",
+                          isClient && "border-primary/20 bg-primary/10 text-primary",
+                        )}>
+                          <Icon className="h-4 w-4" aria-hidden="true" />
+                        </span>
                         <span className="min-w-0 flex-1">
+                          {isClient ? (
+                            <span className="mb-0.5 block text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
+                              Cliente
+                            </span>
+                          ) : null}
                           <span className="block min-w-0">
                             <HighlightLabel text={item.label} query={trimmed} />
                           </span>
@@ -328,8 +453,16 @@ export function OneViewTableSearchField({
                             {item.company && kind === "number" ? ` · ${item.company}` : null}
                           </span>
                         </span>
+                        <span className={cn(
+                          "ml-2 inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[10px] font-bold",
+                          selected ? "border-primary/30 text-primary" : "text-foreground",
+                        )}>
+                          {selected ? <Check className="h-3 w-3" aria-hidden="true" /> : isClient ? <Plus className="h-3 w-3" aria-hidden="true" /> : null}
+                          {actionLabel}
+                        </span>
                       </CommandItem>
-                    ))}
+                      );
+                    })}
                   </CommandGroup>
                 </div>
               );

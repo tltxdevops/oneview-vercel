@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { OneViewButton } from "@/components/oneview/OneViewDesignSystem";
@@ -17,22 +17,30 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import {
   acknowledgeAlert,
+  fetchAlert,
   type AcknowledgeAlertResponse,
   type OneViewAlert,
 } from "@/lib/oneview-api";
 import {
   sourceAckCanOpen,
+  sourceAckIsPending,
+  sourceAckTerminalMessage,
+  sourceAckTerminalStatus,
   sourceAckTooltip,
   sourceAckVisualState,
   type AlertSourceAckPhase,
+  type SourceAckTerminalStatus,
 } from "@/lib/oneview-alert-source-ack";
 
 export const SOURCE_ACK_SUCCESS_TOAST = "Reconhecimento enviado ao Zabbix...";
+export const SOURCE_ACK_POLL_INTERVAL_MS = 2_000;
+export const SOURCE_ACK_POLL_TIMEOUT_MS = 45_000;
 
 type Props = {
   alert: OneViewAlert;
   variant?: "icon" | "button";
-  onAcknowledged?: (result: AcknowledgeAlertResponse) => void | Promise<void>;
+  onRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
+  onAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
 };
 
 function confirmField(label: string, value: string) {
@@ -44,14 +52,20 @@ function confirmField(label: string, value: string) {
   );
 }
 
-export function AlertSourceAckAction({ alert, variant = "icon", onAcknowledged }: Props) {
+export function AlertSourceAckAction({ alert, variant = "icon", onRequestAccepted, onAcknowledged }: Props) {
   const [phase, setPhase] = useState<AlertSourceAckPhase>("idle");
   const [comment, setComment] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [enqueued, setEnqueued] = useState(false);
-  const visual = sourceAckVisualState(alert);
-  const tooltip = sourceAckTooltip(alert);
-  const canOpen = sourceAckCanOpen(alert) && !enqueued;
+  const [polling, setPolling] = useState(false);
+  const [observedAlert, setObservedAlert] = useState<OneViewAlert | null>(null);
+  const onAcknowledgedRef = useRef(onAcknowledged);
+  useEffect(() => { onAcknowledgedRef.current = onAcknowledged; }, [onAcknowledged]);
+  const currentAlert = observedAlert?.id === alert.id ? observedAlert : alert;
+  const visual = sourceAckVisualState(currentAlert);
+  const waitingForOrigin = enqueued || sourceAckIsPending(currentAlert);
+  const tooltip = waitingForOrigin ? "Aguardando confirmação da origem" : sourceAckTooltip(currentAlert);
+  const canOpen = sourceAckCanOpen(currentAlert) && !enqueued;
   const submitting = phase === "submitting";
   const confirming = phase === "confirming" || phase === "submitting" || phase === "error";
   const ariaLabel = visual === "acknowledged"
@@ -76,6 +90,56 @@ export function AlertSourceAckAction({ alert, variant = "icon", onAcknowledged }
     }
   }
 
+  useEffect(() => {
+    if (!polling) return undefined;
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    let stopped = false;
+    const stop = () => {
+      stopped = true;
+      controller.abort();
+      setPolling(false);
+    };
+    const poll = async () => {
+      if (stopped || controller.signal.aborted) return;
+      try {
+        const response = await fetchAlert(alert.id, controller.signal);
+        if (stopped || controller.signal.aborted) return;
+        const refreshed = response.item;
+        setObservedAlert(refreshed);
+        const terminal = sourceAckTerminalStatus(refreshed);
+        if (terminal) {
+          stop();
+          setEnqueued(false);
+          if (terminal === "confirmed") toast.success(sourceAckTerminalMessage(terminal));
+          else toast.error(sourceAckTerminalMessage(terminal));
+          await onAcknowledgedRef.current?.(refreshed, terminal);
+          return;
+        }
+        if (!sourceAckIsPending(refreshed)) {
+          stop();
+          setEnqueued(false);
+          setObservedAlert(null);
+          return;
+        }
+        if (Date.now() - startedAt >= SOURCE_ACK_POLL_TIMEOUT_MS) {
+          stop();
+          setEnqueued(false);
+          setObservedAlert(null);
+          toast.message("Reconhecimento ainda aguardando confirmação da origem.");
+        }
+      } catch {
+        // Falha transitória no refetch isolado não interrompe a confirmação.
+      }
+    };
+    const timer = window.setInterval(() => void poll(), SOURCE_ACK_POLL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [alert.id, polling]);
+
   async function submitExternalAck() {
     if (!canOpen || submitting) return;
     const sourceEventId = String(alert.source_event_id || "").trim();
@@ -92,11 +156,27 @@ export function AlertSourceAckAction({ alert, variant = "icon", onAcknowledged }
         sourceEventId,
         comment: comment.trim() || undefined,
       });
-      setEnqueued(result.status === "pending");
+      const accepted = result.status === "pending" && !result.acknowledged_source;
+      setEnqueued(accepted);
+      setPolling(accepted);
+      setObservedAlert(accepted ? {
+        ...alert,
+        source_ack_status: "pending",
+        oneview_ack: {
+          status: "pending",
+          requested_at: new Date().toISOString(),
+          processed_at: null,
+          actor_name: result.actor_name || null,
+          reason: null,
+          message: null,
+        },
+      } : alert);
       setPhase("success");
-      toast.success(SOURCE_ACK_SUCCESS_TOAST);
+      if (accepted) toast.success(SOURCE_ACK_SUCCESS_TOAST);
+      else toast.success("Reconhecido");
       try {
-        await onAcknowledged?.(result);
+        await onRequestAccepted?.(alert, result);
+        if (!accepted) await onAcknowledged?.(alert, "confirmed");
       } catch {
         // ACK externo já confirmado; falha de refresh não assume erro de reconhecimento.
       }
@@ -119,11 +199,11 @@ export function AlertSourceAckAction({ alert, variant = "icon", onAcknowledged }
       size={variant === "button" ? "sm" : "icon"}
       className={cn(
         variant === "button" ? "ov-control-official-compact h-8 gap-1.5 px-2.5" : "ov-control-official-compact h-7 min-h-7 w-7 px-0",
-        (visual === "acknowledged" || enqueued) && "text-emerald-600",
+        (visual === "acknowledged" || waitingForOrigin) && "text-emerald-600",
       )}
-      disabled={!canOpen || submitting}
-      aria-label={ariaLabel}
-      aria-disabled={!canOpen || submitting}
+      disabled={!canOpen || submitting || waitingForOrigin}
+      aria-label={waitingForOrigin ? "Aguardando confirmação da origem" : ariaLabel}
+      aria-disabled={!canOpen || submitting || waitingForOrigin}
       data-source-ack-state={visual}
       data-source-ack-phase={phase}
       onClick={(event) => {
@@ -132,7 +212,7 @@ export function AlertSourceAckAction({ alert, variant = "icon", onAcknowledged }
       }}
     >
       {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-      {variant === "button" ? <span>{enqueued ? "Reconhecimento enviado" : "Reconhecer alerta"}</span> : <span className="sr-only">{enqueued ? "Reconhecimento enviado" : ariaLabel}</span>}
+      {variant === "button" ? <span>{waitingForOrigin ? "Aguardando confirmação da origem" : "Reconhecer alerta"}</span> : <span className="sr-only">{waitingForOrigin ? "Aguardando confirmação da origem" : ariaLabel}</span>}
     </OneViewButton>
   );
 

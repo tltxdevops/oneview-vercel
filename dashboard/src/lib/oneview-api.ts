@@ -198,12 +198,12 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
   const isRead = method === "GET";
   // Only signal-free reads enter `inFlightReads`; a screen can safely reuse
   // that prefetch without inheriting its own AbortSignal.
-  const canShare = canShareOneViewRead(init);
+  const canShare = !oneViewFresh && canShareOneViewRead(init);
   const key = oneViewReadCacheKey(path, init);
   const cached = isRead && !oneViewFresh ? readCache.get(key) : undefined;
   const now = Date.now();
   if (cached && cached.freshUntil > now) return cached.value as T;
-  const shared = oneViewFresh ? undefined : inFlightReads.get(key);
+  const shared = canShare ? inFlightReads.get(key) : undefined;
   if (shared) {
     return shared as Promise<T>;
   }
@@ -621,6 +621,8 @@ export interface OneViewAlert {
   severity: string;
   status_source: string;
   status_internal: string;
+  /** Estado do alerta, independente do ciclo da ação ACK OneView. */
+  alert_status?: "active" | "resolved" | "cancelled" | "unknown";
   acknowledged_source: boolean;
   acknowledged_internal: boolean;
   acknowledged_source_at?: string | null;
@@ -631,6 +633,15 @@ export interface OneViewAlert {
   acknowledged_at: string | null;
   acknowledged_by: string | null;
   ack_request_status?: "pending" | "processing" | null;
+  source_ack_status?: "pending" | "processing" | "failed" | "cancelled" | null;
+  oneview_ack?: {
+    status: "none" | "pending" | "processing" | "success" | "cancelled" | "failed";
+    requested_at: string | null;
+    processed_at: string | null;
+    actor_name: string | null;
+    reason: string | null;
+    message: string | null;
+  };
   suppressed: boolean;
   suppressed_until: string | null;
   maintenance_status: string | null;
@@ -1144,6 +1155,7 @@ export interface FetchAlertsParams {
   acknowledged?: boolean;
   acknowledgedSource?: boolean;
   acknowledgedInternal?: boolean;
+  oneviewAckStatus?: "pending" | "success" | "cancelled" | "failed";
   search?: string;
   searchField?: "all" | "host" | "problem" | "customer" | "eventid";
   hostSearch?: string;
@@ -1164,6 +1176,8 @@ export interface FetchAlertsParams {
   recurrenceKey?: string;
   /** Home-only queue isolation; `/alertas` never sets it. */
   excludeOperator?: boolean;
+  /** Comma list: items, summary, temporal. Omitted = all three. */
+  include?: string;
   signal?: AbortSignal;
 }
 
@@ -1181,6 +1195,7 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
   if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
   if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
+  if (params?.oneviewAckStatus) search.set("oneview_ack_status", params.oneviewAckStatus);
   if (params?.search) search.set("search", params.search);
   if (params?.searchField && params.searchField !== "all") search.set("search_field", params.searchField);
   if (params?.hostSearch) search.set("host_search", params.hostSearch);
@@ -1200,6 +1215,7 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   if (params?.sortSecondary) search.set("sort_secondary", params.sortSecondary);
   if (params?.recurrenceKey) search.set("recurrence_key", params.recurrenceKey);
   if (params?.excludeOperator) search.set("exclude_operator", "true");
+  if (params?.include) search.set("include", params.include);
   const query = search.toString();
   return `/oneview/alerts${query ? `?${query}` : ""}`;
 }
@@ -1510,7 +1526,13 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   return `/oneview/incidents${query ? `?${query}` : ""}`;
 }
 
-export const DEFAULT_INCIDENTS_FETCH_PARAMS: FetchIncidentsParams = { page: 1, pageSize: 25 };
+export const DEFAULT_INCIDENTS_FETCH_PARAMS: FetchIncidentsParams = {
+  page: 1,
+  pageSize: 25,
+  includeCounts: false,
+  includeGlobalCounts: false,
+  includeFacets: false,
+};
 
 export async function fetchIncidents(params?: FetchIncidentsParams): Promise<IncidentListResponse> {
   return fetchApi<IncidentListResponse>(oneViewIncidentsPath(params), { signal: params?.signal });
@@ -1604,6 +1626,7 @@ function appendAlertScopeQueryParams(search: URLSearchParams, params?: FetchAler
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
   if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
   if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
+  if (params?.oneviewAckStatus) search.set("oneview_ack_status", params.oneviewAckStatus);
   if (params?.dateFrom) search.set("date_from", params.dateFrom);
   if (params?.dateTo) search.set("date_to", params.dateTo);
   if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);

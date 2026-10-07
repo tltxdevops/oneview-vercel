@@ -3,6 +3,7 @@ import { OneViewTableSearchField } from "@/components/oneview/OneViewTableSearch
 import {
   fetchIncidentSearchSuggestions,
   type FetchIncidentSearchSuggestionsParams,
+  type OneViewSearchSuggestion,
 } from "@/lib/oneview-api";
 
 type ChamadosSearchFieldProps = {
@@ -10,11 +11,13 @@ type ChamadosSearchFieldProps = {
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onSelect: (value: string) => void;
+  onSuggestionSelect?: (item: OneViewSearchSuggestion) => void;
   scope: Omit<FetchIncidentSearchSuggestionsParams, "q" | "limit" | "signal">;
   className?: string;
   inputId?: string;
   activity?: "idle" | "pending" | "searching";
   activityQuery?: string;
+  selectedCompany?: string;
 };
 
 export function ChamadosSearchField({
@@ -22,11 +25,13 @@ export function ChamadosSearchField({
   onChange,
   onSubmit,
   onSelect,
+  onSuggestionSelect,
   scope,
   className,
   inputId = "chamados-search",
   activity,
   activityQuery,
+  selectedCompany = "",
 }: ChamadosSearchFieldProps) {
   const fetchSuggestions = useCallback(
     (q: string, signal: AbortSignal) =>
@@ -40,6 +45,7 @@ export function ChamadosSearchField({
       onChange={onChange}
       onSubmit={onSubmit}
       onSelect={onSelect}
+      onSuggestionSelect={onSuggestionSelect}
       fetchSuggestions={fetchSuggestions}
       placeholder="Buscar na tabela por INC, cliente ou descrição…"
       ariaLabel="Buscar na tabela de chamados"
@@ -47,6 +53,8 @@ export function ChamadosSearchField({
       className={className}
       activity={activity}
       activityQuery={activityQuery}
+      getSuggestionActionLabel={(item) => item.kind === "company" ? "Aplicar Cliente" : null}
+      isSuggestionSelected={(item) => item.kind === "company" && Boolean(selectedCompany.trim()) && item.value.trim().toLocaleLowerCase("pt-BR") === selectedCompany.trim().toLocaleLowerCase("pt-BR")}
     />
   );
 }

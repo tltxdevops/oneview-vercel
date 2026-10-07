@@ -166,6 +166,25 @@ function severityCountsFromSummary(summary: unknown): {
   return normalizeAlertSeveritySummary(summary);
 }
 
+export function recentOperationalMetricsFromAlertSummary(payload: {
+  filtered_summary?: unknown;
+  checked_at?: string;
+  data_source?: string;
+}): RecentOperationalMetrics {
+  const { by_severity, not_classified } = severityCountsFromSummary(payload.filtered_summary);
+  return {
+    created_last_1h: null,
+    disaster_unacked_recent: null,
+    high_unacked_recent: null,
+    acks_last_30m: null,
+    last_sync_at: null,
+    by_severity,
+    not_classified,
+    checked_at: payload.checked_at,
+    data_source: payload.data_source,
+  };
+}
+
 /** Contagens verificáveis via /oneview/alerts (server-side). Falha → null (nunca inventa zero). */
 export async function fetchRecentOperationalMetrics(params?: {
   customers?: string[];
@@ -193,6 +212,7 @@ export async function fetchRecentOperationalMetrics(params?: {
         datasources,
         firstSeenFrom: params.from ?? isoAgo(params.windowMs ?? RECENT_PRIORITY_WINDOW_MS, now),
         firstSeenTo: params.to,
+        include: "summary",
         signal,
       }),
       fetchSyncLogs(8),
@@ -212,17 +232,9 @@ export async function fetchRecentOperationalMetrics(params?: {
       };
     }
     const payload = summaryResult.value;
-    const { by_severity, not_classified } = severityCountsFromSummary(payload.filtered_summary);
     return {
-      created_last_1h: null,
-      disaster_unacked_recent: null,
-      high_unacked_recent: null,
-      acks_last_30m: null,
+      ...recentOperationalMetricsFromAlertSummary(payload),
       last_sync_at: syncResult.status === "fulfilled" ? latestSyncAt(syncResult.value.items ?? []) : null,
-      by_severity,
-      not_classified,
-      checked_at: payload.checked_at,
-      data_source: payload.data_source,
     };
   }
 

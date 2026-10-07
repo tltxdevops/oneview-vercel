@@ -4,6 +4,7 @@ import type { FetchAlertsParams, OneViewSeverity } from "@/lib/oneview-api";
 
 export type AlertsStatusFilter = "active" | "resolved" | "all";
 export type AlertsAckFilter = "all" | "acknowledged" | "unacknowledged";
+export type AlertsOneViewAckFilter = "all" | "pending" | "success" | "cancelled" | "failed";
 export type AlertsDateField = "first_seen" | "last_seen" | "acknowledged" | "resolved";
 export type AlertsSearchField = "all" | "host" | "problem" | "customer" | "eventid";
 export type AlertsDatePreset =
@@ -165,6 +166,10 @@ export function parseSortOptionKey(value: string | null): { sort: AlertsSortKey;
   return { sort: sort as AlertsSortKey, order };
 }
 
+export const FIRST_ALERTS_PAGE_SIZE = 10;
+export const ALERT_LIST_INCLUDE_ITEMS = "items";
+export const ALERT_LIST_INCLUDE_SUMMARY = "summary,temporal";
+
 export const DEFAULT_ALERTS_FETCH = {
   view: "recent",
   status: "active" as const,
@@ -186,6 +191,14 @@ export function defaultAlertsFetchParams(now = Date.now()): FetchAlertsParams {
   }, DEFAULT_ALERTS_FETCH.dateField, alertsDateBounds(DEFAULT_ALERTS_FETCH.datePreset, undefined, now));
 }
 
+export function firstAlertsFetchParams(now = Date.now()): FetchAlertsParams {
+  return {
+    ...defaultAlertsFetchParams(now),
+    pageSize: FIRST_ALERTS_PAGE_SIZE,
+    include: ALERT_LIST_INCLUDE_ITEMS,
+  };
+}
+
 export function isDefaultAlertsWarmQuery(state: {
   view?: string;
   status: string;
@@ -199,6 +212,7 @@ export function isDefaultAlertsWarmQuery(state: {
   datasources?: string[];
   severities: string[];
   acknowledgedSource: string;
+  oneviewAckStatus?: string;
   search: string;
 }) {
   return (state.view ?? DEFAULT_ALERTS_FETCH.view) === DEFAULT_ALERTS_FETCH.view
@@ -213,6 +227,7 @@ export function isDefaultAlertsWarmQuery(state: {
     && !(state.datasources?.length)
     && state.severities.length === 0
     && state.acknowledgedSource === "all"
+    && (state.oneviewAckStatus ?? "all") === "all"
     && !state.search.trim();
 }
 
@@ -224,6 +239,7 @@ export type AlertsUrlState = {
   status: AlertsStatusFilter;
   incidentState?: "all" | "8";
   acknowledgedSource: AlertsAckFilter;
+  oneviewAckStatus: AlertsOneViewAckFilter;
   dateField: AlertsDateField;
   datePreset: AlertsDatePreset;
   dateRange?: DateRange;
@@ -249,6 +265,7 @@ export function writeAlertsUrlParams(state: AlertsUrlState) {
   if (state.acknowledgedSource === "all") {
     // omit
   }
+  if (state.oneviewAckStatus !== "all") next.set("oneview_ack_status", state.oneviewAckStatus);
   next.set("date_field", state.dateField);
   if (state.datePreset !== "all" && state.datePreset !== "custom") next.set("date_preset", state.datePreset);
   if (state.datePreset === "custom") {

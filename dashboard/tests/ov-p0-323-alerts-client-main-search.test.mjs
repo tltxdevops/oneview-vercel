@@ -31,8 +31,11 @@ test("OV-P0-323: escolha de Cliente aplica filtro estruturado e não texto amplo
   const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /onSearchSuggestionPick/);
   assert.match(alerts, /suggestion\.kind === "customer" && suggestion\.customer_key/);
-  assert.match(alerts, /setSelectedCustomerKeys\(\[suggestion\.customer_key\]\)/);
+  assert.match(alerts, /setSelectedCustomerKeys\(\(current\) => current\.includes\(suggestion\.customer_key!\)/);
+  assert.match(alerts, /\.\.\.current, suggestion\.customer_key!/);
   assert.match(alerts, /setSearchQuery\(""\)/);
+  assert.match(alerts, /localSearchSuggestions=\{localCustomerSearchSuggestions\}/);
+  assert.match(alerts, /Aplicar Cliente/);
 });
 
 test("OV-P0-323: sugestão BFF retorna chave e MAPS não usa N+1", async () => {

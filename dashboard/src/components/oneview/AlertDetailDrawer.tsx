@@ -41,7 +41,7 @@ import {
   fetchAlerts,
   formatOneViewSeverityLabel,
 } from "@/lib/oneview-api";
-import { sourceAckVisualState } from "@/lib/oneview-alert-source-ack";
+import { oneViewAckStatusLabel, sourceAckIsPending, type SourceAckTerminalStatus } from "@/lib/oneview-alert-source-ack";
 import {
   buildAlertClientCommunication,
   type AlertClientCommunicationEdits,
@@ -104,6 +104,14 @@ function isResolvedAlert(alert: OneViewAlert) {
   const sourceStatus = String(alert.status_source || "").trim().toLowerCase();
   const internalStatus = String(alert.status_internal || "").trim().toLowerCase();
   return Boolean(alert.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
+}
+
+function originStatusLabel(value?: string | null) {
+  const status = String(value || "").trim().toLowerCase();
+  if (["cancelled", "canceled"].includes(status)) return "Cancelado";
+  if (status === "active") return "Ativo";
+  if (status === "resolved") return "Resolvido";
+  return status || ORIGIN_UNAVAILABLE;
 }
 
 function safeActorName(value?: string | null) {
@@ -237,7 +245,8 @@ export type AlertDetailDrawerProps = {
   defaultTab?: AlertDetailDrawerTab;
   alertsQueueHref?: string | null;
   auditEmphasis?: boolean;
-  onSourceAcknowledged?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
+  onSourceAckRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
+  onSourceAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
 };
 
 /**
@@ -254,6 +263,7 @@ export function AlertDetailDrawer({
   description = "Detalhe operacional do alerta.",
   defaultTab = "summary",
   alertsQueueHref = null,
+  onSourceAckRequestAccepted,
   onSourceAcknowledged,
 }: AlertDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<AlertDetailDrawerTab>(
@@ -373,7 +383,6 @@ export function AlertDetailDrawer({
   const hostName = alert ? canonicalHostName(alert) : "—";
   const resolved = alert ? isResolvedAlert(alert) : false;
   const visualAlert = alert;
-  const ackPending = visualAlert ? sourceAckVisualState(visualAlert) !== "acknowledged" : true;
   const temporalInconsistent = alert?.temporal_integrity === "source_clock_inconsistent";
   const publicIp = alert ? safeHostIp(alert.host_ip) : null;
   const iface = alert ? interfaceFromAlertTags(alert) : null;
@@ -384,8 +393,13 @@ export function AlertDetailDrawer({
   }, [alert, nestedIncident]);
   const ackAt = visualAlert ? (visualAlert.acknowledged_source_at || visualAlert.acknowledged_at) : null;
   const ackBy = visualAlert
-    ? safeActorName(visualAlert.acknowledged_source_by || visualAlert.acknowledged_by)
+    ? safeActorName(visualAlert.oneview_ack?.actor_name || visualAlert.acknowledged_source_by || visualAlert.acknowledged_by)
     : null;
+  const sourceAckLabel = visualAlert?.acknowledged_source
+    ? "Reconhecido"
+    : sourceAckIsPending(visualAlert)
+      ? "Pendente"
+      : "Não reconhecido";
   const operatorTag = alert ? primaryPersistedOperatorTag(alert) : null;
   const fonteZabbix = alert ? zabbixSourceDisplayName(alert.datasource_name) : "Fonte não identificada";
   const hostVisible = alert ? displayHostField(alert.host_visible_name, canonicalHostName(alert)) : ORIGIN_UNAVAILABLE;
@@ -441,9 +455,11 @@ export function AlertDetailDrawer({
   const visibleRecurrenceEpisodes = recurrenceEpisodes.length ? recurrenceEpisodes : fallbackRecurrenceEpisodes;
   const previousHistoryEpisodes = visibleRecurrenceEpisodes.filter((item) => !item.current);
   const previousHistoryTotal = Math.max(previousHistoryEpisodes.length, Math.max(0, recurrenceTimelineTotal - 1));
-  const ackDetail = ackPending
-    ? alert?.acknowledged_internal ? "Registrado no OneView; pendente na origem" : "Aguardando reconhecimento"
-    : [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem";
+  const ackDetail = visualAlert?.acknowledged_source
+    ? [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem"
+    : sourceAckIsPending(visualAlert)
+      ? "Aguardando confirmação da origem"
+      : "Sem confirmação da origem";
 
   return (
     <>
@@ -475,9 +491,8 @@ export function AlertDetailDrawer({
                   <AlertSourceAckAction
                     alert={visualAlert}
                     variant="button"
-                    onAcknowledged={async (result) => {
-                      await onSourceAcknowledged?.(visualAlert, result);
-                    }}
+                    onRequestAccepted={onSourceAckRequestAccepted}
+                    onAcknowledged={onSourceAcknowledged}
                   />
                 ) : null}
                 <AlertOperationalShareActions
@@ -563,9 +578,9 @@ export function AlertDetailDrawer({
                     <QuickFact
                       icon={<CheckCircle2 className="h-3.5 w-3.5" />}
                       label="ACK"
-                      value={ackPending ? "Pendente" : "Reconhecido"}
+                      value={sourceAckLabel}
                       detail={ackDetail}
-                      tone={ackPending ? "warning" : "success"}
+                      tone={visualAlert?.acknowledged_source ? "success" : "warning"}
                     />
                     <QuickFact
                       icon={<Clock3 className="h-3.5 w-3.5" />}
@@ -760,9 +775,9 @@ export function AlertDetailDrawer({
                     <h3 className="text-sm font-semibold">Estado e tempos</h3>
                     <AlertRecurrenceSignal alert={alert} />
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                      <DetailField label="Estado da origem" value={String(alert.status_source || "").trim() || ORIGIN_UNAVAILABLE} />
+                      <DetailField label="Estado da origem" value={originStatusLabel(alert.alert_status || alert.status_source)} />
                       <DetailField label="ACK origem" value={alert.acknowledged_source ? "Reconhecido" : "Não reconhecido"} />
-                      <DetailField label="ACK OneView" value={alert.acknowledged_internal ? "Reconhecido" : "Não reconhecido"} />
+                      <DetailField label="ACK OneView" value={oneViewAckStatusLabel(alert.oneview_ack?.status)} />
                       <DetailField label="Responsável" value={ackBy || "Sem responsável"} />
                       <DetailField label="Primeira ocorrência" value={formatDateTime(alert.first_seen_at)} />
                       <DetailField label="Última ocorrência" value={formatDateTime(alert.last_seen_at)} />
