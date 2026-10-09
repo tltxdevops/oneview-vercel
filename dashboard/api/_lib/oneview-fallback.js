@@ -271,6 +271,15 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
     const expected = filters.acknowledgedInternal === "true";
     items = items.filter((item) => Boolean(item.acknowledged_internal) === expected);
   }
+  if (filters.ackActor) {
+    const actorQuery = filters.ackActor.toLocaleLowerCase("pt-BR");
+    items = items.filter((item) => String(
+      item.oneview_ack?.actor_name
+      || item.acknowledged_source_by
+      || item.acknowledged_by
+      || "",
+    ).toLocaleLowerCase("pt-BR").includes(actorQuery));
+  }
   if (filters.search) {
     const search = filters.search.toLocaleLowerCase("pt-BR");
     const searchField = String(filters.searchField || "all").toLowerCase();

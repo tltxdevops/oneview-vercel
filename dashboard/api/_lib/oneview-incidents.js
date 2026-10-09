@@ -30,10 +30,13 @@ const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
 const MONITORING_CONTACT_TYPE = "monitoring";
 const SAFE_FILTER = /^[a-zA-Z0-9._:@/\- ]{1,120}$/;
+const SAFE_COMPANY_FILTER = /^[\p{L}\p{N} ._:@\/,'&()\-]{1,120}$/u;
 const SAFE_STATE = /^[0-9,]{1,40}$/;
 const SAFE_PRIORITY = /^[1-5]$/;
 const SAFE_SYS_ID = /^[a-f0-9]{32}$/i;
 const MAX_ASSIGNED_TO_IDS = 20;
+const MAX_COMPANY_FILTERS = 20;
+const MAX_MULTI_FILTERS = 20;
 
 /**
  * SN-P0-12 — definições explícitas de KPI por state ServiceNow.
@@ -66,6 +69,8 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "manual",
   "origin",
   "number",
+  "number_search",
+  "description_search",
   "sys_id",
   "state",
   "priority",
@@ -92,9 +97,9 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
 ]);
 
 /** Query params extras só para GET /oneview/incidents/search-suggest. */
-export const INCIDENT_SUGGEST_QUERY_KEYS = Object.freeze(["q", "limit"]);
+export const INCIDENT_SUGGEST_QUERY_KEYS = Object.freeze(["q", "limit", "kind"]);
 
-const ALLOWED_QUERY_KEY_SET = new Set(INCIDENT_ALLOWED_QUERY_KEYS);
+const ALLOWED_QUERY_KEY_SET = new Set([...INCIDENT_ALLOWED_QUERY_KEYS, ...INCIDENT_SUGGEST_QUERY_KEYS]);
 
 function oneQuery(req, key) {
   const value = req?.query?.[key];
@@ -108,6 +113,39 @@ function oneQueryJoined(req, key) {
     return value.map((item) => String(item || "").trim()).filter(Boolean).join(",");
   }
   return value;
+}
+
+function queryValues(req, key) {
+  const value = req?.query?.[key];
+  return (Array.isArray(value) ? value : [value])
+    .map((item) => cleanOptional(item))
+    .filter(Boolean);
+}
+
+function parseRepeatedTokens(req, key, pattern, code, max = MAX_MULTI_FILTERS) {
+  const tokens = queryValues(req, key)
+    .flatMap((value) => String(value).split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (tokens.length > max || tokens.some((value) => !pattern.test(value))) throw invalidQuery(code);
+  return [...new Set(tokens)];
+}
+
+function parseCompanyFilters(req) {
+  const explicit = queryValues(req, "company");
+  const legacy = explicit.length
+    ? []
+    : [...queryValues(req, "client"), ...queryValues(req, "cliente")];
+  const values = explicit.length ? explicit : legacy;
+  if (values.length > MAX_COMPANY_FILTERS) throw invalidQuery("invalid_company");
+  const unique = new Map();
+  for (const value of values) {
+    const safe = value && SAFE_COMPANY_FILTER.test(value) ? value : null;
+    if (!safe) throw invalidQuery("invalid_company");
+    const key = safe?.toLocaleLowerCase("pt-BR");
+    if (safe && key && !unique.has(key)) unique.set(key, safe);
+  }
+  return [...unique.values()];
 }
 
 export function parseAssignedToFilter(value) {
@@ -215,20 +253,14 @@ export function parseIncidentFilters(req) {
 
   const callerId = assertSafeFilter(cleanOptional(oneQuery(req, "caller_id")), "invalid_caller_id");
   const assignedTo = parseAssignedToFilter(oneQueryJoined(req, "assigned_to"));
-  const stateRaw = cleanOptional(oneQuery(req, "state"));
-  const state = stateRaw
-    ? (SAFE_STATE.test(stateRaw) ? stateRaw : (() => { throw invalidQuery("invalid_state"); })())
-    : null;
+  const states = parseRepeatedTokens(req, "state", /^\d$/, "invalid_state");
+  const priorities = parseRepeatedTokens(req, "priority", SAFE_PRIORITY, "invalid_priority");
+  const assignmentGroups = parseRepeatedTokens(req, "assignment_group", SAFE_FILTER, "invalid_assignment_group");
+  const state = states.length ? states.join(",") : null;
+  const priority = priorities.length ? priorities.join(",") : null;
 
-  const priorityRaw = cleanOptional(oneQuery(req, "priority"));
-  const priority = priorityRaw
-    ? (SAFE_PRIORITY.test(priorityRaw) ? priorityRaw : (() => { throw invalidQuery("invalid_priority"); })())
-    : null;
-
-  const company = assertSafeFilter(
-    cleanOptional(oneQuery(req, "company") ?? oneQuery(req, "client") ?? oneQuery(req, "cliente")),
-    "invalid_company",
-  );
+  const companies = parseCompanyFilters(req);
+  const company = companies[0] || null;
   const openedFrom = assertSafeDate(cleanOptional(oneQuery(req, "opened_from")), "invalid_opened_from");
   const openedTo = assertSafeDate(cleanOptional(oneQuery(req, "opened_to")), "invalid_opened_to");
   const updatedFrom = assertSafeDate(cleanOptional(oneQuery(req, "updated_from")), "invalid_updated_from");
@@ -245,6 +277,8 @@ export function parseIncidentFilters(req) {
   if (!new Set(["all", "manual", "automatic"]).has(origin)) throw invalidQuery("invalid_origin");
 
   let numberRaw = cleanOptional(oneQuery(req, "number"));
+  const numberSearch = cleanOptional(oneQuery(req, "number_search"));
+  const descriptionSearch = cleanOptional(oneQuery(req, "description_search"));
   const sysIdRaw = cleanOptional(oneQuery(req, "sys_id"));
   let searchRaw = cleanOptional(oneQuery(req, "search"));
 
@@ -260,10 +294,9 @@ export function parseIncidentFilters(req) {
   const sysId = sysIdRaw
     ? (SAFE_SYS_ID.test(sysIdRaw) ? sysIdRaw.toLowerCase() : (() => { throw invalidQuery("invalid_sys_id"); })())
     : null;
-  const assignmentGroup = assertSafeFilter(
-    cleanOptional(oneQuery(req, "assignment_group")),
-    "invalid_assignment_group",
-  );
+  if (numberSearch && !SAFE_NUMBER.test(numberSearch)) throw invalidQuery("invalid_number_search");
+  if (descriptionSearch && !SAFE_SEARCH.test(descriptionSearch)) throw invalidQuery("invalid_description_search");
+  const assignmentGroup = assignmentGroups.length ? assignmentGroups.join(",") : null;
 
   const search = searchRaw
     ? (SAFE_SEARCH.test(searchRaw) ? searchRaw : (() => { throw invalidQuery("invalid_search"); })())
@@ -283,12 +316,17 @@ export function parseIncidentFilters(req) {
     assigned_to: unassigned ? null : assignedTo,
     contact_type: contactType,
     number,
+    number_search: numberSearch,
+    description_search: descriptionSearch,
     sys_id: sysId,
     // OV-P0-317: aba Manuais é estritamente operacional; não permite estado
     // resolvido/encerrado mesmo se a URL for alterada manualmente.
     state: manual ? "1,2,3" : state,
+    states: manual ? ["1", "2", "3"] : states,
     priority,
+    priorities,
     company,
+    companies,
     opened_from: openedFrom,
     opened_to: openedTo,
     updated_from: updatedFrom,
@@ -303,6 +341,7 @@ export function parseIncidentFilters(req) {
     manual,
     origin,
     assignment_group: assignmentGroup,
+    assignment_groups: assignmentGroups,
     sort,
     order,
     search,
@@ -329,8 +368,17 @@ function buildAndParts(filters, { stateOverride = undefined, unassignedOverride 
   } else if (filters.has_assignee) {
     andParts.push("assigned_toISNOTEMPTY");
   }
+  if (filters.assignment_group) {
+    if (String(filters.assignment_group).includes(",")) andParts.push(`assignment_groupIN${filters.assignment_group}`);
+    else andParts.push(`assignment_group=${filters.assignment_group}`);
+  }
   if (filters.number) andParts.push(`number=${filters.number}`);
-  if (filters.priority) andParts.push(`priority=${filters.priority}`);
+  if (filters.number_search) andParts.push(`numberSTARTSWITH${escapeLike(filters.number_search)}`);
+  if (filters.description_search) andParts.push(`short_descriptionLIKE${escapeLike(filters.description_search)}`);
+  if (filters.priority) {
+    if (String(filters.priority).includes(",")) andParts.push(`priorityIN${filters.priority}`);
+    else andParts.push(`priority=${filters.priority}`);
+  }
   if (filters.company) andParts.push(`company.nameLIKE${escapeLike(filters.company)}`);
   if (filters.opened_from) andParts.push(`opened_at>=${filters.opened_from}`);
   if (filters.opened_to) andParts.push(`opened_at<=${filters.opened_to} 23:59:59`);

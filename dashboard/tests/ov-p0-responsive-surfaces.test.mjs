@@ -21,16 +21,46 @@ test("Alerts removes Fonte Zabbix and date-field controls while preserving canon
   assert.match(drawer, /Fonte Zabbix/);
 });
 
-test("Operational filters adapt between bounded desktop popover and compact bottom sheet", async () => {
+test("Operational filters adapt between wide desktop popover and compact bottom sheet", async () => {
   const panel = await read("src/components/oneview/OperationalFilterPanel.tsx");
   const tools = await read("src/components/oneview/ConfigurableTableTools.tsx");
   assert.match(panel, /side="bottom"/);
-  assert.match(panel, /max-h-\[90dvh\]/);
-  assert.match(panel, /COMPACT_FILTER_BREAKPOINT = 1120/);
-  assert.match(panel, /width: "min\(48rem, calc\(100vw - 2rem\)\)"/);
-  assert.match(panel, /maxHeight: "min\(80dvh, var\(--radix-popover-content-available-height\)\)"/);
-  assert.match(panel, /repeat\(auto-fit,minmax\(min\(100%,14\.5rem\),1fr\)\)/);
+  assert.match(panel, /max-h-\[82dvh\]/);
+  assert.match(panel, /overlayClassName="bg-black\/40"/);
+  assert.match(panel, /COMPACT_FILTER_BREAKPOINT = 1024/);
+  assert.match(panel, /align="center"/);
+  assert.match(panel, /width: "min\(58rem, calc\(100vw - 2rem\)\)"/);
+  assert.match(panel, /maxHeight: "min\(78dvh, var\(--radix-popover-content-available-height\)\)"/);
+  assert.match(panel, /repeat\(auto-fit,minmax\(min\(100%,12rem\),1fr\)\)/);
   assert.match(tools, /OperationalFilterPanel/);
+  assert.match(tools, /lg:grid-cols-\[minmax\(18rem,1fr\)_auto\]/);
+});
+
+test("operational lists use responsive column metadata and do not render ServiceNow errors inside table cells", async () => {
+  const [chamados, alerts, history, actions] = await Promise.all([
+    read("src/pages/Chamados.tsx"),
+    read("src/pages/Alerts.tsx"),
+    read("src/pages/Historico.tsx"),
+    read("src/components/oneview/IncidentActions.tsx"),
+  ]);
+  for (const source of [chamados, alerts, history]) {
+    assert.match(source, /useOperationalTableLayout/);
+    assert.match(source, /responsivePriority/);
+    assert.match(source, /operationalColumnPreferredWidth/);
+  }
+  assert.match(history, /import \{ dashboardWidgetsForPage \}/);
+  assert.match(chamados, /incidentTableLayout\.visibleColumns\.map/);
+  assert.match(chamados, /column\.id === "actions" && "sticky right-0/);
+  assert.match(alerts, /id: "actions", label: "Ações", required: true/);
+  assert.match(alerts, /liveDurationSeconds\(alert, durationNow\)/);
+  assert.match(alerts, /sticky right-0/);
+  assert.match(alerts, /column\.id === "actions" && "sticky right-0 z-20 bg-inherit"/);
+  assert.match(alerts, /key="actions" className="sticky right-0 z-10 bg-inherit/);
+  assert.doesNotMatch(alerts, /key="actions" className="[^"]*bg-background/);
+  assert.match(alerts, /const ackColumnFilter/);
+  assert.match(alerts, /Filtrar analista do ACK/);
+  assert.match(actions, /!isTableCell && holdOptionsError/);
+  assert.match(actions, /async function loadHoldOptions/);
 });
 
 test("Monitoring, History and platform health have narrow viewport escape paths", async () => {

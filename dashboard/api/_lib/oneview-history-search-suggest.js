@@ -15,6 +15,7 @@ import { mergeRankedSuggestions } from "./oneview-search-suggest-rank.js";
 const NO_CACHE = "no-store, no-cache, max-age=0, must-revalidate";
 const SAFE_SEARCH = /^[a-zA-Z0-9._:@/\- ]{1,80}$/;
 const INC_PREFIX_RE = /^INC\d*$/i;
+const SUGGESTION_KINDS = new Set(["host", "problem", "actor", "description"]);
 
 function oneQuery(req, key) {
   const value = req?.query?.[key];
@@ -33,8 +34,9 @@ function asLimit(value) {
   return Math.min(Math.max(parsed, 1), 15);
 }
 
-function scopeReq(req) {
-  return { query: { ...req.query, search: undefined, q: undefined, limit: undefined, page: "1", page_size: "1" } };
+function scopeReq(req, kind) {
+  const ownFilter = { host: "host_search", problem: "problem_search", actor: "actor", description: "comment_search" }[kind];
+  return { query: { ...req.query, ...(ownFilter ? { [ownFilter]: undefined } : {}), search: undefined, q: undefined, kind: undefined, limit: undefined, page: "1", page_size: "1" } };
 }
 
 export async function searchHistoryReadModelSuggestions(req, config) {
@@ -45,6 +47,12 @@ export async function searchHistoryReadModelSuggestions(req, config) {
     throw error;
   }
   const limit = asLimit(oneQuery(req, "limit"));
+  const kind = cleanOptional(oneQuery(req, "kind"))?.toLowerCase() || null;
+  if (kind && !SUGGESTION_KINDS.has(kind)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
 
   if (INC_PREFIX_RE.test(q)) {
     const incident = await searchReadModelIncidentSuggestions(
@@ -54,7 +62,7 @@ export async function searchHistoryReadModelSuggestions(req, config) {
     return { suggestions: incident.suggestions ?? [] };
   }
 
-  const { clauses, params: scopeParams } = buildGlobalHistoryScopeClauses(scopeReq(req));
+  const { clauses, params: scopeParams } = buildGlobalHistoryScopeClauses(scopeReq(req, kind));
 
   const run = async (kind, fieldSql, cap) => {
     const runParams = [...scopeParams, `%${q}%`];
@@ -79,17 +87,20 @@ export async function searchHistoryReadModelSuggestions(req, config) {
     }).filter(Boolean);
   };
 
-  const [hosts, actors, messages] = await Promise.all([
-    run("host", "coalesce(a.host_name, '')", 3),
-    run("actor", "coalesce(h.actor_name, h.operator_name, '')", 3),
-    run("description", "left(coalesce(h.message, ''), 120)", 3),
+  const [hosts, problems, actors, messages] = await Promise.all([
+    !kind || kind === "host" ? run("host", "coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '')", 4) : [],
+    !kind || kind === "problem" ? run("problem", "coalesce(a.problem_name, '')", 4) : [],
+    !kind || kind === "actor" ? run("actor", "coalesce(h.actor_name, h.operator_name, '')", 4) : [],
+    !kind || kind === "description" ? run("description", "left(coalesce(h.message, ''), 120)", 4) : [],
   ]);
 
-  const enriched = [...hosts, ...actors, ...messages].map((item) => ({
+  const enriched = [...hosts, ...problems, ...actors, ...messages].map((item) => ({
     ...item,
     hint: item.kind === "host"
       ? "Filtrar eventos por host"
-      : item.kind === "actor"
+      : item.kind === "problem"
+        ? "Filtrar eventos por problema"
+        : item.kind === "actor"
         ? "Filtrar eventos por ator"
         : "Filtrar eventos por mensagem",
   }));

@@ -3,8 +3,9 @@ import { useSearchParams } from "react-router-dom";
 import { Bell, ChevronDown, Link as LinkIcon, Loader2, RotateCcw, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
-import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { ConfigurableTableToolbar, OneViewColumnFilterPopover, OneViewFilterableHeader } from "@/components/oneview/ConfigurableTableTools";
+import { OneViewTableSearchField, useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { OperationalFacetChecklist, OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ClientFilterCombobox } from "@/components/oneview/ClientFilterCombobox";
 import { IncidentDetailActions } from "@/components/oneview/IncidentDetailActions";
@@ -28,7 +29,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchLinkSearchSuggestions, fetchOperatorReminderDeepLink, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem, type OperatorReminderInboxLink } from "@/lib/oneview-api";
+import { cancelOperatorReminder, createOperatorReminder, fetchCanonicalLinkDetail, fetchCanonicalLinks, fetchIncidentDetail, fetchLinkSearchSuggestions, fetchOperatorReminderDeepLink, fetchOperatorReminderFeed, fetchOperatorReminders, getCachedOperatorReminders, OneViewApiError, operatorReminderIdentity, updateOperatorReminder, type CanonicalLink, type CanonicalLinkDetail, type CanonicalLinkIncident, type CanonicalLinksResponse, type OneViewIncident, type OneViewSearchSuggestion, type OperatorReminder, type OperatorReminderFeed, type OperatorReminderFeedItem, type OperatorReminderInboxLink } from "@/lib/oneview-api";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 import { cn } from "@/lib/utils";
 import { oneViewIncidentStatusVisual } from "@/lib/oneview-incident-status-visual";
@@ -50,6 +51,19 @@ import {
 } from "@/lib/oneview-severity-popup";
 
 const ALL = "all";
+function filterValues(value: string) {
+  return [...new Set(value.split(",").map((item) => item.trim()).filter((item) => item && item !== ALL))];
+}
+function filterValue(values: string[]) {
+  return values.length ? [...new Set(values)].join(",") : ALL;
+}
+function searchParamFilter(params: URLSearchParams, key: string) {
+  return filterValue(params.getAll(key).flatMap((value) => filterValues(value)));
+}
+function syncRepeatedParam(params: URLSearchParams, key: string, value: string) {
+  params.delete(key);
+  for (const item of filterValues(value)) params.append(key, item);
+}
 const REFRESH_MS = 10_000;
 const REMINDERS_REFRESH_MS = 30_000;
 const RECENT_EPISODE_PREVIEW = 5;
@@ -113,7 +127,7 @@ const LINK_SORT_OPTIONS = [
 ] as const;
 const OPERATOR_DASHBOARD_WIDGETS = dashboardWidgetsForPage("operators").filter((widget) => widget.id !== "operators-filters");
 type QueueTab = "open" | "normalized" | "all";
-type OperationalSituation = "all" | "failure_without_incident" | "failure_with_open_incident" | "failure_with_closed_incident" | "normalized_with_open_incident" | "normalized_without_open_incident";
+type OperationalSituation = string;
 type ActivityPeriod = "all" | "1h" | "4h" | "24h" | "7d";
 type PageView = "queue" | "reminders";
 type ReminderScope = "all" | "mine";
@@ -374,17 +388,65 @@ function ColumnHeaderFilter({
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
 }) {
+  const selectedValues = filterValues(value);
   return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger className={cn(OV_FILTER_CONTROL, "mt-1 h-7 w-full min-w-0 text-[11px]")} aria-label={ariaLabel}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
+    <OneViewColumnFilterPopover label={ariaLabel} activeCount={selectedValues.length}>
+      <OperationalFacetChecklist
+        options={options.filter((option) => option.value !== ALL)}
+        selectedValues={selectedValues}
+        onChange={(values) => onChange(filterValue(values))}
+        allLabel={options.find((option) => option.value === ALL)?.label || "Todas"}
+      />
+    </OneViewColumnFilterPopover>
+  );
+}
+
+function MultiFilter({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string; count?: number | null }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <label className="text-xs font-medium text-muted-foreground">{label}</label>
+      <OperationalFacetMultiSelect
+        label={label}
+        options={options.filter((option) => option.value !== ALL)}
+        selectedValues={filterValues(value)}
+        onChange={(values) => onChange(filterValue(values))}
+        allLabel={options.find((option) => option.value === ALL)?.label || "Todos"}
+      />
+    </div>
+  );
+}
+
+function ColumnHeaderSingleFilter({
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <OneViewColumnFilterPopover label={ariaLabel} activeCount={value === ALL ? 0 : 1}>
+      <div className="grid gap-1" role="radiogroup" aria-label={ariaLabel}>
         {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+          <Button key={option.value} type="button" variant={value === option.value ? "secondary" : "ghost"} className="h-8 justify-start" onClick={() => onChange(option.value)}>
+            {option.label}
+          </Button>
         ))}
-      </SelectContent>
-    </Select>
+      </div>
+    </OneViewColumnFilterPopover>
   );
 }
 
@@ -440,6 +502,15 @@ function LinkTableColumnHeader({
   severity,
   classification,
   carrier,
+  customer,
+  linkSearchDraft,
+  incidentNumberDraft,
+  onLinkSearchDraftChange,
+  onIncidentNumberDraftChange,
+  onLinkSearchCommit,
+  onIncidentNumberCommit,
+  fetchLinkSuggestions,
+  fetchIncidentSuggestions,
   onOperationalSituationChange,
   onActivityPeriodChange,
   onChamadoChange,
@@ -448,6 +519,7 @@ function LinkTableColumnHeader({
   onSeverityChange,
   onClassificationChange,
   onCarrierChange,
+  onCustomerChange,
   sort,
   order,
   onSort,
@@ -462,6 +534,15 @@ function LinkTableColumnHeader({
   severity: string;
   classification: string;
   carrier: string;
+  customer: string;
+  linkSearchDraft: string;
+  incidentNumberDraft: string;
+  onLinkSearchDraftChange: (value: string) => void;
+  onIncidentNumberDraftChange: (value: string) => void;
+  onLinkSearchCommit: (value: string) => void;
+  onIncidentNumberCommit: (value: string) => void;
+  fetchLinkSuggestions: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
+  fetchIncidentSuggestions: (query: string, signal: AbortSignal) => Promise<OneViewSearchSuggestion[]>;
   onOperationalSituationChange: (value: OperationalSituation) => void;
   onActivityPeriodChange: (value: ActivityPeriod) => void;
   onChamadoChange: (value: string) => void;
@@ -470,6 +551,7 @@ function LinkTableColumnHeader({
   onSeverityChange: (value: string) => void;
   onClassificationChange: (value: string) => void;
   onCarrierChange: (value: string) => void;
+  onCustomerChange: (value: string) => void;
   sort: LinkSortKey;
   order: LinkSortOrder;
   onSort: (field: LinkSortKey) => void;
@@ -477,6 +559,32 @@ function LinkTableColumnHeader({
   const sortField = LINK_COLUMN_SORT[column.id];
   const sortActive = sortField === sort || (column.id === "latest_alert" && ((sort === "recent" && order === "desc") || (sort === "oldest" && order === "asc")));
   const filter = (() => {
+    if (column.id === "link_local") {
+      return (
+        <OneViewColumnFilterPopover label="Pesquisar link ou local" activeCount={Number(Boolean(linkSearchDraft.trim())) + filterValues(customer).length} kind="search">
+          <OneViewTableSearchField
+            value={linkSearchDraft}
+            onChange={onLinkSearchDraftChange}
+            onSubmit={onLinkSearchCommit}
+            onSuggestionSelect={(suggestion) => onLinkSearchCommit(suggestion.value)}
+            fetchSuggestions={fetchLinkSuggestions}
+            placeholder="Link, circuito, host ou local"
+            ariaLabel="Pesquisar link ou local"
+            normalizeInc={false}
+          />
+          <div className="mt-3 border-t border-border/60 pt-2">
+            <p className="mb-1 text-xs font-semibold">Clientes</p>
+            <OperationalFacetChecklist
+              options={(facets?.customers || []).map((item) => ({ value: item.value, label: item.label, count: item.count }))}
+              selectedValues={filterValues(customer)}
+              onChange={(values) => onCustomerChange(filterValue(values))}
+              allLabel="Todos"
+              searchPlaceholder="Buscar cliente..."
+            />
+          </div>
+        </OneViewColumnFilterPopover>
+      );
+    }
     if (column.id === "situation") {
       return (
         <ColumnHeaderFilter
@@ -489,7 +597,7 @@ function LinkTableColumnHeader({
     }
     if (column.id === "latest_alert") {
       return (
-        <ColumnHeaderFilter
+        <ColumnHeaderSingleFilter
           ariaLabel="Filtrar por período de alerta"
           value={activityPeriod}
           options={ACTIVITY_PERIOD_FILTER_OPTIONS}
@@ -499,21 +607,30 @@ function LinkTableColumnHeader({
     }
     if (column.id === "current_incident") {
       return (
-        <div className="space-y-1">
+        <div className="flex items-center gap-0.5">
+          <OneViewColumnFilterPopover label="Pesquisar chamado" activeCount={incidentNumberDraft.trim() ? 1 : 0} kind="search" align="end">
+            <OneViewTableSearchField
+              value={incidentNumberDraft}
+              onChange={onIncidentNumberDraftChange}
+              onSubmit={onIncidentNumberCommit}
+              onSuggestionSelect={(suggestion) => onIncidentNumberCommit(suggestion.value)}
+              fetchSuggestions={fetchIncidentSuggestions}
+              placeholder="INC..."
+              ariaLabel="Pesquisar chamado"
+            />
+          </OneViewColumnFilterPopover>
           <ColumnHeaderFilter
             ariaLabel="Filtrar por chamado"
             value={chamadoChip}
             options={CHAMADO_FILTER_OPTIONS}
             onChange={onChamadoChange}
           />
-          {chamadoChip === "yes" ? (
-            <ColumnHeaderFilter
-              ariaLabel="Filtrar por status do chamado"
-              value={incidentState}
-              options={INCIDENT_STATE_FILTER_OPTIONS}
-              onChange={onIncidentStateChange}
-            />
-          ) : null}
+          <ColumnHeaderFilter
+            ariaLabel="Filtrar por status do chamado"
+            value={incidentState}
+            options={INCIDENT_STATE_FILTER_OPTIONS}
+            onChange={onIncidentStateChange}
+          />
         </div>
       );
     }
@@ -558,6 +675,7 @@ function LinkTableColumnHeader({
           options={[
             { value: ALL, label: "Todas" },
             { value: "unknown", label: "Não informada na origem" },
+            ...(facets?.carriers || []).map((item) => ({ value: item.value, label: item.label })),
           ]}
           onChange={onCarrierChange}
         />
@@ -568,10 +686,13 @@ function LinkTableColumnHeader({
 
   return (
     <TableHead key={column.id} aria-sort={sortField ? sortActive ? order === "asc" ? "ascending" : "descending" : "none" : undefined} className={cn(OV_TABLE_HEAD, "overflow-visible align-top")}>
-      <div className="space-y-0.5">
-        {sortField ? <OneViewSortableHeader label={column.label} active={sortActive} direction={order} onClick={() => onSort(sortField)} /> : <span className="block">{column.label}</span>}
-        {filter}
-      </div>
+      <OneViewFilterableHeader
+        label={column.label}
+        active={sortActive}
+        direction={order}
+        onSort={sortField ? () => onSort(sortField) : undefined}
+        filter={filter}
+      />
     </TableHead>
   );
 }
@@ -652,16 +773,16 @@ export default function OperadorasPage() {
   const [initialError, setInitialError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState<string | null>(null);
-  const [customer, setCustomer] = useState(ALL);
-  const [datasource, setDatasource] = useState(ALL);
-  const [classification, setClassification] = useState(ALL);
-  const [state, setState] = useState(ALL);
-  const [ack, setAck] = useState(ALL);
-  const [severity, setSeverity] = useState(ALL);
-  const [incident, setIncident] = useState(ALL);
-  const [incidentState, setIncidentState] = useState(ALL);
-  const [carrier, setCarrier] = useState(ALL);
-  const [operatorEscalation, setOperatorEscalation] = useState(ALL);
+  const [customer, setCustomer] = useState(() => searchParamFilter(searchParams, "customer"));
+  const [datasource, setDatasource] = useState(() => searchParamFilter(searchParams, "datasource"));
+  const [classification, setClassification] = useState(() => searchParamFilter(searchParams, "classification"));
+  const [state, setState] = useState(() => searchParamFilter(searchParams, "state"));
+  const [ack, setAck] = useState(() => searchParamFilter(searchParams, "ack"));
+  const [severity, setSeverity] = useState(() => searchParamFilter(searchParams, "severity"));
+  const [incident, setIncident] = useState(() => searchParamFilter(searchParams, "incident"));
+  const [incidentState, setIncidentState] = useState(() => searchParamFilter(searchParams, "incident_state"));
+  const [carrier, setCarrier] = useState(() => searchParamFilter(searchParams, "carrier"));
+  const [operatorEscalation, setOperatorEscalation] = useState(() => searchParamFilter(searchParams, "operator_escalation"));
   const [tab, setTab] = useState<QueueTab>("open");
   const [view, setView] = useState<PageView>("queue");
   const [resolvedWindow, setResolvedWindow] = useState("today");
@@ -669,10 +790,14 @@ export default function OperadorasPage() {
   const [sortOrder, setSortOrder] = useState<LinkSortOrder>("desc");
   const [divergence, setDivergence] = useState<"a" | "b" | "any" | "">("");
   const [recurrence, setRecurrence] = useState<"all" | "recurrent">("all");
-  const [operationalSituation, setOperationalSituation] = useState<OperationalSituation>("all");
-  const [activityPeriod, setActivityPeriod] = useState<ActivityPeriod>("all");
-  const [searchDraft, setSearchDraft] = useState("");
-  const [search, setSearch] = useState("");
+  const [operationalSituation, setOperationalSituation] = useState<OperationalSituation>(() => searchParamFilter(searchParams, "operational_situation"));
+  const [activityPeriod, setActivityPeriod] = useState<ActivityPeriod>(() => (searchParams.get("activity_period") as ActivityPeriod) || ALL);
+  const [linkColumnDraft, setLinkColumnDraft] = useState(() => searchParams.get("link_search") || "");
+  const [linkColumnSearch, setLinkColumnSearch] = useState(() => searchParams.get("link_search") || "");
+  const [incidentNumberDraft, setIncidentNumberDraft] = useState(() => searchParams.get("incident_number") || "");
+  const [incidentNumber, setIncidentNumber] = useState(() => searchParams.get("incident_number") || "");
+  const [searchDraft, setSearchDraft] = useState(() => searchParams.get("search") || "");
+  const [search, setSearch] = useState(() => searchParams.get("search") || "");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
   const [page, setPage] = useState(1);
@@ -705,6 +830,23 @@ export default function OperadorasPage() {
   const disasterSeeded = useRef(false);
   const disasterSeen = useRef<Set<string>>(new Set());
   const severityPopupLinksRef = useRef(new Map<string, CanonicalLink>());
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of [
+      ["customer", customer], ["datasource", datasource], ["classification", classification],
+      ["state", state], ["ack", ack], ["severity", severity], ["incident", incident],
+      ["incident_state", incidentState], ["carrier", carrier], ["operator_escalation", operatorEscalation],
+      ["operational_situation", operationalSituation],
+    ] as const) syncRepeatedParam(next, key, value);
+    for (const [key, value] of [
+      ["activity_period", activityPeriod === ALL ? "" : activityPeriod],
+      ["link_search", linkColumnSearch], ["incident_number", incidentNumber], ["search", search],
+    ] as const) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [ack, activityPeriod, carrier, classification, customer, datasource, incident, incidentNumber, incidentState, linkColumnSearch, operationalSituation, operatorEscalation, search, searchParams, setSearchParams, severity, state]);
   const commitLinkSearch = useCallback((value: string) => {
     if (value === search) return;
     linkSearchIntent.current = { id: ++linkSearchIntentId.current, value };
@@ -737,24 +879,26 @@ export default function OperadorasPage() {
     } else setRefreshing(true);
     try {
       const result = await fetchCanonicalLinks({
-        customer,
-        datasource,
-        classification,
-        state,
-        ack,
-        severity,
-        incident,
-        incident_state: incidentState === ALL ? undefined : incidentState,
-        carrier,
-        operator_escalation: operatorEscalation,
+        customer: filterValues(customer),
+        datasource: filterValues(datasource),
+        classification: filterValues(classification),
+        state: filterValues(state),
+        ack: filterValues(ack),
+        severity: filterValues(severity),
+        incident: filterValues(incident),
+        incident_state: filterValues(incidentState),
+        carrier: filterValues(carrier),
+        operator_escalation: filterValues(operatorEscalation),
         tab,
         resolved_window: resolvedWindow,
         sort,
         order: sortOrder,
         divergence: divergence || undefined,
         recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
-        operational_situation: operationalSituation === ALL ? undefined : operationalSituation,
+        operational_situation: filterValues(operationalSituation),
         activity_period: activityPeriod === ALL ? undefined : activityPeriod,
+        link_search: linkColumnSearch || undefined,
+        incident_number: incidentNumber || undefined,
         search,
         page,
         page_size: operatorQueuePageSize,
@@ -792,7 +936,7 @@ export default function OperadorasPage() {
       }
       finishRequest?.();
     }
-  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operatorEscalation, operationalSituation, operatorQueuePageSize, page, recurrence, resolvedWindow, search, severity, sort, sortOrder, state, tab]);
+  }, [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentNumber, incidentState, linkColumnSearch, operatorEscalation, operationalSituation, operatorQueuePageSize, page, recurrence, resolvedWindow, search, severity, sort, sortOrder, state, tab]);
 
   const toggleLinkSort = useCallback((field: LinkSortKey) => {
     const currentField = sort === "recent" || sort === "oldest" ? "activity" : sort;
@@ -1101,8 +1245,16 @@ export default function OperadorasPage() {
     setter(value);
     setPage(1);
   };
+  const toggleCustomer = (key: string) => {
+    if (key === ALL) setCustomer(ALL);
+    else {
+      const selected = filterValues(customer);
+      setCustomer(filterValue(selected.includes(key) ? selected.filter((item) => item !== key) : [...selected, key]));
+    }
+    setPage(1);
+  };
   const activeFilterCount = [customer, datasource, classification, state, ack, severity, incident, incidentState, carrier, operatorEscalation, operationalSituation, activityPeriod]
-    .filter((value) => value !== ALL).length + (search.trim() ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
+    .reduce((count, value) => count + filterValues(value).length, 0) + (search.trim() ? 1 : 0) + (linkColumnSearch ? 1 : 0) + (incidentNumber ? 1 : 0) + (recurrence === "recurrent" ? 1 : 0) + (divergence ? 1 : 0);
   const panelFilterCount = [state, ack]
     .filter((value) => value !== ALL).length;
   const topbarRightSection = useMemo(() => {
@@ -1132,32 +1284,60 @@ export default function OperadorasPage() {
   const fetchLinkTableSuggestions = useCallback((q: string, signal: AbortSignal) => fetchLinkSearchSuggestions({
     q,
     limit: 12,
-    customer,
-    datasource,
-    classification,
-    state,
-    ack,
-    severity,
-    incident,
-    incident_state: incidentState,
-    carrier,
-    operator_escalation: operatorEscalation,
+    customer: filterValues(customer),
+    datasource: filterValues(datasource),
+    classification: filterValues(classification),
+    state: filterValues(state),
+    ack: filterValues(ack),
+    severity: filterValues(severity),
+    incident: filterValues(incident),
+    incident_state: filterValues(incidentState),
+    carrier: filterValues(carrier),
+    operator_escalation: filterValues(operatorEscalation),
     tab,
     resolved_window: resolvedWindow,
     divergence: divergence || undefined,
     recurrence: recurrence === "recurrent" ? "recurrent" : undefined,
-    operational_situation: operationalSituation,
+    operational_situation: filterValues(operationalSituation),
     activity_period: activityPeriod,
+    link_search: linkColumnSearch || undefined,
+    incident_number: incidentNumber || undefined,
     sort,
     order: sortOrder,
     page: 1,
     page_size: operatorQueuePageSize,
     signal,
-  }).then((response) => response.suggestions ?? []), [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentState, operationalSituation, operatorEscalation, operatorQueuePageSize, recurrence, resolvedWindow, severity, sort, sortOrder, state, tab]);
-  const selectedCustomerKeys = customer === ALL ? [] : [customer];
-  const selectedCustomerLabel = customer === ALL
+  }).then((response) => response.suggestions ?? []), [ack, activityPeriod, carrier, classification, customer, datasource, divergence, incident, incidentNumber, incidentState, linkColumnSearch, operationalSituation, operatorEscalation, operatorQueuePageSize, recurrence, resolvedWindow, severity, sort, sortOrder, state, tab]);
+  const fetchLinkColumnSuggestions = useCallback((q: string, signal: AbortSignal) => fetchLinkSearchSuggestions({
+    q, kind: "link", limit: 12, customer: filterValues(customer), datasource: filterValues(datasource),
+    classification: filterValues(classification), state: filterValues(state), ack: filterValues(ack),
+    severity: filterValues(severity), incident: filterValues(incident), incident_state: filterValues(incidentState),
+    incident_number: incidentNumber || undefined, carrier: filterValues(carrier), signal,
+  }).then((response) => response.suggestions ?? []), [ack, carrier, classification, customer, datasource, incident, incidentNumber, incidentState, severity, state]);
+  const fetchIncidentColumnSuggestions = useCallback((q: string, signal: AbortSignal) => fetchLinkSearchSuggestions({
+    q, kind: "number", limit: 12, customer: filterValues(customer), datasource: filterValues(datasource),
+    classification: filterValues(classification), state: filterValues(state), ack: filterValues(ack),
+    severity: filterValues(severity), incident: filterValues(incident), incident_state: filterValues(incidentState),
+    link_search: linkColumnSearch || undefined, carrier: filterValues(carrier), signal,
+  }).then((response) => response.suggestions ?? []), [ack, carrier, classification, customer, datasource, incident, incidentState, linkColumnSearch, severity, state]);
+  const selectedCustomerKeys = filterValues(customer);
+  const selectedCustomerLabel = selectedCustomerKeys.length === 0
     ? "TODOS"
-    : (customerOptions.find((item) => item.key === customer)?.name || customer).toUpperCase();
+    : selectedCustomerKeys.length === 1
+      ? (customerOptions.find((item) => item.key === selectedCustomerKeys[0])?.name || selectedCustomerKeys[0]).toUpperCase()
+      : `${selectedCustomerKeys.length} CLIENTES`;
+  const removeSelectedValue = (setter: (value: string) => void, current: string, value: string) => {
+    setter(filterValue(filterValues(current).filter((item) => item !== value)));
+    setPage(1);
+  };
+  const activeLinkFilterChips = [
+    ...selectedCustomerKeys.map((value) => ({ key: `customer:${value}`, label: `Cliente: ${customerOptions.find((item) => item.key === value)?.name || value}`, remove: () => removeSelectedValue(setCustomer, customer, value) })),
+    ...filterValues(severity).map((value) => ({ key: `severity:${value}`, label: `Severidade: ${value}`, remove: () => removeSelectedValue(setSeverity, severity, value) })),
+    ...filterValues(operationalSituation).map((value) => ({ key: `situation:${value}`, label: OPERATIONAL_SITUATION_FILTER_OPTIONS.find((item) => item.value === value)?.label || value, remove: () => removeSelectedValue(setOperationalSituation, operationalSituation, value) })),
+    ...filterValues(incidentState).map((value) => ({ key: `incident-state:${value}`, label: `Chamado: ${INCIDENT_STATE_FILTER_OPTIONS.find((item) => item.value === value)?.label || value}`, remove: () => removeSelectedValue(setIncidentState, incidentState, value) })),
+    ...(linkColumnSearch ? [{ key: "link-search", label: `Link/local: ${linkColumnSearch}`, remove: () => { setLinkColumnDraft(""); setLinkColumnSearch(""); setPage(1); } }] : []),
+    ...(incidentNumber ? [{ key: "incident-number", label: `Chamado: ${incidentNumber}`, remove: () => { setIncidentNumberDraft(""); setIncidentNumber(""); setPage(1); } }] : []),
+  ];
   const kpis = useMemo(() => [
     { label: "Em falha", value: totals?.operational.open, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "all" as OperationalSituation },
     { label: "Sem chamado", value: totals?.operational.without_incident, tone: "danger" as const, tab: "open" as QueueTab, incident: ALL, recurrence: "all" as const, divergence: "" as const, situation: "failure_without_incident" as OperationalSituation },
@@ -1183,6 +1363,10 @@ export default function OperadorasPage() {
     setRecurrence("all");
     setOperationalSituation("all");
     setActivityPeriod("all");
+    setLinkColumnDraft("");
+    setLinkColumnSearch("");
+    setIncidentNumberDraft("");
+    setIncidentNumber("");
     setSearchDraft("");
     setSearch("");
     setPage(1);
@@ -1257,9 +1441,7 @@ export default function OperadorasPage() {
               selectedKeys={selectedCustomerKeys}
               selectedLabel={selectedCustomerLabel}
               onToggle={(key) => {
-                setCustomer(key === ALL || key === customer ? ALL : key);
-                setCustomerFilterOpen(false);
-                setPage(1);
+                toggleCustomer(key);
               }}
               countNoun="neste filtro"
             />
@@ -1277,17 +1459,9 @@ export default function OperadorasPage() {
           </div>
 
           <div aria-label="Filtros operacionais principais" className="grid gap-3 border-t border-border/60 pt-3 md:grid-cols-2 xl:grid-cols-3">
-            <div className="flex min-h-8 items-center">
-              <ChipGroup
-                label="Chamado"
-                ariaLabel="Filtro de chamado"
-                value={chamadoChip}
-                options={[[ALL, "Todos"], ["no", "Sem chamado"], ["yes", "Com chamado"]]}
-                onChange={(value) => { setIncident(value); setIncidentState(ALL); setPage(1); }}
-              />
-            </div>
-            <Filter label="Situação" value={operationalSituation} options={[{ value: ALL, label: "Todas" }, { value: "failure_without_incident", label: "Falha sem chamado" }, { value: "failure_with_open_incident", label: "Falha com chamado aberto" }, { value: "failure_with_closed_incident", label: "Falha com chamado encerrado" }, { value: "normalized_with_open_incident", label: "Normalizado com chamado aberto" }, { value: "normalized_without_open_incident", label: "Normalizado sem chamado" }]} onChange={(value) => { setOperationalSituation(value as OperationalSituation); setPage(1); }} />
-            <Filter label="Status INC" value={incidentState} options={[{ value: ALL, label: "Todos" }, { value: "1", label: "Novo" }, { value: "2", label: "Em andamento" }, { value: "3", label: "Em espera" }, { value: "6", label: "Resolvido" }, { value: "7", label: "Fechado" }, { value: "8", label: "Cancelado" }]} onChange={(value) => { setIncidentState(value); if (value !== ALL) setIncident("yes"); setPage(1); }} />
+            <MultiFilter label="Chamado" value={chamadoChip} options={CHAMADO_FILTER_OPTIONS} onChange={(value) => { setIncident(value); setPage(1); }} />
+            <MultiFilter label="Situação" value={operationalSituation} options={[...OPERATIONAL_SITUATION_FILTER_OPTIONS]} onChange={(value) => { setOperationalSituation(value); setPage(1); }} />
+            <MultiFilter label="Status INC" value={incidentState} options={INCIDENT_STATE_FILTER_OPTIONS} onChange={(value) => { setIncidentState(value); if (value !== ALL) setIncident("yes"); setPage(1); }} />
             <div className="flex min-h-8 items-center">
               <ChipGroup
                 label="Recorrência"
@@ -1312,7 +1486,7 @@ export default function OperadorasPage() {
             <div aria-label="Mais filtros" className="border-t border-border/60 pt-3">
               <p className="mb-2 text-xs font-medium text-muted-foreground">Filtros complementares</p>
               <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
-                  <Filter
+                  <MultiFilter
                     label="Estado"
                     value={state}
                     options={[
@@ -1324,7 +1498,7 @@ export default function OperadorasPage() {
                     ]}
                     onChange={setFilter(setState)}
                   />
-                  <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
+                  <MultiFilter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
                   <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={(value) => { setSort(value as LinkSortKey); setPage(1); }} />
               </div>
             </div>
@@ -1368,7 +1542,7 @@ export default function OperadorasPage() {
                   cancelLinkSearch();
                   linkSearchIntent.current = null;
                   setLinkSearchLoading(false);
-                  setCustomer(customerKey);
+                  if (!filterValues(customer).includes(customerKey)) setCustomer(filterValue([...filterValues(customer), customerKey]));
                   setSearchDraft("");
                   setSearch("");
                   setPage(1);
@@ -1379,7 +1553,7 @@ export default function OperadorasPage() {
               commitLinkSearchNow(suggestion.value);
             }}
             getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
-            isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && customerOptions.some((item) => item.key === customer && (item.key === suggestion.customer_key || item.name === suggestion.label))}
+            isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && customerOptions.some((item) => selectedCustomerKeys.includes(item.key) && (item.key === suggestion.customer_key || item.name === suggestion.label))}
             searchPlaceholder="Buscar link, host ou cliente…"
             searchLabel="Buscar na tabela de links"
             columns={linkTableColumns}
@@ -1395,16 +1569,35 @@ export default function OperadorasPage() {
             }}
             filters={(
               <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
-                <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerOptions} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={(key) => { setCustomer(key === ALL || key === customer ? ALL : key); setCustomerFilterOpen(false); setPage(1); }} countNoun="neste filtro" /></div>
+                <div className="space-y-1 text-xs text-muted-foreground">Cliente<ClientFilterCombobox open={customerFilterOpen} onOpenChange={setCustomerFilterOpen} options={customerOptions} selectedKeys={selectedCustomerKeys} selectedLabel={selectedCustomerLabel} onToggle={toggleCustomer} countNoun="neste filtro" /></div>
+                <div className="space-y-1.5 text-xs font-medium text-muted-foreground">
+                  Link / local
+                  <OneViewTableSearchField value={linkColumnDraft} onChange={setLinkColumnDraft} onSubmit={(value) => { setLinkColumnSearch(value.trim()); setPage(1); }} onSuggestionSelect={(suggestion) => { setLinkColumnDraft(suggestion.value); setLinkColumnSearch(suggestion.value); setPage(1); }} fetchSuggestions={fetchLinkColumnSuggestions} placeholder="Link, circuito, host ou local" ariaLabel="Pesquisar link ou local" normalizeInc={false} />
+                </div>
+                <div className="space-y-1.5 text-xs font-medium text-muted-foreground">
+                  Chamado
+                  <OneViewTableSearchField value={incidentNumberDraft} onChange={setIncidentNumberDraft} onSubmit={(value) => { setIncidentNumber(value.trim().toUpperCase()); setPage(1); }} onSuggestionSelect={(suggestion) => { setIncidentNumberDraft(suggestion.value); setIncidentNumber(suggestion.value); setPage(1); }} fetchSuggestions={fetchIncidentColumnSuggestions} placeholder="INC..." ariaLabel="Pesquisar chamado" />
+                </div>
                 <Filter label="Recorrência" value={recurrence} options={[{ value: "all", label: "Todos" }, { value: "recurrent", label: "Recorrentes" }]} onChange={(value) => { setRecurrence(value === "recurrent" ? "recurrent" : "all"); setPage(1); }} />
-                <Filter label="Estado" value={state} options={[{ value: ALL, label: "Todos" }, { value: "critical", label: "Crítico" }, { value: "alert", label: "Alerta" }, { value: "attention", label: "Atenção" }, { value: "normal", label: "Normal" }]} onChange={setFilter(setState)} />
-                <Filter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
-                <Filter label="Operadora" value={operatorEscalation} options={[{ value: ALL, label: "Todos" }, { value: "yes", label: "Escalonado" }, { value: "no", label: "Não escalonado" }]} onChange={setFilter(setOperatorEscalation)} />
-                <Filter label="Carrier" value={carrier} options={[{ value: ALL, label: "Todos" }, { value: "unknown", label: "Não identificada" }, ...(payload?.facets.carriers || []).map((item) => ({ value: item.value, label: item.label }))]} onChange={setFilter(setCarrier)} />
+                <MultiFilter label="Estado" value={state} options={[{ value: ALL, label: "Todos" }, { value: "critical", label: "Crítico" }, { value: "alert", label: "Alerta" }, { value: "attention", label: "Atenção" }, { value: "normal", label: "Normal" }]} onChange={setFilter(setState)} />
+                <MultiFilter label="ACK" value={ack} options={[{ value: ALL, label: "Todos" }, { value: "pending", label: "Pendente" }, { value: "none", label: "Sem pendência" }]} onChange={setFilter(setAck)} />
+                <MultiFilter label="Situação" value={operationalSituation} options={[...OPERATIONAL_SITUATION_FILTER_OPTIONS]} onChange={setFilter(setOperationalSituation)} />
+                <MultiFilter label="Status INC" value={incidentState} options={INCIDENT_STATE_FILTER_OPTIONS} onChange={setFilter(setIncidentState)} />
+                <MultiFilter label="Severidade" value={severity} options={SEVERITY_FILTER_OPTIONS} onChange={setFilter(setSeverity)} />
+                <MultiFilter label="Fonte" value={datasource} options={optionList(payload?.facets.datasources)} onChange={setFilter(setDatasource)} />
+                <MultiFilter label="Classificação" value={classification} options={optionList(payload?.facets.classifications, "Todas")} onChange={setFilter(setClassification)} />
+                <MultiFilter label="Operadora" value={operatorEscalation} options={[{ value: ALL, label: "Todos" }, { value: "yes", label: "Escalonado" }, { value: "no", label: "Não escalonado" }]} onChange={setFilter(setOperatorEscalation)} />
+                <MultiFilter label="Carrier" value={carrier} options={[{ value: ALL, label: "Todos" }, { value: "unknown", label: "Não identificada" }, ...(payload?.facets.carriers || []).map((item) => ({ value: item.value, label: item.label }))]} onChange={setFilter(setCarrier)} />
                 <Filter label="Ordenação" value={sort} options={[{ value: "recent", label: "Mais recente" }, { value: "oldest", label: "Mais antigo" }, { value: "duration", label: "Maior duração" }, { value: "severity", label: "Maior severidade" }]} onChange={(value) => { setSort(value as LinkSortKey); setPage(1); }} />
               </div>
             )}
           />
+          {activeLinkFilterChips.length ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-3 py-1.5" aria-label="Filtros ativos">
+              {activeLinkFilterChips.map((chip) => <Button key={chip.key} type="button" size="sm" variant="outline" className="h-7 max-w-full truncate px-2 text-xs" onClick={chip.remove}>{chip.label} ×</Button>)}
+              <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={clearFilters}>Limpar todos</Button>
+            </div>
+          ) : null}
           {loading && !payload ? (
             <>
               <div className="divide-y divide-border/60 md:hidden" aria-label="Carregando a primeira página de links">
@@ -1450,6 +1643,15 @@ export default function OperadorasPage() {
                           severity={severity}
                           classification={classification}
                           carrier={carrier}
+                          customer={customer}
+                          linkSearchDraft={linkColumnDraft}
+                          incidentNumberDraft={incidentNumberDraft}
+                          onLinkSearchDraftChange={setLinkColumnDraft}
+                          onIncidentNumberDraftChange={setIncidentNumberDraft}
+                          onLinkSearchCommit={(value) => { setLinkColumnDraft(value); setLinkColumnSearch(value.trim()); setPage(1); }}
+                          onIncidentNumberCommit={(value) => { setIncidentNumberDraft(value); setIncidentNumber(value.trim().toUpperCase()); setPage(1); }}
+                          fetchLinkSuggestions={fetchLinkColumnSuggestions}
+                          fetchIncidentSuggestions={fetchIncidentColumnSuggestions}
                           onOperationalSituationChange={(value) => { setOperationalSituation(value); setPage(1); }}
                           onActivityPeriodChange={(value) => { setActivityPeriod(value); setPage(1); }}
                           onChamadoChange={(value) => { setIncident(value); setIncidentState(ALL); setPage(1); }}
@@ -1458,6 +1660,7 @@ export default function OperadorasPage() {
                           onSeverityChange={setFilter(setSeverity)}
                           onClassificationChange={setFilter(setClassification)}
                           onCarrierChange={setFilter(setCarrier)}
+                          onCustomerChange={setFilter(setCustomer)}
                           sort={sort}
                           order={sortOrder}
                           onSort={toggleLinkSort}

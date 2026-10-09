@@ -1171,10 +1171,15 @@ export interface FetchAlertsParams {
   severities?: string[];
   status?: "active" | "resolved" | "all";
   incidentState?: string;
+  incidentStates?: string[];
+  incidentNumber?: string;
   acknowledged?: boolean;
   acknowledgedSource?: boolean;
   acknowledgedInternal?: boolean;
   oneviewAckStatus?: "pending" | "success" | "cancelled" | "failed";
+  oneviewAckStatuses?: Array<"pending" | "processing" | "success" | "cancelled" | "failed">;
+  /** Nominal source-ACK actor/operator. */
+  ackActor?: string;
   search?: string;
   searchField?: "all" | "host" | "problem" | "customer" | "eventid";
   hostSearch?: string;
@@ -1210,15 +1215,19 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
-  if (params?.incidentState) search.set("incident_state", params.incidentState);
+  if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
+  else if (params?.incidentState) search.set("incident_state", params.incidentState);
+  if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
   if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
   if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
-  if (params?.oneviewAckStatus) search.set("oneview_ack_status", params.oneviewAckStatus);
+  if (params?.oneviewAckStatuses?.length) for (const value of params.oneviewAckStatuses) search.append("oneview_ack_status", value);
+  else if (params?.oneviewAckStatus) search.set("oneview_ack_status", params.oneviewAckStatus);
+  if (params?.ackActor?.trim()) search.set("ack_actor", params.ackActor.trim());
+  if (params?.hostSearch?.trim()) search.set("host_search", params.hostSearch.trim());
+  if (params?.problemSearch?.trim()) search.set("problem_search", params.problemSearch.trim());
   if (params?.search) search.set("search", params.search);
   if (params?.searchField && params.searchField !== "all") search.set("search_field", params.searchField);
-  if (params?.hostSearch) search.set("host_search", params.hostSearch);
-  if (params?.problemSearch) search.set("problem_search", params.problemSearch);
   if (params?.dateFrom) search.set("date_from", params.dateFrom);
   if (params?.dateTo) search.set("date_to", params.dateTo);
   if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);
@@ -1258,7 +1267,12 @@ export async function fetchGlobalHistory(params?: {
   datasources?: string[];
   eventType?: string;
   actor?: string;
+  actors?: string[];
   search?: string;
+  hostSearch?: string;
+  problemSearch?: string;
+  commentSearch?: string;
+  severities?: string[];
   occurredFrom?: string;
   occurredTo?: string;
   sort?: "occurred" | "client" | "host" | "problem" | "actor" | "description" | "severity";
@@ -1271,8 +1285,13 @@ export async function fetchGlobalHistory(params?: {
   for (const customer of params?.customers ?? []) search.append("customer", customer);
   for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
   if (params?.eventType && params.eventType !== "all") search.set("event_type", params.eventType);
-  if (params?.actor) search.set("actor", params.actor);
+  if (params?.actors?.length) for (const actor of params.actors) search.append("actor", actor);
+  else if (params?.actor) search.set("actor", params.actor);
   if (params?.search) search.set("search", params.search);
+  if (params?.hostSearch) search.set("host_search", params.hostSearch);
+  if (params?.problemSearch) search.set("problem_search", params.problemSearch);
+  if (params?.commentSearch) search.set("comment_search", params.commentSearch);
+  for (const severity of params?.severities ?? []) search.append("severity", severity);
   if (params?.occurredFrom) search.set("occurred_from", params.occurredFrom);
   if (params?.occurredTo) search.set("occurred_to", params.occurredTo);
   if (params?.sort) search.set("sort", params.sort);
@@ -1436,6 +1455,7 @@ export type IncidentListResponse = {
     state: string | null;
     priority: string | null;
     company: string | null;
+    companies?: string[];
     opened_from: string | null;
     opened_to: string | null;
     updated_from?: string | null;
@@ -1487,11 +1507,17 @@ export type FetchIncidentsParams = {
   callerId?: string;
   contactType?: string;
   assignedTo?: string;
+  assignedToIds?: string[];
   number?: string;
+  numberSearch?: string;
+  descriptionSearch?: string;
   sysId?: string;
   state?: string;
+  states?: string[];
   priority?: string;
+  priorities?: string[];
   company?: string;
+  companies?: string[];
   openedFrom?: string;
   openedTo?: string;
   updatedFrom?: string;
@@ -1504,6 +1530,7 @@ export type FetchIncidentsParams = {
   origin?: "manual" | "automatic";
   unassigned?: boolean;
   assignmentGroup?: string;
+  assignmentGroups?: string[];
   search?: string;
   hasAssignee?: boolean;
   includeUnassigned?: boolean;
@@ -1518,12 +1545,25 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   search.set("page_size", String(Math.min(Math.max(params?.pageSize ?? 25, 1), 100)));
   if (params?.callerId) search.set("caller_id", params.callerId);
   if (params?.contactType) search.set("contact_type", params.contactType);
-  if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
+  const assignedToIds = (params?.assignedToIds ?? []).map((value) => value.trim()).filter(Boolean);
+  if (assignedToIds.length) for (const value of assignedToIds) search.append("assigned_to", value);
+  else if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params?.number) search.set("number", params.number);
+  if (params?.numberSearch) search.set("number_search", params.numberSearch);
+  if (params?.descriptionSearch) search.set("description_search", params.descriptionSearch);
   if (params?.sysId) search.set("sys_id", params.sysId);
-  if (params?.state) search.set("state", params.state);
-  if (params?.priority) search.set("priority", params.priority);
-  if (params?.company) search.set("company", params.company);
+  const states = (params?.states ?? []).map((value) => value.trim()).filter(Boolean);
+  if (states.length) for (const value of states) search.append("state", value);
+  else if (params?.state) search.set("state", params.state);
+  const priorities = (params?.priorities ?? []).map((value) => value.trim()).filter(Boolean);
+  if (priorities.length) for (const value of priorities) search.append("priority", value);
+  else if (params?.priority) search.set("priority", params.priority);
+  const companies = (params?.companies ?? []).map((company) => company.trim()).filter(Boolean);
+  if (companies.length) {
+    for (const company of companies) search.append("company", company);
+  } else if (params?.company) {
+    search.set("company", params.company);
+  }
   if (params?.openedFrom) search.set("opened_from", params.openedFrom);
   if (params?.openedTo) search.set("opened_to", params.openedTo);
   if (params?.updatedFrom) search.set("updated_from", params.updatedFrom);
@@ -1537,7 +1577,9 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   if (params?.unassigned) search.set("unassigned", "true");
   if (params?.hasAssignee) search.set("has_assignee", "true");
   if (params?.includeUnassigned) search.set("include_unassigned", "true");
-  if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
+  const assignmentGroups = (params?.assignmentGroups ?? []).map((value) => value.trim()).filter(Boolean);
+  if (assignmentGroups.length) for (const value of assignmentGroups) search.append("assignment_group", value);
+  else if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.search) search.set("search", params.search);
   if (params?.sort) search.set("sort", params.sort);
   if (params?.order) search.set("order", params.order);
@@ -1602,11 +1644,22 @@ export type IncidentSearchSuggestionsResponse = {
 function appendIncidentScopeQueryParams(search: URLSearchParams, params?: FetchIncidentsParams) {
   if (params?.callerId) search.set("caller_id", params.callerId);
   if (params?.contactType) search.set("contact_type", params.contactType);
-  if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
+  const assignedToIds = (params?.assignedToIds ?? []).map((value) => value.trim()).filter(Boolean);
+  if (assignedToIds.length) for (const value of assignedToIds) search.append("assigned_to", value);
+  else if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params?.sysId) search.set("sys_id", params.sysId);
-  if (params?.state) search.set("state", params.state);
-  if (params?.priority) search.set("priority", params.priority);
-  if (params?.company) search.set("company", params.company);
+  const states = (params?.states ?? []).map((value) => value.trim()).filter(Boolean);
+  if (states.length) for (const value of states) search.append("state", value);
+  else if (params?.state) search.set("state", params.state);
+  const priorities = (params?.priorities ?? []).map((value) => value.trim()).filter(Boolean);
+  if (priorities.length) for (const value of priorities) search.append("priority", value);
+  else if (params?.priority) search.set("priority", params.priority);
+  const companies = (params?.companies ?? []).map((company) => company.trim()).filter(Boolean);
+  if (companies.length) {
+    for (const company of companies) search.append("company", company);
+  } else if (params?.company) {
+    search.set("company", params.company);
+  }
   if (params?.openedFrom) search.set("opened_from", params.openedFrom);
   if (params?.openedTo) search.set("opened_to", params.openedTo);
   if (params?.updatedFrom) search.set("updated_from", params.updatedFrom);
@@ -1614,7 +1667,9 @@ function appendIncidentScopeQueryParams(search: URLSearchParams, params?: FetchI
   if (params?.unassigned) search.set("unassigned", "true");
   if (params?.hasAssignee) search.set("has_assignee", "true");
   if (params?.includeUnassigned) search.set("include_unassigned", "true");
-  if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
+  const assignmentGroups = (params?.assignmentGroups ?? []).map((value) => value.trim()).filter(Boolean);
+  if (assignmentGroups.length) for (const value of assignmentGroups) search.append("assignment_group", value);
+  else if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.manual) search.set("manual", "true");
   if (params?.origin) search.set("origin", params.origin);
 }
@@ -1642,10 +1697,17 @@ function appendAlertScopeQueryParams(search: URLSearchParams, params?: FetchAler
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
+  if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
+  else if (params?.incidentState) search.set("incident_state", params.incidentState);
+  if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());
   if (typeof params?.acknowledged === "boolean") search.set("acknowledged", String(params.acknowledged));
   if (typeof params?.acknowledgedSource === "boolean") search.set("acknowledged_source", String(params.acknowledgedSource));
   if (typeof params?.acknowledgedInternal === "boolean") search.set("acknowledged_internal", String(params.acknowledgedInternal));
-  if (params?.oneviewAckStatus) search.set("oneview_ack_status", params.oneviewAckStatus);
+  if (params?.oneviewAckStatuses?.length) for (const value of params.oneviewAckStatuses) search.append("oneview_ack_status", value);
+  else if (params?.oneviewAckStatus) search.set("oneview_ack_status", params.oneviewAckStatus);
+  if (params?.ackActor?.trim()) search.set("ack_actor", params.ackActor.trim());
+  if (params?.hostSearch?.trim()) search.set("host_search", params.hostSearch.trim());
+  if (params?.problemSearch?.trim()) search.set("problem_search", params.problemSearch.trim());
   if (params?.dateFrom) search.set("date_from", params.dateFrom);
   if (params?.dateTo) search.set("date_to", params.dateTo);
   if (params?.firstSeenFrom) search.set("first_seen_from", params.firstSeenFrom);
@@ -1666,12 +1728,16 @@ export type FetchAlertSearchSuggestionsParams = Omit<
 > & {
   q: string;
   limit?: number;
+  kind?: "number" | "company" | "description" | "host";
+  kind?: "customer" | "host" | "problem" | "actor" | "number";
 };
 
 export function oneViewAlertSearchSuggestPath(params: FetchAlertSearchSuggestionsParams): string {
   const search = new URLSearchParams();
   search.set("q", params.q.trim());
   if (params.limit != null) search.set("limit", String(Math.min(Math.max(params.limit, 1), 15)));
+  if (params.kind) search.set("kind", params.kind);
+  if (params.kind) search.set("kind", params.kind);
   appendAlertScopeQueryParams(search, params);
   return `/oneview/alerts/search-suggest?${search.toString()}`;
 }
@@ -1690,8 +1756,14 @@ export type FetchHistorySearchSuggestionsParams = {
   customers?: string[];
   datasources?: string[];
   eventType?: string;
+  actors?: string[];
+  hostSearch?: string;
+  problemSearch?: string;
+  commentSearch?: string;
+  severities?: string[];
   occurredFrom?: string;
   occurredTo?: string;
+  kind?: "host" | "problem" | "actor" | "description";
   signal?: AbortSignal;
 };
 
@@ -1702,8 +1774,14 @@ export function oneViewHistorySearchSuggestPath(params: FetchHistorySearchSugges
   for (const customer of params.customers ?? []) search.append("customer", customer);
   for (const datasource of params.datasources ?? []) search.append("datasource", datasource);
   if (params.eventType && params.eventType !== "all") search.set("event_type", params.eventType);
+  for (const actor of params.actors ?? []) search.append("actor", actor);
+  if (params.hostSearch) search.set("host_search", params.hostSearch);
+  if (params.problemSearch) search.set("problem_search", params.problemSearch);
+  if (params.commentSearch) search.set("comment_search", params.commentSearch);
+  for (const severity of params.severities ?? []) search.append("severity", severity);
   if (params.occurredFrom) search.set("occurred_from", params.occurredFrom);
   if (params.occurredTo) search.set("occurred_to", params.occurredTo);
+  if (params.kind) search.set("kind", params.kind);
   return `/oneview/history/search-suggest?${search.toString()}`;
 }
 
@@ -1718,6 +1796,7 @@ export async function fetchHistorySearchSuggestions(
 export type FetchLinkSearchSuggestionsParams = CanonicalLinksQuery & {
   q: string;
   limit?: number;
+  kind?: "customer" | "host" | "link" | "number";
 };
 
 export function oneViewLinkSearchSuggestPath(params: FetchLinkSearchSuggestionsParams): string {
@@ -1726,7 +1805,9 @@ export function oneViewLinkSearchSuggestPath(params: FetchLinkSearchSuggestionsP
   if (params.limit != null) search.set("limit", String(Math.min(Math.max(params.limit, 1), 15)));
   for (const [key, value] of Object.entries(params)) {
     if (key === "q" || key === "limit" || key === "signal") continue;
-    if (value !== undefined && value !== "" && value !== "all") search.set(key, String(value));
+    if (Array.isArray(value)) {
+      for (const item of value) if (item !== "" && item !== "all") search.append(key, item);
+    } else if (value !== undefined && value !== "" && value !== "all") search.set(key, String(value));
   }
   return `/oneview/links/search-suggest?${search.toString()}`;
 }
@@ -1800,6 +1881,7 @@ export type IncidentDuplicatesResponse = {
 
 export async function fetchIncidentDuplicates(params?: {
   customer?: string;
+  customers?: string[];
   assignedTo?: string;
   assignmentGroup?: string;
   priority?: string;
@@ -1807,7 +1889,12 @@ export async function fetchIncidentDuplicates(params?: {
   signal?: AbortSignal;
 }): Promise<IncidentDuplicatesResponse> {
   const search = new URLSearchParams();
-  if (params?.customer) search.set("customer", params.customer);
+  const customers = (params?.customers ?? []).map((customer) => customer.trim()).filter(Boolean);
+  if (customers.length) {
+    for (const customer of customers) search.append("customer", customer);
+  } else if (params?.customer) {
+    search.set("customer", params.customer);
+  }
   if (params?.assignedTo) search.set("assigned_to", params.assignedTo);
   if (params?.assignmentGroup) search.set("assignment_group", params.assignmentGroup);
   if (params?.priority) search.set("priority", params.priority);
@@ -2250,7 +2337,7 @@ export type CanonicalLink = {
 };
 export type CanonicalLinkDetail = CanonicalLink & { active_alerts_detail: CanonicalLinkAlert[]; incident_history: CanonicalLinkIncident[]; recent_episodes?: Array<{ started_at: string | null; resolved_at: string | null; active: boolean; duration_seconds: number | null; incident_number: string | null; incident_sys_id: string | null; incident_state: string | null; source_trigger_ids: string[]; alert_titles: string[]; severities: string[] }>; technical: { circuit_key: string | null; resolution_status: CanonicalLink["resolution_status"]; source: string; host_name: string | null; source_host_id: string; trigger_ids: string[]; member_key: string | null; uplink_key: string | null; healthcheck_key: string | null; endpoint_ip: string | null; confidence: string | null; strategy: string; }; integration_status: { servicenow: "available" | "degraded" }; };
 export type CanonicalLinksResponse = OneViewResponseMeta & { items: CanonicalLink[]; recent_severe?: CanonicalLink[]; recent_disasters?: CanonicalLink[]; pagination: AlertPagination; totals: { links: number; active_alert_links: number; incident_links: number | null; known_carriers: number; pending_classification: number; operational: { open: number; normalized?: number; without_incident?: number; without_open_incident: number; with_open_incident: number; recurrent?: number; divergences: number; divergence_a: number; divergence_b: number; resolved_today: number } }; integration_status?: { servicenow: "available" | "degraded" }; facets: { customers: OperatorQueueFacet[]; datasources: OperatorQueueFacet[]; classifications: OperatorQueueFacet[]; carriers: OperatorQueueFacet[] } };
-export type CanonicalLinksQuery = Record<string, string | number | undefined> & { signal?: AbortSignal };
+export type CanonicalLinksQuery = Record<string, string | number | string[] | AbortSignal | undefined> & { signal?: AbortSignal };
 export const DEFAULT_CANONICAL_LINKS_QUERY = {
   tab: "open",
   resolved_window: "today",
@@ -2261,7 +2348,12 @@ export const DEFAULT_CANONICAL_LINKS_QUERY = {
 
 export function oneViewLinksPath(params?: CanonicalLinksQuery): string {
   const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params || {})) if (key !== "signal" && value !== undefined && value !== "" && value !== "all") search.set(key, String(value));
+  for (const [key, value] of Object.entries(params || {})) {
+    if (key === "signal" || value === undefined) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) if (item !== "" && item !== "all") search.append(key, item);
+    } else if (value !== "" && value !== "all") search.set(key, String(value));
+  }
   if (!search.has("page")) search.set("page", "1"); if (!search.has("page_size")) search.set("page_size", "50");
   return `/oneview/links?${search}`;
 }

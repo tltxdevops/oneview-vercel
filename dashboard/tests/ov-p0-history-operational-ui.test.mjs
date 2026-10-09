@@ -42,8 +42,10 @@ test("Histórico expõe filtros ativos removíveis e tabela operacional responsi
   assert.match(source, /ov-operational-table table-fixed/);
   assert.match(source, /historyAlertColumns\.visibleColumns\.map/);
   assert.match(source, /status=\{alertStatusLabel\(alert\) === "Ativo" \? "monitoring-down" : "monitoring-normalized"\}/);
-  assert.match(source, /status="incident-waiting" label="Pendente"/);
+  assert.match(source, /sourceAckRowKind\(alert\)/);
   assert.match(source, /status="incident-resolved" label="Reconhecido"/);
+  assert.match(source, /sourceAckRowBadgeStatus\(originAck\)/);
+  assert.match(source, /sourceAckRowLabel\(originAck\)/);
 });
 
 test("migração visual preserva consultas, paginação, risco, ACK e drawer", async () => {

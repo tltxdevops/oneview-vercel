@@ -4,9 +4,9 @@ import { endOfDay, format, formatDistanceToNow, startOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
-import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
-import { OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
+import { ConfigurableTableToolbar, OneViewColumnFilterPopover, OneViewFilterableHeader, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
+import { OneViewTableSearchField, useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { OperationalFacetChecklist, OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
 import { OperationalFilterSection } from "@/components/oneview/OperationalFilterPanel";
 import {
   OneViewButton,
@@ -28,7 +28,6 @@ import {
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
-import { AlertOperatorLinkControls } from "@/components/oneview/AlertOperatorLinkControls";
 import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
 import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
@@ -40,6 +39,7 @@ import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyStat
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
 import { PageHeader } from "@/components/oneview/PageHeader";
 import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -53,6 +53,7 @@ import { shouldInvalidateAlertList } from "@/lib/oneview-alert-live-refresh";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
+import { operationalColumnPreferredWidth, useOperationalTableLayout } from "@/lib/oneview-operational-table-layout";
 import {
   AlertDetailResponse,
   AlertHistoryItem,
@@ -175,17 +176,19 @@ type SortOrder = "asc" | "desc";
 type TemporalPreset = AlertsDatePreset;
 
 const ALERT_TABLE_COLUMNS = [
-  { id: "severity", label: "Severidade" },
-  { id: "client", label: "Cliente" },
-  { id: "host", label: "Host" },
-  { id: "problem", label: "Problema", required: true },
-  { id: "started", label: "Início" },
-  { id: "duration", label: "Duração" },
-  { id: "ack", label: "ACK" },
-  { id: "incident", label: "Chamado" },
-  { id: "status", label: "Estado" },
-  { id: "actions", label: "Ações" },
+  { id: "severity", label: "Severidade", minWidth: 104, preferredWidth: 118, responsivePriority: "essential" },
+  { id: "client", label: "Cliente", minWidth: 112, preferredWidth: 140, responsivePriority: "essential" },
+  { id: "host", label: "Host", minWidth: 138, preferredWidth: 172, responsivePriority: "intermediate" },
+  { id: "problem", label: "Problema", required: true, minWidth: 270, preferredWidth: 390, responsivePriority: "essential" },
+  { id: "started", label: "Início", minWidth: 126, preferredWidth: 146, responsivePriority: "secondary" },
+  { id: "duration", label: "Duração", minWidth: 100, preferredWidth: 112, responsivePriority: "intermediate" },
+  { id: "ack", label: "ACK", minWidth: 118, preferredWidth: 144, responsivePriority: "essential" },
+  { id: "incident", label: "Chamado", minWidth: 112, preferredWidth: 132, responsivePriority: "intermediate" },
+  { id: "status", label: "Estado", minWidth: 102, preferredWidth: 118, responsivePriority: "essential" },
+  { id: "actions", label: "Ações", required: true, minWidth: 96, preferredWidth: 108, responsivePriority: "essential" },
 ] as const;
+
+const ALERT_QUICK_INCIDENT_ACTIONS = ["claim"] as const;
 
 type AlertTableColumnId = typeof ALERT_TABLE_COLUMNS[number]["id"];
 
@@ -230,6 +233,29 @@ const ALERTS_VIEWS: Array<{ id: AlertsView; label: string }> = [
   { id: "resolved", label: "Resolvidos" },
   { id: "all", label: "Todos" },
 ];
+
+const ALERT_STATUS_OPTIONS = [
+  { value: "active", label: "Ativo" },
+  { value: "resolved", label: "Resolvido" },
+] as const;
+const INCIDENT_STATE_OPTIONS = [
+  { value: "1", label: "Novo" },
+  { value: "2", label: "Em andamento" },
+  { value: "3", label: "Em espera" },
+  { value: "6", label: "Resolvido" },
+  { value: "7", label: "Encerrado" },
+  { value: "8", label: "Cancelado" },
+] as const;
+const ACK_SOURCE_OPTIONS = [
+  { value: "acknowledged", label: "Reconhecido" },
+  { value: "unacknowledged", label: "Pendente" },
+] as const;
+const ONEVIEW_ACK_OPTIONS = [
+  { value: "pending", label: "Pendente" },
+  { value: "success", label: "Reconhecido" },
+  { value: "cancelled", label: "Cancelado" },
+  { value: "failed", label: "Falhou" },
+] as const;
 
 function inferAlertsView(query: URLSearchParams): AlertsView {
   const explicit = query.get("view");
@@ -334,8 +360,10 @@ function normalizeAlertResponse(response: AlertListResponse, requestedPage: numb
       page_size: pageSize,
       total_items: totalItems,
       total_pages: totalPages,
-      has_next: Boolean(rawPagination?.has_next ?? page < totalPages),
-      has_previous: Boolean(rawPagination?.has_previous ?? page > 1),
+      // O total/página calculados no mesmo payload são a fonte de verdade. Alguns
+      // proxies antigos retornam has_next=false mesmo havendo páginas seguintes.
+      has_next: page < totalPages || Boolean(rawPagination?.has_next),
+      has_previous: page > 1 || Boolean(rawPagination?.has_previous),
     } satisfies AlertPagination,
   };
 }
@@ -756,6 +784,13 @@ function isResolvedAlert(alert: OneViewAlert | null | undefined) {
   return Boolean(alert.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
 }
 
+function liveDurationSeconds(alert: OneViewAlert, now: number) {
+  if (isResolvedAlert(alert)) return alert.duration_seconds;
+  const startedAt = Date.parse(String(alert.first_seen_at || ""));
+  if (!Number.isFinite(startedAt)) return alert.duration_seconds;
+  return Math.max(0, Math.floor((now - startedAt) / 1000));
+}
+
 function ackRequestAllowedFor(alert: OneViewAlert | null | undefined, requestEnabled: boolean) {
   return requestEnabled && !isResolvedAlert(alert) && alert?.datasource_name?.trim().toLowerCase() === "teletex-http";
 }
@@ -849,6 +884,10 @@ function queryEnum<T extends string>(value: string | null, allowed: readonly T[]
   return allowed.includes(value as T) ? value as T : fallback;
 }
 
+function repeatedQueryValues(params: URLSearchParams, key: string) {
+  return [...new Set(params.getAll(key).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean))];
+}
+
 function positiveQueryInteger(value: string | null, fallback: number, maximum: number) {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
@@ -878,6 +917,7 @@ export default function AlertsPage() {
     actorId,
     definitions: ALERT_TABLE_COLUMNS,
   });
+  const alertTableLayout = useOperationalTableLayout({ columns: alertTableColumns.visibleColumns });
   const [searchParams, setSearchParams] = useSearchParams();
   const initialQueryRef = useRef(new URLSearchParams(searchParams));
   const initialQuery = initialQueryRef.current;
@@ -908,9 +948,13 @@ export default function AlertsPage() {
     if (initialView === "priority" || initialView === "forgotten") return "unacknowledged";
     return "all";
   });
-  const [oneviewAckFilter, setOneviewAckFilter] = useState<OneViewAckFilter>(() => (
-    queryEnum(initialQuery.get("oneview_ack_status"), ["all", "pending", "success", "cancelled", "failed"] as const, "all")
+  const [oneviewAckStatuses, setOneviewAckStatuses] = useState<Array<Exclude<OneViewAckFilter, "all">>>(() => (
+    repeatedQueryValues(initialQuery, "oneview_ack_status")
+      .filter((value): value is Exclude<OneViewAckFilter, "all"> => ["pending", "success", "cancelled", "failed"].includes(value))
   ));
+  const oneviewAckFilter: OneViewAckFilter = oneviewAckStatuses.length === 1 ? oneviewAckStatuses[0] : "all";
+  const [ackActorFilter, setAckActorFilter] = useState(() => initialQuery.get("ack_actor")?.trim().slice(0, 160) || "");
+  const [ackActorDraft, setAckActorDraft] = useState(() => initialQuery.get("ack_actor")?.trim().slice(0, 160) || "");
   const [alertsView, setAlertsView] = useState<AlertsView>(() => initialView);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => {
     if (initialQuery.get("status")) return queryEnum(initialQuery.get("status"), ["active", "resolved", "all"] as const, "active");
@@ -918,9 +962,16 @@ export default function AlertsPage() {
     if (initialView === "all") return "all";
     return "active";
   });
-  const [incidentStateFilter, setIncidentStateFilter] = useState<"all" | "8">(() => (
-    initialQuery.get("incident_state") === "8" ? "8" : "all"
+  const [incidentStates, setIncidentStates] = useState<string[]>(() => (
+    repeatedQueryValues(initialQuery, "incident_state").filter((value) => INCIDENT_STATE_OPTIONS.some((option) => option.value === value))
   ));
+  const incidentStateFilter: "all" | "8" = incidentStates.length === 1 && incidentStates[0] === "8" ? "8" : "all";
+  const [incidentNumber, setIncidentNumber] = useState(() => initialQuery.get("incident_number")?.trim().toUpperCase().slice(0, 40) || "");
+  const [incidentNumberDraft, setIncidentNumberDraft] = useState(() => initialQuery.get("incident_number")?.trim().toUpperCase().slice(0, 40) || "");
+  const [hostColumnSearch, setHostColumnSearch] = useState(() => initialQuery.get("host_search")?.trim().slice(0, 200) || "");
+  const [hostColumnDraft, setHostColumnDraft] = useState(() => initialQuery.get("host_search")?.trim().slice(0, 200) || "");
+  const [problemColumnSearch, setProblemColumnSearch] = useState(() => initialQuery.get("problem_search")?.trim().slice(0, 200) || "");
+  const [problemColumnDraft, setProblemColumnDraft] = useState(() => initialQuery.get("problem_search")?.trim().slice(0, 200) || "");
   const [sortField, setSortField] = useState<SortField>(() => {
     if (initialQuery.get("sort")) {
       return queryEnum(initialQuery.get("sort"), ["last_seen_at", "first_seen_at", "resolved_at", "severity", "client", "datasource", "host", "problem", "duration", "status", "acknowledged_source", "acknowledged_at"] as const, "first_seen_at");
@@ -996,6 +1047,7 @@ export default function AlertsPage() {
   const [pendingAckRequests, setPendingAckRequests] = useState<Record<string, string>>({});
   const [freshAttentionIds, setFreshAttentionIds] = useState<Set<string>>(new Set());
   const [alertTransitions, setAlertTransitions] = useState<Map<string, LiveTransition>>(new Map());
+  const [durationNow, setDurationNow] = useState(() => Date.now());
 
   const [alertsMeta, setAlertsMeta] = useState<MetaState>({});
   const [metricsMeta, setMetricsMeta] = useState<MetaState>({});
@@ -1046,9 +1098,13 @@ export default function AlertsPage() {
     selectedCustomerKeys,
     selectedSeverities,
     statusFilter,
-    incidentStateFilter,
+    incidentStates,
+    incidentNumber,
     sourceAckFilter,
-    oneviewAckFilter,
+    oneviewAckStatuses,
+    ackActorFilter,
+    hostColumnSearch,
+    problemColumnSearch,
     datePreset,
     dateFrom: dateRange?.from?.toISOString() ?? null,
     dateTo: dateRange?.to?.toISOString() ?? null,
@@ -1056,7 +1112,7 @@ export default function AlertsPage() {
     debouncedSearch,
     sortField,
     sortOrder,
-  }), [alertsView, datePreset, dateRange?.from, dateRange?.to, debouncedSearch, incidentStateFilter, oneviewAckFilter, page, pageSize, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }), [ackActorFilter, alertsView, datePreset, dateRange?.from, dateRange?.to, debouncedSearch, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   useEffect(() => {
     const next = writeAlertsUrlParams({
@@ -1065,8 +1121,14 @@ export default function AlertsPage() {
       severities: selectedSeverities,
       status: statusFilter,
       incidentState: incidentStateFilter,
+      incidentStates,
+      incidentNumber,
       acknowledgedSource: sourceAckFilter,
       oneviewAckStatus: oneviewAckFilter,
+      oneviewAckStatuses,
+      ackActor: ackActorFilter,
+      hostSearch: hostColumnSearch,
+      problemSearch: problemColumnSearch,
       dateField: "first_seen",
       datePreset,
       dateRange,
@@ -1081,7 +1143,7 @@ export default function AlertsPage() {
       alert: requestedAlertId,
     });
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [alertsView, datePreset, dateRange, incidentStateFilter, oneviewAckFilter, page, pageSize, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   useEffect(() => {
     severityPopupSeenRef.current = readSeverityPopupSeen("alerts", actorId);
@@ -1095,8 +1157,8 @@ export default function AlertsPage() {
     return () => window.removeEventListener(ONEVIEW_NOTIFICATION_PREFERENCES_EVENT, sync);
   }, [actorId]);
 
-  const loadAlerts = useCallback(async (options?: { quiet?: boolean }) => {
-    if (options?.quiet && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
+  const loadAlerts = useCallback(async (options?: { quiet?: boolean; force?: boolean }) => {
+    if (options?.quiet && !options.force && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
     if (feedbackQueryKeyRef.current !== feedbackQueryKey) {
       feedbackQueryKeyRef.current = feedbackQueryKey;
       freshKnownIdsRef.current = new Set();
@@ -1139,9 +1201,13 @@ export default function AlertsPage() {
         customers: selectedCustomerKeys,
         severities: selectedSeverities,
         status: statusFilter,
-        incidentState: incidentStateFilter === "all" ? undefined : incidentStateFilter,
+        incidentStates,
+        incidentNumber: incidentNumber || undefined,
         acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
-        oneviewAckStatus: oneviewAckFilter === "all" ? undefined : oneviewAckFilter,
+        oneviewAckStatuses,
+        ackActor: ackActorFilter || undefined,
+        hostSearch: hostColumnSearch || undefined,
+        problemSearch: problemColumnSearch || undefined,
         sort: sortField as "last_seen_at" | "first_seen_at" | "resolved_at" | "severity" | "duration" | "acknowledged_at",
         order: sortOrder,
         signal: controller.signal,
@@ -1187,7 +1253,7 @@ export default function AlertsPage() {
       const missingIds = [...previousAlerts.keys()].filter((id) => !nextAlertMap.has(id));
       const shouldProveMissing = statusFilter === "active"
         || sourceAckFilter === "unacknowledged"
-        || oneviewAckFilter === "pending";
+        || oneviewAckStatuses.includes("pending");
 
       if (alertSnapshotReadyRef.current && shouldProveMissing && missingIds.length) {
         const proofs = await Promise.allSettled(
@@ -1296,7 +1362,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hasLoadedAlerts, health, incidentStateFilter, oneviewAckFilter, page, pageSize, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hasLoadedAlerts, health, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1484,8 +1550,12 @@ export default function AlertsPage() {
     selectedCustomerKeys.length
     || selectedSeverities.length
     || sourceAckFilter !== "all"
-    || oneviewAckFilter !== "all"
-    || incidentStateFilter !== "all"
+    || oneviewAckStatuses.length
+    || Boolean(ackActorFilter)
+    || incidentStates.length
+    || Boolean(incidentNumber)
+    || Boolean(hostColumnSearch)
+    || Boolean(problemColumnSearch)
     || statusFilter !== "active"
     || debouncedSearch
     || hasTemporalFilter
@@ -1541,7 +1611,7 @@ export default function AlertsPage() {
       filter: "pending" as const,
       title: "Pendentes",
       value: pendingTotal,
-      description: temporalDescription ?? "Aguardando tratamento",
+      description: temporalDescription ?? "Ativos sem ACK na origem",
     },
   ];
   const severityCards = VISUAL_SEVERITY_STRIP.map((severity) => ({
@@ -1608,10 +1678,10 @@ export default function AlertsPage() {
       severities: selectedSeverities,
       status: statusFilter,
       acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
-      oneviewAckStatus: oneviewAckFilter === "all" ? undefined : oneviewAckFilter,
+      oneviewAckStatuses,
       signal,
     }).then((response) => response.suggestions ?? [])
-  ), [oneviewAckFilter, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [oneviewAckStatuses, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const localCustomerSearchSuggestions = useMemo(() => customerCards
     .filter((customer) => customer.key !== "all")
@@ -1623,6 +1693,57 @@ export default function AlertsPage() {
       hint: "Adicionar aos clientes selecionados",
     })), [customerCards]);
 
+  const fetchAckActorSuggestions = useCallback((q: string, signal: AbortSignal) => (
+    fetchAlertSearchSuggestions({
+      q,
+      limit: 8,
+      customers: selectedCustomerKeys,
+      severities: selectedSeverities,
+      status: statusFilter,
+      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      oneviewAckStatuses,
+      kind: "actor",
+      signal,
+    }).then((response) => (response.suggestions ?? []).filter((item) => item.kind === "actor"))
+  ), [oneviewAckStatuses, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+
+  const fetchHostColumnSuggestions = useCallback((q: string, signal: AbortSignal) => (
+    fetchAlertSearchSuggestions({
+      q, kind: "host", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
+      status: statusFilter, problemSearch: problemColumnSearch || undefined, incidentStates,
+      incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
+      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      ackActor: ackActorFilter || undefined, signal,
+    }).then((response) => response.suggestions ?? [])
+  ), [ackActorFilter, incidentNumber, incidentStates, oneviewAckStatuses, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+
+  const fetchProblemColumnSuggestions = useCallback((q: string, signal: AbortSignal) => (
+    fetchAlertSearchSuggestions({
+      q, kind: "problem", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
+      status: statusFilter, hostSearch: hostColumnSearch || undefined, incidentStates,
+      incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
+      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      ackActor: ackActorFilter || undefined, signal,
+    }).then((response) => response.suggestions ?? [])
+  ), [ackActorFilter, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+
+  const fetchIncidentNumberSuggestions = useCallback((q: string, signal: AbortSignal) => (
+    fetchAlertSearchSuggestions({
+      q, kind: "number", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
+      status: statusFilter, hostSearch: hostColumnSearch || undefined, problemSearch: problemColumnSearch || undefined,
+      incidentStates, oneviewAckStatuses,
+      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      ackActor: ackActorFilter || undefined, signal,
+    }).then((response) => response.suggestions ?? [])
+  ), [ackActorFilter, hostColumnSearch, incidentStates, oneviewAckStatuses, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+
+  const applyAckActorFilter = useCallback((value: string) => {
+    const next = value.trim().slice(0, 160);
+    setAckActorDraft(next);
+    setAckActorFilter(next);
+    setPage(1);
+  }, []);
+
   const activeFilterChips = [
     ...selectedCustomerKeys.map((customerKey) => ({
       key: `customer:${customerKey}`,
@@ -1631,9 +1752,13 @@ export default function AlertsPage() {
     })),
     ...selectedSeverities.map((severity) => ({ key: `severity:${severity}`, label: severityCatalog[severity].label, remove: () => setSelectedSeverities((current) => current.filter((item) => item !== severity)) })),
     statusFilter !== "active" ? { label: `Status: ${statusFilter === "resolved" ? "Resolvidos" : "Todos"}`, remove: () => setStatusFilter("active") } : null,
-    incidentStateFilter === "8" ? { label: "Chamado cancelado", remove: () => setIncidentStateFilter("all") } : null,
+    ...incidentStates.map((value) => ({ key: `incident-state:${value}`, label: `Chamado: ${INCIDENT_STATE_OPTIONS.find((option) => option.value === value)?.label ?? value}`, remove: () => setIncidentStates((current) => current.filter((item) => item !== value)) })),
+    incidentNumber ? { label: `Chamado: ${incidentNumber}`, remove: () => { setIncidentNumber(""); setIncidentNumberDraft(""); } } : null,
     sourceAckFilter !== "all" ? { label: `ACK origem: ${sourceAckFilter === "acknowledged" ? "Com ACK" : "Sem ACK"}`, remove: () => setSourceAckFilter("all") } : null,
-    oneviewAckFilter !== "all" ? { label: `ACK OneView: ${{ pending: "Pendente", success: "Reconhecido", cancelled: "Cancelado", failed: "Falhou" }[oneviewAckFilter]}`, remove: () => setOneviewAckFilter("all") } : null,
+    ...oneviewAckStatuses.map((value) => ({ key: `oneview-ack:${value}`, label: `ACK OneView: ${ONEVIEW_ACK_OPTIONS.find((option) => option.value === value)?.label ?? value}`, remove: () => setOneviewAckStatuses((current) => current.filter((item) => item !== value)) })),
+    ackActorFilter ? { label: `Analista ACK: ${ackActorFilter}`, remove: () => { setAckActorFilter(""); setAckActorDraft(""); } } : null,
+    hostColumnSearch ? { label: `Host: ${hostColumnSearch}`, remove: () => { setHostColumnSearch(""); setHostColumnDraft(""); } } : null,
+    problemColumnSearch ? { label: `Problema: ${problemColumnSearch}`, remove: () => { setProblemColumnSearch(""); setProblemColumnDraft(""); } } : null,
     hasTemporalFilter ? {
       label: `Período ${temporalLabels[datePreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`,
       remove: () => { setDatePreset("all"); setDateRange(undefined); },
@@ -1650,11 +1775,18 @@ export default function AlertsPage() {
     transitions: alertTransitions,
     passesFilter: () => true,
     filter: {
-      hideAcknowledged: sourceAckFilter === "unacknowledged" || oneviewAckFilter === "pending",
+      hideAcknowledged: sourceAckFilter === "unacknowledged" || oneviewAckStatuses.includes("pending"),
       hideResolved: statusFilter === "active",
       hideAssigned: false,
     },
   }).slice(0, pageSize);
+
+  const hasVisibleActiveAlerts = displayedAlerts.some((alert) => !isResolvedAlert(alert));
+  useEffect(() => {
+    if (!hasVisibleActiveAlerts) return undefined;
+    const timer = window.setInterval(() => setDurationNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [hasVisibleActiveAlerts]);
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
@@ -1725,7 +1857,7 @@ export default function AlertsPage() {
   const alertSearchActivity = searchQuery !== debouncedSearch ? "pending" : alertSearchLoading ? "searching" : "idle";
   const showAlertsSkeleton = isAlertsLoading && !hasLoadedAlerts && alerts.length === 0;
   const ackRequestsEnabled = health?.capabilities?.acknowledgement === true;
-  const tableColumnCount = alertTableColumns.visibleColumns.length;
+  const tableColumnCount = alertTableLayout.visibleColumns.length;
 
   const clearFilters = () => {
     cancelAlertSearch();
@@ -1734,10 +1866,18 @@ export default function AlertsPage() {
     setSelectedCustomerKeys([]);
     setSelectedSeverities([]);
     setSourceAckFilter("all");
-    setOneviewAckFilter("all");
+    setOneviewAckStatuses([]);
+    setAckActorFilter("");
+    setAckActorDraft("");
     setAlertsView("recent");
     setStatusFilter("active");
-    setIncidentStateFilter("all");
+    setIncidentStates([]);
+    setIncidentNumber("");
+    setIncidentNumberDraft("");
+    setHostColumnSearch("");
+    setHostColumnDraft("");
+    setProblemColumnSearch("");
+    setProblemColumnDraft("");
     setSortField("first_seen_at");
     setSortOrder("desc");
     setSearchField("all");
@@ -1975,25 +2115,128 @@ export default function AlertsPage() {
     invalidateOneViewReadCache(`/oneview/alerts/${alert.id}`);
     invalidateOneViewReadCache(`/oneview/alerts/${alert.id}/history`);
     await Promise.all([
-      loadAlerts({ quiet: true }),
+      loadAlerts({ quiet: true, force: true }),
       selectedAlertId === alert.id ? loadSelectedAlert(alert.id) : Promise.resolve(),
     ]);
   }, [loadAlerts, loadSelectedAlert, selectedAlertId]);
+
+  const commitHostColumnSearch = (value: string) => {
+    const next = value.trim().slice(0, 200);
+    setHostColumnDraft(next);
+    setHostColumnSearch(next);
+    setPage(1);
+  };
+  const commitProblemColumnSearch = (value: string) => {
+    const next = value.trim().slice(0, 200);
+    setProblemColumnDraft(next);
+    setProblemColumnSearch(next);
+    setPage(1);
+  };
+  const commitIncidentNumber = (value: string) => {
+    const next = value.trim().toUpperCase().slice(0, 40);
+    setIncidentNumberDraft(next);
+    setIncidentNumber(next);
+    setPage(1);
+  };
+
+  const ackColumnFilter = (
+    <OneViewColumnFilterPopover label="Filtrar ACK" activeCount={(sourceAckFilter === "all" ? 0 : 1) + oneviewAckStatuses.length + Number(Boolean(ackActorFilter))} align="end">
+      <div className="space-y-3">
+        <div><p className="mb-1 text-xs font-semibold">ACK da origem</p><OperationalFacetChecklist options={ACK_SOURCE_OPTIONS} selectedValues={sourceAckFilter === "all" ? [] : [sourceAckFilter]} onChange={(values) => { setSourceAckFilter(values.length === 1 ? values[0] : "all"); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar estado..." /></div>
+        <div><p className="mb-1 text-xs font-semibold">ACK OneView</p><OperationalFacetChecklist options={ONEVIEW_ACK_OPTIONS} selectedValues={oneviewAckStatuses} onChange={(values) => { setOneviewAckStatuses(values); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar status..." /></div>
+        <div><p className="mb-1 text-xs font-semibold">Analista do ACK</p><OneViewTableSearchField value={ackActorDraft} onChange={setAckActorDraft} onSubmit={applyAckActorFilter} onSuggestionSelect={(suggestion) => suggestion.kind === "actor" && applyAckActorFilter(suggestion.value)} fetchSuggestions={fetchAckActorSuggestions} placeholder="Pesquisar analista..." ariaLabel="Filtrar analista do ACK" normalizeInc={false} className="w-full" /></div>
+        {ackActorFilter ? <OneViewTextAction className="text-xs" onClick={() => applyAckActorFilter("")}>Limpar analista</OneViewTextAction> : null}
+      </div>
+    </OneViewColumnFilterPopover>
+  );
+
+  const alertColumnFilter = (column: AlertTableColumnId) => {
+    if (column === "severity") return (
+      <OneViewColumnFilterPopover label="Filtrar severidade" activeCount={selectedSeverities.length}>
+        <OperationalFacetChecklist
+          options={severityOrder.map((severity) => ({ value: severity, label: severityCatalog[severity].label }))}
+          selectedValues={selectedSeverities}
+          onChange={(values) => { setSelectedSeverities(values); setPage(1); }}
+          allLabel="Todas"
+          searchPlaceholder="Buscar severidade..."
+        />
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "client") return (
+      <OneViewColumnFilterPopover label="Filtrar clientes" activeCount={selectedCustomerKeys.length}>
+        <OperationalFacetChecklist
+          options={customerCards.filter((customer) => customer.key !== "all").map((customer) => ({ value: customer.key, label: customer.name, count: customer.alerts_count ?? undefined }))}
+          selectedValues={selectedCustomerKeys}
+          onChange={(values) => { setSelectedCustomerKeys(values); setPage(1); }}
+          allLabel="Todos"
+          searchPlaceholder="Buscar cliente..."
+        />
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "host") return (
+      <OneViewColumnFilterPopover label="Filtrar host" kind="search" activeCount={hostColumnSearch ? 1 : 0}>
+        <OneViewTableSearchField
+          value={hostColumnDraft}
+          onChange={setHostColumnDraft}
+          onSubmit={commitHostColumnSearch}
+          onSuggestionSelect={(suggestion) => suggestion.kind === "host" && commitHostColumnSearch(suggestion.value)}
+          fetchSuggestions={fetchHostColumnSuggestions}
+          placeholder="Pesquisar host..."
+          ariaLabel="Filtrar por host"
+          normalizeInc={false}
+          className="w-full"
+        />
+        {hostColumnSearch ? <OneViewTextAction className="mt-2 text-xs" onClick={() => commitHostColumnSearch("")}>Limpar</OneViewTextAction> : null}
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "problem") return (
+      <OneViewColumnFilterPopover label="Filtrar problema" kind="search" activeCount={problemColumnSearch ? 1 : 0}>
+        <OneViewTableSearchField
+          value={problemColumnDraft}
+          onChange={setProblemColumnDraft}
+          onSubmit={commitProblemColumnSearch}
+          onSuggestionSelect={(suggestion) => suggestion.kind === "problem" && commitProblemColumnSearch(suggestion.value)}
+          fetchSuggestions={fetchProblemColumnSuggestions}
+          placeholder="Pesquisar problema..."
+          ariaLabel="Filtrar por problema"
+          normalizeInc={false}
+          className="w-full"
+        />
+        {problemColumnSearch ? <OneViewTextAction className="mt-2 text-xs" onClick={() => commitProblemColumnSearch("")}>Limpar</OneViewTextAction> : null}
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "started") return (
+      <OneViewColumnFilterPopover label="Filtrar período do início" activeCount={hasTemporalFilter ? 1 : 0}>
+        <p className="mb-2 text-xs font-semibold">Período do início</p>
+        <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}>
+          <SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado no painel</SelectItem></SelectContent>
+        </Select>
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "ack") return ackColumnFilter;
+    if (column === "incident") return (
+      <OneViewColumnFilterPopover label="Filtrar chamado" activeCount={incidentStates.length + Number(Boolean(incidentNumber))} align="end">
+        <div className="space-y-3">
+          <OneViewTableSearchField value={incidentNumberDraft} onChange={(value) => setIncidentNumberDraft(value.toUpperCase().slice(0, 40))} onSubmit={commitIncidentNumber} onSuggestionSelect={(suggestion) => suggestion.kind === "number" && commitIncidentNumber(suggestion.value)} fetchSuggestions={fetchIncidentNumberSuggestions} placeholder="Pesquisar INC..." ariaLabel="Filtrar número do chamado" className="w-full" />
+          <OperationalFacetChecklist options={INCIDENT_STATE_OPTIONS} selectedValues={incidentStates} onChange={(values) => { setIncidentStates(values); setPage(1); }} allLabel="Todos os estados" searchPlaceholder="Buscar estado..." />
+          {incidentNumber ? <OneViewTextAction className="text-xs" onClick={() => commitIncidentNumber("")}>Limpar número</OneViewTextAction> : null}
+        </div>
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "status") return (
+      <OneViewColumnFilterPopover label="Filtrar estado do alerta" activeCount={statusFilter === "all" ? 0 : 1} align="end">
+        <OperationalFacetChecklist options={ALERT_STATUS_OPTIONS} selectedValues={statusFilter === "all" ? [] : [statusFilter]} onChange={(values) => { setStatusFilter(values.length === 1 ? values[0] : "all"); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar estado..." />
+      </OneViewColumnFilterPopover>
+    );
+    return null;
+  };
 
   const toggleColumnSort = (field: SortField) => {
     setSortOrder((current) => sortField === field && current === "asc" ? "desc" : "asc");
     setSortField(field);
     setPage(1);
   };
-
-  const sortableHeader = (label: string, field: SortField) => (
-    <OneViewSortableHeader
-      label={label}
-      active={sortField === field}
-      direction={sortOrder}
-      onClick={() => toggleColumnSort(field)}
-    />
-  );
 
   const temporalOptionText = (subject: string, preset: ResolvedTemporalPreset, count?: number) => preset === "all"
     ? "Todos"
@@ -2127,6 +2370,11 @@ export default function AlertsPage() {
           searchPlaceholder="Buscar alerta/host ou adicionar clientes…"
           searchLabel="Buscar na tabela de alertas"
           columns={alertTableColumns}
+          responsiveColumns={{
+            autoHiddenCount: alertTableLayout.autoHiddenColumns.length,
+            showAllColumns: alertTableLayout.showAllColumns,
+            onShowAllColumnsChange: alertTableLayout.setShowAllColumns,
+          }}
           activeFilterCount={activeFilterChips.length}
           onClearFilters={clearFilters}
           searchActivity={alertSearchActivity}
@@ -2147,8 +2395,8 @@ export default function AlertsPage() {
             label: "Ordenar alertas",
           }}
           filters={(
-            <div className="space-y-4">
-              <OperationalFilterSection title="Escopo">
+            <div className="grid min-w-0 grid-cols-1 gap-x-4 gap-y-3 lg:grid-cols-4">
+              <OperationalFilterSection title="Escopo" className="lg:col-span-4 [&>div]:lg:grid-cols-3">
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Severidade
                   <OperationalFacetMultiSelect
@@ -2161,33 +2409,58 @@ export default function AlertsPage() {
                   />
                 </label>
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Estado
-                  <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Ativos</SelectItem><SelectItem value="resolved">Resolvidos</SelectItem><SelectItem value="all">Todos</SelectItem></SelectContent></Select>
+                  <OperationalFacetMultiSelect label="Estado" options={ALERT_STATUS_OPTIONS} selectedValues={statusFilter === "all" ? [] : [statusFilter]} onChange={(values) => { setStatusFilter(values.length === 1 ? values[0] : "all"); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar estado..." />
                 </label>
               </OperationalFilterSection>
 
-              <OperationalFilterSection title="Chamado e ACK">
+              <OperationalFilterSection title="Chamado e ACK" className="lg:col-span-4 [&>div]:lg:grid-cols-4">
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Número do chamado
+                  <OneViewTableSearchField value={incidentNumberDraft} onChange={(value) => setIncidentNumberDraft(value.toUpperCase().slice(0, 40))} onSubmit={commitIncidentNumber} onSuggestionSelect={(suggestion) => suggestion.kind === "number" && commitIncidentNumber(suggestion.value)} fetchSuggestions={fetchIncidentNumberSuggestions} placeholder="Pesquisar INC..." ariaLabel="Filtrar número do chamado" className="w-full" />
+                </label>
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Estado do chamado
-                  <Select value={incidentStateFilter} onValueChange={(value) => { setIncidentStateFilter(value as "all" | "8"); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="8">Chamado cancelado</SelectItem></SelectContent></Select>
+                  <OperationalFacetMultiSelect label="Estado do chamado" options={INCIDENT_STATE_OPTIONS} selectedValues={incidentStates} onChange={(values) => { setIncidentStates(values); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar estado..." />
                 </label>
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">ACK da origem
                   <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="acknowledged">Com ACK</SelectItem><SelectItem value="unacknowledged">Sem ACK</SelectItem></SelectContent></Select>
                 </label>
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Status do ACK OneView
-                  <Select value={oneviewAckFilter} onValueChange={(value) => { setOneviewAckFilter(value as OneViewAckFilter); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="pending">Pendente</SelectItem><SelectItem value="success">Reconhecido</SelectItem><SelectItem value="cancelled">Cancelado</SelectItem><SelectItem value="failed">Falhou</SelectItem></SelectContent></Select>
+                  <OperationalFacetMultiSelect label="Status do ACK OneView" options={ONEVIEW_ACK_OPTIONS} selectedValues={oneviewAckStatuses} onChange={(values) => { setOneviewAckStatuses(values); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar status..." />
+                </label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Analista do ACK
+                  <OneViewTableSearchField
+                    value={ackActorDraft}
+                    onChange={setAckActorDraft}
+                    onSubmit={applyAckActorFilter}
+                    onSuggestionSelect={(suggestion) => {
+                      if (suggestion.kind === "actor") applyAckActorFilter(suggestion.value);
+                    }}
+                    fetchSuggestions={fetchAckActorSuggestions}
+                    placeholder="Pesquisar analista que fez ACK..."
+                    ariaLabel="Pesquisar analista do ACK"
+                    normalizeInc={false}
+                    getSuggestionActionLabel={(suggestion) => suggestion.kind === "actor" ? "Filtrar analista" : null}
+                    className="w-full"
+                  />
                 </label>
               </OperationalFilterSection>
 
-              <OperationalFilterSection title="Busca e período">
+              <OperationalFilterSection title="Busca e período" className="lg:col-span-4 [&>div]:lg:grid-cols-4">
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Campo da busca
                   <Select value={searchField} onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SEARCH_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
                 </label>
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Período do início
                   <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado</SelectItem></SelectContent></Select>
                 </label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Host
+                  <OneViewTableSearchField value={hostColumnDraft} onChange={setHostColumnDraft} onSubmit={commitHostColumnSearch} onSuggestionSelect={(suggestion) => suggestion.kind === "host" && commitHostColumnSearch(suggestion.value)} fetchSuggestions={fetchHostColumnSuggestions} placeholder="Pesquisar host..." ariaLabel="Filtrar host" normalizeInc={false} className="w-full" />
+                </label>
+                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Problema
+                  <OneViewTableSearchField value={problemColumnDraft} onChange={setProblemColumnDraft} onSubmit={commitProblemColumnSearch} onSuggestionSelect={(suggestion) => suggestion.kind === "problem" && commitProblemColumnSearch(suggestion.value)} fetchSuggestions={fetchProblemColumnSuggestions} placeholder="Pesquisar problema..." ariaLabel="Filtrar problema" normalizeInc={false} className="w-full" />
+                </label>
                 {datePreset === "custom" ? <div className="min-w-0 [grid-column:1/-1]"><Calendar className="mx-auto max-w-full" mode="range" numberOfMonths={1} locale={ptBR} selected={dateRange} onSelect={(range) => { setDateRange(range); setPage(1); }} /></div> : null}
               </OperationalFilterSection>
 
-              <OperationalFilterSection title="Exibição">
+              <OperationalFilterSection title="Exibição" className="lg:col-span-1">
                 <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Itens por página
                   <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
                 </label>
@@ -2204,27 +2477,28 @@ export default function AlertsPage() {
 
         {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} onRetry={() => void loadAlerts()} /> : null}
 
-        <div className="relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading || isAlertsFilling}>
+        <div ref={alertTableLayout.containerRef} className="ov-operational-responsive relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading || isAlertsFilling}>
           {(isAlertsLoading || isAlertsFilling) && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
           <TooltipProvider delayDuration={250}>
-          <Table className={cn("ov-operational-table w-full table-fixed", tableColumnCount > 7 ? "min-w-[1240px]" : "min-w-[760px]")}>
+          <Table className="ov-operational-table w-full table-fixed" style={{ minWidth: `${alertTableLayout.minimumTableWidth}px` }}>
             <colgroup>
-              <col className="w-[8%]" />
-              <col className="w-[11%]" />
-              <col className="w-[12%]" />
-              <col className="w-[20%]" />
-              <col className="w-[9%]" />
-              <col className="w-[7%]" />
-              <col className="w-[11%]" />
-              <col className="w-[9%]" />
-              <col className="w-[7%]" />
-              <col className="w-[6%]" />
+              {alertTableLayout.visibleColumns.map((column) => <col key={column.id} style={{ width: `${operationalColumnPreferredWidth(column)}px` }} />)}
             </colgroup>
             <TableHeader className="sticky top-0 z-10">
               <TableRow className="border-border bg-muted/80 ov-type-caption text-muted-foreground hover:bg-muted/80">
-                {alertTableColumns.visibleColumns.map((column) => (
-                  <TableHead key={column.id} className={cn("overflow-visible font-semibold", column.id === "duration" ? "text-right" : column.id === "actions" ? "text-center" : "text-left")}>
-                    {ALERT_COLUMN_SORT[column.id] ? sortableHeader(column.label, ALERT_COLUMN_SORT[column.id]!) : column.label}
+                {alertTableLayout.visibleColumns.map((column) => (
+                  <TableHead key={column.id} className={cn(
+                    "overflow-visible font-semibold",
+                    column.id === "duration" ? "text-right" : column.id === "actions" ? "text-center" : "text-left",
+                    column.id === "actions" && "sticky right-0 z-20 bg-inherit",
+                  )}>
+                    <OneViewFilterableHeader
+                      label={column.label}
+                      active={Boolean(ALERT_COLUMN_SORT[column.id] && sortField === ALERT_COLUMN_SORT[column.id])}
+                      direction={sortOrder}
+                      onSort={ALERT_COLUMN_SORT[column.id] ? () => toggleColumnSort(ALERT_COLUMN_SORT[column.id]!) : undefined}
+                      filter={alertColumnFilter(column.id)}
+                    />
                   </TableHead>
                 ))}
               </TableRow>
@@ -2260,8 +2534,9 @@ export default function AlertsPage() {
                   operational_scope_label: alert.operational_scope_label,
                 });
                 const problemLabel = safeDisplayText(alert.problem_name, "Alerta sem descrição", 220);
-                const durationLabel = Number.isFinite(Number(alert.duration_seconds)) && Number(alert.duration_seconds) >= 0
-                  ? formatDurationSeconds(Number(alert.duration_seconds))
+                const durationSeconds = liveDurationSeconds(alert, durationNow);
+                const durationLabel = Number.isFinite(Number(durationSeconds)) && Number(durationSeconds) >= 0
+                  ? formatDurationSeconds(Number(durationSeconds))
                   : "—";
                 const alertCells: Record<AlertTableColumnId, ReactNode> = {
                   severity: (
@@ -2305,7 +2580,7 @@ export default function AlertsPage() {
                   incident: <TableCell key="incident" className="text-left"><AlertServiceNowReferenceCell reference={alert.servicenow_reference} /></TableCell>,
                   status: <TableCell key="status" className="text-left"><OneViewSemanticStatusBadge status={isActive ? "monitoring-down" : "monitoring-normalized"} label={isActive ? "Ativo" : "Resolvido"} /></TableCell>,
                   actions: (
-                    <TableCell key="actions" className="px-2 py-2 align-middle text-right" onClick={(event) => event.stopPropagation()}>
+                    <TableCell key="actions" className="sticky right-0 z-10 bg-inherit px-2 py-2 align-middle text-right" onClick={(event) => event.stopPropagation()}>
                       <div className="flex flex-nowrap items-center justify-end gap-0.5">
                         {alert.servicenow_reference?.sys_id && alert.servicenow_reference?.number ? (
                           <IncidentTableActionsCell
@@ -2316,10 +2591,10 @@ export default function AlertsPage() {
                             alertArtifact={buildAlertArtifactFromOneViewAlert(alert, {
                               number: alert.servicenow_reference.number,
                             })}
+                            visibleActions={ALERT_QUICK_INCIDENT_ACTIONS}
                             onActionComplete={() => void loadAlerts({ quiet: true })}
                           />
                         ) : null}
-                        {alert.operator_link ? <AlertOperatorLinkControls alert={alert} compact /> : null}
                         <AlertSourceAckAction
                           alert={alert}
                           variant="icon"
@@ -2342,14 +2617,14 @@ export default function AlertsPage() {
                     onClick={() => openAlert(alert)}
                     onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openAlert(alert); } }}
                     className={cn(
-                      "cursor-pointer border-border/40 outline-none hover:bg-muted/40 focus-visible:bg-muted/60",
+                      "cursor-pointer border-border/40 bg-card outline-none hover:bg-muted/40 focus-visible:bg-muted/60",
                       selectedAlertId === alert.id && "bg-muted/60",
                       attentionTone === "high" && "ov-alert-fresh-attention-high",
                       attentionTone === "disaster" && "ov-alert-fresh-attention-disaster",
                       liveTransition && "ov-alert-success-transition",
                     )}
                   >
-                    {alertTableColumns.visibleColumns.map((column) => alertCells[column.id])}
+                    {alertTableLayout.visibleColumns.map((column) => alertCells[column.id])}
                   </TableRow>
                 );
               })}

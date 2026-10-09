@@ -64,6 +64,28 @@ test("Alertas preserves table columns and exposes the official detail action", a
   assert.match(alerts, /status=\{isActive \? "monitoring-down" : "monitoring-normalized"\}/);
 });
 
+test("Alertas keeps claim, source ACK and details as fixed quick actions and full actions in the drawer", async () => {
+  const [alerts, alertDrawer, detailActions, actions] = await Promise.all([
+    read("src/pages/Alerts.tsx"),
+    read("src/components/oneview/AlertDetailDrawer.tsx"),
+    read("src/components/oneview/IncidentDetailActions.tsx"),
+    read("src/components/oneview/IncidentActions.tsx"),
+  ]);
+
+  assert.match(alerts, /const ALERT_QUICK_INCIDENT_ACTIONS = \["claim"\] as const/);
+  assert.match(alerts, /visibleActions=\{ALERT_QUICK_INCIDENT_ACTIONS\}/);
+  assert.match(alerts, /<AlertSourceAckAction/);
+  assert.match(alerts, /aria-label="Ver detalhes"/);
+  assert.doesNotMatch(alerts, /<AlertTableActionPicker/);
+  assert.doesNotMatch(alerts, /<AlertOperatorLinkControls/);
+  assert.match(actions, /aria-label="Assumir chamado"/);
+  assert.match(actions, /fetchIncidentDetail\(incident\.sys_id\)/);
+  assert.match(actions, /Consulta o estado do chamado ao clicar/);
+  assert.match(alertDrawer, /<IncidentDetailDrawer/);
+  assert.equal(detailActions.match(/visibleActions=\{visibleActions\}/g)?.length, 1);
+  assert.match(detailActions, /<IncidentActions\s+incident=\{incident\}\s+alertArtifact=\{alertArtifact\}\s+placement=\{placement\}\s+onClaimed=/);
+});
+
 test("Alertas leaves data, ACK and BFF behavior on the existing paths", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
 

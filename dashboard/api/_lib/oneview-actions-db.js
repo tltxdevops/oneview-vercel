@@ -64,7 +64,31 @@ function poolSignature(config) {
     config.poolMax,
     config.connectionTimeoutMs,
     config.queryTimeoutMs,
+    config.statementTimeoutMs,
+    config.idleTimeoutMs,
+    config.maxLifetimeSeconds,
+    config.idleInTransactionTimeoutMs,
   ]);
+}
+
+function poolStatsFor(poolInstance = actionsPool) {
+  return {
+    db_pool_max: Number(poolInstance?.options?.max || 0),
+    db_pool_total: Number(poolInstance?.totalCount || 0),
+    db_pool_idle: Number(poolInstance?.idleCount || 0),
+    db_pool_waiting: Number(poolInstance?.waitingCount || 0),
+  };
+}
+
+function logActionsPoolMetric({ operation, retry = 0, durationMs = 0, error, poolInstance = actionsPool } = {}) {
+  console.info(JSON.stringify({
+    event: "oneview_actions_database_operation",
+    operation: String(operation || "actions_database").replace(/[^a-zA-Z0-9_:/.-]/g, "").slice(0, 120) || "actions_database",
+    retry: Math.max(0, Number(retry) || 0),
+    duration_ms: Math.max(0, Number(durationMs) || 0),
+    error_class: error ? classifyActionsFailure(error) : "none",
+    ...poolStatsFor(poolInstance),
+  }));
 }
 
 export function getOneViewActionsDbConfig(env = process.env) {
@@ -97,6 +121,10 @@ export function getOneViewActionsDbConfig(env = process.env) {
     poolMax: integerValue(env.ONEVIEW_ACTIONS_DB_POOL_MAX, 1, 1, 3),
     queryTimeoutMs: integerValue(env.ONEVIEW_DB_QUERY_TIMEOUT_MS, 10000, 1000, 30000),
     connectionTimeoutMs: integerValue(env.ONEVIEW_DB_CONNECTION_TIMEOUT_MS, 10000, 1000, 30000),
+    idleTimeoutMs: integerValue(env.ONEVIEW_DB_IDLE_TIMEOUT_MS, 5000, 1000, 60000),
+    maxLifetimeSeconds: integerValue(env.ONEVIEW_DB_MAX_LIFETIME_SECONDS, 300, 30, 3600),
+    statementTimeoutMs: integerValue(env.ONEVIEW_DB_STATEMENT_TIMEOUT_MS, 10000, 1000, 30000),
+    idleInTransactionTimeoutMs: integerValue(env.ONEVIEW_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS, 15000, 1000, 60000),
   });
 }
 
@@ -104,48 +132,80 @@ export function getOneViewActionsPool(config = getOneViewActionsDbConfig()) {
   const signature = poolSignature(config);
   if (!actionsPool || actionsPoolKey !== signature) {
     if (actionsPool) actionsPool.end().catch(() => undefined);
-    actionsPool = new Pool({
+    const nextPool = new Pool({
       host: config.host,
       port: config.port,
       database: config.database,
       user: ACTIONS_DB_USER,
       password: config.password,
       max: config.poolMax,
-      idleTimeoutMillis: 5000,
+      idleTimeoutMillis: config.idleTimeoutMs,
       connectionTimeoutMillis: config.connectionTimeoutMs,
       query_timeout: config.queryTimeoutMs,
+      maxLifetimeSeconds: config.maxLifetimeSeconds,
+      allowExitOnIdle: true,
       ssl: sslConfig(config),
       application_name: "oneview-actions-bff",
     });
-    actionsPool.on("error", (error) => {
-      console.error(JSON.stringify({ event: "oneview_actions_pool_error", code: "database_unavailable", cause: classifyActionsFailure(error) }));
+    nextPool.on("error", (error) => {
+      console.error(JSON.stringify({
+        event: "oneview_actions_pool_error",
+        operation: "idle_client",
+        retry: 0,
+        duration_ms: 0,
+        error_class: classifyActionsFailure(error),
+        ...poolStatsFor(nextPool),
+      }));
     });
+    actionsPool = nextPool;
     actionsPoolKey = signature;
   }
   return actionsPool;
 }
 
 export async function withOneViewActionsQuery(work, config = getOneViewActionsDbConfig()) {
-  const client = await getOneViewActionsPool(config).connect();
+  const pool = getOneViewActionsPool(config);
+  const startedAt = Date.now();
+  let client;
+  let failure;
   try {
+    client = await pool.connect();
     return await work(client);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    client.release();
+    if (client) client.release(failure);
+    logActionsPoolMetric({ operation: "actions_query", durationMs: Date.now() - startedAt, error: failure, poolInstance: pool });
   }
 }
 
 export async function withOneViewActionsTransaction(work, config = getOneViewActionsDbConfig()) {
-  const client = await getOneViewActionsPool(config).connect();
+  const pool = getOneViewActionsPool(config);
+  const startedAt = Date.now();
+  let client;
+  let began = false;
+  let failure;
   try {
+    client = await pool.connect();
     await client.query("begin");
+    began = true;
+    // PgBouncer in front of this BFF rejects timeout startup parameters. SET LOCAL
+    // applies only to this explicit transaction and is reset on commit/rollback.
+    await client.query(
+      "select set_config('statement_timeout', $1, true), set_config('idle_in_transaction_session_timeout', $2, true)",
+      [String(config.statementTimeoutMs), String(config.idleInTransactionTimeoutMs)],
+    );
     const result = await work(client);
     await client.query("commit");
     return result;
   } catch (error) {
-    await client.query("rollback").catch(() => undefined);
+    failure = error;
+    if (client && began) await client.query("rollback").catch(() => undefined);
     throw error;
   } finally {
-    client.release();
+    if (client) client.release(failure);
+    logActionsPoolMetric({ operation: "actions_transaction", durationMs: Date.now() - startedAt, error: failure, poolInstance: pool });
   }
 }
 

@@ -18,6 +18,7 @@ import type {
   FetchAlertRelatedIncidentsParams,
   OneViewAlert,
 } from "./oneview-api.ts";
+import { sourceAckRowKind, sourceAckRowLabel } from "./oneview-alert-source-ack.ts";
 
 const ORIGIN_UNAVAILABLE = "Indisponível na origem";
 const UNKNOWN_CLIENT = "Cliente não identificado";
@@ -477,7 +478,7 @@ export function buildAlertOperationalShareDocument({
     { label: "Trigger/Problema", value: text(alert.problem_name || alert.trigger_description, "Alerta sem descrição") },
     { label: "Severidade", value: formatSeverity(alert.severity) },
     { label: "Estado", value: resolved ? "Resolvido" : "Ativo" },
-    { label: "ACK origem", value: alert.acknowledged_source ? "Reconhecido" : "Não reconhecido" },
+    { label: "ACK origem", value: sourceAckRowLabel(sourceAckRowKind(alert)) },
     { label: "ACK OneView", value: alert.acknowledged_internal ? "Reconhecido" : "Não reconhecido" },
   ];
 

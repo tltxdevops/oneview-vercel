@@ -14,6 +14,14 @@ test("OV-P0-278C payload keeps only canonical links and carrier null semantics",
 });
 test("OV-P0-278C filters preserve canonical customer, datasource-host join contract", () => {
   const req={query:{customer:"Tuper",carrier:"unknown",ack:"pending",page:"1",page_size:"50"}};
-  assert.deepEqual(parseLinkFilters(req),{...filters,customer:"Tuper",carrier:"unknown",ack:"pending",page:1,page_size:50});
+  const parsed = parseLinkFilters(req);
+  assert.equal(parsed.customer, "Tuper");
+  assert.equal(parsed.carrier, "unknown");
+  assert.equal(parsed.ack, "pending");
+  assert.deepEqual(parsed.customers, ["Tuper"]);
+  assert.deepEqual(parsed.carriers, ["unknown"]);
+  assert.deepEqual(parsed.acks, ["pending"]);
+  assert.equal(parsed.page, 1);
+  assert.equal(parsed.page_size, 50);
   assert.throws(()=>parseLinkFilters({query:{customer:"Protege;drop table"}}));
 });

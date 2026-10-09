@@ -492,6 +492,16 @@
   .ov-density-compact { --ov-density-row-height: 2.5rem; --ov-density-control-height: var(--ov-control-height-sm); --ov-density-gap: var(--ov-space-8); }
   .ov-density-default { --ov-density-row-height: 3rem; --ov-density-control-height: var(--ov-control-height-md); --ov-density-gap: var(--ov-space-12); }
 
+  /* Operational lists stay readable at notebook widths without changing the global font scale. */
+  .ov-operational-responsive { min-width: 0; }
+  .ov-operational-responsive .ov-operational-table tbody tr { height: 2.5rem; }
+  .ov-operational-responsive .ov-operational-table th,
+  .ov-operational-responsive .ov-operational-table td { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+  @media (max-width: 1439px) {
+    .ov-operational-responsive .ov-live-metric { min-height: 3.75rem; padding-block: var(--ov-space-8); padding-inline: var(--ov-space-12); }
+    .ov-operational-responsive .ov-live-metric-value { font-size: 1rem; line-height: 1.25rem; }
+  }
+
   .ov-callout-warning {
     border: 1px solid hsl(var(--ov-color-warning) / 0.4);
     border-radius: var(--ov-radius-lg);
@@ -569,6 +579,31 @@
     background: hsl(var(--background) / 0.96);
     box-shadow: 0 4px 16px hsl(var(--foreground) / 0.08);
   }
+  /* Organizador abre pelo botao fixo: nunca pode crescer acima da viewport. */
+  .ov-dashboard-organize-panel {
+    display: flex;
+    max-width: calc(100vw - 2rem);
+    max-height: min(calc(100dvh - 2rem), var(--radix-popover-content-available-height));
+    overflow: hidden;
+  }
+  .ov-dashboard-organize-panel-body { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+  .ov-dashboard-organize-panel-header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--ov-space-8);
+    border-bottom: 1px solid hsl(var(--border) / 0.7);
+    padding: var(--ov-space-12);
+    background: hsl(var(--popover));
+  }
+  .ov-dashboard-organize-panel-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
 
   @media (max-width: 767px) {
     .ov-dashboard-toolbar { justify-content: flex-start; }
@@ -577,6 +612,7 @@
     .ov-dashboard-widget-editor-controls { margin-left: 0; }
     .ov-dashboard-size-control { flex: 1 1 auto; justify-content: space-between; }
     .ov-dashboard-organize-fab { height: 2.75rem; width: 2.75rem; }
+    .ov-dashboard-organize-panel { max-width: calc(100vw - 1rem); max-height: min(calc(100dvh - 1rem), var(--radix-popover-content-available-height)); }
   }
 
   @media (max-width: 1023px) {

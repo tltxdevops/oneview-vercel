@@ -67,10 +67,17 @@ export function ClientFilterCombobox({
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" collisionPadding={8} className="w-[min(22rem,calc(100vw-1rem))] p-0">
-        <Command>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={6}
+        collisionPadding={8}
+        style={{ maxHeight: "min(22rem, var(--radix-popover-content-available-height))" }}
+        className="w-[min(22rem,calc(100vw-1rem))] overflow-hidden p-0"
+      >
+        <Command className="flex max-h-full flex-col">
           <CommandInput placeholder="Buscar cliente..." className="h-10" />
-          <CommandList>
+          <CommandList className="max-h-[18rem] overflow-y-auto overscroll-contain">
             <CommandEmpty>{emptyLabel}</CommandEmpty>
             <CommandGroup heading="Clientes disponíveis">
               {options.map((customer) => {

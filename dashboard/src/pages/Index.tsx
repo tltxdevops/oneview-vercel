@@ -510,17 +510,15 @@ function HomeAlertRow({
     action: (
       <span
         key="action"
-        className="inline-flex justify-center"
+        className="inline-flex items-center justify-center"
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
         <AlertSourceAckAction
           alert={alert}
-          variant="button"
-          buttonLabel="FAZER ACK"
-          waitingLabel="Aguardando"
+          variant="icon"
           livePollEnabled={selectedAlertId !== alert.id}
-          className="h-7 min-h-7 gap-1 px-2 text-[11px] font-semibold uppercase tracking-wide"
+          className="h-7 min-h-7 w-7 p-0"
           onRequestAccepted={onSourceAckRequestAccepted}
           onAcknowledged={onSourceAcknowledged}
         />

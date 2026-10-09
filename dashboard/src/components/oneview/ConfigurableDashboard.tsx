@@ -118,7 +118,31 @@ function DashboardToolbar({
             <Settings2 className="h-4 w-4" aria-hidden="true" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3">
+        <PopoverContent
+          align="end"
+          sideOffset={8}
+          collisionPadding={16}
+          className="ov-dashboard-organize-panel w-[min(36rem,calc(100vw-2rem))] p-0"
+        >
+          <div className="ov-dashboard-organize-panel-body">
+            <div className="ov-dashboard-organize-panel-header">
+              <div>
+                <p className="ov-typography-small font-semibold">Organizar painel</p>
+                <p className="ov-typography-caption text-muted-foreground">Ajuste somente o que precisa aparecer nesta tela.</p>
+              </div>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8 shrink-0"
+                aria-label="Fechar organizador"
+                onClick={() => setOpen(false)}
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
+            <div className="ov-dashboard-organize-panel-scroll">
+              <div className="space-y-3 p-3">
           <div className="space-y-1.5">
             <p className="ov-typography-caption uppercase text-muted-foreground">Disposição</p>
             <div className="ov-segmented-control" role="group" aria-label="Template do painel">
@@ -206,6 +230,9 @@ function DashboardToolbar({
             })}
           </div>
           {metricStrip ? <ConfigurableMetricStripPanel controller={metricStrip} /> : null}
+              </div>
+            </div>
+          </div>
         </PopoverContent>
       </Popover>
     </div>

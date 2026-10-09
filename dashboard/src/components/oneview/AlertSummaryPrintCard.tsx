@@ -4,6 +4,7 @@ import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatOneViewSeverityLabel, type AlertRelatedIncident, type OneViewAlert } from "@/lib/oneview-api";
+import { sourceAckRowKind, sourceAckRowLabel } from "@/lib/oneview-alert-source-ack";
 import { zabbixSourceDisplayName } from "@/lib/oneview-zabbix-source";
 
 const ORIGIN_UNAVAILABLE = "Indisponível na origem";
@@ -67,7 +68,8 @@ export function AlertSummaryPrintCard({ alert, relatedIncidents = [] }: Props) {
   const hostVisible = displayHostField(alert.host_visible_name, canonicalHostName(alert));
   const hostTechnical = displayHostField(alert.host_technical_name, ORIGIN_UNAVAILABLE);
   const resolved = isResolvedAlert(alert);
-  const ackPending = !alert.acknowledged_source;
+  const originAck = sourceAckRowKind(alert);
+  const ackPending = originAck === "pending";
 
   return (
     <article
@@ -108,7 +110,7 @@ export function AlertSummaryPrintCard({ alert, relatedIncidents = [] }: Props) {
                   : "border-emerald-200 bg-emerald-50 text-emerald-700",
               )}
             >
-              {ackPending ? "ACK pendente" : "ACK"}
+              {ackPending ? "ACK pendente" : originAck === "acknowledged" ? "ACK" : "Sem ACK"}
             </Badge>
           </div>
         </div>
@@ -134,7 +136,7 @@ export function AlertSummaryPrintCard({ alert, relatedIncidents = [] }: Props) {
         <AlertRecurrenceSignal alert={alert} />
         <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
           <PrintField label="Estado da origem" value={String(alert.status_source || "").trim() || ORIGIN_UNAVAILABLE} />
-          <PrintField label="ACK origem" value={alert.acknowledged_source ? "Reconhecido" : "Não reconhecido"} />
+          <PrintField label="ACK origem" value={sourceAckRowLabel(originAck)} />
           <PrintField label="ACK OneView" value={alert.acknowledged_internal ? "Reconhecido" : "Não reconhecido"} />
           <PrintField label="Responsável" value={actorName(alert)} />
           <PrintField label="Primeira ocorrência" value={formatDateTime(alert.first_seen_at)} />

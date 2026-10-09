@@ -13,9 +13,9 @@ import {
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableToolbar, OneViewSortableHeader } from "@/components/oneview/ConfigurableTableTools";
-import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
-import { OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
+import { ConfigurableTableToolbar, OneViewColumnFilterPopover, OneViewFilterableHeader } from "@/components/oneview/ConfigurableTableTools";
+import { OneViewTableSearchField, useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { OperationalFacetChecklist, OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { ZabbixSourceFilter } from "@/components/oneview/ZabbixSourceFilter";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -55,8 +55,13 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
+import { useAlertDrawerLiveRefresh } from "@/hooks/useAlertDrawerLiveRefresh";
+import { shouldInvalidateAlertList } from "@/lib/oneview-alert-live-refresh";
+import { sourceAckRowBadgeStatus, sourceAckRowKind, sourceAckRowLabel } from "@/lib/oneview-alert-source-ack";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
+import { dashboardWidgetsForPage } from "@/lib/oneview-dashboard-layout";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
+import { operationalColumnPreferredWidth, useOperationalTableLayout } from "@/lib/oneview-operational-table-layout";
 import { FIRST_ALERTS_PAGE_SIZE } from "@/lib/alerts-query";
 import {
   applyHistoryRiskPreset,
@@ -76,6 +81,7 @@ import {
   AlertHistoryItem,
   fetchAlert,
   fetchAlertHistory,
+  invalidateOneViewReadCache,
   fetchAlertSearchSuggestions,
   fetchAlerts,
   fetchGlobalHistory,
@@ -93,24 +99,24 @@ import {
 const HISTORY_REFRESH_MS = 60_000;
 
 const HISTORY_ALERT_COLUMNS = [
-  { id: "client", label: "Cliente" },
-  { id: "severity", label: "Severidade" },
-  { id: "host", label: "Host" },
-  { id: "problem", label: "Problema", required: true },
-  { id: "started", label: "Início" },
-  { id: "ack", label: "ACK" },
-  { id: "incident", label: "Chamado" },
-  { id: "status", label: "Estado" },
+  { id: "client", label: "Cliente", minWidth: 132, preferredWidth: 162, responsivePriority: "essential" },
+  { id: "severity", label: "Severidade", minWidth: 104, preferredWidth: 118, responsivePriority: "essential" },
+  { id: "host", label: "Host", minWidth: 138, preferredWidth: 166, responsivePriority: "intermediate" },
+  { id: "problem", label: "Problema", required: true, minWidth: 260, preferredWidth: 360, responsivePriority: "essential" },
+  { id: "started", label: "Início", minWidth: 126, preferredWidth: 146, responsivePriority: "essential" },
+  { id: "ack", label: "ACK", minWidth: 118, preferredWidth: 142, responsivePriority: "intermediate" },
+  { id: "incident", label: "Chamado", minWidth: 112, preferredWidth: 132, responsivePriority: "intermediate" },
+  { id: "status", label: "Estado", minWidth: 102, preferredWidth: 118, responsivePriority: "essential" },
 ] as const;
 
 const HISTORY_EVENT_COLUMNS = [
-  { id: "client", label: "Cliente" },
-  { id: "host", label: "Host" },
-  { id: "problem", label: "Problema", required: true },
-  { id: "actor", label: "Ator" },
-  { id: "comment", label: "Comentário" },
-  { id: "occurred", label: "Ocorrido em" },
-  { id: "severity", label: "Severidade" },
+  { id: "client", label: "Cliente", minWidth: 132, preferredWidth: 162, responsivePriority: "essential" },
+  { id: "host", label: "Host", minWidth: 138, preferredWidth: 166, responsivePriority: "intermediate" },
+  { id: "problem", label: "Problema", required: true, minWidth: 260, preferredWidth: 360, responsivePriority: "essential" },
+  { id: "actor", label: "Ator", minWidth: 126, preferredWidth: 152, responsivePriority: "intermediate" },
+  { id: "comment", label: "Comentário", minWidth: 170, preferredWidth: 250, responsivePriority: "intermediate" },
+  { id: "occurred", label: "Ocorrido em", minWidth: 130, preferredWidth: 150, responsivePriority: "essential" },
+  { id: "severity", label: "Severidade", minWidth: 104, preferredWidth: 118, responsivePriority: "essential" },
 ] as const;
 type HistoryAlertColumnId = typeof HISTORY_ALERT_COLUMNS[number]["id"];
 type HistoryEventColumnId = typeof HISTORY_EVENT_COLUMNS[number]["id"];
@@ -257,6 +263,10 @@ function formatWhen(value?: string | null) {
 
 function queryEnum<T extends string>(value: string | null, allowed: readonly T[], fallback: T): T {
   return value && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+function repeatedQueryValues(params: URLSearchParams, key: string) {
+  return [...new Set(params.getAll(key).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean))];
 }
 
 function rangeFromUrl(params: URLSearchParams): DateRange | undefined {
@@ -448,6 +458,8 @@ export default function HistoricoPage() {
   });
   const historyAlertColumns = useOneViewTableColumns({ tableId: "history-alerts", actorId: user?.id || user?.email, definitions: HISTORY_ALERT_COLUMNS });
   const historyEventColumns = useOneViewTableColumns({ tableId: "history-events", actorId: user?.id || user?.email, definitions: HISTORY_EVENT_COLUMNS });
+  const historyAlertTableLayout = useOperationalTableLayout({ columns: historyAlertColumns.visibleColumns });
+  const historyEventTableLayout = useOperationalTableLayout({ columns: historyEventColumns.visibleColumns });
   const historyPageSize = dashboard.layout.widgets.find((item) => item.id === "history-results")?.itemLimit ?? PAGE_SIZE;
   const [searchParams, setSearchParams] = useSearchParams();
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
@@ -479,7 +491,11 @@ export default function HistoricoPage() {
 
   const [searchDraft, setSearchDraft] = useState(() => searchParams.get("search") || "");
   const [historySearchLoading, setHistorySearchLoading] = useState(false);
-  const [actorDraft, setActorDraft] = useState(() => searchParams.get("actor") || "");
+  const [actorDraft, setActorDraft] = useState("");
+  const [hostDraft, setHostDraft] = useState(() => searchParams.get("host_search") || "");
+  const [problemDraft, setProblemDraft] = useState(() => searchParams.get("problem_search") || "");
+  const [commentDraft, setCommentDraft] = useState(() => searchParams.get("comment_search") || "");
+  const [incidentNumberDraft, setIncidentNumberDraft] = useState(() => searchParams.get("incident_number") || "");
   const [customRange, setCustomRange] = useState<DateRange | undefined>(() => rangeFromUrl(searchParams));
   const [filtersOpen, setFiltersOpen] = useState(false);
   const eventsRequestRef = useRef<AbortController | null>(null);
@@ -487,6 +503,8 @@ export default function HistoricoPage() {
   const historySearchIntent = useRef<{ id: number; value: string } | null>(null);
   const historySearchIntentId = useRef(0);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const detailInFlightRef = useRef(false);
+  const detailOwnerRef = useRef<object | null>(null);
   const eventsLoadedRef = useRef(false);
   const alertsLoadedRef = useRef(false);
 
@@ -504,7 +522,9 @@ export default function HistoricoPage() {
     HISTORY_RISK_PRESETS.map((item) => item.value),
     "all",
   ) as HistoryRiskPreset;
-  const clienteRaw = searchParams.get("customer") || "all";
+  const customerTokens = repeatedQueryValues(searchParams, "customer");
+  const clientes = customerTokens.filter((value) => !isDatasourceOnlyQueryToken(value));
+  const clienteRaw = clientes[0] || searchParams.get("customer") || "all";
   const cliente = isDatasourceOnlyQueryToken(clienteRaw) ? "all" : clienteRaw;
   const fonte = searchParams.get("datasource")
     || (isDatasourceOnlyQueryToken(clienteRaw) ? zabbixSourceKey(clienteRaw) : "all")
@@ -531,7 +551,13 @@ export default function HistoricoPage() {
     tab === "eventos" ? "7d" : "all",
   ) as PeriodPreset;
   const search = searchParams.get("search") || "";
-  const actor = searchParams.get("actor") || "";
+  const actors = repeatedQueryValues(searchParams, "actor");
+  const actor = actors[0] || "";
+  const hostSearch = searchParams.get("host_search") || "";
+  const problemSearch = searchParams.get("problem_search") || "";
+  const commentSearch = searchParams.get("comment_search") || "";
+  const incidentNumber = searchParams.get("incident_number") || "";
+  const eventSeverities = repeatedQueryValues(searchParams, "event_severity").filter((value) => ONEVIEW_V1_FILTER_SEVERITIES.includes(value as OneViewSeverity));
   const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
   const selectedAlertId = searchParams.get("alert");
   const recurrenceKey = searchParams.get("recurrence") || null;
@@ -569,9 +595,10 @@ export default function HistoricoPage() {
     setSearchDraft(search);
   }, [search]);
 
-  useEffect(() => {
-    setActorDraft(actor);
-  }, [actor]);
+  useEffect(() => { setHostDraft(hostSearch); }, [hostSearch]);
+  useEffect(() => { setProblemDraft(problemSearch); }, [problemSearch]);
+  useEffect(() => { setCommentDraft(commentSearch); }, [commentSearch]);
+  useEffect(() => { setIncidentNumberDraft(incidentNumber); }, [incidentNumber]);
 
   useEffect(() => {
     if (period === "custom") {
@@ -586,14 +613,21 @@ export default function HistoricoPage() {
     patchParams({ search: value || null }, { resetPage: true });
   }, [patchParams, search]);
   const commitHistoryActor = useCallback((value: string) => {
-    if (value === actor) return;
-    patchParams({ actor: value || null }, { resetPage: true });
-  }, [actor, patchParams]);
+    const next = value.trim().slice(0, 160);
+    if (!next) return;
+    const merged = [...new Set([...actors, next])];
+    patchParams({ actor: merged }, { resetPage: true });
+    setActorDraft("");
+  }, [actors, patchParams]);
   const { commitNow: commitHistorySearchNow, cancelPending: cancelHistorySearch } = useOneViewCommittedSearch(
     searchDraft,
     commitHistorySearch,
   );
-  const { cancelPending: cancelHistoryActor } = useOneViewCommittedSearch(actorDraft, commitHistoryActor);
+  const cancelHistoryActor = useCallback(() => undefined, []);
+  const commitHostSearch = useCallback((value: string) => patchParams({ host_search: value.trim().slice(0, 200) || null }, { resetPage: true }), [patchParams]);
+  const commitProblemSearch = useCallback((value: string) => patchParams({ problem_search: value.trim().slice(0, 200) || null }, { resetPage: true }), [patchParams]);
+  const commitCommentSearch = useCallback((value: string) => patchParams({ comment_search: value.trim().slice(0, 200) || null }, { resetPage: true }), [patchParams]);
+  const commitIncidentNumber = useCallback((value: string) => patchParams({ incident_number: value.trim().toUpperCase().slice(0, 40) || null }, { resetPage: true }), [patchParams]);
 
   useEffect(() => {
     void fetchOneViewFacets()
@@ -622,11 +656,16 @@ export default function HistoricoPage() {
       const response = await fetchGlobalHistory({
         page,
         pageSize: historyPageSize,
-        customers: cliente === "all" ? [] : [cliente],
+        customers: clientes,
         datasources: fonte === "all" ? [] : [fonte],
         eventType,
         search: search || undefined,
-        actor: actor || undefined,
+        actors,
+        hostSearch: hostSearch || undefined,
+        problemSearch: problemSearch || undefined,
+        incidentNumber: incidentNumber || undefined,
+        commentSearch: commentSearch || undefined,
+        severities: eventSeverities,
         occurredFrom: bounds.from,
         occurredTo: bounds.to,
         sort: eventSort,
@@ -652,7 +691,7 @@ export default function HistoricoPage() {
         setHistorySearchLoading(false);
       }
     }
-  }, [actor, cliente, customRange, eventSort, eventType, fonte, historyPageSize, page, period, search, sortOrder]);
+  }, [actors, clientes, commentSearch, customRange, eventSeverities, eventSort, eventType, fonte, historyPageSize, hostSearch, page, period, problemSearch, search, sortOrder]);
 
   const loadAlerts = useCallback(async () => {
     alertsRequestRef.current?.abort();
@@ -677,7 +716,9 @@ export default function HistoricoPage() {
       let request = applyHistoryRiskPreset({
         page,
         pageSize: historyPageSize,
-        customers: cliente === "all" ? [] : [cliente],
+        customers: clientes,
+        hostSearch: hostSearch || undefined,
+        problemSearch: problemSearch || undefined,
         datasources: fonte === "all" ? [] : [fonte],
         severities: risk === "all" || risk === "no_ack" ? severities : undefined,
         status: risk === "all" || risk === "no_ack" ? alertStatus : undefined,
@@ -737,7 +778,7 @@ export default function HistoricoPage() {
         setHistorySearchLoading(false);
       }
     }
-  }, [ackFilter, alertSort, alertStatus, cliente, fonte, customRange, historyPageSize, page, period, recurrenceKey, risk, search, severities, sortOrder]);
+  }, [ackFilter, alertSort, alertStatus, clientes, fonte, customRange, historyPageSize, hostSearch, incidentNumber, page, period, problemSearch, recurrenceKey, risk, search, severities, sortOrder]);
 
   useEffect(() => {
     if (tab !== "eventos") return;
@@ -765,6 +806,43 @@ export default function HistoricoPage() {
     };
   }, [loadAlerts, loadEvents, tab]);
 
+  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal; preview?: OneViewAlert | null }) => {
+    if (options?.quiet && detailInFlightRef.current) return null;
+    if (!options?.quiet) detailRequestRef.current?.abort();
+    const controller = options?.signal ? null : new AbortController();
+    const signal = options?.signal ?? controller!.signal;
+    if (controller) detailRequestRef.current = controller;
+    const token = { id: alertId };
+    detailOwnerRef.current = token;
+    detailInFlightRef.current = true;
+    const preview = options?.preview;
+    if (!options?.quiet) {
+      setDetailLoading(true);
+      setDetailError(null);
+    }
+    try {
+      const results = await Promise.allSettled([
+        fetchAlert(alertId, signal),
+        fetchAlertHistory(alertId, signal),
+      ]);
+      if (signal.aborted) return null;
+      if (results[0].status === "fulfilled") setDetail(results[0].value.item);
+      else if (!options?.quiet && !preview) {
+        setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Não foi possível abrir o detalhe.");
+      }
+      if (results[1].status === "fulfilled") setDetailHistory(results[1].value.items ?? []);
+      if (!options?.quiet && results[0].status === "rejected" && results[1].status === "rejected" && !preview) {
+        setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Não foi possível abrir o detalhe.");
+      }
+      return results[0].status === "fulfilled" ? results[0].value.item : null;
+    } finally {
+      if (detailOwnerRef.current === token) {
+        detailInFlightRef.current = false;
+        if (!options?.quiet && !signal.aborted) setDetailLoading(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!selectedAlertId) {
       setDetail(null);
@@ -774,33 +852,21 @@ export default function HistoricoPage() {
     }
     const preview = alertItems.find((item) => item.id === selectedAlertId) || null;
     if (preview) setDetail((current) => current?.id === selectedAlertId ? current : preview);
-    detailRequestRef.current?.abort();
-    const controller = new AbortController();
-    detailRequestRef.current = controller;
-    setDetailLoading(true);
-    setDetailError(null);
-    void Promise.allSettled([
-      fetchAlert(selectedAlertId, controller.signal),
-      fetchAlertHistory(selectedAlertId, controller.signal),
-    ]).then((results) => {
-      if (controller.signal.aborted) return;
-      if (results[0].status === "fulfilled") {
-        setDetail(results[0].value.item);
-      } else if (!preview) {
-        setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Não foi possível abrir o detalhe.");
-      }
-      if (results[1].status === "fulfilled") {
-        setDetailHistory(results[1].value.items ?? []);
-      }
-      if (results[0].status === "rejected" && results[1].status === "rejected" && !preview) {
-        setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Não foi possível abrir o detalhe.");
-      }
-    }).finally(() => {
-      if (!controller.signal.aborted) setDetailLoading(false);
-    });
-    return () => controller.abort();
+    void loadSelectedAlert(selectedAlertId, { preview });
+    return () => detailRequestRef.current?.abort();
     // OV-P0-108 — não re-fetch em refresh da tabela (alertItems); só quando o alert ID muda.
   }, [selectedAlertId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useAlertDrawerLiveRefresh({
+    alertId: selectedAlertId,
+    alert: detail,
+    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    onTransition: (transition) => {
+      if (!shouldInvalidateAlertList(transition)) return;
+      invalidateOneViewReadCache("/oneview/alerts");
+      if (tab === "alertas") void loadAlerts();
+    },
+  });
 
   const groupedEvents = useMemo(() => {
     const groups: Array<{ key: string; label: string; items: GlobalHistoryItem[] }> = [];
@@ -983,9 +1049,14 @@ export default function HistoricoPage() {
       return fetchHistorySearchSuggestions({
         q,
         limit: 10,
-        customers: cliente === "all" ? [] : [cliente],
+        customers: clientes,
         datasources: fonte === "all" ? [] : [fonte],
         eventType,
+        actors,
+        hostSearch: hostSearch || undefined,
+        problemSearch: problemSearch || undefined,
+        commentSearch: commentSearch || undefined,
+        severities: eventSeverities,
         occurredFrom: bounds.from,
         occurredTo: bounds.to,
         signal,
@@ -994,14 +1065,44 @@ export default function HistoricoPage() {
     return fetchAlertSearchSuggestions({
       q,
       limit: 10,
-      customers: cliente === "all" ? [] : [cliente],
+      customers: clientes,
       datasources: fonte === "all" ? [] : [fonte],
       severities,
       status: alertStatus,
       acknowledgedSource: ackFilter === "all" ? undefined : ackFilter === "true",
       signal,
     }).then((response) => response.suggestions ?? []);
-  }, [ackFilter, alertStatus, cliente, customRange, eventType, fonte, period, severities, tab]);
+  }, [ackFilter, actors, alertStatus, clientes, commentSearch, customRange, eventSeverities, eventType, fonte, hostSearch, period, problemSearch, severities, tab]);
+
+  const fetchHistoryColumnSuggestions = useCallback((kind: "host" | "problem" | "actor" | "description") => (
+    q: string,
+    signal: AbortSignal,
+  ) => {
+    const bounds = periodBounds(period, customRange);
+    if (tab === "alertas") {
+      return fetchAlertSearchSuggestions({
+        q,
+        kind: kind === "description" ? "problem" : kind === "actor" ? "actor" : kind,
+        limit: 8,
+        customers: clientes,
+        datasources: fonte === "all" ? [] : [fonte],
+        severities,
+        status: alertStatus,
+        acknowledgedSource: ackFilter === "all" ? undefined : ackFilter === "true",
+        hostSearch: kind === "host" ? undefined : hostSearch || undefined,
+        problemSearch: kind === "problem" ? undefined : problemSearch || undefined,
+        signal,
+      }).then((response) => response.suggestions ?? []);
+    }
+    return fetchHistorySearchSuggestions({
+      q, kind, limit: 8, customers: clientes, datasources: fonte === "all" ? [] : [fonte], eventType,
+      actors: kind === "actor" ? [] : actors,
+      hostSearch: kind === "host" ? undefined : hostSearch || undefined,
+      problemSearch: kind === "problem" ? undefined : problemSearch || undefined,
+      commentSearch: kind === "description" ? undefined : commentSearch || undefined,
+      severities: eventSeverities, occurredFrom: bounds.from, occurredTo: bounds.to, signal,
+    }).then((response) => response.suggestions ?? []);
+  }, [ackFilter, actors, alertStatus, clientes, commentSearch, customRange, eventSeverities, eventType, fonte, hostSearch, period, problemSearch, severities, tab]);
 
   const pickHistoricoSearch = useCallback((value: string) => {
     cancelHistorySearch();
@@ -1018,12 +1119,12 @@ export default function HistoricoPage() {
         historySearchIntent.current = null;
         setHistorySearchLoading(false);
         setSearchDraft("");
-        patchParams({ customer: customerKey, search: null }, { resetPage: true });
+        patchParams({ customer: [...new Set([...clientes, customerKey])], search: null }, { resetPage: true });
         return;
       }
     }
     pickHistoricoSearch(suggestion.value);
-  }, [cancelHistorySearch, customerOptions, patchParams, pickHistoricoSearch]);
+  }, [cancelHistorySearch, clientes, customerOptions, patchParams, pickHistoricoSearch]);
 
   const applyHistorySort = useCallback((value: string) => {
     const [sort, order] = value.split(":");
@@ -1037,12 +1138,11 @@ export default function HistoricoPage() {
   }, [alertSort, eventSort, patchParams, sortOrder, tab]);
 
   const activeFilterChips: Array<{ key: string; label: string; onClear: () => void }> = [];
-  if (cliente !== "all") {
-    const customerLabel = customerOptions.find((customer) => customer.key === cliente)?.name || cliente;
+  for (const customerKey of clientes) {
     activeFilterChips.push({
-      key: "customer",
-      label: customerLabel,
-      onClear: () => changeFilter("customer", "all"),
+      key: `customer:${customerKey}`,
+      label: customerOptions.find((customer) => customer.key === customerKey)?.name || customerKey,
+      onClear: () => patchParams({ customer: clientes.filter((value) => value !== customerKey) }, { resetPage: true }),
     });
   }
   if (fonte !== "all") {
@@ -1118,16 +1218,24 @@ export default function HistoricoPage() {
         onClear: () => changeFilter("event_type", "actions"),
       });
     }
-    if (actor) {
+    for (const selectedActor of actors) {
       activeFilterChips.push({
-        key: "actor",
-        label: `Ator: ${actor}`,
+        key: `actor:${selectedActor}`,
+        label: `Ator: ${selectedActor}`,
         onClear: () => {
-          setActorDraft("");
-          patchParams({ actor: null }, { resetPage: true });
+          patchParams({ actor: actors.filter((value) => value !== selectedActor) }, { resetPage: true });
         },
       });
     }
+    if (hostSearch) activeFilterChips.push({ key: "host", label: `Host: ${hostSearch}`, onClear: () => commitHostSearch("") });
+    if (problemSearch) activeFilterChips.push({ key: "problem", label: `Problema: ${problemSearch}`, onClear: () => commitProblemSearch("") });
+    if (commentSearch) activeFilterChips.push({ key: "comment", label: `Comentário: ${commentSearch}`, onClear: () => commitCommentSearch("") });
+    for (const severity of eventSeverities) activeFilterChips.push({ key: `event-severity:${severity}`, label: formatOneViewSeverityLabel(severity), onClear: () => patchParams({ event_severity: eventSeverities.filter((value) => value !== severity) }, { resetPage: true }) });
+  }
+  if (tab === "alertas") {
+    if (hostSearch) activeFilterChips.push({ key: "host", label: `Host: ${hostSearch}`, onClear: () => commitHostSearch("") });
+    if (problemSearch) activeFilterChips.push({ key: "problem", label: `Problema: ${problemSearch}`, onClear: () => commitProblemSearch("") });
+    if (incidentNumber) activeFilterChips.push({ key: "incident", label: `Chamado: ${incidentNumber}`, onClear: () => commitIncidentNumber("") });
   }
   if (recurrenceKey) {
     activeFilterChips.push({
@@ -1141,7 +1249,7 @@ export default function HistoricoPage() {
     ? Number(fonte !== "all") + (risk === "all"
       ? Number(severities.length > 0) + Number(alertStatus !== "all") + Number(ackFilter !== "all")
       : 0)
-    : Number(fonte !== "all") + Number(eventType !== "actions") + Number(Boolean(actor));
+    : Number(fonte !== "all") + Number(eventType !== "actions") + Number(actors.length > 0) + Number(Boolean(hostSearch)) + Number(Boolean(problemSearch)) + Number(Boolean(commentSearch)) + Number(eventSeverities.length > 0);
 
   const activeFiltersContent = activeFilterChips.length ? (
     <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3" aria-label="Filtros ativos">
@@ -1160,6 +1268,35 @@ export default function HistoricoPage() {
       <OneViewTextAction onClick={clearFilters}>Limpar todos</OneViewTextAction>
     </div>
   ) : null;
+
+  const fetchHistoryIncidentSuggestions = (q: string, signal: AbortSignal) => fetchAlertSearchSuggestions({
+    q, kind: "number", limit: 8, customers: clientes, datasources: fonte === "all" ? [] : [fonte],
+    severities, status: alertStatus, acknowledgedSource: ackFilter === "all" ? undefined : ackFilter === "true",
+    hostSearch: hostSearch || undefined, problemSearch: problemSearch || undefined, signal,
+  }).then((response) => response.suggestions ?? []);
+
+  const historyAlertColumnFilter = (column: HistoryAlertColumnId) => {
+    if (column === "client") return <OneViewColumnFilterPopover label="Filtrar clientes" activeCount={clientes.length}><OperationalFacetChecklist options={customerOptions.map((customer) => ({ value: customer.key, label: customer.name }))} selectedValues={clientes} onChange={(values) => patchParams({ customer: values }, { resetPage: true })} allLabel="Todos" searchPlaceholder="Buscar cliente..." /></OneViewColumnFilterPopover>;
+    if (column === "severity") return <OneViewColumnFilterPopover label="Filtrar severidade" activeCount={severities.length}><OperationalFacetChecklist options={ONEVIEW_V1_FILTER_SEVERITIES.map((value) => ({ value, label: formatOneViewSeverityLabel(value) }))} selectedValues={severities} onChange={(values) => patchParams({ severity: values, risk: "all" }, { resetPage: true })} allLabel="Todas" searchPlaceholder="Buscar severidade..." /></OneViewColumnFilterPopover>;
+    if (column === "host") return <OneViewColumnFilterPopover label="Filtrar host" kind="search" activeCount={hostSearch ? 1 : 0}><OneViewTableSearchField value={hostDraft} onChange={setHostDraft} onSubmit={commitHostSearch} onSuggestionSelect={(item) => item.kind === "host" && commitHostSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("host")} placeholder="Pesquisar host..." ariaLabel="Filtrar host" normalizeInc={false} className="w-full" />{hostSearch ? <OneViewTextAction className="mt-2 text-xs" onClick={() => commitHostSearch("")}>Limpar</OneViewTextAction> : null}</OneViewColumnFilterPopover>;
+    if (column === "problem") return <OneViewColumnFilterPopover label="Filtrar problema" kind="search" activeCount={problemSearch ? 1 : 0}><OneViewTableSearchField value={problemDraft} onChange={setProblemDraft} onSubmit={commitProblemSearch} onSuggestionSelect={(item) => item.kind === "problem" && commitProblemSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("problem")} placeholder="Pesquisar problema..." ariaLabel="Filtrar problema" normalizeInc={false} className="w-full" />{problemSearch ? <OneViewTextAction className="mt-2 text-xs" onClick={() => commitProblemSearch("")}>Limpar</OneViewTextAction> : null}</OneViewColumnFilterPopover>;
+    if (column === "started") return <OneViewColumnFilterPopover label="Filtrar período" activeCount={period === "all" ? 0 : 1}><Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></OneViewColumnFilterPopover>;
+    if (column === "ack") return <OneViewColumnFilterPopover label="Filtrar ACK" activeCount={ackFilter === "all" ? 0 : 1}><OperationalFacetChecklist options={ACK_FILTERS.filter((item) => item.value !== "all")} selectedValues={ackFilter === "all" ? [] : [ackFilter]} onChange={(values) => changeFilter("acknowledged_source", values.length === 1 ? values[0] : "all")} allLabel="Todos" searchPlaceholder="Buscar ACK..." /></OneViewColumnFilterPopover>;
+    if (column === "incident") return <OneViewColumnFilterPopover label="Filtrar chamado" kind="search" activeCount={incidentNumber ? 1 : 0}><OneViewTableSearchField value={incidentNumberDraft} onChange={(value) => setIncidentNumberDraft(value.toUpperCase())} onSubmit={commitIncidentNumber} onSuggestionSelect={(item) => item.kind === "number" && commitIncidentNumber(item.value)} fetchSuggestions={fetchHistoryIncidentSuggestions} placeholder="Pesquisar INC..." ariaLabel="Filtrar chamado" className="w-full" />{incidentNumber ? <OneViewTextAction className="mt-2 text-xs" onClick={() => commitIncidentNumber("")}>Limpar</OneViewTextAction> : null}</OneViewColumnFilterPopover>;
+    if (column === "status") return <OneViewColumnFilterPopover label="Filtrar estado" activeCount={alertStatus === "all" ? 0 : 1} align="end"><OperationalFacetChecklist options={ALERT_STATUS_FILTERS.filter((item) => item.value !== "all")} selectedValues={alertStatus === "all" ? [] : [alertStatus]} onChange={(values) => changeFilter("status", values.length === 1 ? values[0] : "all")} allLabel="Todos" searchPlaceholder="Buscar estado..." /></OneViewColumnFilterPopover>;
+    return null;
+  };
+
+  const historyEventColumnFilter = (column: HistoryEventColumnId) => {
+    if (column === "client") return <OneViewColumnFilterPopover label="Filtrar clientes" activeCount={clientes.length}><OperationalFacetChecklist options={customerOptions.map((customer) => ({ value: customer.key, label: customer.name }))} selectedValues={clientes} onChange={(values) => patchParams({ customer: values }, { resetPage: true })} allLabel="Todos" searchPlaceholder="Buscar cliente..." /></OneViewColumnFilterPopover>;
+    if (column === "host") return <OneViewColumnFilterPopover label="Filtrar host" kind="search" activeCount={hostSearch ? 1 : 0}><OneViewTableSearchField value={hostDraft} onChange={setHostDraft} onSubmit={commitHostSearch} onSuggestionSelect={(item) => item.kind === "host" && commitHostSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("host")} placeholder="Pesquisar host..." ariaLabel="Filtrar host" normalizeInc={false} className="w-full" /></OneViewColumnFilterPopover>;
+    if (column === "problem") return <OneViewColumnFilterPopover label="Filtrar problema" kind="search" activeCount={problemSearch ? 1 : 0}><OneViewTableSearchField value={problemDraft} onChange={setProblemDraft} onSubmit={commitProblemSearch} onSuggestionSelect={(item) => item.kind === "problem" && commitProblemSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("problem")} placeholder="Pesquisar problema..." ariaLabel="Filtrar problema" normalizeInc={false} className="w-full" /></OneViewColumnFilterPopover>;
+    if (column === "actor") return <OneViewColumnFilterPopover label="Filtrar atores" kind="search" activeCount={actors.length}><OneViewTableSearchField value={actorDraft} onChange={setActorDraft} onSubmit={commitHistoryActor} onSuggestionSelect={(item) => item.kind === "actor" && commitHistoryActor(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("actor")} placeholder="Adicionar ator..." ariaLabel="Filtrar atores" normalizeInc={false} className="w-full" /><OperationalFacetChecklist options={actors.map((value) => ({ value, label: value }))} selectedValues={actors} onChange={(values) => patchParams({ actor: values }, { resetPage: true })} allLabel="Todos" searchPlaceholder="Selecionados..." /></OneViewColumnFilterPopover>;
+    if (column === "comment") return <OneViewColumnFilterPopover label="Filtrar comentário" kind="search" activeCount={commentSearch ? 1 : 0}><OneViewTableSearchField value={commentDraft} onChange={setCommentDraft} onSubmit={commitCommentSearch} onSuggestionSelect={(item) => item.kind === "description" && commitCommentSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("description")} placeholder="Pesquisar comentário..." ariaLabel="Filtrar comentário" normalizeInc={false} className="w-full" /></OneViewColumnFilterPopover>;
+    if (column === "occurred") return <OneViewColumnFilterPopover label="Filtrar período" activeCount={period === "all" ? 0 : 1}><Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></OneViewColumnFilterPopover>;
+    if (column === "severity") return <OneViewColumnFilterPopover label="Filtrar severidade" activeCount={eventSeverities.length} align="end"><OperationalFacetChecklist options={ONEVIEW_V1_FILTER_SEVERITIES.map((value) => ({ value, label: formatOneViewSeverityLabel(value) }))} selectedValues={eventSeverities} onChange={(values) => patchParams({ event_severity: values }, { resetPage: true })} allLabel="Todas" searchPlaceholder="Buscar severidade..." /></OneViewColumnFilterPopover>;
+    return null;
+  };
 
   return (
     <AppLayout
@@ -1360,11 +1497,16 @@ export default function HistoricoPage() {
                 onSearchSuggestionPick={pickHistoricoSuggestion}
                 localSearchSuggestions={localCustomerSearchSuggestions}
                 getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
-                isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && cliente === suggestion.customer_key}
+                isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && clientes.includes(suggestion.customer_key!)}
                 onSearchSubmit={(value) => commitHistorySearchNow(value)}
                 searchPlaceholder="Buscar host, problema ou cliente…"
                 searchLabel="Buscar na tabela do histórico de alertas"
                 columns={historyAlertColumns}
+                responsiveColumns={{
+                  autoHiddenCount: historyAlertTableLayout.autoHiddenColumns.length,
+                  showAllColumns: historyAlertTableLayout.showAllColumns,
+                  onShowAllColumnsChange: historyAlertTableLayout.setShowAllColumns,
+                }}
                 searchActivity={historySearchActivity}
                 searchActivityQuery={search}
                 activeFilterCount={activeFilterChips.length}
@@ -1377,13 +1519,16 @@ export default function HistoricoPage() {
                 }}
                 filters={(
                   <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
-                    <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Cliente<OperationalFacetMultiSelect label="Cliente" options={customerOptions.map((customer) => ({ value: customer.key, label: customer.name }))} selectedValues={clientes} onChange={(values) => patchParams({ customer: values }, { resetPage: true })} allLabel="Todos os clientes" searchPlaceholder="Buscar cliente..." /></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Risco<Select value={risk} onValueChange={(value) => applyRiskPreset(value as HistoryRiskPreset)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{HISTORY_RISK_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={zabbixSourceFilterOptions} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
                     <label className="space-y-1 text-xs text-muted-foreground">Severidade<OperationalFacetMultiSelect label="Severidade" options={ONEVIEW_V1_FILTER_SEVERITIES.map((value) => ({ value, label: formatOneViewSeverityLabel(value) }))} selectedValues={severities} onChange={(values) => patchParams({ severity: values, risk: "all" }, { resetPage: true })} allLabel="Todas" searchPlaceholder="Buscar severidade..." /></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Estado<Select value={alertStatus} onValueChange={(value) => changeFilter("status", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ALERT_STATUS_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <label className="space-y-1 text-xs text-muted-foreground">ACK<Select value={ackFilter} onValueChange={(value) => changeFilter("acknowledged_source", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{ACK_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Host<OneViewTableSearchField value={hostDraft} onChange={setHostDraft} onSubmit={commitHostSearch} onSuggestionSelect={(item) => item.kind === "host" && commitHostSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("host")} placeholder="Pesquisar host..." ariaLabel="Filtrar host" normalizeInc={false} className="w-full" /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Problema<OneViewTableSearchField value={problemDraft} onChange={setProblemDraft} onSubmit={commitProblemSearch} onSuggestionSelect={(item) => item.kind === "problem" && commitProblemSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("problem")} placeholder="Pesquisar problema..." ariaLabel="Filtrar problema" normalizeInc={false} className="w-full" /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Chamado<OneViewTableSearchField value={incidentNumberDraft} onChange={(value) => setIncidentNumberDraft(value.toUpperCase())} onSubmit={commitIncidentNumber} onSuggestionSelect={(item) => item.kind === "number" && commitIncidentNumber(item.value)} fetchSuggestions={fetchHistoryIncidentSuggestions} placeholder="Pesquisar INC..." ariaLabel="Filtrar chamado" className="w-full" /></label>
                     {period === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={customRange} onSelect={applyCustomRange} /></div> : null}
                   </div>
                 )}
@@ -1395,14 +1540,17 @@ export default function HistoricoPage() {
                   <Skeleton className="h-10 w-full" />
                 </div>
               ) : alertItems.length ? (
-                <div className="overflow-x-auto">
-                  <Table className={cn("ov-operational-table table-fixed", historyAlertColumns.visibleColumns.length > 6 && "min-w-[70rem]")}>
+                <div ref={historyAlertTableLayout.containerRef} className="ov-operational-responsive overflow-x-auto">
+                  <Table className="ov-operational-table w-full table-fixed" style={{ minWidth: `${historyAlertTableLayout.minimumTableWidth}px` }}>
+                    <colgroup>
+                      {historyAlertTableLayout.visibleColumns.map((column) => <col key={column.id} style={{ width: `${operationalColumnPreferredWidth(column)}px` }} />)}
+                    </colgroup>
                     <TableHeader>
                       <TableRow>
-                        {historyAlertColumns.visibleColumns.map((column) => {
+                        {historyAlertTableLayout.visibleColumns.map((column) => {
                           const field = HISTORY_ALERT_COLUMN_SORT[column.id];
                           const active = field === alertSort;
-                          return <TableHead key={column.id} aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined} className="ov-type-caption overflow-visible font-semibold">{field ? <OneViewSortableHeader label={column.label} active={active} direction={sortOrder} onClick={() => toggleHistorySort(field)} /> : column.label}</TableHead>;
+                          return <TableHead key={column.id} aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined} className="ov-type-caption overflow-visible font-semibold"><OneViewFilterableHeader label={column.label} active={active} direction={sortOrder} onSort={field ? () => toggleHistorySort(field) : undefined} filter={historyAlertColumnFilter(column.id)} /></TableHead>;
                         })}
                       </TableRow>
                     </TableHeader>
@@ -1427,13 +1575,16 @@ export default function HistoricoPage() {
                               }
                             }}
                           >
-                            {historyAlertColumns.visibleColumns.map((column) => {
+                            {historyAlertTableLayout.visibleColumns.map((column) => {
                               if (column.id === "client") return <TableCell key={column.id} className="max-w-[12rem]"><ClientIdentity customer={{ key: alert.customer_key, name: alert.customer_name, source: alert.customer_source, operational_scope: alert.operational_scope, operational_scope_label: alert.operational_scope_label }} operationalScope={alert.operational_scope} operationalScopeLabel={historyEventClientLabel({ key: alert.customer_key, name: alert.customer_name, operational_scope: alert.operational_scope, operational_scope_label: alert.operational_scope_label })} showName nameClassName="truncate ov-type-body" /></TableCell>;
                               if (column.id === "severity") return <TableCell key={column.id}><SeverityBadge severity={alert.severity} /></TableCell>;
                               if (column.id === "host") return <TableCell key={column.id} className="max-w-[12rem] truncate ov-type-body font-semibold">{canonicalHostName(alert)}</TableCell>;
                               if (column.id === "problem") return <TableCell key={column.id} className="max-w-[18rem] truncate">{alert.problem_name || "Problema não informado"}</TableCell>;
                               if (column.id === "started") return <TableCell key={column.id} className="whitespace-nowrap ov-type-caption text-muted-foreground">{formatWhen(alert.first_seen_at)}</TableCell>;
-                              if (column.id === "ack") return <TableCell key={column.id} className="max-w-[10rem]">{ackActor ? <div className="min-w-0"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" />{ackActor !== "Reconhecido" ? <p className="mt-1 truncate ov-type-caption font-semibold">{ackActor}</p> : null}{ackAt ? <p className="mt-0.5 truncate ov-type-caption text-muted-foreground">{formatWhen(ackAt)}</p> : null}</div> : <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />}</TableCell>;
+                              if (column.id === "ack") {
+                                const originAck = sourceAckRowKind(alert);
+                                return <TableCell key={column.id} className="max-w-[10rem]">{originAck === "acknowledged" ? <div className="min-w-0"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" />{ackActor && ackActor !== "Reconhecido" ? <p className="mt-1 truncate ov-type-caption font-semibold">{ackActor}</p> : null}{ackAt ? <p className="mt-0.5 truncate ov-type-caption text-muted-foreground">{formatWhen(ackAt)}</p> : null}</div> : <OneViewSemanticStatusBadge status={sourceAckRowBadgeStatus(originAck)} label={sourceAckRowLabel(originAck)} />}</TableCell>;
+                              }
                               if (column.id === "incident") return <TableCell key={column.id} className="max-w-[9rem]"><AlertServiceNowReferenceCell reference={alert.servicenow_reference} /></TableCell>;
                               return <TableCell key={column.id}><OneViewSemanticStatusBadge status={alertStatusLabel(alert) === "Ativo" ? "monitoring-down" : "monitoring-normalized"} label={alertStatusLabel(alert)} /></TableCell>;
                             })}
@@ -1594,13 +1745,16 @@ export default function HistoricoPage() {
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="historico-ator">Ator</Label>
-                    <Input
-                      id="historico-ator"
-                      className="ov-control-official h-9"
-                      aria-label="Filtrar por ator"
-                      placeholder="Buscar ator"
+                    <OneViewTableSearchField
                       value={actorDraft}
-                      onChange={(event) => setActorDraft(event.target.value)}
+                      onChange={setActorDraft}
+                      onSubmit={commitHistoryActor}
+                      onSuggestionSelect={(item) => item.kind === "actor" && commitHistoryActor(item.value)}
+                      fetchSuggestions={fetchHistoryColumnSuggestions("actor")}
+                      placeholder="Adicionar ator..."
+                      ariaLabel="Filtrar por ator"
+                      normalizeInc={false}
+                      className="w-full"
                     />
                   </div>
                 </div>
@@ -1629,11 +1783,16 @@ export default function HistoricoPage() {
                 onSearchSuggestionPick={pickHistoricoSuggestion}
                 localSearchSuggestions={localCustomerSearchSuggestions}
                 getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
-                isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && cliente === suggestion.customer_key}
+                isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && clientes.includes(suggestion.customer_key!)}
                 onSearchSubmit={(value) => commitHistorySearchNow(value)}
                 searchPlaceholder="Buscar evento, host, cliente ou ator…"
                 searchLabel="Buscar na tabela do histórico de eventos"
                 columns={historyEventColumns}
+                responsiveColumns={{
+                  autoHiddenCount: historyEventTableLayout.autoHiddenColumns.length,
+                  showAllColumns: historyEventTableLayout.showAllColumns,
+                  onShowAllColumnsChange: historyEventTableLayout.setShowAllColumns,
+                }}
                 searchActivity={historySearchActivity}
                 searchActivityQuery={search}
                 activeFilterCount={activeFilterChips.length}
@@ -1646,11 +1805,15 @@ export default function HistoricoPage() {
                 }}
                 filters={(
                   <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
-                    <label className="space-y-1 text-xs text-muted-foreground">Cliente<Select value={cliente} onValueChange={(value) => changeFilter("customer", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos os clientes</SelectItem>{customerOptions.map((customer) => <SelectItem key={customer.key} value={customer.key}>{customer.name}</SelectItem>)}</SelectContent></Select></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Cliente<OperationalFacetMultiSelect label="Cliente" options={customerOptions.map((customer) => ({ value: customer.key, label: customer.name }))} selectedValues={clientes} onChange={(values) => patchParams({ customer: values }, { resetPage: true })} allLabel="Todos os clientes" searchPlaceholder="Buscar cliente..." /></label>
                     <label className="space-y-1 text-xs text-muted-foreground">Período<Select value={period} onValueChange={(value) => changeFilter("period", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{PERIOD_PRESETS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
                     <div className="space-y-1 text-xs text-muted-foreground">Fonte Zabbix<ZabbixSourceFilter value={fonte} options={zabbixSourceFilterOptions} onValueChange={(value) => changeFilter("datasource", value)} triggerClassName="w-full" /></div>
                     <label className="space-y-1 text-xs text-muted-foreground">Tipo de evento<Select value={eventType} onValueChange={(value) => changeFilter("event_type", value)}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{EVENT_TYPE_FILTERS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></label>
-                    <label className="space-y-1 text-xs text-muted-foreground">Ator<Input className="h-9" aria-label="Filtrar por ator" placeholder="Buscar ator" value={actorDraft} onChange={(event) => setActorDraft(event.target.value)} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Ator<OneViewTableSearchField value={actorDraft} onChange={setActorDraft} onSubmit={commitHistoryActor} onSuggestionSelect={(item) => item.kind === "actor" && commitHistoryActor(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("actor")} placeholder="Adicionar ator..." ariaLabel="Filtrar atores" normalizeInc={false} className="w-full" /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Host<OneViewTableSearchField value={hostDraft} onChange={setHostDraft} onSubmit={commitHostSearch} onSuggestionSelect={(item) => item.kind === "host" && commitHostSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("host")} placeholder="Pesquisar host..." ariaLabel="Filtrar host" normalizeInc={false} className="w-full" /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Problema<OneViewTableSearchField value={problemDraft} onChange={setProblemDraft} onSubmit={commitProblemSearch} onSuggestionSelect={(item) => item.kind === "problem" && commitProblemSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("problem")} placeholder="Pesquisar problema..." ariaLabel="Filtrar problema" normalizeInc={false} className="w-full" /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Comentário<OneViewTableSearchField value={commentDraft} onChange={setCommentDraft} onSubmit={commitCommentSearch} onSuggestionSelect={(item) => item.kind === "description" && commitCommentSearch(item.value)} fetchSuggestions={fetchHistoryColumnSuggestions("description")} placeholder="Pesquisar comentário..." ariaLabel="Filtrar comentário" normalizeInc={false} className="w-full" /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Severidade<OperationalFacetMultiSelect label="Severidade" options={ONEVIEW_V1_FILTER_SEVERITIES.map((value) => ({ value, label: formatOneViewSeverityLabel(value) }))} selectedValues={eventSeverities} onChange={(values) => patchParams({ event_severity: values }, { resetPage: true })} allLabel="Todas" searchPlaceholder="Buscar severidade..." /></label>
                     {period === "custom" ? <div className="sm:col-span-2 lg:col-span-3"><Calendar mode="range" numberOfMonths={1} locale={ptBR} selected={customRange} onSelect={applyCustomRange} /></div> : null}
                   </div>
                 )}
@@ -1663,14 +1826,17 @@ export default function HistoricoPage() {
                   <Skeleton className="h-16 w-full" />
                 </div>
               ) : eventItems.length ? (
-                  <div className="overflow-x-auto">
-                    <Table className={cn("ov-operational-table table-fixed", historyEventColumns.visibleColumns.length > 5 && "min-w-[64rem]")}>
+                  <div ref={historyEventTableLayout.containerRef} className="ov-operational-responsive overflow-x-auto">
+                    <Table className="ov-operational-table w-full table-fixed" style={{ minWidth: `${historyEventTableLayout.minimumTableWidth}px` }}>
+                      <colgroup>
+                        {historyEventTableLayout.visibleColumns.map((column) => <col key={column.id} style={{ width: `${operationalColumnPreferredWidth(column)}px` }} />)}
+                      </colgroup>
                       <TableHeader>
                         <TableRow>
-                          {historyEventColumns.visibleColumns.map((column) => {
+                          {historyEventTableLayout.visibleColumns.map((column) => {
                             const field = HISTORY_EVENT_COLUMN_SORT[column.id];
                             const active = field === eventSort;
-                            return <TableHead key={column.id} aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined} className="ov-type-caption overflow-visible font-semibold">{field ? <OneViewSortableHeader label={column.label} active={active} direction={sortOrder} onClick={() => toggleHistorySort(field)} /> : column.label}</TableHead>;
+                            return <TableHead key={column.id} aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined} className="ov-type-caption overflow-visible font-semibold"><OneViewFilterableHeader label={column.label} active={active} direction={sortOrder} onSort={field ? () => toggleHistorySort(field) : undefined} filter={historyEventColumnFilter(column.id)} /></TableHead>;
                           })}
                         </TableRow>
                       </TableHeader>
@@ -1693,7 +1859,7 @@ export default function HistoricoPage() {
                                 }
                               }}
                             >
-                              {historyEventColumns.visibleColumns.map((column) => {
+                              {historyEventTableLayout.visibleColumns.map((column) => {
                                 if (column.id === "client") return <TableCell key={column.id} className="max-w-[12rem]"><ClientIdentity customer={{ key: item.customer_key, name: item.customer_name, operational_scope: item.operational_scope, operational_scope_label: item.operational_scope_label }} operationalScope={item.operational_scope} operationalScopeLabel={item.operational_scope_label || historyEventClientLabel(item)} showName nameClassName="truncate ov-type-body" /></TableCell>;
                                 if (column.id === "host") return <TableCell key={column.id} className="max-w-[12rem] truncate">{canonicalHostName(item)}</TableCell>;
                                 if (column.id === "problem") return <TableCell key={column.id} className="max-w-[16rem] truncate">{item.problem_name || "Problema não informado"}</TableCell>;

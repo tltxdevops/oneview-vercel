@@ -33,6 +33,7 @@ import { useToast } from "@/hooks/use-toast";
 import { AlertArtifactCard } from "@/components/oneview/AlertArtifactCard";
 import {
   OneViewApiError,
+  fetchIncidentDetail,
   fetchServiceNowOperatorIdentity,
   fetchServiceNowPutOnHoldOptions,
   requestServiceNowIncidentAlertAttachment,
@@ -54,10 +55,13 @@ type ClaimableIncident = {
   identity_conflict?: boolean;
 };
 
+export type IncidentTableActionId = "claim" | "work_note" | "put_on_hold" | "attach_alert";
+
 type Props = {
   incident: ClaimableIncident;
   alertArtifact?: AlertArtifactModel | null;
   placement?: "inline" | "drawer-footer" | "table-cell";
+  visibleActions?: readonly IncidentTableActionId[];
   onClaimed?: (result: ServiceNowIncidentClaimResponse) => void;
   onWorkNoteAdded?: () => void;
   onAttachmentAdded?: () => void;
@@ -77,6 +81,7 @@ export function IncidentActions({
   incident,
   alertArtifact = null,
   placement = "inline",
+  visibleActions,
   onClaimed,
   onWorkNoteAdded,
   onAttachmentAdded,
@@ -100,6 +105,16 @@ export function IncidentActions({
   const [holdConfirmOpen, setHoldConfirmOpen] = useState(false);
   const [holdError, setHoldError] = useState<string | null>(null);
   const [holdOptionsError, setHoldOptionsError] = useState<string | null>(null);
+  const [holdOptionsLoading, setHoldOptionsLoading] = useState(false);
+  const [resolvedState, setResolvedState] = useState<string | null>(null);
+  const [resolvingState, setResolvingState] = useState(false);
+  const holdOptionsControllerRef = useRef<AbortController | null>(null);
+  const showClaim = !visibleActions || visibleActions.includes("claim");
+  const showWorkNote = !visibleActions || visibleActions.includes("work_note");
+  const showHold = !visibleActions || visibleActions.includes("put_on_hold");
+  const showAttach = !visibleActions || visibleActions.includes("attach_alert");
+  const useActionMenu = visibleActions == null;
+  const hasVisibleIncidentAction = showClaim || showWorkNote || showHold || showAttach;
 
   useEffect(() => {
     if (incident.identity_conflict) {
@@ -122,6 +137,8 @@ export function IncidentActions({
     setHoldVendors([]);
     setHoldVendor("");
     setHoldOptionsError(null);
+    setResolvedState(null);
+    setResolvingState(false);
     void fetchServiceNowOperatorIdentity(controller.signal)
       .then(setIdentity)
       .catch((error: unknown) => {
@@ -129,26 +146,42 @@ export function IncidentActions({
           setIdentityError(error instanceof Error ? error.message : "Ação indisponível temporariamente.");
         }
       });
-    void fetchServiceNowPutOnHoldOptions(controller.signal)
-      .then((options) => {
-        if (controller.signal.aborted) return;
-        const vendors = options.external_vendors
-          .map((vendor) => vendor.trim())
-          .filter(Boolean);
-        setHoldVendors(vendors);
-        setHoldReasonLabel(options.hold_reason_label || "Aguardando fornecedor");
-        setHoldVendor(vendors[0] || "");
-        setHoldOptionsError(vendors.length ? null : "Nenhum fornecedor homologado foi retornado pelo ServiceNow.");
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setHoldVendors([]);
-          setHoldVendor("");
-          setHoldOptionsError("Não foi possível carregar os fornecedores do ServiceNow. Tente novamente mais tarde.");
-        }
-      });
     return () => controller.abort();
   }, [incident.identity_conflict, incident.sys_id]);
+
+  useEffect(() => () => holdOptionsControllerRef.current?.abort(), []);
+
+  async function loadHoldOptions() {
+    if (holdOptionsLoading) return false;
+    holdOptionsControllerRef.current?.abort();
+    const controller = new AbortController();
+    holdOptionsControllerRef.current = controller;
+    setHoldOptionsLoading(true);
+    setHoldOptionsError(null);
+    try {
+      const options = await fetchServiceNowPutOnHoldOptions(controller.signal);
+      if (controller.signal.aborted) return false;
+      const vendors = options.external_vendors.map((vendor) => vendor.trim()).filter(Boolean);
+      setHoldVendors(vendors);
+      setHoldReasonLabel(options.hold_reason_label || "Aguardando fornecedor");
+      setHoldVendor(vendors[0] || "");
+      if (!vendors.length) {
+        setHoldOptionsError("Nenhum fornecedor homologado foi retornado pelo ServiceNow.");
+        return false;
+      }
+      return true;
+    } catch {
+      if (!controller.signal.aborted) {
+        setHoldVendors([]);
+        setHoldVendor("");
+        setHoldOptionsError("Não foi possível carregar os fornecedores do ServiceNow. Tente novamente mais tarde.");
+      }
+      return false;
+    } finally {
+      if (holdOptionsControllerRef.current === controller) holdOptionsControllerRef.current = null;
+      if (!controller.signal.aborted) setHoldOptionsLoading(false);
+    }
+  }
 
   async function claim(confirmReassign = false) {
     if (!incident.sys_id || submitting) return;
@@ -239,8 +272,36 @@ export function IncidentActions({
     }
   }
 
-  function openHoldSetup() {
-    if (holdOptionsError || !holdVendors.length) return;
+  async function resolveIncidentState() {
+    const known = String(resolvedState ?? (incident.state || "")).trim();
+    if (known) return known;
+    if (!incident.sys_id || resolvingState) return "";
+    setResolvingState(true);
+    try {
+      const detail = await fetchIncidentDetail(incident.sys_id);
+      const next = String(detail.state || "").trim();
+      setResolvedState(next);
+      return next;
+    } catch {
+      setActionError("Não foi possível consultar o estado do chamado.");
+      return "";
+    } finally {
+      setResolvingState(false);
+    }
+  }
+
+  async function openHoldSetup() {
+    if (submitting || holdOptionsLoading || resolvingState || !identity?.available || !incident.sys_id) return;
+    const state = await resolveIncidentState();
+    if (!PUT_ON_HOLD_ALLOWED_STATES.has(state)) {
+      setHoldError(state === "3"
+        ? "Chamado já está em espera."
+        : state
+          ? "Somente chamados novos ou em andamento podem ser colocados em espera."
+          : "Não foi possível consultar o estado do chamado.");
+      return;
+    }
+    if (!holdVendors.length && !await loadHoldOptions()) return;
     setHoldError(null);
     if (!holdVendor && holdVendors[0]) setHoldVendor(holdVendors[0]);
     setHoldSetupOpen(true);
@@ -257,7 +318,7 @@ export function IncidentActions({
   }
 
   async function putOnHold() {
-    const state = String(incident.state || "").trim();
+    const state = String(resolvedState ?? (incident.state || "")).trim();
     if (!incident.sys_id || !PUT_ON_HOLD_ALLOWED_STATES.has(state) || holdOptionsError || !holdVendor || !holdVendors.includes(holdVendor) || submitting) return;
     setSubmitting(true);
     setHoldError(null);
@@ -288,32 +349,42 @@ export function IncidentActions({
   const canClaim = Boolean(identity?.available && identity.noc_member && incident.sys_id && !assignedToSelf);
   const canAddWorkNote = Boolean(identity?.available && incident.sys_id);
   const canAttachAlert = Boolean(identity?.available && incident.sys_id && alertArtifact);
-  const incidentState = String(incident.state || "").trim();
+  const incidentState = String(resolvedState ?? (incident.state || "")).trim();
+  const stateUnknown = !incidentState;
   const holdStateAllowed = PUT_ON_HOLD_ALLOWED_STATES.has(incidentState);
   const onHoldAlready = incidentState === "3";
+  const canStartPutOnHold = Boolean(identity?.available && incident.sys_id && holdStateAllowed);
   const canPutOnHold = Boolean(identity?.available && incident.sys_id && holdStateAllowed && !holdOptionsError && holdVendors.length > 0);
+  const canResolveHoldState = Boolean(identity?.available && incident.sys_id && stateUnknown);
   const disabledReason = identityUnavailableMessage(identity, identityError);
   const attachDisabledReason = !alertArtifact
     ? "Não há alerta relacionado a este chamado."
     : disabledReason;
-  const holdDisabledReason = onHoldAlready
+  const holdDisabledReason = stateUnknown
+      ? "Consulta o estado do chamado ao clicar."
+      : onHoldAlready
       ? "Chamado já está em espera."
       : !holdStateAllowed
         ? "Somente chamados novos ou em andamento podem ser colocados em espera."
-        : holdOptionsError
-          ? holdOptionsError
+        : holdOptionsLoading || resolvingState
+          ? "Carregando fornecedores homologados..."
+          : holdOptionsError
+          ? `${holdOptionsError} Selecione novamente para tentar.`
           : !holdVendors.length
         ? "Nenhum fornecedor homologado disponível."
         : disabledReason;
   const moreActionsDisabled = submitting || (!identity && !identityError);
-  const holdMenuDisabled = !canPutOnHold || submitting;
+  const holdMenuDisabled = (!canStartPutOnHold && !canResolveHoldState) || submitting || holdOptionsLoading || resolvingState;
+
+  const isTableCell = placement === "table-cell";
 
   if (!incident.sys_id || !incident.number) return null;
+  if (!hasVisibleIncidentAction) return null;
   if (incident.identity_conflict) {
     return (
-      <p className="text-xs text-destructive">
-        Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.
-      </p>
+      isTableCell
+        ? <span className="inline-grid h-7 w-7 place-items-center rounded text-xs font-bold text-destructive" title="Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis." aria-label="Ações indisponíveis por inconsistência de identidade">!</span>
+        : <p className="text-xs text-destructive">Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.</p>
     );
   }
   if (!identity && !identityError) {
@@ -330,8 +401,6 @@ export function IncidentActions({
     );
   }
 
-  const isTableCell = placement === "table-cell";
-
   const rootClassName = placement === "drawer-footer"
     ? "space-y-2"
     : isTableCell
@@ -340,6 +409,7 @@ export function IncidentActions({
 
   const buttonClass = isTableCell ? "h-7 w-7 shrink-0 p-0" : undefined;
   const buttonVariant = isTableCell ? "ghost" : "secondary";
+  const tableActionError = isTableCell ? actionError || holdOptionsError || holdError : null;
 
   const moreActionsTrigger = isTableCell ? (
     <Button
@@ -390,7 +460,7 @@ export function IncidentActions({
           onSelect={(event) => {
             event.preventDefault();
             if (holdMenuDisabled) return;
-            openHoldSetup();
+            void openHoldSetup();
           }}
         >
           <Clock3 className="h-4 w-4" aria-hidden="true" />
@@ -442,13 +512,45 @@ export function IncidentActions({
     </Button>
   );
 
-  function withTooltip(node: ReactNode, label: string, showDisabledReason: boolean) {
+  const holdButton = (
+    <Button
+      type="button"
+      size={isTableCell ? "icon" : "sm"}
+      variant={buttonVariant}
+      className={buttonClass}
+      disabled={holdMenuDisabled}
+      aria-label="Colocar em espera"
+      onClick={() => void openHoldSetup()}
+    >
+      {resolvingState || holdOptionsLoading
+        ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        : <Clock3 className="h-4 w-4" aria-hidden="true" />}
+      {isTableCell ? null : "Colocar em espera"}
+    </Button>
+  );
+
+  const attachButton = (
+    <Button
+      type="button"
+      size={isTableCell ? "icon" : "sm"}
+      variant={buttonVariant}
+      className={buttonClass}
+      disabled={!canAttachAlert || submitting}
+      aria-label="Anexar detalhes do alerta"
+      onClick={() => void attachAlertDetails()}
+    >
+      <Paperclip className="h-4 w-4" aria-hidden="true" />
+      {isTableCell ? null : "Anexar detalhes do alerta"}
+    </Button>
+  );
+
+  function withTooltip(node: ReactNode, label: string, showDisabledReason: boolean, reason = disabledReason) {
     return (
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex">{node}</span>
         </TooltipTrigger>
-        <TooltipContent>{showDisabledReason ? disabledReason : label}</TooltipContent>
+        <TooltipContent>{showDisabledReason ? reason : label}</TooltipContent>
       </Tooltip>
     );
   }
@@ -465,35 +567,52 @@ export function IncidentActions({
         isTableCell ? "flex-nowrap items-center justify-end gap-0.5" : "flex-wrap",
       )}
       >
-        {isTableCell ? (
-          withTooltip(
-            claimButton,
-            assignedToSelf ? "Atribuído a você" : "Assumir chamado",
-            !canClaim && !assignedToSelf,
+        {showClaim ? (
+          isTableCell ? (
+            withTooltip(
+              claimButton,
+              assignedToSelf ? "Atribuído a você" : "Assumir chamado",
+              !canClaim && !assignedToSelf,
+            )
+          ) : canClaim || assignedToSelf ? (
+            claimButton
+          ) : (
+            withTooltip(claimButton, "Assumir chamado", true)
           )
-        ) : canClaim || assignedToSelf ? (
-          claimButton
-        ) : (
-          withTooltip(claimButton, "Assumir chamado", true)
-        )}
-        {isTableCell ? (
-          withTooltip(workNoteButton, "Adicionar anotação", !canAddWorkNote)
-        ) : canAddWorkNote ? (
-          workNoteButton
-        ) : (
-          withTooltip(
-            <Button type="button" size="sm" variant="secondary" disabled aria-label="Adicionar anotação">
-              <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
-              Adicionar anotação
-            </Button>,
-            "Adicionar anotação",
-            true,
+        ) : null}
+        {showWorkNote ? (
+          isTableCell ? (
+            withTooltip(workNoteButton, "Adicionar anotação", !canAddWorkNote)
+          ) : canAddWorkNote ? (
+            workNoteButton
+          ) : (
+            withTooltip(
+              <Button type="button" size="sm" variant="secondary" disabled aria-label="Adicionar anotação">
+                <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
+                Adicionar anotação
+              </Button>,
+              "Adicionar anotação",
+              true,
+            )
           )
+        ) : null}
+        {useActionMenu ? moreActionsMenu : (
+          <>
+            {showHold ? withTooltip(holdButton, "Colocar em espera", holdMenuDisabled, holdDisabledReason) : null}
+            {showAttach ? withTooltip(attachButton, "Anexar detalhes do alerta", !canAttachAlert, attachDisabledReason) : null}
+          </>
         )}
-        {moreActionsMenu}
       </div>
-      {actionError ? <p className="text-xs text-destructive">{actionError}</p> : null}
-      {holdOptionsError ? <p role="alert" className="text-xs text-destructive">{holdOptionsError}</p> : null}
+      {tableActionError ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span tabIndex={0} className="inline-grid h-7 w-4 shrink-0 place-items-center text-xs font-bold text-destructive" aria-label="Ação ServiceNow indisponível">!</span>
+          </TooltipTrigger>
+          <TooltipContent>{tableActionError}</TooltipContent>
+        </Tooltip>
+      ) : null}
+      {!isTableCell && actionError ? <p className="text-xs text-destructive">{actionError}</p> : null}
+      {!isTableCell && holdOptionsError ? <p role="alert" className="text-xs text-destructive">{holdOptionsError}</p> : null}
       <Dialog open={workNoteOpen} onOpenChange={(open) => { if (!submitting) { setWorkNoteOpen(open); if (!open) setWorkNoteError(null); } }}>
         <DialogContent>
           <DialogHeader>

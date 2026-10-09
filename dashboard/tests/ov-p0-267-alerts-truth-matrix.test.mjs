@@ -142,7 +142,7 @@ test("OV-P0-267: status contract uses resolved_at + status_source + status_inter
   assert.match(active.whereSql, /status_internal/);
   assert.doesNotMatch(active.whereSql, /acknowledged_source.*resolved/);
   assert.equal(resolved.filters.status, "resolved");
-  assert.match(resolved.whereSql, /a\.resolved_at is not null/);
+  assert.match(resolved.whereSql, /lower\(coalesce\(a\.status_source, ''\)\) = 'resolved'/);
   assert.equal(all.filters.status, "all");
   assert.doesNotMatch(all.whereSql, /a\.resolved_at is null/);
   const omitted = buildAlertListQuery(request({}));

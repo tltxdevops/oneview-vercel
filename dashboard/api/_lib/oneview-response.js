@@ -1,6 +1,6 @@
 import { methodNotAllowed, sendJson } from "./http.js";
 import { getOneViewConfig, getOneViewRoute } from "./oneview-config.js";
-import { fetchOneViewDatabase } from "./oneview-db.js";
+import { fetchOneViewDatabase, getOneViewDbPoolStats, logOneViewDbPoolMetric } from "./oneview-db.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewSnapshotPayload } from "./oneview-fallback.js";
 import { invalidateOneViewSummaryCache, withOneViewSummaryCache } from "./oneview-runtime-cache.js";
@@ -55,13 +55,15 @@ async function readDatabaseWithTransientRetry({ database, routeName, req, config
   } catch (error) {
     const code = safeFallbackCode(error);
     if (error?.code !== TRANSIENT_DATABASE_RETRY_CODE) throw error;
-    logger(JSON.stringify({
+    logOneViewDbPoolMetric({
+      logger,
       event: "oneview_database_read_retry",
-      route: routeTemplate(routeName),
-      code,
+      operation: routeTemplate(routeName),
+      retry: 1,
       attempt: 2,
-      elapsed_ms: Math.max(Date.now() - startedAt, 0),
-    }));
+      durationMs: Date.now() - startedAt,
+      error,
+    });
     return database(routeName, req, config);
   }
 }
@@ -91,8 +93,11 @@ function requestErrorClass(status) {
 
 function writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode = null, status = 200) {
   const code = Number(status);
+  const pool = getOneViewDbPoolStats();
   logger(JSON.stringify({
     event: "oneview_request",
+    operation: routeTemplate(routeName),
+    retry: 0,
     route: routeTemplate(routeName),
     data_source: source,
     duration_ms: Math.max(Date.now() - startedAt, 0),
@@ -100,6 +105,9 @@ function writeRequestLog(logger, routeName, startedAt, source, payload, fallback
     fallback_code: fallbackCode,
     status: Number.isInteger(code) ? code : 0,
     error_class: requestErrorClass(code),
+    db_pool_total: pool.total,
+    db_pool_idle: pool.idle,
+    db_pool_waiting: pool.waiting,
   }));
 }
 

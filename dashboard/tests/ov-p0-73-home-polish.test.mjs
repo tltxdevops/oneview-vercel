@@ -100,12 +100,11 @@ test("OV-P0-73 Home: drawer e filtros preservados", async () => {
   assert.match(index, /HOME_ALERT_COLUMNS/);
 });
 
-test("OV-P0-73 Home: coluna Ação dispara FAZER ACK em vez de Abrir", async () => {
+test("OV-P0-73 Home: coluna Ação usa ícone de ACK, sem Abrir", async () => {
   const index = await read("src/pages/Index.tsx");
   const row = index.slice(index.indexOf("function HomeAlertRow"), index.indexOf("function HomeOperatorRow"));
-  assert.match(row, /buttonLabel="FAZER ACK"/);
   assert.match(row, /<AlertSourceAckAction/);
-  assert.match(row, /variant="button"/);
+  assert.match(row, /variant="icon"/);
   assert.doesNotMatch(row, />Abrir</);
   assert.doesNotMatch(row, /<Eye/);
   assert.match(index, /handleSourceAckRequestAccepted/);

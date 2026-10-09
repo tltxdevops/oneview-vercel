@@ -417,6 +417,16 @@ function eligibleCanaryAlert(alert) {
     && (severity === "high" || severity === "disaster");
 }
 
+/** Local alert row only. A pending outbox does not make a resolved alert sendable. */
+export function isTheoProducedAlertOperational(alert) {
+  const status = text(alert?.status_source).toLowerCase();
+  const internal = text(alert?.status_internal).toLowerCase();
+  return Boolean(alert)
+    && status === "active"
+    && !alert.resolved_at
+    && internal !== "normalized";
+}
+
 export function createTheoDispatchHandler({
   transaction = withOneViewActionsTransaction,
   configProvider = getTheoDispatchConfig,
@@ -534,6 +544,8 @@ export function createTheoDispatchHandler({
         }
         if (!alert && !enrichmentFailure) {
           enrichmentFailure = { code: "produced_alert_not_found", retryable: false, retry_after_seconds: 0 };
+        } else if (alert && !enrichmentFailure && !isTheoProducedAlertOperational(alert)) {
+          enrichmentFailure = { code: "alert_not_operationally_active", retryable: false, retry_after_seconds: 0 };
         }
         if (enrichmentFailure) {
           await transaction((client) => finish(client, {

@@ -5,9 +5,11 @@ import { ChamadosSearchField } from "@/components/chamados/ChamadosSearchField";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
-import { ConfigurableTableColumns, OneViewSortableHeader, OneViewTableSortMenu } from "@/components/oneview/ConfigurableTableTools";
-import { useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { ConfigurableTableColumns, OneViewColumnFilterPopover, OneViewFilterableHeader, OneViewTableSortMenu } from "@/components/oneview/ConfigurableTableTools";
+import { OneViewTableSearchField, useOneViewCommittedSearch } from "@/components/oneview/OneViewTableSearchField";
+import { OperationalFacetChecklist, OperationalFacetMultiSelect } from "@/components/oneview/OperationalFacetMultiSelect";
 import { OperationalFilterPanel } from "@/components/oneview/OperationalFilterPanel";
+import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { FilterBar } from "@/components/oneview/FilterBar";
 import { OperationalEmptyState } from "@/components/oneview/OperationalEmptyState";
 import { OperationalErrorBanner } from "@/components/oneview/OperationalErrorBanner";
@@ -38,6 +40,7 @@ import {
 } from "@/components/ui/table";
 import {
   fetchIncidentDuplicates,
+  fetchIncidentSearchSuggestions,
   fetchIncidents,
   formatDurationSeconds,
   type DuplicateIncidentGroup,
@@ -52,6 +55,8 @@ import { parseAssignedToSysIds } from "@/lib/oneview-operational-incidents";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
+import { operationalColumnPreferredWidth, useOperationalTableLayout } from "@/lib/oneview-operational-table-layout";
+import { compactOperationalClientLabel } from "@/components/oneview/ClientIdentity";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
 
@@ -83,17 +88,17 @@ const CHAMADOS_METRIC_OPTIONS = [
 type ChamadosMetricId = typeof CHAMADOS_METRIC_OPTIONS[number]["id"];
 
 const INCIDENT_COLUMN_OPTIONS = [
-  { id: "number", label: COLUMNS[0], required: true },
-  { id: "client", label: COLUMNS[1] },
-  { id: "description", label: COLUMNS[2] },
-  { id: "state", label: COLUMNS[3] },
-  { id: "priority", label: COLUMNS[4] },
-  { id: "group", label: COLUMNS[5] },
-  { id: "assignee", label: COLUMNS[6] },
-  { id: "duration", label: "Tempo aberto" },
-  { id: "sla", label: "SLA" },
-  { id: "updated", label: COLUMNS[7] },
-  { id: "actions", label: "Ações", required: true },
+  { id: "number", label: COLUMNS[0], required: true, minWidth: 112, preferredWidth: 132, responsivePriority: "essential" },
+  { id: "client", label: COLUMNS[1], minWidth: 108, preferredWidth: 128, responsivePriority: "essential" },
+  { id: "description", label: COLUMNS[2], minWidth: 260, preferredWidth: 380, responsivePriority: "essential" },
+  { id: "state", label: COLUMNS[3], minWidth: 118, preferredWidth: 142, responsivePriority: "essential" },
+  { id: "priority", label: COLUMNS[4], minWidth: 100, preferredWidth: 118, responsivePriority: "essential" },
+  { id: "group", label: COLUMNS[5], minWidth: 132, preferredWidth: 168, responsivePriority: "secondary" },
+  { id: "assignee", label: COLUMNS[6], minWidth: 128, preferredWidth: 156, responsivePriority: "intermediate" },
+  { id: "duration", label: "Tempo aberto", minWidth: 108, preferredWidth: 124, responsivePriority: "intermediate" },
+  { id: "sla", label: "SLA", minWidth: 112, preferredWidth: 138, responsivePriority: "intermediate" },
+  { id: "updated", label: COLUMNS[7], minWidth: 126, preferredWidth: 148, responsivePriority: "secondary" },
+  { id: "actions", label: "Ações", required: true, minWidth: 116, preferredWidth: 128, responsivePriority: "essential" },
 ] as const;
 
 type IncidentColumnId = typeof INCIDENT_COLUMN_OPTIONS[number]["id"];
@@ -138,21 +143,6 @@ function incidentSortFromUrl(value: string | null): IncidentSortKey {
     : "updated";
 }
 
-/** Larguras fixas — tabela rola horizontalmente em vez de cortar colunas. */
-const INCIDENT_COLUMN_WIDTH: Record<IncidentColumnId, string> = {
-  number: "8%",
-  client: "12%",
-  description: "35%",
-  state: "10%",
-  priority: "9%",
-  group: "12%",
-  assignee: "10%",
-  duration: "9%",
-  sla: "12%",
-  updated: "8%",
-  actions: "11%",
-};
-
 const STATE_OPTIONS = [
   { value: "all", label: "Todos" },
   { value: "1", label: "Novo" },
@@ -182,13 +172,13 @@ const PERIOD_OPTIONS = [
 
 type DraftFilters = {
   search: string;
-  company: string;
-  state: string;
-  priority: string;
-  assignedTo: string;
-  callerId: string;
-  contactType: string;
-  assignmentGroup: string;
+  numberSearch: string;
+  descriptionSearch: string;
+  companies: string[];
+  states: string[];
+  priorities: string[];
+  assignedTo: string[];
+  assignmentGroups: string[];
   origin: "all" | "manual" | "automatic";
   period: string;
   customFrom: string;
@@ -198,13 +188,13 @@ type DraftFilters = {
 
 const EMPTY_DRAFT: DraftFilters = {
   search: "",
-  company: "",
-  state: "all",
-  priority: "all",
-  assignedTo: "all",
-  callerId: "all",
-  contactType: "all",
-  assignmentGroup: "all",
+  numberSearch: "",
+  descriptionSearch: "",
+  companies: [],
+  states: [],
+  priorities: [],
+  assignedTo: [],
+  assignmentGroups: [],
   origin: "all",
   period: "all",
   customFrom: "",
@@ -247,6 +237,20 @@ function periodBounds(period: string, customFrom = "", customTo = ""): { openedF
   return { openedFrom: from, openedTo: to };
 }
 
+function uniqueCompanies(values: string[]) {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    const key = normalized.toLocaleLowerCase("pt-BR");
+    if (normalized && !unique.has(key)) unique.set(key, normalized);
+  }
+  return [...unique.values()];
+}
+
+function repeatedFilterValues(params: URLSearchParams, key: string) {
+  return [...new Set(params.getAll(key).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean))];
+}
+
 export default function ChamadosPage() {
   const { user } = useAuthContext();
   const actorId = user?.id || user?.email || "anonymous";
@@ -254,19 +258,39 @@ export default function ChamadosPage() {
   const chamadosMetrics = useOneViewMetricStrip({ stripId: "incidents-summary", actorId, definitions: CHAMADOS_METRIC_OPTIONS });
   const incidentTablePageSize = dashboard.layout.widgets.find((item) => item.id === "incidents-table")?.itemLimit ?? PAGE_SIZE;
   const incidentColumns = useOneViewTableColumns({ tableId: "incidents", actorId, definitions: INCIDENT_COLUMN_OPTIONS });
+  const incidentTableLayout = useOperationalTableLayout({ columns: incidentColumns.visibleColumns });
   const [searchParams, setSearchParams] = useSearchParams();
   const initialFilters = useMemo<DraftFilters>(() => {
+    const companies = uniqueCompanies(searchParams.getAll("company"));
+    const states = repeatedFilterValues(searchParams, "state").filter((value) => STATE_OPTIONS.some((option) => option.value === value));
+    const priorities = repeatedFilterValues(searchParams, "priority").filter((value) => PRIORITY_OPTIONS.some((option) => option.value === value));
+    const assignmentGroups = repeatedFilterValues(searchParams, "assignment_group");
     const temporal = searchParams.get("period") === "custom" && searchParams.get("from") && searchParams.get("to")
       ? { period: "custom", customFrom: searchParams.get("from") || "", customTo: searchParams.get("to") || "" }
       : {};
+    const base = {
+      ...EMPTY_DRAFT,
+      ...temporal,
+      search: searchParams.get("search") || "",
+      numberSearch: searchParams.get("number_search") || "",
+      descriptionSearch: searchParams.get("description_search") || "",
+      companies,
+      states,
+      priorities,
+      assignmentGroups,
+      origin: (["manual", "automatic"] as const).includes(searchParams.get("origin") as "manual" | "automatic")
+        ? searchParams.get("origin") as "manual" | "automatic"
+        : "all",
+      period: searchParams.get("period") || temporal.period || "all",
+    } satisfies DraftFilters;
     if (searchParams.get("unassigned") === "true") {
-      return { ...EMPTY_DRAFT, ...temporal, unassigned: true };
+      return { ...base, unassigned: true };
     }
-    const assignedIds = parseAssignedToSysIds(searchParams.get("assigned_to"));
+    const assignedIds = parseAssignedToSysIds(repeatedFilterValues(searchParams, "assigned_to").join(","));
     if (assignedIds.length) {
-      return { ...EMPTY_DRAFT, ...temporal, assignedTo: assignedIds.join(",") };
+      return { ...base, assignedTo: assignedIds };
     }
-    return { ...EMPTY_DRAFT, ...temporal };
+    return base;
   }, [searchParams]);
   const [draft, setDraft] = useState<DraftFilters>(initialFilters);
   const [applied, setApplied] = useState<DraftFilters>(initialFilters);
@@ -283,6 +307,7 @@ export default function ChamadosPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [incidentSearchLoading, setIncidentSearchLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [clientFilterOpen, setClientFilterOpen] = useState(false);
   const [selected, setSelected] = useState<OneViewIncident | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "manual" | "duplicates">("list");
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
@@ -296,11 +321,26 @@ export default function ChamadosPage() {
   }, [incidentTablePageSize]);
 
   useEffect(() => {
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams();
     if (sortField !== "updated") next.set("sort", sortField); else next.delete("sort");
     if (sortOrder !== "desc") next.set("order", sortOrder); else next.delete("order");
+    if (applied.search) next.set("search", applied.search);
+    if (applied.numberSearch) next.set("number_search", applied.numberSearch);
+    if (applied.descriptionSearch) next.set("description_search", applied.descriptionSearch);
+    for (const value of applied.companies) next.append("company", value);
+    for (const value of applied.states) next.append("state", value);
+    for (const value of applied.priorities) next.append("priority", value);
+    for (const value of applied.assignedTo) next.append("assigned_to", value);
+    for (const value of applied.assignmentGroups) next.append("assignment_group", value);
+    if (applied.origin !== "all") next.set("origin", applied.origin);
+    if (applied.period !== "all") next.set("period", applied.period);
+    if (applied.period === "custom" && applied.customFrom && applied.customTo) {
+      next.set("from", applied.customFrom);
+      next.set("to", applied.customTo);
+    }
+    if (applied.unassigned) next.set("unassigned", "true");
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams, sortField, sortOrder]);
+  }, [applied, searchParams, setSearchParams, sortField, sortOrder]);
 
   useEffect(() => {
     if (viewMode === "duplicates") return;
@@ -349,18 +389,17 @@ export default function ChamadosPage() {
       pageSize: incidentTablePageSize,
       search: searchParams.search,
       number: searchParams.number,
-      company: applied.company.trim() || undefined,
-      state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
-      priority: applied.priority !== "all" ? applied.priority : undefined,
-      assignedTo: applied.unassigned
-        ? undefined
-        : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
-      callerId: applied.callerId !== "all" ? applied.callerId : undefined,
-      contactType: applied.contactType !== "all" ? applied.contactType : undefined,
-      assignmentGroup: applied.assignmentGroup !== "all" ? applied.assignmentGroup : undefined,
+      numberSearch: applied.numberSearch || undefined,
+      descriptionSearch: applied.descriptionSearch || undefined,
+      companies: applied.companies,
+      states: applied.states,
+      priorities: applied.priorities,
+      assignedToIds: applied.assignedTo,
+      assignmentGroups: applied.assignmentGroups,
       origin: applied.origin === "all" ? undefined : applied.origin,
       manual: viewMode === "manual",
-      unassigned: applied.unassigned || undefined,
+      unassigned: applied.unassigned && applied.assignedTo.length === 0 ? true : undefined,
+      includeUnassigned: applied.unassigned && applied.assignedTo.length > 0 ? true : undefined,
       openedFrom: period.openedFrom,
       openedTo: period.openedTo,
       sort: sortField,
@@ -430,12 +469,12 @@ export default function ChamadosPage() {
     const controller = new AbortController();
     if (!duplicatesPayloadRef.current) setDuplicatesLoading(true);
     fetchIncidentDuplicates({
-      customer: applied.company.trim() || undefined,
+      customers: applied.companies,
       assignedTo: applied.unassigned
         ? undefined
-        : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
-      priority: applied.priority !== "all" ? applied.priority : undefined,
-      state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
+        : (applied.assignedTo.length ? applied.assignedTo.join(",") : undefined),
+      priority: applied.priorities.length ? applied.priorities.join(",") : undefined,
+      state: applied.unassigned ? undefined : (applied.states.length ? applied.states.join(",") : undefined),
       signal: controller.signal,
     })
       .then((response) => {
@@ -459,15 +498,15 @@ export default function ChamadosPage() {
   const incidentSearchActivity = draft.search !== applied.search ? "pending" : incidentSearchLoading ? "searching" : "idle";
   const pagination = payload?.pagination;
   const globalCounts = payload?.global_counts;
-  const visibleColumnIds = incidentColumns.visibleColumns.map((column) => column.id);
+  const visibleColumnIds = incidentTableLayout.visibleColumns.map((column) => column.id);
   const visibleColumnCount = visibleColumnIds.length;
-  const activeFilterCount = Number(Boolean(draft.company.trim()))
-    + Number(!draft.unassigned && draft.state !== "all")
-    + Number(draft.priority !== "all")
-    + Number(!draft.unassigned && draft.assignedTo !== "all")
-    + Number(draft.callerId !== "all")
-    + Number(draft.contactType !== "all")
-    + Number(draft.assignmentGroup !== "all")
+  const activeFilterCount = Number(draft.companies.length > 0)
+    + Number(Boolean(draft.numberSearch))
+    + Number(Boolean(draft.descriptionSearch))
+    + Number(draft.states.length > 0)
+    + Number(draft.priorities.length > 0)
+    + Number(draft.assignedTo.length > 0)
+    + Number(draft.assignmentGroups.length > 0)
     + Number(draft.origin !== "all")
     + Number(draft.period !== "all")
     + Number(draft.unassigned);
@@ -480,46 +519,32 @@ export default function ChamadosPage() {
     return `${total} encontrado${count === 1 ? "" : "s"}`;
   }, [error, pagination]);
 
-  const callerOptions = useMemo(() => {
-    const map = new Map<string, { value: string; label: string }>();
-    map.set("all", { value: "all", label: "Todos" });
-    // SN-P0-33: sem seeds hardcoded — só facets do BFF (+ valor aplicado se ausente).
-    for (const facet of payload?.facets?.callers ?? []) {
-      const value = String(facet?.value || "").trim();
-      if (!value) continue;
-      map.set(value, {
-        value,
-        label: String(facet.display_value || facet.label || value).trim() || value,
+  const clientOptions = useMemo<ClientFilterOption[]>(() => {
+    const map = new Map<string, ClientFilterOption>();
+    map.set("all", { key: "all", name: "Todos" });
+    for (const facet of payload?.facets?.companies ?? []) {
+      const name = String(facet.display_value || facet.label || facet.value || "").trim();
+      if (!name) continue;
+      const key = name.toLocaleLowerCase("pt-BR");
+      const previous = map.get(key);
+      map.set(key, {
+        key: name,
+        name,
+        alerts_count: (previous?.alerts_count ?? 0) + (Number(facet.count) || 0),
       });
     }
-    if (applied.callerId !== "all" && !map.has(applied.callerId)) {
-      map.set(applied.callerId, { value: applied.callerId, label: applied.callerId });
+    for (const company of draft.companies) {
+      const key = company.toLocaleLowerCase("pt-BR");
+      if (!map.has(key)) map.set(key, { key: company, name: company });
     }
     return [...map.values()];
-  }, [payload?.facets?.callers, applied.callerId]);
+  }, [draft.companies, payload?.facets?.companies]);
 
-  const contactTypeOptions = useMemo(() => {
-    const map = new Map<string, { value: string; label: string }>();
-    map.set("all", { value: "all", label: "Todos os canais" });
-    for (const facet of payload?.facets?.contact_types ?? []) {
-      const value = String(facet?.value || "").trim();
-      if (!value) continue;
-      const rawLabel = String(facet?.label || value).trim();
-      const label = value === "__blank"
-        ? "Sem canal informado"
-        : rawLabel === "monitoring"
-          ? "Monitoramento"
-          : rawLabel;
-      map.set(value, { value, label });
-    }
-    if (applied.contactType !== "all" && !map.has(applied.contactType)) {
-      map.set(applied.contactType, {
-        value: applied.contactType,
-        label: applied.contactType === "__blank" ? "Sem canal informado" : applied.contactType,
-      });
-    }
-    return [...map.values()];
-  }, [payload?.facets?.contact_types, applied.contactType]);
+  const selectedClientLabel = draft.companies.length === 0
+    ? "TODOS"
+    : draft.companies.length === 1
+      ? compactOperationalClientLabel(draft.companies[0], draft.companies[0])
+      : `${draft.companies.length} clientes`;
 
   const assigneeOptions = useMemo(() => {
     const map = new Map<string, { value: string; label: string }>();
@@ -532,12 +557,8 @@ export default function ChamadosPage() {
         label: String(facet.display_value || facet.label || value).trim() || value,
       });
     }
-    if (applied.assignedTo !== "all" && !map.has(applied.assignedTo)) {
-      const ids = parseAssignedToSysIds(applied.assignedTo);
-      map.set(applied.assignedTo, {
-        value: applied.assignedTo,
-        label: ids.length > 1 ? `${ids.length} analistas` : applied.assignedTo,
-      });
+    for (const assignedTo of applied.assignedTo) {
+      if (!map.has(assignedTo)) map.set(assignedTo, { value: assignedTo, label: assignedTo });
     }
     return [...map.values()];
   }, [payload?.facets?.assignees, applied.assignedTo]);
@@ -546,25 +567,46 @@ export default function ChamadosPage() {
     value: String(facet.value), label: String(facet.display_value || facet.label || facet.value),
   }))], [payload?.facets?.assignment_groups]);
 
+  const appliedFilterChips = [
+    ...applied.companies.map((value) => ({ key: `company:${value}`, label: `Cliente: ${value}`, remove: () => applyColumnFilter({ companies: applied.companies.filter((item) => item !== value) }) })),
+    ...applied.states.map((value) => ({ key: `state:${value}`, label: `Estado: ${STATE_OPTIONS.find((option) => option.value === value)?.label || value}`, remove: () => applyColumnFilter({ states: applied.states.filter((item) => item !== value) }) })),
+    ...applied.priorities.map((value) => ({ key: `priority:${value}`, label: `Prioridade: ${PRIORITY_OPTIONS.find((option) => option.value === value)?.label || value}`, remove: () => applyColumnFilter({ priorities: applied.priorities.filter((item) => item !== value) }) })),
+    ...applied.assignedTo.map((value) => ({ key: `assignee:${value}`, label: `Responsável: ${assigneeOptions.find((option) => option.value === value)?.label || value}`, remove: () => applyColumnFilter({ assignedTo: applied.assignedTo.filter((item) => item !== value) }) })),
+    ...applied.assignmentGroups.map((value) => ({ key: `group:${value}`, label: `Grupo: ${assignmentGroupOptions.find((option) => option.value === value)?.label || value}`, remove: () => applyColumnFilter({ assignmentGroups: applied.assignmentGroups.filter((item) => item !== value) }) })),
+    ...(applied.numberSearch ? [{ key: "number", label: `Número: ${applied.numberSearch}`, remove: () => applyColumnFilter({ numberSearch: "" }) }] : []),
+    ...(applied.descriptionSearch ? [{ key: "description", label: `Descrição: ${applied.descriptionSearch}`, remove: () => applyColumnFilter({ descriptionSearch: "" }) }] : []),
+    ...(applied.search ? [{ key: "search", label: `Busca: ${applied.search}`, remove: () => applyColumnFilter({ search: "" }) }] : []),
+    ...(applied.origin !== "all" ? [{ key: "origin", label: `Origem: ${applied.origin === "manual" ? "Manual" : "Automática"}`, remove: () => applyColumnFilter({ origin: "all" }) }] : []),
+    ...(applied.period !== "all" ? [{ key: "period", label: `Abertura: ${PERIOD_OPTIONS.find((option) => option.value === applied.period)?.label || applied.period}`, remove: () => applyColumnFilter({ period: "all", customFrom: "", customTo: "" }) }] : []),
+    ...(applied.unassigned ? [{ key: "unassigned", label: "Sem responsável", remove: () => applyColumnFilter({ unassigned: false }) }] : []),
+  ];
+
   const searchSuggestScope = useMemo((): Omit<FetchIncidentSearchSuggestionsParams, "q" | "limit" | "signal"> => {
     const period = periodBounds(applied.period, applied.customFrom, applied.customTo);
     return {
-      company: applied.company.trim() || undefined,
-      state: applied.unassigned ? undefined : (applied.state !== "all" ? applied.state : undefined),
-      priority: applied.priority !== "all" ? applied.priority : undefined,
-      assignedTo: applied.unassigned
-        ? undefined
-        : (applied.assignedTo !== "all" ? applied.assignedTo : undefined),
-      callerId: applied.callerId !== "all" ? applied.callerId : undefined,
-      contactType: applied.contactType !== "all" ? applied.contactType : undefined,
-      assignmentGroup: applied.assignmentGroup !== "all" ? applied.assignmentGroup : undefined,
+      // Não restringir sugestões ao cliente já selecionado: isso permite
+      // adicionar outros clientes pela mesma barra de pesquisa.
+      states: applied.states,
+      priorities: applied.priorities,
+      assignedToIds: applied.assignedTo,
+      assignmentGroups: applied.assignmentGroups,
       origin: applied.origin === "all" ? undefined : applied.origin,
       manual: viewMode === "manual",
-      unassigned: applied.unassigned || undefined,
+      unassigned: applied.unassigned && applied.assignedTo.length === 0 ? true : undefined,
+      includeUnassigned: applied.unassigned && applied.assignedTo.length > 0 ? true : undefined,
       updatedFrom: period.openedFrom,
       updatedTo: period.openedTo,
     };
   }, [applied, viewMode]);
+
+  const fetchIncidentNumberSuggestions = useCallback((q: string, signal: AbortSignal) => (
+    fetchIncidentSearchSuggestions({ ...searchSuggestScope, q, kind: "number", limit: 8, signal })
+      .then((response) => (response.suggestions ?? []).filter((item) => item.kind === "number"))
+  ), [searchSuggestScope]);
+  const fetchIncidentDescriptionSuggestions = useCallback((q: string, signal: AbortSignal) => (
+    fetchIncidentSearchSuggestions({ ...searchSuggestScope, q, kind: "description", limit: 8, signal })
+      .then((response) => (response.suggestions ?? []).filter((item) => item.kind === "description"))
+  ), [searchSuggestScope]);
 
   function applyFilters(next: DraftFilters = draft, _requestMode: "full" | "metric" = "full") {
     cancelIncidentSearch();
@@ -573,12 +615,20 @@ export default function ChamadosPage() {
     setApplied({
       ...next,
       search: next.search.trim(),
-      company: next.company.trim(),
+      companies: uniqueCompanies(next.companies),
     });
+  }
+
+  function applyColumnFilter(patch: Partial<DraftFilters>) {
+    setDraft((current) => ({ ...current, ...patch }));
+    setApplied((current) => ({ ...current, ...patch }));
+    setPage(1);
+    setMetadataRefreshVersion((current) => current + 1);
   }
 
   function clearFilters() {
     cancelIncidentSearch();
+    setClientFilterOpen(false);
     incidentSearchIntent.current = null;
     setIncidentSearchLoading(false);
     setDraft(EMPTY_DRAFT);
@@ -618,7 +668,7 @@ export default function ChamadosPage() {
       setViewMode("manual");
       setSelected(null);
       setSelectedDuplicateGroup(null);
-      const next = { ...draft, state: "all", unassigned: false, origin: "all" as const };
+      const next = { ...draft, states: [], unassigned: false, origin: "all" as const };
       setDraft(next);
       applyFilters(next, "metric");
       return;
@@ -628,16 +678,16 @@ export default function ChamadosPage() {
     const next: DraftFilters = {
       ...draft,
       unassigned: kind === "unassigned",
-      assignedTo: kind === "unassigned" ? "all" : draft.assignedTo,
-      state: kind === "open"
-        ? "1"
+      assignedTo: kind === "unassigned" ? [] : draft.assignedTo,
+      states: kind === "open"
+        ? ["1"]
         : kind === "in_progress"
-          ? "2"
+          ? ["2"]
           : kind === "resolved"
-            ? "6"
+            ? ["6"]
             : kind === "closed"
-              ? "7"
-              : "all",
+              ? ["7"]
+              : [],
     };
     setDraft(next);
     applyFilters(next, "metric");
@@ -650,7 +700,7 @@ export default function ChamadosPage() {
       value: error ? "—" : safeCount(globalCounts?.total),
       tone: "info" as const,
       loading,
-      selected: viewMode === "list" && applied.state === "all" && !applied.unassigned,
+      selected: viewMode === "list" && applied.states.length === 0 && !applied.unassigned,
       onClick: () => selectMetric("total"),
     },
     open: {
@@ -659,7 +709,7 @@ export default function ChamadosPage() {
       value: error ? "—" : safeCount(globalCounts?.open),
       tone: "info" as const,
       loading: viewMode === "list" && loading,
-      selected: viewMode === "list" && applied.state === "1" && !applied.unassigned,
+      selected: viewMode === "list" && applied.states.length === 1 && applied.states[0] === "1" && !applied.unassigned,
       onClick: () => selectMetric("open"),
     },
     in_progress: {
@@ -668,7 +718,7 @@ export default function ChamadosPage() {
       value: error ? "—" : safeCount(globalCounts?.in_progress),
       tone: "warning" as const,
       loading: viewMode === "list" && loading,
-      selected: viewMode === "list" && applied.state === "2" && !applied.unassigned,
+      selected: viewMode === "list" && applied.states.length === 1 && applied.states[0] === "2" && !applied.unassigned,
       onClick: () => selectMetric("in_progress"),
     },
     resolved: {
@@ -677,7 +727,7 @@ export default function ChamadosPage() {
       value: error ? "—" : safeCount(globalCounts?.resolved),
       tone: "success" as const,
       loading: viewMode === "list" && loading,
-      selected: viewMode === "list" && applied.state === "6" && !applied.unassigned,
+      selected: viewMode === "list" && applied.states.length === 1 && applied.states[0] === "6" && !applied.unassigned,
       onClick: () => selectMetric("resolved"),
     },
     closed: {
@@ -686,7 +736,7 @@ export default function ChamadosPage() {
       value: error ? "—" : safeCount(globalCounts?.closed),
       tone: "neutral" as const,
       loading: viewMode === "list" && loading,
-      selected: viewMode === "list" && applied.state === "7" && !applied.unassigned,
+      selected: viewMode === "list" && applied.states.length === 1 && applied.states[0] === "7" && !applied.unassigned,
       onClick: () => selectMetric("closed"),
     },
     unassigned: {
@@ -717,7 +767,7 @@ export default function ChamadosPage() {
       onClick: () => selectMetric("duplicates"),
     },
   }), [
-    applied.state,
+    applied.states,
     applied.unassigned,
     duplicatesError,
     duplicatesLoading,
@@ -743,6 +793,88 @@ export default function ChamadosPage() {
     [chamadosMetricItemsById, chamadosMetrics.rowSpan, chamadosMetrics.span, chamadosMetrics.visibleMetrics],
   );
 
+  const incidentColumnFilter = (column: IncidentColumnId) => {
+    if (column === "number") return (
+      <OneViewColumnFilterPopover label="Filtrar número do incidente" kind="search" activeCount={applied.numberSearch ? 1 : 0}>
+        <p className="mb-2 text-xs font-semibold">Número do incidente</p>
+        <OneViewTableSearchField
+          value={draft.numberSearch}
+          onChange={(numberSearch) => setDraft((current) => ({ ...current, numberSearch: numberSearch.toUpperCase().slice(0, 40) }))}
+          onSubmit={(numberSearch) => applyColumnFilter({ numberSearch: numberSearch.trim().toUpperCase().slice(0, 40) })}
+          onSuggestionSelect={(item) => item.kind === "number" && applyColumnFilter({ numberSearch: item.value.toUpperCase() })}
+          fetchSuggestions={fetchIncidentNumberSuggestions}
+          placeholder="INC0094..."
+          ariaLabel="Pesquisar número do incidente"
+          getSuggestionActionLabel={(item) => item.kind === "number" ? "Filtrar incidente" : null}
+        />
+        {applied.numberSearch ? <Button type="button" variant="ghost" size="sm" className="mt-2 h-7" onClick={() => applyColumnFilter({ numberSearch: "" })}>Limpar</Button> : null}
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "client") return (
+      <OneViewColumnFilterPopover label="Filtrar clientes" kind="search" activeCount={applied.companies.length}>
+        <p className="mb-1 text-xs font-semibold">Clientes</p>
+        <OperationalFacetChecklist
+          options={clientOptions.filter((option) => option.key !== "all").map((option) => ({ value: option.key, label: option.name, count: option.alerts_count }))}
+          selectedValues={applied.companies}
+          onChange={(companies) => applyColumnFilter({ companies: uniqueCompanies(companies) })}
+          allLabel="Todos os clientes"
+          searchPlaceholder="Buscar cliente..."
+        />
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "description") return (
+      <OneViewColumnFilterPopover label="Filtrar descrição" kind="search" activeCount={applied.descriptionSearch ? 1 : 0}>
+        <p className="mb-2 text-xs font-semibold">Descrição</p>
+        <OneViewTableSearchField
+          value={draft.descriptionSearch}
+          onChange={(descriptionSearch) => setDraft((current) => ({ ...current, descriptionSearch: descriptionSearch.slice(0, 80) }))}
+          onSubmit={(descriptionSearch) => applyColumnFilter({ descriptionSearch: descriptionSearch.trim().slice(0, 80) })}
+          onSuggestionSelect={(item) => item.kind === "description" && applyColumnFilter({ descriptionSearch: item.value.slice(0, 80) })}
+          fetchSuggestions={fetchIncidentDescriptionSuggestions}
+          placeholder="Pesquisar descrição..."
+          ariaLabel="Pesquisar descrição do chamado"
+          normalizeInc={false}
+          getSuggestionActionLabel={(item) => item.kind === "description" ? "Filtrar descrição" : null}
+        />
+        {applied.descriptionSearch ? <Button type="button" variant="ghost" size="sm" className="mt-2 h-7" onClick={() => applyColumnFilter({ descriptionSearch: "" })}>Limpar</Button> : null}
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "state") return (
+      <OneViewColumnFilterPopover label="Filtrar estados" activeCount={applied.states.length}>
+        <p className="mb-1 text-xs font-semibold">Estados</p>
+        <OperationalFacetChecklist options={STATE_OPTIONS.filter((option) => option.value !== "all")} selectedValues={applied.states} onChange={(states) => applyColumnFilter({ states })} allLabel="Todos" searchPlaceholder="Buscar estado..." />
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "priority") return (
+      <OneViewColumnFilterPopover label="Filtrar prioridades" activeCount={applied.priorities.length}>
+        <p className="mb-1 text-xs font-semibold">Prioridades</p>
+        <OperationalFacetChecklist options={PRIORITY_OPTIONS.filter((option) => option.value !== "all")} selectedValues={applied.priorities} onChange={(priorities) => applyColumnFilter({ priorities })} allLabel="Todas" searchPlaceholder="Buscar prioridade..." />
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "group") return (
+      <OneViewColumnFilterPopover label="Filtrar grupos" activeCount={applied.assignmentGroups.length}>
+        <p className="mb-1 text-xs font-semibold">Grupos</p>
+        <OperationalFacetChecklist options={assignmentGroupOptions.filter((option) => option.value !== "all")} selectedValues={applied.assignmentGroups} onChange={(assignmentGroups) => applyColumnFilter({ assignmentGroups })} allLabel="Todos" searchPlaceholder="Buscar grupo..." />
+      </OneViewColumnFilterPopover>
+    );
+    if (column === "assignee") {
+      const selected = [...applied.assignedTo, ...(applied.unassigned ? ["__unassigned"] : [])];
+      return (
+        <OneViewColumnFilterPopover label="Filtrar responsáveis" activeCount={selected.length}>
+          <p className="mb-1 text-xs font-semibold">Responsáveis</p>
+          <OperationalFacetChecklist
+            options={[{ value: "__unassigned", label: "Sem responsável" }, ...assigneeOptions.filter((option) => option.value !== "all")]}
+            selectedValues={selected}
+            onChange={(values) => applyColumnFilter({ assignedTo: values.filter((value) => value !== "__unassigned"), unassigned: values.includes("__unassigned") })}
+            allLabel="Todos"
+            searchPlaceholder="Buscar analista..."
+          />
+        </OneViewColumnFilterPopover>
+      );
+    }
+    return null;
+  };
+
   return (
     <AppLayout
       enableAutoRefresh={false}
@@ -764,7 +896,7 @@ export default function ChamadosPage() {
         <ConfigurableDashboardWidget id="incidents-table">
 
         <FilterBar aria-label="Ferramentas da tabela de chamados" className="mb-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="grid min-w-0 gap-2 lg:grid-cols-[minmax(18rem,1fr)_auto] lg:items-center">
             <ChamadosSearchField
               value={draft.search}
               onChange={(search) => setDraft((prev) => ({ ...prev, search }))}
@@ -789,7 +921,11 @@ export default function ChamadosPage() {
                 if (suggestion.kind === "company") {
                   incidentSearchIntent.current = null;
                   setIncidentSearchLoading(false);
-                  const next = { ...draft, company: suggestion.value, search: "" };
+                  const next = {
+                    ...draft,
+                    companies: uniqueCompanies([...draft.companies, suggestion.value]),
+                    search: "",
+                  };
                   setDraft(next);
                   applyFilters(next);
                   return;
@@ -801,11 +937,12 @@ export default function ChamadosPage() {
                 applyFilters(next);
               }}
               scope={searchSuggestScope}
-              selectedCompany={draft.company}
+              selectedCompanies={draft.companies}
               activity={incidentSearchActivity}
               activityQuery={applied.search}
             />
 
+            <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
             <OperationalFilterPanel
               open={filtersOpen}
               onOpenChange={setFiltersOpen}
@@ -818,52 +955,44 @@ export default function ChamadosPage() {
                 </div>
               )}
             >
-                <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-3">
-                  <label className="space-y-1 text-xs text-muted-foreground">
-                    Cliente
-                    <Input value={draft.company} onChange={(event) => setDraft((prev) => ({ ...prev, company: event.target.value }))} placeholder="Nome do cliente" className="ov-filter-control" />
+                <div className="grid min-w-0 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="min-w-0 space-y-1 text-xs text-muted-foreground">
+                    <span className="block">Cliente</span>
+                    <ClientFilterCombobox
+                      open={clientFilterOpen}
+                      onOpenChange={setClientFilterOpen}
+                      options={clientOptions}
+                      selectedKeys={draft.companies}
+                      selectedLabel={selectedClientLabel}
+                      onToggle={(company) => setDraft((prev) => ({
+                        ...prev,
+                        companies: company === "all"
+                          ? []
+                          : prev.companies.some((item) => item.toLocaleLowerCase("pt-BR") === company.toLocaleLowerCase("pt-BR"))
+                            ? prev.companies.filter((item) => item.toLocaleLowerCase("pt-BR") !== company.toLocaleLowerCase("pt-BR"))
+                            : uniqueCompanies([...prev.companies, company]),
+                      }))}
+                      triggerClassName="w-full"
+                      countNoun="chamados neste filtro"
+                    />
+                  </div>
+                  <label className="space-y-1 text-xs text-muted-foreground">Número do incidente
+                    <Input value={draft.numberSearch} onChange={(event) => setDraft((prev) => ({ ...prev, numberSearch: event.target.value.toUpperCase().slice(0, 40) }))} placeholder="INC0094..." className="h-9" />
                   </label>
-                  <label className="space-y-1 text-xs text-muted-foreground">
-                    Estado
-                    <Select value={draft.unassigned ? "all" : draft.state} onValueChange={(value) => setDraft((prev) => ({ ...prev, state: value, unassigned: false }))}>
-                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
-                      <SelectContent>{STATE_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                    </Select>
+                  <label className="space-y-1 text-xs text-muted-foreground">Descrição
+                    <Input value={draft.descriptionSearch} onChange={(event) => setDraft((prev) => ({ ...prev, descriptionSearch: event.target.value.slice(0, 80) }))} placeholder="Pesquisar descrição..." className="h-9" />
                   </label>
-                  <label className="space-y-1 text-xs text-muted-foreground">
-                    Prioridade
-                    <Select value={draft.priority} onValueChange={(value) => setDraft((prev) => ({ ...prev, priority: value }))}>
-                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
-                      <SelectContent>{PRIORITY_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                    </Select>
+                  <label className="space-y-1 text-xs text-muted-foreground">Estado
+                    <OperationalFacetMultiSelect label="Estado" options={STATE_OPTIONS.filter((option) => option.value !== "all")} selectedValues={draft.states} onChange={(states) => setDraft((prev) => ({ ...prev, states }))} allLabel="Todos" searchPlaceholder="Buscar estado..." />
                   </label>
-                  <label className="space-y-1 text-xs text-muted-foreground">
-                    Analista
-                    <Select value={draft.unassigned ? "all" : draft.assignedTo} onValueChange={(value) => setDraft((prev) => ({ ...prev, assignedTo: value, unassigned: false }))}>
-                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
-                      <SelectContent>{assigneeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                    </Select>
+                  <label className="space-y-1 text-xs text-muted-foreground">Prioridade
+                    <OperationalFacetMultiSelect label="Prioridade" options={PRIORITY_OPTIONS.filter((option) => option.value !== "all")} selectedValues={draft.priorities} onChange={(priorities) => setDraft((prev) => ({ ...prev, priorities }))} allLabel="Todas" searchPlaceholder="Buscar prioridade..." />
                   </label>
-                  <label className="space-y-1 text-xs text-muted-foreground">
-                    Canal
-                    <Select value={draft.contactType} onValueChange={(value) => setDraft((prev) => ({ ...prev, contactType: value }))}>
-                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
-                      <SelectContent>{contactTypeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                    </Select>
+                  <label className="space-y-1 text-xs text-muted-foreground">Analista
+                    <OperationalFacetMultiSelect label="Analista" options={assigneeOptions.filter((option) => option.value !== "all")} selectedValues={draft.assignedTo} onChange={(assignedTo) => setDraft((prev) => ({ ...prev, assignedTo }))} allLabel="Todos" searchPlaceholder="Buscar analista..." />
                   </label>
-                  <label className="space-y-1 text-xs text-muted-foreground">
-                    Caller
-                    <Select value={draft.callerId} onValueChange={(value) => setDraft((prev) => ({ ...prev, callerId: value }))}>
-                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
-                      <SelectContent>{callerOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </label>
-                  <label className="space-y-1 text-xs text-muted-foreground">
-                    Grupo
-                    <Select value={draft.assignmentGroup} onValueChange={(value) => setDraft((prev) => ({ ...prev, assignmentGroup: value }))}>
-                      <SelectTrigger className="ov-filter-control"><SelectValue /></SelectTrigger>
-                      <SelectContent>{assignmentGroupOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-                    </Select>
+                  <label className="space-y-1 text-xs text-muted-foreground">Grupo
+                    <OperationalFacetMultiSelect label="Grupo" options={assignmentGroupOptions.filter((option) => option.value !== "all")} selectedValues={draft.assignmentGroups} onChange={(assignmentGroups) => setDraft((prev) => ({ ...prev, assignmentGroups }))} allLabel="Todos" searchPlaceholder="Buscar grupo..." />
                   </label>
                   <label className="space-y-1 text-xs text-muted-foreground">
                     Origem
@@ -890,7 +1019,7 @@ export default function ChamadosPage() {
                     </div>
                   ) : null}
                   <div className="flex items-end">
-                    <Button type="button" variant={draft.unassigned ? "default" : "outline"} className="w-full" aria-pressed={draft.unassigned} onClick={() => setDraft((prev) => ({ ...prev, unassigned: !prev.unassigned, assignedTo: "all", state: "all" }))}>
+                    <Button type="button" variant={draft.unassigned ? "default" : "outline"} className="w-full" aria-pressed={draft.unassigned} onClick={() => setDraft((prev) => ({ ...prev, unassigned: !prev.unassigned }))}>
                       Sem responsável
                     </Button>
                   </div>
@@ -903,12 +1032,27 @@ export default function ChamadosPage() {
               onChange={applyIncidentSort}
               label="Ordenar chamados"
             />
-            <ConfigurableTableColumns controller={incidentColumns} />
+            <ConfigurableTableColumns
+              controller={incidentColumns}
+              responsive={{
+                autoHiddenCount: incidentTableLayout.autoHiddenColumns.length,
+                showAllColumns: incidentTableLayout.showAllColumns,
+                onShowAllColumnsChange: incidentTableLayout.setShowAllColumns,
+              }}
+            />
 
             {activeFilterCount > 0 ? <Button type="button" size="sm" variant="ghost" className="h-9" onClick={clearFilters}>Limpar filtros</Button> : null}
             {viewMode === "manual" ? <Badge variant="secondary">Manuais: Novo, Em andamento e Em espera</Badge> : null}
+            </div>
           </div>
         </FilterBar>
+
+        {appliedFilterChips.length ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5" aria-label="Filtros ativos">
+            {appliedFilterChips.map((chip) => <Button key={chip.key} type="button" size="sm" variant="outline" className="h-7 max-w-full truncate px-2 text-xs" onClick={chip.remove}>{chip.label} ×</Button>)}
+            <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={clearFilters}>Limpar todos</Button>
+          </div>
+        ) : null}
 
         {viewMode === "duplicates" ? (
           <>
@@ -1079,7 +1223,7 @@ export default function ChamadosPage() {
         {error ? <OperationalErrorBanner message={error} onRetry={() => applyFilters()} /> : null}
 
         <SectionPanel
-          className="min-w-0"
+          className="ov-operational-responsive min-w-0"
           bodyClassName="min-w-0 p-0"
           title={viewMode === "manual" ? "Chamados manuais abertos" : "Incidentes"}
           aside={(
@@ -1091,27 +1235,37 @@ export default function ChamadosPage() {
             </p>
           )}
         >
-          <Table className={cn(
-            "ov-operational-table ov-operational-table--dense w-full table-fixed",
-            visibleColumnCount >= 7 ? "min-w-[72rem]" : visibleColumnCount >= 5 ? "min-w-[56rem]" : "min-w-[40rem]",
-          )}>
+          <div ref={incidentTableLayout.containerRef} className="min-w-0 overflow-x-auto">
+          <Table
+            className="ov-operational-table ov-operational-table--dense w-full table-fixed"
+            style={{ minWidth: `${incidentTableLayout.minimumTableWidth}px` }}
+          >
             <colgroup>
-              {visibleColumnIds.map((column) => (
-                <col key={column} style={{ width: INCIDENT_COLUMN_WIDTH[column] }} />
+              {incidentTableLayout.visibleColumns.map((column) => (
+                <col key={column.id} style={{ width: `${operationalColumnPreferredWidth(column)}px` }} />
               ))}
             </colgroup>
             <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-              <TableRow className="hover:bg-transparent">
-                {incidentColumns.visibleColumns.map((column) => {
+              <TableRow className="bg-background/95 hover:bg-background/95">
+                {incidentTableLayout.visibleColumns.map((column) => {
                   const field = INCIDENT_COLUMN_SORT[column.id];
                   const active = field === sortField;
                   return (
                     <TableHead
                       key={column.id}
                       aria-sort={field ? active ? sortOrder === "asc" ? "ascending" : "descending" : "none" : undefined}
-                      className="ov-type-caption overflow-visible px-3 py-1.5 font-semibold uppercase tracking-wide text-muted-foreground"
+                      className={cn(
+                        "ov-type-caption overflow-hidden px-3 py-1.5 font-semibold uppercase tracking-wide text-muted-foreground",
+                        column.id === "actions" && "sticky right-0 z-20 bg-inherit text-center",
+                      )}
                     >
-                      {field ? <OneViewSortableHeader label={column.label} active={active} direction={sortOrder} onClick={() => toggleIncidentSort(field)} /> : column.label}
+                      <OneViewFilterableHeader
+                        label={column.label}
+                        active={active}
+                        direction={sortOrder}
+                        onSort={field ? () => toggleIncidentSort(field) : undefined}
+                        filter={incidentColumnFilter(column.id)}
+                      />
                     </TableHead>
                   );
                 })}
@@ -1144,7 +1298,7 @@ export default function ChamadosPage() {
                 items.map((item, index) => (
                   <TableRow
                     key={incidentKey(item, index)}
-                    className="cursor-pointer"
+                    className="group cursor-pointer bg-background"
                     tabIndex={0}
                     aria-label={`Abrir detalhes de ${displayValue(item.number)}`}
                     onClick={() => setSelected(item)}
@@ -1160,7 +1314,7 @@ export default function ChamadosPage() {
                         return (
                           <TableCell
                             key={column}
-                            className="px-2 py-1.5 align-middle"
+                            className="sticky right-0 z-10 bg-inherit px-2 py-1.5 align-middle transition-colors group-hover:bg-muted/50"
                             onClick={(event) => event.stopPropagation()}
                           >
                             <IncidentTableActionsCell
@@ -1171,7 +1325,10 @@ export default function ChamadosPage() {
                         );
                       }
                       if (column === "number") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 font-mono text-xs">{displayValue(item.number)}</TableCell>;
-                      if (column === "client") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.company_display, item.company)}>{displayValue(item.company_display, item.company)}</TableCell>;
+                      if (column === "client") {
+                        const fullClientName = displayValue(item.company_display, item.company);
+                        return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm font-medium" title={fullClientName}>{compactOperationalClientLabel(fullClientName, fullClientName)}</TableCell>;
+                      }
                       if (column === "description") return <TableCell key={column} className="max-w-0 truncate px-3 py-1.5 text-sm" title={displayValue(item.short_description)}>{displayValue(item.short_description)}</TableCell>;
                       if (column === "state") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-sm">{displayValue(item.state_display, item.state)}</TableCell>;
                       if (column === "priority") return <TableCell key={column} className="whitespace-nowrap px-3 py-1.5 text-sm">{displayValue(item.priority_display, item.priority)}</TableCell>;
@@ -1186,6 +1343,7 @@ export default function ChamadosPage() {
               )}
             </TableBody>
           </Table>
+          </div>
 
           {pagination && pagination.total_pages > 0 ? (
             <div className="flex items-center justify-end gap-2 border-t border-border/60 px-4 py-3">

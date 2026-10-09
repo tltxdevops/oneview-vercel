@@ -53,7 +53,7 @@ test("OV-P0 go-live: 503 / abort / keep-last payload / concorrência", async () 
   assert.match(alerts, /controller.signal.aborted \|\| isOneViewAbortError/);
   assert.match(alerts, /onRetry=\{\(\) => void loadAlerts\(\)\}/);
   assert.match(alerts, /if \(!hasLoadedAlerts\) setAlertsError\(null\)/);
-  assert.match(monitoring, /inFlightGeneration\(\) === generation.peek\(\)/);
+  assert.match(monitoring, /(?:inFlightGeneration\(\) === generation.peek\(\)|queryGenerationRef\.current\.inFlightGeneration\(\) === queryGenerationRef\.current\.peek\(\))/);
   assert.match(monitoring, /isOneViewAbortError/);
   assert.match(settings, /OperationalErrorBanner/);
   assert.match(settings, /Atualização falhou — exibindo último dado disponível/);

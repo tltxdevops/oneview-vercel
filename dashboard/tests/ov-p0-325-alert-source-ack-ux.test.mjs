@@ -35,7 +35,7 @@ test("OV-P0-325: polling ACK Ã© isolado, terminal e sem refresh global", async
 
   const sourceAckHandler = alerts.slice(alerts.indexOf("const handleSourceAcknowledged"), alerts.indexOf("const toggleColumnSort"));
   assert.match(sourceAckHandler, /invalidateOneViewReadCache\("\/oneview\/alerts"/);
-  assert.match(sourceAckHandler, /loadAlerts\(\{ quiet: true \}\)/);
+  assert.match(sourceAckHandler, /loadAlerts\(\{ quiet: true(?:, force: true)? \}\)/);
   assert.match(sourceAckHandler, /loadSelectedAlert\(alert\.id\)/);
   assert.doesNotMatch(sourceAckHandler, /loadSummaryResources|fetchOneViewFacets|fetchOneViewHealth|fetchOperationsHealth/);
 });
@@ -66,8 +66,9 @@ test("P0 ACK OneView: status terminal, histórico humanizado e filtro são indep
   const pending = buildAlertListQuery({ query: { status: "active", oneview_ack_status: "pending" } }, "teletex-http");
   const cancelled = buildAlertListQuery({ query: { status: "resolved", oneview_ack_status: "cancelled" } }, "teletex-http");
   assert.match(pending.whereSql, /a\.resolved_at is null/);
-  assert.match(pending.whereSql, /in \('pending','processing'\)/);
-  assert.match(cancelled.whereSql, /a\.resolved_at is not null/);
+  assert.match(pending.whereSql, /= any\(\$\d+::text\[\]\)/);
+  assert.deepEqual(pending.params.at(-1), ["pending", "processing"]);
+  assert.match(cancelled.whereSql, /lower\(coalesce\(a\.status_source, ''\)\) = 'resolved'/);
   assert.match(cancelled.whereSql, /ack\.acknowledgement_type = 'source'/);
 
   const db = await read("api/_lib/oneview-db.js");

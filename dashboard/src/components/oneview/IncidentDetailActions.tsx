@@ -1,4 +1,4 @@
-import { IncidentActions } from "@/components/oneview/IncidentActions";
+import { IncidentActions, type IncidentTableActionId } from "@/components/oneview/IncidentActions";
 import type { AlertArtifactModel } from "@/lib/oneview-alert-artifact";
 import type {
   ServiceNowIncidentClaimResponse,
@@ -17,6 +17,7 @@ type Props = {
   incident: IncidentRef;
   alertArtifact?: AlertArtifactModel | null;
   placement?: "inline" | "drawer-footer" | "table-cell";
+  visibleActions?: readonly IncidentTableActionId[];
   className?: string;
   onClaimed?: (result: ServiceNowIncidentClaimResponse) => void;
   onWorkNoteAdded?: () => void;
@@ -28,6 +29,7 @@ export function IncidentDetailActions({
   incident,
   alertArtifact = null,
   placement = "drawer-footer",
+  visibleActions,
   className,
   onClaimed,
   onWorkNoteAdded,
@@ -42,6 +44,7 @@ export function IncidentDetailActions({
         incident={incident}
         alertArtifact={alertArtifact}
         placement={placement}
+        visibleActions={visibleActions}
         onClaimed={onClaimed}
         onWorkNoteAdded={onWorkNoteAdded}
         onAttachmentAdded={onAttachmentAdded}

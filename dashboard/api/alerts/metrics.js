@@ -83,7 +83,6 @@ export default async function handler(req, res) {
         from scoped_alerts
         where ${ACTIVE_WHERE}
           and acknowledged_source = false
-          and acknowledged_internal = false
       `),
       rows(`
         select id, client_name, host_name, problem_name, severity,

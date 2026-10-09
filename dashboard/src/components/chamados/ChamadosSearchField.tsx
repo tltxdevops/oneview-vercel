@@ -17,7 +17,7 @@ type ChamadosSearchFieldProps = {
   inputId?: string;
   activity?: "idle" | "pending" | "searching";
   activityQuery?: string;
-  selectedCompany?: string;
+  selectedCompanies?: string[];
 };
 
 export function ChamadosSearchField({
@@ -31,7 +31,7 @@ export function ChamadosSearchField({
   inputId = "chamados-search",
   activity,
   activityQuery,
-  selectedCompany = "",
+  selectedCompanies = [],
 }: ChamadosSearchFieldProps) {
   const fetchSuggestions = useCallback(
     (q: string, signal: AbortSignal) =>
@@ -54,7 +54,9 @@ export function ChamadosSearchField({
       activity={activity}
       activityQuery={activityQuery}
       getSuggestionActionLabel={(item) => item.kind === "company" ? "Aplicar Cliente" : null}
-      isSuggestionSelected={(item) => item.kind === "company" && Boolean(selectedCompany.trim()) && item.value.trim().toLocaleLowerCase("pt-BR") === selectedCompany.trim().toLocaleLowerCase("pt-BR")}
+      isSuggestionSelected={(item) => item.kind === "company" && selectedCompanies.some((company) => (
+        item.value.trim().toLocaleLowerCase("pt-BR") === company.trim().toLocaleLowerCase("pt-BR")
+      ))}
     />
   );
 }

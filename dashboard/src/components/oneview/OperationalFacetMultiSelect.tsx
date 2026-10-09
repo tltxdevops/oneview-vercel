@@ -12,6 +12,60 @@ export type OperationalFacetOption<Value extends string = string> = {
   disabled?: boolean;
 };
 
+export function OperationalFacetChecklist<Value extends string>({
+  options,
+  selectedValues,
+  onChange,
+  allLabel = "Todas",
+  searchPlaceholder = "Buscar opção...",
+  emptyLabel = "Nenhuma opção encontrada.",
+}: {
+  options: OperationalFacetOption<Value>[];
+  selectedValues: Value[];
+  onChange: (values: Value[]) => void;
+  allLabel?: string;
+  searchPlaceholder?: string;
+  emptyLabel?: string;
+}) {
+  const selected = useMemo(() => new Set(selectedValues), [selectedValues]);
+  return (
+    <Command>
+      <CommandInput placeholder={searchPlaceholder} className="h-9" />
+      <CommandList className="max-h-72 overflow-y-auto overscroll-contain">
+        <CommandEmpty>{emptyLabel}</CommandEmpty>
+        <CommandGroup>
+          <CommandItem value={allLabel} onSelect={() => onChange([])} className="gap-2">
+            <span className="grid h-4 w-4 shrink-0 place-items-center rounded border border-border">
+              {selected.size === 0 ? <Check className="h-3 w-3" /> : null}
+            </span>
+            <span className="flex-1">{allLabel}</span>
+          </CommandItem>
+          {options.map((option) => {
+            const checked = selected.has(option.value);
+            return (
+              <CommandItem
+                key={option.value}
+                value={`${option.label} ${option.value}`}
+                disabled={option.disabled}
+                onSelect={() => onChange(checked
+                  ? selectedValues.filter((value) => value !== option.value)
+                  : [...selectedValues, option.value])}
+                className="gap-2"
+              >
+                <span className="grid h-4 w-4 shrink-0 place-items-center rounded border border-border">
+                  {checked ? <Check className="h-3 w-3" /> : null}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                {option.count != null ? <span className="text-[10px] tabular-nums text-muted-foreground">{option.count.toLocaleString("pt-BR")}</span> : null}
+              </CommandItem>
+            );
+          })}
+        </CommandGroup>
+      </CommandList>
+    </Command>
+  );
+}
+
 export function OperationalFacetMultiSelect<Value extends string>({
   label,
   options,
@@ -32,7 +86,6 @@ export function OperationalFacetMultiSelect<Value extends string>({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const selected = useMemo(() => new Set(selectedValues), [selectedValues]);
   const triggerLabel = selectedValues.length === 0
     ? allLabel
     : selectedValues.length === 1
@@ -55,40 +108,17 @@ export function OperationalFacetMultiSelect<Value extends string>({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" collisionPadding={8} className="w-[min(20rem,calc(100vw-1rem))] p-0">
-        <Command>
-          <CommandInput placeholder={searchPlaceholder} className="h-10" />
-          <CommandList className="max-h-72">
-            <CommandEmpty>{emptyLabel}</CommandEmpty>
-            <CommandGroup>
-              <CommandItem value={allLabel} onSelect={() => { onChange([]); setOpen(false); }} className="gap-2">
-                <span className="grid h-4 w-4 shrink-0 place-items-center rounded border border-border">
-                  {selected.size === 0 ? <Check className="h-3 w-3" /> : null}
-                </span>
-                <span className="flex-1">{allLabel}</span>
-              </CommandItem>
-              {options.map((option) => {
-                const checked = selected.has(option.value);
-                return (
-                  <CommandItem
-                    key={option.value}
-                    value={`${option.label} ${option.value}`}
-                    disabled={option.disabled}
-                    onSelect={() => onChange(checked
-                      ? selectedValues.filter((value) => value !== option.value)
-                      : [...selectedValues, option.value])}
-                    className="gap-2"
-                  >
-                    <span className="grid h-4 w-4 shrink-0 place-items-center rounded border border-border">
-                      {checked ? <Check className="h-3 w-3" /> : null}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                    {option.count != null ? <span className="text-[10px] tabular-nums text-muted-foreground">{option.count.toLocaleString("pt-BR")}</span> : null}
-                  </CommandItem>
-                );
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
+        <OperationalFacetChecklist
+          options={options}
+          selectedValues={selectedValues}
+          onChange={(values) => {
+            onChange(values);
+            if (values.length === 0) setOpen(false);
+          }}
+          allLabel={allLabel}
+          searchPlaceholder={searchPlaceholder}
+          emptyLabel={emptyLabel}
+        />
       </PopoverContent>
     </Popover>
   );

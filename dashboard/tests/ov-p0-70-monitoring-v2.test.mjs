@@ -95,7 +95,7 @@ test("OV-P0-70 Monitoring: fila Prioritários|Todos + helpers (command center em
   assert.match(monitoring, /MONITOR_WINDOW_OPTIONS\.map/);
   assert.match(monitoring, /OperationalSegmentedControl|Prioritários/);
   assert.match(monitoring, /MonitorAlertRow/);
-  assert.match(monitoring, /Sem ACK|Com ACK/);
+  assert.match(monitoring, /sourceAckRowLabel|Sem ACK|Com ACK/);
   assert.match(monitoring, /PlatformHealthStrip/);
   assert.match(monitoring, /<Sidebar/);
   assert.match(monitoring, /monitoringCollapse/);

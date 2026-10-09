@@ -225,6 +225,14 @@ function queryValues(req, key) {
     .slice(0, MAX_FILTER_VALUES);
 }
 
+function queryTokenValues(req, key) {
+  return [...new Set(queryValues(req, key)
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter(Boolean))]
+    .slice(0, MAX_FILTER_VALUES);
+}
+
 function oneQueryValue(req, key) {
   return queryValues(req, key)[0] || "";
 }
@@ -254,6 +262,10 @@ function poolSignature(config) {
     config.poolMax,
     config.connectionTimeoutMs,
     config.queryTimeoutMs,
+    config.statementTimeoutMs,
+    config.idleTimeoutMs,
+    config.maxLifetimeSeconds,
+    config.idleInTransactionTimeoutMs,
   ]);
 }
 
@@ -681,7 +693,11 @@ const INCIDENT_REFERENCE_TAG_ROWS_SQL = `
 `;
 
 /** Strict identity: one sys_id tag, else one unique INC tag, else one source event match. */
-function incidentStateCorrelationSql(stateParam) {
+function incidentCorrelationSql({ statesParam = null, numberParam = null } = {}) {
+  const incidentMatch = (alias) => [
+    statesParam ? `${alias}.state::text = any(${statesParam}::text[])` : null,
+    numberParam ? `upper(${alias}.number::text) like ${numberParam}` : null,
+  ].filter(Boolean).join(" and ") || "true";
   return `exists (
     with tag_rows as (${INCIDENT_REFERENCE_TAG_ROWS_SQL}), refs as (
       select array_agg(distinct lower(value)) filter (
@@ -697,14 +713,14 @@ function incidentStateCorrelationSql(stateParam) {
        when cardinality(coalesce(sys_ids, array[]::text[])) > 0 then
          cardinality(sys_ids) = 1 and exists (
            select 1 from servicenow_incidents i
-            where lower(i.sys_id::text) = sys_ids[1] and i.state::text = ${stateParam}
+            where lower(i.sys_id::text) = sys_ids[1] and ${incidentMatch("i")}
          )
        when cardinality(coalesce(numbers, array[]::text[])) > 0 then
          cardinality(numbers) = 1
          and (select count(*) from servicenow_incidents i where upper(i.number::text) = numbers[1]) = 1
          and exists (
            select 1 from servicenow_incidents i
-            where upper(i.number::text) = numbers[1] and i.state::text = ${stateParam}
+            where upper(i.number::text) = numbers[1] and ${incidentMatch("i")}
          )
        else
          (select count(*) from servicenow_incidents i
@@ -721,7 +737,7 @@ function incidentStateCorrelationSql(stateParam) {
               nullif(btrim(i.raw_payload->>'zabbix_event_id'), ''),
               nullif(btrim(i.raw_payload->>'u_zabbix_event_id'), '')
             ) = coalesce(a.source_event_id::text, a.source_problem_id::text)
-              and i.state::text = ${stateParam}
+              and ${incidentMatch("i")}
          )
      end
   )`;
@@ -764,7 +780,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const acknowledged = oneQueryValue(req, "acknowledged").toLowerCase();
   const acknowledgedSource = oneQueryValue(req, "acknowledged_source").toLowerCase();
   const acknowledgedInternal = oneQueryValue(req, "acknowledged_internal").toLowerCase();
-  const oneviewAckStatus = oneQueryValue(req, "oneview_ack_status").toLowerCase();
+  const oneviewAckStatuses = queryTokenValues(req, "oneview_ack_status").map((value) => value.toLowerCase());
+  const ackActor = oneQueryValue(req, "ack_actor").slice(0, 160);
   const search = oneQueryValue(req, "search").slice(0, 200);
   const searchField = (oneQueryValue(req, "search_field") || "all").toLowerCase();
   const hostSearch = oneQueryValue(req, "host_search").slice(0, 200);
@@ -785,7 +802,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const recurrenceKeyRaw = oneQueryValue(req, "recurrence_key");
   const recurrenceKey = recurrenceKeyRaw ? parseRecurrenceKey(recurrenceKeyRaw) : null;
   const excludeOperator = oneQueryValue(req, "exclude_operator").toLowerCase();
-  const incidentState = oneQueryValue(req, "incident_state").trim();
+  const incidentStates = queryTokenValues(req, "incident_state");
+  const incidentNumber = oneQueryValue(req, "incident_number").trim().toUpperCase().slice(0, 40);
 
   if (severities.some((value) => !ALERT_SEVERITIES.has(value))) throw requestError("invalid_query");
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
@@ -793,7 +811,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (acknowledged && !["true", "false"].includes(acknowledged)) throw requestError("invalid_query");
   if (acknowledgedSource && !["true", "false"].includes(acknowledgedSource)) throw requestError("invalid_query");
   if (acknowledgedInternal && !["true", "false"].includes(acknowledgedInternal)) throw requestError("invalid_query");
-  if (oneviewAckStatus && !["pending", "success", "cancelled", "failed"].includes(oneviewAckStatus)) throw requestError("invalid_query");
+  if (oneviewAckStatuses.some((value) => !["pending", "processing", "success", "cancelled", "failed"].includes(value))) throw requestError("invalid_query");
   if (!["all", "host", "problem", "customer", "eventid"].includes(searchField)) throw requestError("invalid_query");
   if (!Object.hasOwn(ALERT_SORTS, sort) || !["asc", "desc"].includes(order)) throw requestError("invalid_query");
   if (sortSecondary && (!Object.hasOwn(ALERT_SORTS, sortSecondary) || sortSecondary === sort)) {
@@ -806,7 +824,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (acknowledgedFrom && acknowledgedTo && Date.parse(acknowledgedFrom) > Date.parse(acknowledgedTo)) throw requestError("invalid_query");
   if (recurrenceKeyRaw && !recurrenceKey) throw requestError("invalid_query");
   if (excludeOperator && !["true", "false"].includes(excludeOperator)) throw requestError("invalid_query");
-  if (incidentState && !/^[1-8]$/.test(incidentState)) throw requestError("invalid_query");
+  if (incidentStates.some((value) => !/^[1-8]$/.test(value))) throw requestError("invalid_query");
+  if (incidentNumber && !/^INC\d{0,20}$/.test(incidentNumber)) throw requestError("invalid_query");
   const offset = (page - 1) * pageSize;
   if (!Number.isSafeInteger(offset)) throw requestError("invalid_query");
 
@@ -837,9 +856,18 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (status === "resolved") clauses.push(RESOLVED_ALERT_SQL);
   // OV-P0-248: Home only. /alertas remains unfiltered unless it explicitly opts in.
   if (excludeOperator === "true") clauses.push(`not (${OPERATOR_TAG_EXISTS_SQL})`);
-  if (incidentState) {
-    params.push(incidentState);
-    clauses.push(incidentStateCorrelationSql(`$${params.length}`));
+  if (incidentStates.length || incidentNumber) {
+    let statesParam = null;
+    let numberParam = null;
+    if (incidentStates.length) {
+      params.push(incidentStates);
+      statesParam = `$${params.length}`;
+    }
+    if (incidentNumber) {
+      params.push(`${incidentNumber}%`);
+      numberParam = `$${params.length}`;
+    }
+    clauses.push(incidentCorrelationSql({ statesParam, numberParam }));
   }
   if (acknowledged) {
     push(
@@ -849,9 +877,23 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   }
   if (acknowledgedSource) push("coalesce(a.acknowledged_source, false) = ?", acknowledgedSource === "true");
   if (acknowledgedInternal) push(`${INTERNAL_ACKNOWLEDGED_SQL} = ?`, acknowledgedInternal === "true");
-  if (oneviewAckStatus === "pending") clauses.push(`${LATEST_ONEVIEW_ACK_STATUS_SQL} in ('pending','processing')`);
-  if (["success", "cancelled", "failed"].includes(oneviewAckStatus)) {
-    push(`${LATEST_ONEVIEW_ACK_STATUS_SQL} = ?`, oneviewAckStatus);
+  if (oneviewAckStatuses.length) {
+    const expandedStatuses = [...new Set(oneviewAckStatuses.flatMap((value) => value === "pending" ? ["pending", "processing"] : [value]))];
+    push(`${LATEST_ONEVIEW_ACK_STATUS_SQL} = any(?::text[])`, expandedStatuses);
+  }
+  if (ackActor) {
+    push(
+      `(coalesce(a.acknowledged_by, '') ilike ? or exists (
+        select 1
+          from alert_acknowledgements ack_actor
+         where ack_actor.alert_id = a.id
+           and ack_actor.acknowledgement_type = 'source'
+           and coalesce(ack_actor.operator_name, '') ilike $CURRENT
+      ))`,
+      `%${ackActor}%`,
+    );
+    const current = `$${params.length}`;
+    clauses[clauses.length - 1] = clauses[clauses.length - 1].replaceAll("$CURRENT", current);
   }
   if (search) {
     if (searchField === "host") {
@@ -929,7 +971,9 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       acknowledged,
       acknowledgedSource,
       acknowledgedInternal,
-      oneviewAckStatus,
+      oneviewAckStatus: oneviewAckStatuses[0] || "",
+      oneviewAckStatuses,
+      ackActor,
       search,
       searchField,
       hostSearch,
@@ -949,7 +993,9 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       sortSecondary,
       recurrenceKey: recurrenceKeyRaw || null,
       excludeOperator: excludeOperator === "true",
-      incidentState: incidentState || null,
+      incidentState: incidentStates[0] || null,
+      incidentStates,
+      incidentNumber: incidentNumber || null,
     },
     include: parseAlertListInclude(oneQueryValue(req, "include")),
   };
@@ -2972,8 +3018,12 @@ export function buildGlobalHistoryScopeClauses(req, dataSourceNames = getOperati
   const customers = queryValues(req, "customer").map((value) => value.slice(0, 160));
   const datasources = queryValues(req, "datasource").map((value) => value.slice(0, 160));
   const eventType = oneQueryValue(req, "event_type").toLowerCase();
-  const actor = oneQueryValue(req, "actor").slice(0, 160);
+  const actors = queryTokenValues(req, "actor").map((value) => value.slice(0, 160));
   const search = oneQueryValue(req, "search").slice(0, 200);
+  const hostSearch = oneQueryValue(req, "host_search").slice(0, 200);
+  const problemSearch = oneQueryValue(req, "problem_search").slice(0, 200);
+  const commentSearch = oneQueryValue(req, "comment_search").slice(0, 200);
+  const severities = queryTokenValues(req, "severity").map((value) => value.toLowerCase());
   const occurredFrom = isoFilterDate(oneQueryValue(req, "occurred_from"));
   const occurredTo = isoFilterDate(oneQueryValue(req, "occurred_to"));
   if (eventType && eventType !== "all" && !Object.hasOwn(GLOBAL_HISTORY_EVENT_TYPES, eventType)) {
@@ -2982,6 +3032,7 @@ export function buildGlobalHistoryScopeClauses(req, dataSourceNames = getOperati
   if (occurredFrom && occurredTo && Date.parse(occurredFrom) > Date.parse(occurredTo)) {
     throw requestError("invalid_query");
   }
+  if (severities.some((value) => !ALERT_SEVERITIES.has(value))) throw requestError("invalid_query");
 
   const params = [operationalDataSourceNames(dataSourceNames)];
   const clauses = [
@@ -3013,9 +3064,14 @@ export function buildGlobalHistoryScopeClauses(req, dataSourceNames = getOperati
     params.push(GLOBAL_HISTORY_EVENT_TYPES[eventType]);
     clauses.push(`lower(coalesce(h.action_type, '')) = any($${params.length})`);
   }
-  if (actor) {
-    push("lower(coalesce(nullif(h.actor_name, ''), nullif(h.operator_name, ''), '')) = lower(?)", actor);
+  if (actors.length) {
+    if (actors.length === 1) push("lower(coalesce(nullif(h.actor_name, ''), nullif(h.operator_name, ''), '')) = lower(?)", actors[0]);
+    else push("lower(coalesce(nullif(h.actor_name, ''), nullif(h.operator_name, ''), '')) = any(?::text[])", actors.map((value) => value.toLowerCase()));
   }
+  if (severities.length) push("lower(coalesce(a.severity, 'not_classified')) = any(?::text[])", severities);
+  if (hostSearch) push("coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '') ilike ?", `%${hostSearch}%`);
+  if (problemSearch) push("coalesce(a.problem_name, '') ilike ?", `%${problemSearch}%`);
+  if (commentSearch) push("coalesce(h.message, '') ilike ?", `%${commentSearch}%`);
   if (occurredFrom) push("coalesce(h.occurred_at, h.created_at) >= ?::timestamptz", occurredFrom);
   if (occurredTo) push("coalesce(h.occurred_at, h.created_at) < ?::timestamptz", occurredTo);
   if (search) {
@@ -3205,7 +3261,49 @@ export function getOneViewDbConfig(env = process.env) {
     poolMax: integerValue(env.ONEVIEW_DB_POOL_MAX, 2, { min: 1, max: 10 }),
     queryTimeoutMs: integerValue(env.ONEVIEW_DB_QUERY_TIMEOUT_MS, 10000, { min: 1000, max: 30000 }),
     connectionTimeoutMs: integerValue(env.ONEVIEW_DB_CONNECTION_TIMEOUT_MS, 10000, { min: 1000, max: 30000 }),
+    // Serverless: conexões curtas evitam reuso de socket obsoleto após freeze/restore.
+    idleTimeoutMs: integerValue(env.ONEVIEW_DB_IDLE_TIMEOUT_MS, 5000, { min: 1000, max: 60000 }),
+    maxLifetimeSeconds: integerValue(env.ONEVIEW_DB_MAX_LIFETIME_SECONDS, 300, { min: 30, max: 3600 }),
+    statementTimeoutMs: integerValue(env.ONEVIEW_DB_STATEMENT_TIMEOUT_MS, 10000, { min: 1000, max: 30000 }),
+    idleInTransactionTimeoutMs: integerValue(env.ONEVIEW_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS, 15000, { min: 1000, max: 60000 }),
   });
+}
+
+function poolStatsFor(poolInstance = pool) {
+  return {
+    db_pool_max: Number(poolInstance?.options?.max || 0),
+    db_pool_total: Number(poolInstance?.totalCount || 0),
+    db_pool_idle: Number(poolInstance?.idleCount || 0),
+    db_pool_waiting: Number(poolInstance?.waitingCount || 0),
+  };
+}
+
+function safeOperationName(value) {
+  return String(value || "database").replace(/[^a-zA-Z0-9_:/.-]/g, "").slice(0, 120) || "database";
+}
+
+/** Sanitized operational metric: never include SQL, connection strings, credentials or driver messages. */
+export function logOneViewDbPoolMetric({
+  logger = console.info,
+  event = "oneview_database_operation",
+  operation = "database",
+  retry = 0,
+  attempt,
+  durationMs = 0,
+  error,
+  poolInstance = pool,
+} = {}) {
+  const errorClass = error ? databaseFailureCode(error) : "none";
+  logger(JSON.stringify({
+    event,
+    operation: safeOperationName(operation),
+    retry: Math.max(0, Number(retry) || 0),
+    ...(attempt === undefined ? {} : { attempt: Math.max(1, Number(attempt) || 1) }),
+    duration_ms: Math.max(0, Number(durationMs) || 0),
+    error_class: errorClass,
+    ...(error ? { code: errorClass } : {}),
+    ...poolStatsFor(poolInstance),
+  }));
 }
 
 export function getOneViewDbPool(config = getOneViewDbConfig()) {
@@ -3214,25 +3312,31 @@ export function getOneViewDbPool(config = getOneViewDbConfig()) {
     if (pool) {
       pool.end().catch(() => undefined);
     }
-    pool = new Pool({
+    const nextPool = new Pool({
       host: config.host,
       port: config.port,
       database: config.database,
       user: config.user,
       password: config.password,
       max: config.poolMax,
-      idleTimeoutMillis: 5000,
+      idleTimeoutMillis: config.idleTimeoutMs,
       connectionTimeoutMillis: config.connectionTimeoutMs,
       query_timeout: config.queryTimeoutMs,
+      maxLifetimeSeconds: config.maxLifetimeSeconds,
+      allowExitOnIdle: true,
       ssl: poolSslConfig(config),
       application_name: "oneview-vercel-bff",
     });
-    pool.on("error", (error) => {
-      console.error(JSON.stringify({
+    nextPool.on("error", (error) => {
+      logOneViewDbPoolMetric({
+        logger: console.error,
         event: "oneview_database_pool_error",
-        code: databaseFailureCode(error),
-      }));
+        operation: "idle_client",
+        error,
+        poolInstance: nextPool,
+      });
     });
+    pool = nextPool;
     poolKey = signature;
   }
   return pool;
@@ -3241,10 +3345,10 @@ export function getOneViewDbPool(config = getOneViewDbConfig()) {
 export function getOneViewDbPoolStats() {
   return {
     initialized: Boolean(pool),
-    max: Number(pool?.options?.max || 0),
-    total: Number(pool?.totalCount || 0),
-    idle: Number(pool?.idleCount || 0),
-    waiting: Number(pool?.waitingCount || 0),
+    max: poolStatsFor().db_pool_max,
+    total: poolStatsFor().db_pool_total,
+    idle: poolStatsFor().db_pool_idle,
+    waiting: poolStatsFor().db_pool_waiting,
   };
 }
 
@@ -3774,6 +3878,7 @@ const RUNTIME_WORKERS = Object.freeze([
   { workerName: "recovery", name: "Recovery", intervalSeconds: 60 },
   { workerName: "servicenow_sync", name: "ServiceNow Sync", intervalSeconds: 30 },
   { workerName: "theo_dispatcher", name: "Theo Dispatcher", intervalSeconds: 60 },
+  { workerName: "zabbix_ack_worker", name: "Zabbix ACK", intervalSeconds: 15 },
 ]);
 function metadataDate(value, key) {
   return isoDate(value?.[key]);
@@ -4449,6 +4554,7 @@ export async function findTheoProducedAlert(
       a.operational_data,
       a.severity,
       a.status_source,
+      a.status_internal,
       a.resolved_at,
       a.first_seen_at,
       a.last_seen_at,

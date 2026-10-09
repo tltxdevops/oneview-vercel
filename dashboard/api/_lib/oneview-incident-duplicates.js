@@ -23,9 +23,11 @@ export const DUPLICATE_CLASSIFICATION = "POSSIBLE_DUPLICATE";
 export const OPEN_INCIDENT_STATES_EXCLUDED = Object.freeze(["6", "7", "8"]);
 
 const SAFE_FILTER = /^[a-zA-Z0-9._:@/\- ]{1,120}$/;
+const SAFE_CUSTOMER_FILTER = /^[\p{L}\p{N} ._:@\/,'&()\-]{1,120}$/u;
 const SAFE_STATE = /^[0-9,]{1,40}$/;
 const SAFE_PRIORITY = /^[1-5]$/;
 const SAFE_SYS_ID = /^[a-f0-9]{32}$/i;
+const MAX_CUSTOMER_FILTERS = 20;
 
 const DUPLICATE_INCIDENT_SELECT = `
   sys_id, number, state, priority, assigned_to, assignment_group, caller_id, company,
@@ -58,6 +60,13 @@ function text(value) {
 function oneQuery(req, key) {
   const value = req?.query?.[key];
   return Array.isArray(value) ? value[0] : value;
+}
+
+function queryValues(req, key) {
+  const value = req?.query?.[key];
+  return (Array.isArray(value) ? value : [value])
+    .map((item) => text(item))
+    .filter(Boolean);
 }
 
 function toMs(value) {
@@ -174,17 +183,29 @@ function invalidQuery(code = "invalid_query") {
 }
 
 export function parseDuplicateFilters(req) {
-  const company = text(oneQuery(req, "customer") || oneQuery(req, "company") || oneQuery(req, "client"));
+  const explicitCompanies = queryValues(req, "customer");
+  const legacyCompanies = explicitCompanies.length
+    ? []
+    : [...queryValues(req, "company"), ...queryValues(req, "client")];
+  const companyMap = new Map();
+  for (const value of explicitCompanies.length ? explicitCompanies : legacyCompanies) {
+    const key = value.toLocaleLowerCase("pt-BR");
+    if (!companyMap.has(key)) companyMap.set(key, value);
+  }
+  const companies = [...companyMap.values()];
+  if (companies.length > MAX_CUSTOMER_FILTERS) throw invalidQuery("invalid_customer");
+  const company = companies[0] || null;
   const assignedTo = text(oneQuery(req, "assigned_to"));
   const assignmentGroup = text(oneQuery(req, "assignment_group"));
   const priority = text(oneQuery(req, "priority"));
   const state = text(oneQuery(req, "state"));
 
-  if (company && !SAFE_FILTER.test(company)) throw invalidQuery("invalid_customer");
+  if (companies.some((value) => !SAFE_CUSTOMER_FILTER.test(value))) throw invalidQuery("invalid_customer");
   if (assignmentGroup && !(SAFE_SYS_ID.test(assignmentGroup) || SAFE_FILTER.test(assignmentGroup))) {
     throw invalidQuery("invalid_assignment_group");
   }
-  if (priority && !SAFE_PRIORITY.test(priority)) throw invalidQuery("invalid_priority");
+  const priorities = priority ? priority.split(",").map((item) => item.trim()).filter(Boolean) : [];
+  if (priorities.some((item) => !SAFE_PRIORITY.test(item))) throw invalidQuery("invalid_priority");
   if (state && !SAFE_STATE.test(state)) throw invalidQuery("invalid_state");
 
   let assignedToFilter = null;
@@ -199,9 +220,10 @@ export function parseDuplicateFilters(req) {
 
   return {
     company,
+    companies,
     assigned_to: assignedToFilter,
     assignment_group: assignmentGroup,
-    priority,
+    priority: priorities,
     state: state ? state.split(",").map((item) => item.trim()).filter(Boolean) : null,
   };
 }
@@ -222,9 +244,9 @@ function buildOpenUniverseWhere(filters, values) {
     values.push(filters.state);
     clauses.push(`state::text = any($${values.length}::text[])`);
   }
-  if (filters.priority) {
+  if (filters.priority?.length) {
     values.push(filters.priority);
-    clauses.push(`priority::text = $${values.length}`);
+    clauses.push(`priority::text = any($${values.length}::text[])`);
   }
   if (filters.assignment_group) {
     values.push(filters.assignment_group);
@@ -234,10 +256,11 @@ function buildOpenUniverseWhere(filters, values) {
     values.push(filters.assigned_to.map((id) => id.toLowerCase()));
     clauses.push(`lower(assigned_to::text) = any($${values.length}::text[])`);
   }
-  if (filters.company) {
-    values.push(`%${filters.company}%`);
+  const companies = filters.companies?.length ? filters.companies : filters.company ? [filters.company] : [];
+  if (companies.length) {
+    values.push(companies.map((company) => `%${company}%`));
     clauses.push(
-      `(company::text ilike $${values.length} or coalesce(display_values::text, '') ilike $${values.length})`,
+      `(company::text ilike any($${values.length}::text[]) or coalesce(display_values::text, '') ilike any($${values.length}::text[]))`,
     );
   }
   return clauses.join(" and ");

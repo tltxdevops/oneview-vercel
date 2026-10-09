@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { ArrowUpDown, Check, ChevronDown, ChevronUp, Columns3, GripVertical, RotateCcw } from "lucide-react";
+import { Fragment, useState, type ReactNode } from "react";
+import { ArrowUpDown, Check, ChevronDown, ChevronUp, Columns3, GripVertical, ListFilter, RotateCcw, Search } from "lucide-react";
 import { OneViewTableSearchField } from "@/components/oneview/OneViewTableSearchField";
 import { OperationalFilterPanel } from "@/components/oneview/OperationalFilterPanel";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,83 @@ export function OneViewSortableHeader({
   );
 }
 
+export function OneViewColumnFilterPopover({
+  label,
+  activeCount = 0,
+  kind = "filter",
+  align = "start",
+  children,
+}: {
+  label: string;
+  activeCount?: number;
+  kind?: "filter" | "search";
+  align?: "start" | "center" | "end";
+  children: ReactNode;
+}) {
+  const Icon = kind === "search" ? Search : ListFilter;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "relative grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            activeCount > 0 && "bg-primary/10 text-primary",
+          )}
+          aria-label={`${label}${activeCount > 0 ? `, ${activeCount} ativo${activeCount === 1 ? "" : "s"}` : ""}`}
+          title={label}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+          {activeCount > 1 ? (
+            <span className="absolute -right-1 -top-1 grid min-h-3.5 min-w-3.5 place-items-center rounded-full bg-primary px-0.5 text-[8px] font-bold leading-none text-primary-foreground">
+              {activeCount > 9 ? "9+" : activeCount}
+            </span>
+          ) : activeCount === 1 ? (
+            <span className="absolute right-0 top-0 h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+          ) : null}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align={align}
+        side="bottom"
+        sideOffset={6}
+        collisionPadding={8}
+        style={{ maxHeight: "min(24rem, var(--radix-popover-content-available-height))" }}
+        className="w-[min(22rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain p-3"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {children}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export function OneViewFilterableHeader({
+  label,
+  active = false,
+  direction = "asc",
+  onSort,
+  filter,
+}: {
+  label: string;
+  active?: boolean;
+  direction?: OneViewSortDirection;
+  onSort?: () => void;
+  filter?: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-1">
+      {onSort ? (
+        <OneViewSortableHeader label={label} active={active} direction={direction} onClick={onSort} />
+      ) : (
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+      )}
+      {filter}
+    </div>
+  );
+}
+
 export function OneViewTableSortMenu({
   value,
   options,
@@ -59,11 +136,15 @@ export function OneViewTableSortMenu({
     <div className="flex h-9 min-w-0 items-center gap-1.5">
       <span className="sr-only">{label}</span>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="h-9 min-w-[10rem] max-w-[15rem]" aria-label={label}>
+        <SelectTrigger className="h-9 min-w-[10rem] max-w-[15rem] max-lg:max-w-[13rem]" aria-label={label}>
           <ArrowUpDown className="mr-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
           <SelectValue placeholder={label} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent
+          align="end"
+          className="w-[min(20rem,calc(100vw-1rem))]"
+          style={{ maxHeight: "min(20rem, var(--radix-select-content-available-height))" }}
+        >
           {options.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
         </SelectContent>
       </Select>
@@ -80,12 +161,22 @@ type ColumnController<ColumnId extends string> = {
   reset: () => void;
 };
 
+type ResponsiveColumnState = {
+  autoHiddenCount?: number;
+  showAllColumns?: boolean;
+  onShowAllColumnsChange?: (showAll: boolean) => void;
+};
+
 export function ConfigurableTableColumns<ColumnId extends string>({
   controller,
   label = "Colunas",
+  responsive,
+  afterColumn,
 }: {
   controller: ColumnController<ColumnId>;
   label?: string;
+  responsive?: ResponsiveColumnState;
+  afterColumn?: { id: ColumnId; content: ReactNode };
 }) {
   const [draggedId, setDraggedId] = useState<ColumnId | null>(null);
   return (
@@ -106,12 +197,26 @@ export function ConfigurableTableColumns<ColumnId extends string>({
             <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
           </Button>
         </div>
+        {responsive?.autoHiddenCount ? (
+          <div className="px-2 text-[10px] text-muted-foreground">
+            {responsive.autoHiddenCount} oculta(s) pela largura atual.
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="ml-1 h-6 px-1 text-[10px]"
+              onClick={() => responsive.onShowAllColumnsChange?.(!responsive.showAllColumns)}
+            >
+              {responsive.showAllColumns ? "Visão adaptativa" : "Mostrar todas"}
+            </Button>
+          </div>
+        ) : null}
         <div className="space-y-1">
           {controller.orderedColumns.map((column, index) => {
             const visible = controller.visibility[column.id] !== false;
             return (
+              <Fragment key={column.id}>
               <div
-                key={column.id}
                 draggable
                 onDragStart={(event) => {
                   setDraggedId(column.id);
@@ -156,6 +261,8 @@ export function ConfigurableTableColumns<ColumnId extends string>({
                   <ChevronDown className="h-3.5 w-3.5 -rotate-90" aria-hidden="true" />
                 </Button>
               </div>
+              {afterColumn?.id === column.id ? afterColumn.content : null}
+              </Fragment>
             );
           })}
         </div>
@@ -188,6 +295,8 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
   getSearchSuggestionActionLabel,
   isSearchSuggestionSelected,
   sort,
+  responsiveColumns,
+  afterColumn,
 }: {
   search: string;
   onSearchChange: (value: string) => void;
@@ -217,10 +326,12 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
     onChange: (value: string) => void;
     label?: string;
   };
+  responsiveColumns?: ResponsiveColumnState;
+  afterColumn?: { id: ColumnId; content: ReactNode };
 }) {
   return (
     <div className={cn("border-b border-border/60 bg-background/75 px-3 py-2", className)}>
-      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+      <div className="grid min-w-0 gap-2 lg:grid-cols-[minmax(18rem,1fr)_auto] lg:items-center">
         <OneViewTableSearchField
           value={search}
           onChange={onSearchChange}
@@ -236,16 +347,16 @@ export function ConfigurableTableToolbar<ColumnId extends string>({
           localSuggestions={localSearchSuggestions}
           getSuggestionActionLabel={getSearchSuggestionActionLabel}
           isSuggestionSelected={isSearchSuggestionSelected}
-          className="w-full basis-full sm:min-w-[20rem] sm:basis-0"
+          className="w-full min-w-0"
         />
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
           {filters ? (
           <OperationalFilterPanel activeFilterCount={activeFilterCount} onClearFilters={onClearFilters}>
             {filters}
           </OperationalFilterPanel>
           ) : null}
           {sort ? <OneViewTableSortMenu {...sort} /> : null}
-          <ConfigurableTableColumns controller={columns} />
+          <ConfigurableTableColumns controller={columns} responsive={responsiveColumns} afterColumn={afterColumn} />
           {trailing}
         </div>
       </div>

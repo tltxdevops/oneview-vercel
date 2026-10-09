@@ -1113,7 +1113,9 @@ test("fila operacional /alertas cobre contrato OV-P0-07", async () => {
   assert.match(alerts, /sourceAckPresentation/);
   assert.match(alerts, /Reconhecido por \$\{ack\.actorLabel\}/);
   assert.match(alerts, /ack\.status !== "acknowledged"/);
+  assert.match(alerts, /ack\.status === "pending"/);
   assert.match(alerts, /status="incident-waiting" label="Pendente"/);
+  assert.match(alerts, /status="incident-closed" label="Sem ACK"/);
   assert.match(alerts, /ack\.actorLabel \? `Reconhecido por \$\{ack\.actorLabel\}` : "Reconhecido"/);
   assert.match(alerts, /ack\.at \? ` · \$\{formatDateTime\(ack\.at\)\}`/);
   assert.doesNotMatch(alerts, /RITM\d+|SLA vencido|Sem chamado/);

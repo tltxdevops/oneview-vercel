@@ -38,10 +38,17 @@ export const HOME_ALL_SEVERITIES = [
 
 export type HomeAlertSeverity = (typeof HOME_ALL_SEVERITIES)[number];
 export type HomeAlertStatus = "active" | "resolved" | "all";
+export type HomeAlertAckFilter = "pending" | "acknowledged" | "all";
 
 export const HOME_ALERT_STATUS_OPTIONS: Array<{ value: HomeAlertStatus; label: string }> = [
   { value: "active", label: "Ativos" },
   { value: "resolved", label: "Resolvidos" },
+  { value: "all", label: "Todos" },
+];
+
+export const HOME_ALERT_ACK_FILTER_OPTIONS: Array<{ value: HomeAlertAckFilter; label: string }> = [
+  { value: "pending", label: "Sem ACK" },
+  { value: "acknowledged", label: "Com ACK" },
   { value: "all", label: "Todos" },
 ];
 
@@ -264,6 +271,7 @@ export function homeAlertsFetchParams(params: {
   customers?: string[];
   datasources?: string[];
   status?: HomeAlertStatus;
+  acknowledgedSource?: boolean;
   limit?: number;
   windowMs?: number;
   from?: string;
@@ -285,6 +293,7 @@ export function homeAlertsFetchParams(params: {
     customers: params.customers?.length ? params.customers : undefined,
     datasources: params.datasources?.length ? params.datasources : undefined,
     status: params.status ?? "active",
+    ...(typeof params.acknowledgedSource === "boolean" ? { acknowledgedSource: params.acknowledgedSource } : {}),
     firstSeenFrom: params.from ?? isoAgo(
       params.windowMs ?? homeOperationalWindowMs(DEFAULT_HOME_OPERATIONAL_WINDOW),
       now,
@@ -303,6 +312,7 @@ export function defaultHomeAlertsFetchParams(now = bucketOneViewReadNow()): Fetc
   return homeAlertsFetchParams({
     mode: DEFAULT_HOME_ALERT_MODE,
     status: "active",
+    acknowledgedSource: false,
     limit: HOME_ALERTS_PAGE_SIZE,
     windowMs: homeOperationalWindowMs(DEFAULT_HOME_OPERATIONAL_WINDOW),
     now,
@@ -336,6 +346,7 @@ export async function fetchHomeAlerts(params: {
   customers?: string[];
   datasources?: string[];
   status?: HomeAlertStatus;
+  acknowledgedSource?: boolean;
   limit?: number;
   windowMs?: number;
   from?: string;
@@ -481,12 +492,14 @@ export function buildHomeAlertsHref(options: {
   customers?: string[];
   datasources?: string[];
   status?: HomeAlertStatus;
+  acknowledgedSource?: boolean;
   windowPreset: string;
   fromDate?: string;
   toDate?: string;
 }) {
   const params = new URLSearchParams();
   params.set("status", options.status ?? "active");
+  if (typeof options.acknowledgedSource === "boolean") params.set("acknowledged_source", String(options.acknowledgedSource));
   params.set("date_field", "first_seen");
   if (options.windowPreset === "custom" && options.fromDate && options.toDate) {
     params.set("date_from", options.fromDate);

@@ -10,6 +10,7 @@ import {
   createTheoCanaryOutbox,
   createTheoSmokeOutbox,
   createTheoDispatchHandler,
+  finishTheoOutbox,
   recordTheoDispatcherHeartbeat,
   THEO_ACTION_TYPE,
   THEO_AUTO_ACTION_TYPE,
@@ -134,6 +135,26 @@ test("OV-P0-192 atomic claim transitions pending or failed to processing", async
   assert.match(calls[0].sql, /for update skip locked/i);
   assert.match(calls[0].sql, /attempts = o\.attempts \+ 1/);
   assert.equal(calls[0].values[3], THEO_SMOKE_DEDUPE_KEY);
+});
+
+test("terminal alert guard exhausts attempts so retry cannot resurrect the outbox", async () => {
+  const calls = [];
+  await finishTheoOutbox({
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return { rows: [{ id: OUTBOX_ID, status: "failed", attempts: 5 }] };
+    },
+  }, {
+    actionType: THEO_AUTO_ACTION_TYPE,
+    outboxId: OUTBOX_ID,
+    lockedBy: "vercel-theo:test",
+    success: false,
+    retryable: false,
+    errorCode: "alert_not_operationally_active",
+  });
+
+  assert.match(calls[0].sql, /attempts = case when \$3::boolean or \$4::boolean then attempts else max_attempts end/i);
+  assert.deepEqual(calls[0].values.slice(2, 7), [false, false, null, "alert_not_operationally_active", 0]);
 });
 
 test("OV-P0-192 completes a claimed smoke outbox after Theo 2xx", async () => {
@@ -296,6 +317,31 @@ test("OV-P0-251 concurrent unseen dispatches claim and send a producer row once"
 
   assert.equal(sends, 1);
   assert.deepEqual([left.body.status, right.body.status].sort(), ["not_eligible", "success"]);
+});
+
+test("resolved or normalized producer rows are not sent", async () => {
+  const closed = [
+    { ...canaryAlert(), status_source: "resolved", resolved_at: "2026-08-25T18:00:00.000Z" },
+    { ...canaryAlert(), status_internal: "normalized", resolved_at: "2026-08-25T18:00:00.000Z" },
+    { ...canaryAlert(), status_source: "active", status_internal: "normalized", resolved_at: null },
+  ];
+  for (const alert of closed) {
+    let sends = 0;
+    let finished;
+    const handler = dispatcher({
+      configProvider: () => config({ automationEnabled: true }),
+      claim: async () => producedClaim(),
+      findProducedAlert: async () => alert,
+      finish: async (_client, result) => { finished = result; return { id: OUTBOX_ID, status: "failed" }; },
+      fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+    });
+    const response = res();
+    await handler(req(), response);
+    assert.equal(sends, 0);
+    assert.equal(finished.errorCode, "alert_not_operationally_active");
+    assert.equal(finished.retryable, false);
+    assert.equal(response.body.status, "failed");
+  }
 });
 
 test("OV-P0-214 a successful producer row is never sent again", async () => {

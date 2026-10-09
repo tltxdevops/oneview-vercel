@@ -4,7 +4,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 
 type OperationalFilterPanelProps = {
@@ -21,7 +20,7 @@ type OperationalFilterPanelProps = {
 
 type FilterTriggerProps = ButtonProps & { activeFilterCount?: number };
 
-const COMPACT_FILTER_BREAKPOINT = 1120;
+const COMPACT_FILTER_BREAKPOINT = 1024;
 
 function useCompactFilterSurface() {
   const [isCompact, setIsCompact] = useState(() => (
@@ -81,7 +80,7 @@ function FilterContents({
   );
 }
 
-/** Shared responsive filter surface: bounded popover on desktop, bottom sheet on mobile. */
+/** Shared responsive filter surface: bounded popover through notebook widths; sheet only on mobile. */
 export function OperationalFilterPanel({
   children,
   activeFilterCount = 0,
@@ -93,7 +92,6 @@ export function OperationalFilterPanel({
   onOpenChange,
   footer,
 }: OperationalFilterPanelProps) {
-  const isMobile = useIsMobile();
   const isCompact = useCompactFilterSurface();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
@@ -102,13 +100,17 @@ export function OperationalFilterPanel({
     onOpenChange?.(next);
   };
 
-  if (isMobile || isCompact) {
+  if (isCompact) {
     return (
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild><FilterTrigger activeFilterCount={activeFilterCount} /></SheetTrigger>
-        <SheetContent side="bottom" className="flex max-h-[90dvh] min-h-0 w-full flex-col gap-3 overflow-hidden rounded-t-2xl p-4 sm:max-w-none">
+        <SheetContent
+          side="bottom"
+          overlayClassName="bg-black/40"
+          className="flex max-h-[82dvh] min-h-0 w-full flex-col gap-2 overflow-hidden rounded-t-2xl p-3 sm:max-w-none"
+        >
           <SheetHeader className="shrink-0 pr-8 text-left">
-            <SheetTitle className="text-base">{title}</SheetTitle>
+            <SheetTitle className="text-sm">{title}</SheetTitle>
             <SheetDescription className="text-xs">{description}</SheetDescription>
           </SheetHeader>
           <FilterContents activeFilterCount={activeFilterCount} onClearFilters={onClearFilters} footer={footer}>{children}</FilterContents>
@@ -121,12 +123,12 @@ export function OperationalFilterPanel({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild><FilterTrigger activeFilterCount={activeFilterCount} /></PopoverTrigger>
       <PopoverContent
-        align="end"
+        align="center"
         sideOffset={8}
         collisionPadding={8}
         style={{
-          width: "min(48rem, calc(100vw - 2rem))",
-          maxHeight: "min(80dvh, var(--radix-popover-content-available-height))",
+          width: "min(58rem, calc(100vw - 2rem))",
+          maxHeight: "min(78dvh, var(--radix-popover-content-available-height))",
         }}
         className={cn("flex min-w-0 flex-col gap-3 overflow-hidden p-4", className)}
       >
@@ -142,7 +144,7 @@ export function OperationalFilterPanel({
 
 export function OperationalFilterGrid({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn("grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,14.5rem),1fr))] gap-3", className)}>
+    <div className={cn("grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2", className)}>
       {children}
     </div>
   );

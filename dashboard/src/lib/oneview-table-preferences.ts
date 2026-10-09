@@ -7,6 +7,9 @@ export type OneViewTableColumnDefinition<ColumnId extends string = string> = {
   label: string;
   required?: boolean;
   defaultVisible?: boolean;
+  minWidth?: number;
+  preferredWidth?: number;
+  responsivePriority?: "essential" | "intermediate" | "secondary";
 };
 
 type StoredTablePreferences = {

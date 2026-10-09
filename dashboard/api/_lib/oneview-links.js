@@ -74,35 +74,43 @@ function text(value) { const result = String(value || "").trim(); return result 
 function elapsedMs(startedAt) { return Math.max(0, Date.now() - startedAt); }
 function logLinksTiming(payload) { console.info(JSON.stringify({ event: "oneview_links_timing", ...payload })); }
 function oneQuery(req, key) { const value = req?.query?.[key]; return Array.isArray(value) ? value[0] : value; }
+function queryTokens(req, key) { const value = req?.query?.[key]; const raw = Array.isArray(value) ? value : value == null ? [] : [value]; return [...new Set(raw.flatMap((item) => String(item || "").split(",")).map((item) => item.trim()).filter(Boolean))].slice(0, 20); }
 function invalidQuery() { const error = new Error("invalid_query"); error.code = "invalid_query"; return error; }
 function pageInt(value, fallback, max) { const result = Number.parseInt(String(value || ""), 10); return Number.isFinite(result) ? Math.min(Math.max(result, 1), max) : fallback; }
 
 export function parseLinkFilters(req) {
   const filters = {
-    customer: text(oneQuery(req, "customer")), datasource: text(oneQuery(req, "datasource")),
-    classification: text(oneQuery(req, "classification")), state: text(oneQuery(req, "state")),
-    ack: text(oneQuery(req, "ack")), severity: text(oneQuery(req, "severity")),
-    incident: text(oneQuery(req, "incident")), carrier: text(oneQuery(req, "carrier")), operator_escalation: text(oneQuery(req, "operator_escalation")), search: text(oneQuery(req, "search")),
+    customers: queryTokens(req, "customer"), datasources: queryTokens(req, "datasource"),
+    classifications: queryTokens(req, "classification"), states: queryTokens(req, "state"),
+    acks: queryTokens(req, "ack"), severities: queryTokens(req, "severity"),
+    incidents: queryTokens(req, "incident"), carriers: queryTokens(req, "carrier"), operator_escalations: queryTokens(req, "operator_escalation"), search: text(oneQuery(req, "search")),
+    link_search: text(oneQuery(req, "link_search")), incident_number: text(oneQuery(req, "incident_number")),
     tab: text(oneQuery(req, "tab")) || "all", resolved_window: text(oneQuery(req, "resolved_window")) || "today",
     divergence: text(oneQuery(req, "divergence")), recurrence: text(oneQuery(req, "recurrence")),
-    incident_state: text(oneQuery(req, "incident_state")), operational_situation: text(oneQuery(req, "operational_situation")),
+    incident_states: queryTokens(req, "incident_state"), operational_situations: queryTokens(req, "operational_situation"),
     activity_period: text(oneQuery(req, "activity_period")), sort: text(oneQuery(req, "sort")) || "recent",
     order: text(oneQuery(req, "order")),
     page: pageInt(oneQuery(req, "page"), 1, 10_000), page_size: pageInt(oneQuery(req, "page_size"), 50, 100),
   };
+  filters.customer = filters.customers[0] || null; filters.datasource = filters.datasources[0] || null;
+  filters.classification = filters.classifications[0] || null; filters.state = filters.states[0] || null;
+  filters.ack = filters.acks[0] || null; filters.severity = filters.severities[0] || null;
+  filters.incident = filters.incidents[0] || null; filters.carrier = filters.carriers[0] || null;
+  filters.operator_escalation = filters.operator_escalations[0] || null;
+  filters.incident_state = filters.incident_states[0] || null; filters.operational_situation = filters.operational_situations[0] || null;
   for (const value of Object.values(filters)) if (typeof value === "string" && !SAFE.test(value)) throw invalidQuery();
-  if (filters.severity && !SEVERITIES.has(filters.severity.toLowerCase())) throw invalidQuery();
-  if (filters.state && !new Set(["critical", "alert", "attention", "normal"]).has(filters.state.toLowerCase())) throw invalidQuery();
-  if (filters.ack && !new Set(["all", "pending", "none"]).has(filters.ack.toLowerCase())) throw invalidQuery();
-  if (filters.incident && !INCIDENT_FILTERS.has(filters.incident.toLowerCase())) throw invalidQuery();
-  if (filters.carrier && !SAFE.test(filters.carrier)) throw invalidQuery();
-  if (filters.operator_escalation && !new Set(["all", "yes", "no"]).has(filters.operator_escalation.toLowerCase())) throw invalidQuery();
+  if (filters.severities.some((value) => !SEVERITIES.has(value.toLowerCase()))) throw invalidQuery();
+  if (filters.states.some((value) => !new Set(["critical", "alert", "attention", "normal"]).has(value.toLowerCase()))) throw invalidQuery();
+  if (filters.acks.some((value) => !new Set(["all", "pending", "none"]).has(value.toLowerCase()))) throw invalidQuery();
+  if (filters.incidents.some((value) => !INCIDENT_FILTERS.has(value.toLowerCase()))) throw invalidQuery();
+  if (filters.carriers.some((value) => !SAFE.test(value))) throw invalidQuery();
+  if (filters.operator_escalations.some((value) => !new Set(["all", "yes", "no"]).has(value.toLowerCase()))) throw invalidQuery();
   if (!QUEUE_TABS.has(filters.tab.toLowerCase()) || !RESOLVED_WINDOWS.has(filters.resolved_window.toLowerCase()) || !QUEUE_SORTS.has(filters.sort.toLowerCase())) throw invalidQuery();
   if (filters.order && !new Set(["asc", "desc"]).has(filters.order.toLowerCase())) throw invalidQuery();
   if (filters.divergence && !new Set(["a", "b", "any"]).has(filters.divergence.toLowerCase())) throw invalidQuery();
   if (filters.recurrence && !new Set(["all", "recurrent"]).has(filters.recurrence.toLowerCase())) throw invalidQuery();
-  if (filters.incident_state && !INCIDENT_STATES.has(filters.incident_state)) throw invalidQuery();
-  if (filters.operational_situation && !OPERATIONAL_SITUATIONS.has(filters.operational_situation.toLowerCase())) throw invalidQuery();
+  if (filters.incident_states.some((value) => !INCIDENT_STATES.has(value))) throw invalidQuery();
+  if (filters.operational_situations.some((value) => !OPERATIONAL_SITUATIONS.has(value.toLowerCase()))) throw invalidQuery();
   if (filters.activity_period && !ACTIVITY_PERIODS.has(filters.activity_period.toLowerCase())) throw invalidQuery();
   return filters;
 }
@@ -616,27 +624,29 @@ export function composeHostRegistryLinks({ inventoryRows = [], alertRows = [], o
 
 function filteredBase(rows, filters) {
   return rows.filter((row) => {
-    if (filters.customer && row.customer_key !== filters.customer && row.customer_name !== filters.customer) return false;
-    if (filters.datasource && row.datasource !== filters.datasource) return false;
-    if (filters.classification && row.classification !== filters.classification) return false;
-    if (filters.state && row.state !== filters.state) return false;
-    if (filters.ack === "pending" && !row.unack_alerts) return false;
-    if (filters.ack === "none" && row.unack_alerts) return false;
-    if (filters.severity && row.max_severity !== filters.severity) return false;
-    if (filters.incident && filters.incident !== "all" && row.incident_correlation_status === "degraded") return false;
-    if (filters.incident === "yes" && !row.incident_count) return false;
-    if (filters.incident === "no" && row.incident_count) return false;
-    if (filters.incident === "open" && !row.open_incident_count) return false;
-    if (filters.incident === "without_open" && row.open_incident_count) return false;
-    if (filters.incident === "resolved" && servicenowState(row) !== "resolved") return false;
-    if (filters.incident === "closed" && servicenowState(row) !== "closed") return false;
-    if (filters.incident === "cancelled" && servicenowState(row) !== "cancelled") return false;
-    if (filters.incident_state && String((row.current_incident || row.latest_incident)?.state || "") !== filters.incident_state) return false;
-    if (filters.carrier === "unknown" && row.carrier_name) return false;
-    if (filters.carrier && filters.carrier !== "all" && filters.carrier !== "unknown" && String(row.carrier_name || "").toLowerCase() !== filters.carrier.toLowerCase()) return false;
-    if (filters.operator_escalation === "yes" && !row.operator_escalation) return false;
-    if (filters.operator_escalation === "no" && row.operator_escalation) return false;
+    if (filters.customers.length && !filters.customers.some((value) => row.customer_key === value || row.customer_name === value)) return false;
+    if (filters.datasources.length && !filters.datasources.includes(row.datasource)) return false;
+    if (filters.classifications.length && !filters.classifications.includes(row.classification)) return false;
+    if (filters.states.length && !filters.states.includes(row.state)) return false;
+    if (filters.acks.length && !filters.acks.some((value) => value === "pending" ? Boolean(row.unack_alerts) : value === "none" ? !row.unack_alerts : true)) return false;
+    if (filters.severities.length && !filters.severities.includes(row.max_severity)) return false;
+    if (filters.incidents.length) {
+      if (row.incident_correlation_status === "degraded") return false;
+      const snState = servicenowState(row);
+      const matchesIncident = filters.incidents.some((value) => value === "all"
+        || (value === "yes" && Boolean(row.incident_count))
+        || (value === "no" && !row.incident_count)
+        || (value === "open" && Boolean(row.open_incident_count))
+        || (value === "without_open" && !row.open_incident_count)
+        || value === snState);
+      if (!matchesIncident) return false;
+    }
+    if (filters.incident_states.length && !filters.incident_states.includes(String((row.current_incident || row.latest_incident)?.state || ""))) return false;
+    if (filters.carriers.length && !filters.carriers.some((value) => value === "unknown" ? !row.carrier_name : String(row.carrier_name || "").toLowerCase() === value.toLowerCase())) return false;
+    if (filters.operator_escalations.length && !filters.operator_escalations.some((value) => value === "yes" ? Boolean(row.operator_escalation) : value === "no" ? !row.operator_escalation : true)) return false;
     if (filters.search) { const needle = filters.search.toLowerCase(); if (![row.service_name, row.customer_name, row.source_host_id, row.host_name, row.site_name, row.link_type, row.carrier_name, row.circuit_key].some((value) => String(value || "").toLowerCase().includes(needle))) return false; }
+    if (filters.link_search) { const needle = filters.link_search.toLowerCase(); if (![row.service_name, row.customer_name, row.source_host_id, row.host_name, row.site_name, row.circuit_key].some((value) => String(value || "").toLowerCase().includes(needle))) return false; }
+    if (filters.incident_number) { const prefix = filters.incident_number.toUpperCase(); const incidents = [...(row.incidents || []), row.current_incident, row.latest_incident].filter(Boolean); if (!incidents.some((item) => String(item.number || "").toUpperCase().startsWith(prefix))) return false; }
     return true;
   });
 }
@@ -705,12 +715,28 @@ function activityPeriodStart(period, now) {
   return null;
 }
 
+function normalizedLinkFilters(filters) {
+  const list = (plural, singular) => Array.isArray(filters[plural])
+    ? filters[plural]
+    : filters[singular] && filters[singular] !== "all" ? [filters[singular]] : [];
+  return {
+    ...filters,
+    customers: list("customers", "customer"), datasources: list("datasources", "datasource"),
+    classifications: list("classifications", "classification"), states: list("states", "state"),
+    acks: list("acks", "ack"), severities: list("severities", "severity"),
+    incidents: list("incidents", "incident"), carriers: list("carriers", "carrier"),
+    operator_escalations: list("operator_escalations", "operator_escalation"),
+    incident_states: list("incident_states", "incident_state"),
+    operational_situations: list("operational_situations", "operational_situation"),
+  };
+}
+
 function filteredOperational(rows, filters, now) {
   return rows.filter((row) => {
     if (filters.recurrence === "recurrent" && !row.is_recurrent) return false;
     if (filters.divergence === "any" && !row.divergence_type) return false;
     if (filters.divergence && filters.divergence !== "any" && row.divergence_type !== filters.divergence) return false;
-    if (filters.operational_situation && row.operational_situation !== filters.operational_situation) return false;
+    if (filters.operational_situations.length && !filters.operational_situations.includes(row.operational_situation)) return false;
     const activityStart = activityPeriodStart(filters.activity_period, now);
     if (activityStart !== null && (timestamp(row.last_operational_activity_at) || 0) < activityStart) return false;
     if (filters.tab === "open") return row.has_active_alert;
@@ -1052,6 +1078,7 @@ export async function fetchOperationalSubjectDetail({ subjectType, circuitKey, d
   return detail;
 }
 export function buildLinksPayload(rows, filters, now = Date.now(), integrationStatus = { servicenow: "available" }) {
+  filters = normalizedLinkFilters(filters);
   const resolvedWindow = resolvedWindowStart(filters.resolved_window, now);
   const all = rows.map((row) => operationalRow(row, now, resolvedWindow));
   const recentSevere = all
@@ -1084,7 +1111,9 @@ export async function searchLinkSuggestions(req, { list = fetchCanonicalLinks, n
   const q = text(oneQuery(req, "q"));
   if (!q || q.length < 2 || !SAFE.test(q)) throw invalidQuery();
   const limit = pageInt(oneQuery(req, "limit"), 8, 15);
-  const scopeQuery = { ...req.query, search: undefined, q: undefined, limit: undefined };
+  const kind = text(oneQuery(req, "kind"));
+  if (kind && !new Set(["customer", "host", "link", "number"]).has(kind)) throw invalidQuery();
+  const scopeQuery = { ...req.query, search: undefined, q: undefined, limit: undefined, kind: undefined };
   const filters = parseLinkFilters({ query: scopeQuery });
 
   let rows = linksSuggestCache.rows;
@@ -1098,7 +1127,7 @@ export async function searchLinkSuggestions(req, { list = fetchCanonicalLinks, n
   const needle = q.toLowerCase();
   const raw = [];
 
-  if (/^INC\d*$/i.test(q)) {
+  if ((!kind || kind === "number") && /^INC\d*$/i.test(q)) {
     for (const row of scoped) {
       const incidents = [...(row.incidents || []), row.current_incident, row.latest_incident].filter(Boolean);
       for (const incident of incidents) {
@@ -1111,15 +1140,15 @@ export async function searchLinkSuggestions(req, { list = fetchCanonicalLinks, n
   }
 
   for (const row of scoped) {
-    if (matchRank(row.customer_name, q) <= 1) {
+    if ((!kind || kind === "customer") && matchRank(row.customer_name, q) <= 1) {
       const label = String(row.customer_name || "").trim();
       if (label) raw.push({ kind: "customer", value: label, label, hint: row.host_name ? `Cliente · host ${row.host_name}` : "Filtrar por cliente" });
     }
-    if (matchRank(row.host_name, q) <= 1 || matchRank(row.source_host_id, q) <= 1) {
+    if ((!kind || kind === "host") && (matchRank(row.host_name, q) <= 1 || matchRank(row.source_host_id, q) <= 1)) {
       const label = String(row.host_name || row.source_host_id || "").trim();
       if (label) raw.push({ kind: "host", value: label, label, hint: row.customer_name ? `Host · ${row.customer_name}` : "Filtrar por host" });
     }
-    for (const field of ["service_name", "site_name", "circuit_key", "carrier_name"]) {
+    for (const field of kind === "customer" || kind === "host" || kind === "number" ? [] : ["service_name", "site_name", "circuit_key", "carrier_name"]) {
       const label = String(row[field] || "").trim();
       if (!label || !label.toLowerCase().includes(needle)) continue;
       raw.push({ kind: "link", value: label, label, hint: `Link · ${row.customer_name || "circuito"}` });

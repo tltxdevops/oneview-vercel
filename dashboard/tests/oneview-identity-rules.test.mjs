@@ -184,3 +184,17 @@ test("OV-P0-40 páginas usam helpers canônicos de host/cliente", async () => {
   assert.match(api, /canonicalClientName\(\{/);
   assert.match(api, /expandHighFamilySeverities/);
 });
+
+test("compact client table labels keep aliases local to presentation", async () => {
+  const [identity, chamados] = await Promise.all([
+    read("src/components/oneview/ClientIdentity.tsx"),
+    read("src/pages/Chamados.tsx"),
+  ]);
+
+  assert.match(identity, /export function compactOperationalClientLabel/);
+  assert.match(identity, /"real hospital portugues": "RHP"/);
+  assert.match(identity, /"companhia de saneamento do parana": "Sanepar"/);
+  assert.match(identity, /rhp: "RHP"/);
+  assert.match(chamados, /compactOperationalClientLabel\(fullClientName, fullClientName\)/);
+  assert.match(chamados, /title=\{fullClientName\}/);
+});

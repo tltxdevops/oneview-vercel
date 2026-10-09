@@ -240,3 +240,25 @@ test("OV-P0-268: Monitoring wires engine, stale guard, CSS and reduced motion", 
   assert.match(css, /prefers-reduced-motion/);
   assert.match(page, /REFRESH_MS\s*=\s*10_000/);
 });
+
+test("OV-P0-268: Home defaults to no ACK, holds confirmed ACK/resolution for ten green pulses, then removes it", async () => {
+  const [home, page, alerts, css] = await Promise.all([
+    read("src/lib/oneview-home.ts"),
+    read("src/pages/Index.tsx"),
+    read("src/pages/Alerts.tsx"),
+    read("src/index.css"),
+  ]);
+
+  assert.match(home, /export type HomeAlertAckFilter = "pending" \| "acknowledged" \| "all"/);
+  assert.match(home, /HOME_ALERT_ACK_FILTER_OPTIONS/);
+  assert.match(home, /acknowledgedSource: params\.acknowledgedSource/);
+  assert.match(page, /useState<HomeAlertAckFilter>\("pending"\)/);
+  assert.match(page, /acknowledgedSource: alertAckFilter === "pending" \? false/);
+  assert.match(page, /HOME_ALERT_SUCCESS_PULSE_DURATION_MS = 9_000/);
+  assert.match(page, /detectLiveTransitions/);
+  assert.match(page, /mergeLiveTransitionQueue/);
+  assert.match(page, /HOME_ALERT_MISSING_PROOF_LIMIT/);
+  assert.match(page, /transition && "ov-alert-success-transition"/);
+  assert.match(css, /ov-alert-success-transition[\s\S]*0\.9s ease-in-out 10/);
+  assert.match(alerts, /has_next: page < totalPages \|\| Boolean\(rawPagination\?\.has_next\)/);
+});

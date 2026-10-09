@@ -43,11 +43,18 @@ function parseSuggestQuery(req) {
     error.code = "invalid_query";
     throw error;
   }
+  const kind = cleanOptional(oneQuery(req, "kind"));
+  if (kind && !new Set(["number", "company", "description", "host"]).has(kind)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
   const filters = parseIncidentFilters(req);
   return {
     filters,
     q: qRaw,
     limit: asSuggestLimit(oneQuery(req, "limit")),
+    kind,
   };
 }
 
@@ -79,7 +86,7 @@ export function createIncidentSearchSuggestHandler({
     }
 
     try {
-      const payload = await suggest(params.filters, { q: params.q, limit: params.limit });
+      const payload = await suggest(params.filters, { q: params.q, limit: params.limit, kind: params.kind });
       logger({
         event: "oneview_request",
         route: "/api/oneview/incidents/search-suggest",

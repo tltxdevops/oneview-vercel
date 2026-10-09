@@ -26,6 +26,7 @@ export const UNKNOWN_SCOPE_LABEL = "Cliente não identificado";
 
 const CANONICAL_CLIENT_DISPLAY_NAMES: Record<string, string> = {
   ailos: "Ailos",
+  rhp: "RHP",
   jfsc: "JFSC",
   "j.macedo": "J.Macedo",
   "saque e pague": "Saque e Pague",
@@ -34,6 +35,14 @@ const CANONICAL_CLIENT_DISPLAY_NAMES: Record<string, string> = {
   maps: "MAPS",
   solarwinds: "Congás",
   sollarwinds: "Congás",
+};
+
+/** Table-only aliases. Identity, filters, sorting and detailed labels stay intact. */
+const COMPACT_CLIENT_DISPLAY_NAMES: Record<string, string> = {
+  "real hospital portugues": "RHP",
+  "real hospital portugues sa": "RHP",
+  "companhia de saneamento do parana": "Sanepar",
+  "companhia de saneamento do parana sanepar": "Sanepar",
 };
 
 /** Chave segura de cliente: somente trim + case-insensitive; sem fuzzy matching. */
@@ -47,6 +56,13 @@ export function canonicalClientDisplayName(value?: string | null): string {
   if (!key) return "";
   if (CANONICAL_CLIENT_DISPLAY_NAMES[key]) return CANONICAL_CLIENT_DISPLAY_NAMES[key];
   return key.replace(/(^|[\s_-])([\p{L}])/gu, (_match, prefix: string, letter: string) => `${prefix}${letter.toUpperCase()}`);
+}
+
+/** Short table label; full name remains available in the tooltip and drawer. */
+export function compactOperationalClientLabel(value?: string | null, fallback = UNKNOWN_SCOPE_LABEL) {
+  const canonical = canonicalClientDisplayName(value);
+  if (!canonical) return fallback;
+  return COMPACT_CLIENT_DISPLAY_NAMES[normalizedClientKey(canonical)] || canonical;
 }
 
 export type OperationalScope = "customer" | "platform" | "test" | "unknown";

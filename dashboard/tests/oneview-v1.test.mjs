@@ -259,8 +259,9 @@ test("status active, resolved e all usam predicados antes da paginacao", () => {
 
   assert.match(active.whereSql, /a\.resolved_at is null/);
   assert.match(active.whereSql, /status_internal/);
-  assert.match(resolved.whereSql, /a\.resolved_at is not null/);
-  assert.match(resolved.whereSql, /'normalized'/);
+  assert.match(resolved.whereSql, /lower\(coalesce\(a\.status_source, ''\)\) = 'resolved'/);
+  assert.doesNotMatch(resolved.whereSql, /a\.resolved_at is null/);
+  assert.doesNotMatch(resolved.whereSql, /acknowledged_source/);
   assert.match(all.whereSql, /d\.name = any/);
   assert.deepEqual([resolved.page, resolved.pageSize, resolved.offset], [3, 25, 50]);
 });

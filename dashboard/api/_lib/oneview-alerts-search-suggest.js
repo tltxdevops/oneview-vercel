@@ -21,6 +21,8 @@ const INC_PREFIX_RE = /^INC\d*$/i;
 const HOST_EXPR = "coalesce(a.host_visible_name, a.host_technical_name, a.host_name, '')";
 const CUSTOMER_EXPR = `coalesce(nullif(btrim(${SAFE_CUSTOMER_NAME_SQL}), ''), nullif(btrim(a.customer_name), ''), nullif(btrim(a.client_name), ''), '')`;
 const PROBLEM_EXPR = "coalesce(a.problem_name, a.trigger_description, '')";
+const ACK_ACTOR_EXPR = "coalesce(nullif(btrim(oneview_ack.operator_name), ''), nullif(btrim(a.acknowledged_by), ''), '')";
+const SUGGESTION_KINDS = new Set(["customer", "host", "problem", "actor", "number"]);
 
 function oneQuery(req, key) {
   const value = req?.query?.[key];
@@ -44,7 +46,19 @@ function scopeFromReq(req) {
     query: { ...req.query, search: undefined, q: undefined, limit: undefined, page: "1", page_size: "1" },
   };
   const built = buildAlertListQuery(scopeReq);
-  return { built, fromJoin: "from alerts a left join data_sources d on d.id = a.data_source_id" };
+  return {
+    built,
+    fromJoin: `from alerts a
+      left join data_sources d on d.id = a.data_source_id
+      left join lateral (
+        select ack.operator_name
+          from alert_acknowledgements ack
+         where ack.alert_id = a.id
+           and ack.acknowledgement_type = 'source'
+         order by ack.requested_at desc, ack.id desc
+         limit 1
+      ) oneview_ack on true`,
+  };
 }
 
 export async function searchAlertReadModelSuggestions(req, config) {
@@ -55,8 +69,14 @@ export async function searchAlertReadModelSuggestions(req, config) {
     throw error;
   }
   const limit = asLimit(oneQuery(req, "limit"));
+  const kind = cleanOptional(oneQuery(req, "kind"))?.toLowerCase() || null;
+  if (kind && !SUGGESTION_KINDS.has(kind)) {
+    const error = new Error("invalid_query");
+    error.code = "invalid_query";
+    throw error;
+  }
 
-  if (INC_PREFIX_RE.test(q)) {
+  if ((kind === "number" || !kind) && INC_PREFIX_RE.test(q)) {
     const incident = await searchReadModelIncidentSuggestions(
       { page: 1, page_size: 25, search: null, number: null },
       { q, limit, pool: getOneViewDbPool() },
@@ -101,13 +121,14 @@ export async function searchAlertReadModelSuggestions(req, config) {
     }).filter(Boolean);
   };
 
-  const [customers, hosts, problems] = await Promise.all([
-    runBucket("customer", CUSTOMER_EXPR, CUSTOMER_EXPR, HOST_EXPR, 6, SAFE_CUSTOMER_KEY_SQL),
-    runBucket("host", HOST_EXPR, HOST_EXPR, CUSTOMER_EXPR, 6),
-    runBucket("problem", PROBLEM_EXPR, PROBLEM_EXPR, HOST_EXPR, 4),
+  const [customers, hosts, problems, actors] = await Promise.all([
+    !kind || kind === "customer" ? runBucket("customer", CUSTOMER_EXPR, CUSTOMER_EXPR, HOST_EXPR, 6, SAFE_CUSTOMER_KEY_SQL) : [],
+    !kind || kind === "host" ? runBucket("host", HOST_EXPR, HOST_EXPR, CUSTOMER_EXPR, 6) : [],
+    !kind || kind === "problem" ? runBucket("problem", PROBLEM_EXPR, PROBLEM_EXPR, HOST_EXPR, 4) : [],
+    !kind || kind === "actor" ? runBucket("actor", ACK_ACTOR_EXPR, ACK_ACTOR_EXPR, CUSTOMER_EXPR, 6) : [],
   ]);
 
-  const suggestions = mergeRankedSuggestions([...customers, ...hosts, ...problems], q, limit);
+  const suggestions = mergeRankedSuggestions([...actors, ...customers, ...hosts, ...problems], q, limit);
   return { suggestions };
 }
 

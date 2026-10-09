@@ -436,12 +436,30 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
   } else if (filters.has_assignee) {
     clauses.push("coalesce(btrim(assigned_to::text), '') <> ''");
   }
-  if (filters.assignment_group) clauses.push(`assignment_group::text = ${addParam(values, filters.assignment_group)}`);
+  if (filters.assignment_group || filters.assignment_groups?.length) {
+    const groups = Array.isArray(filters.assignment_groups) && filters.assignment_groups.length
+      ? filters.assignment_groups
+      : String(filters.assignment_group).split(",").map((value) => value.trim()).filter(Boolean);
+    if (groups.length) clauses.push(`assignment_group::text = any(${addParam(values, groups)}::text[])`);
+  }
   if (filters.number) clauses.push(`upper(number::text) = ${addParam(values, filters.number.toUpperCase())}`);
+  if (filters.number_search) clauses.push(`upper(number::text) like ${addParam(values, `${filters.number_search.toUpperCase()}%`)}`);
+  if (filters.description_search) {
+    const description = addParam(values, `%${filters.description_search}%`);
+    clauses.push(`(coalesce(short_description, '') ilike ${description} or coalesce(description, '') ilike ${description})`);
+  }
   if (filters.sys_id) clauses.push(`lower(sys_id::text) = ${addParam(values, filters.sys_id.toLowerCase())}`);
-  if (filters.priority) clauses.push(`priority::text = ${addParam(values, filters.priority)}`);
-  if (filters.company) {
-    const { terms } = expandServiceNowCompanyFilterToken(filters.company);
+  if (filters.priority || filters.priorities?.length) {
+    const priorities = Array.isArray(filters.priorities) && filters.priorities.length ? filters.priorities : String(filters.priority).split(",");
+    clauses.push(`priority::text = any(${addParam(values, priorities)}::text[])`);
+  }
+  const companyFilters = Array.isArray(filters.companies) && filters.companies.length
+    ? filters.companies
+    : filters.company ? [filters.company] : [];
+  if (companyFilters.length) {
+    const terms = [...new Set(companyFilters.flatMap((company) => (
+      expandServiceNowCompanyFilterToken(company).terms
+    )))];
     const companyClauses = terms.map((term) => {
       const param = addParam(values, `%${term}%`);
       return `(company::text ilike ${param} or coalesce(display_values::text, '') ilike ${param})`;
@@ -461,7 +479,10 @@ function buildWhere(filters, values, { includeState = true, includeUnassigned = 
       ? `sys_updated_on <= ${addParam(values, temporalBoundary(filters.updated_to, "to"))}`
       : `sys_updated_on < (${addParam(values, temporalBoundary(filters.updated_to, "to"))}::timestamptz + interval '1 day')`);
   }
-  if (includeState && filters.state) clauses.push(`state::text = any(${addParam(values, String(filters.state).split(","))}::text[])`);
+  if (includeState && (filters.state || filters.states?.length)) {
+    const states = Array.isArray(filters.states) && filters.states.length ? filters.states : String(filters.state).split(",");
+    clauses.push(`state::text = any(${addParam(values, states)}::text[])`);
+  }
   if (includeUnassigned && filters.unassigned) clauses.push("coalesce(btrim(assigned_to::text), '') = ''");
   if (filters.search) {
     const param = addParam(values, `%${filters.search}%`);
@@ -484,6 +505,8 @@ async function fetchFacets(pool, filters) {
   const where = buildWhere({
     ...filters,
     state: filters.manual ? OPERATIONAL_STATES.join(",") : null,
+    company: null,
+    companies: null,
     caller_id: null,
     assigned_to: null,
     has_assignee: false,
@@ -727,6 +750,7 @@ function truncateLabel(value, max = 120) {
 export async function searchReadModelIncidentSuggestions(filters, {
   q,
   limit = 8,
+  kind = null,
   pool = getOneViewDbPool(),
 } = {}) {
   const query = String(q || "").trim();
@@ -735,7 +759,7 @@ export async function searchReadModelIncidentSuggestions(filters, {
   const scopeFilters = { ...filters, search: null, number: null, sys_id: null };
   const suggestions = [];
 
-  if (INCIDENT_SUGGEST_INC_PREFIX_RE.test(query)) {
+  if ((!kind || kind === "number") && INCIDENT_SUGGEST_INC_PREFIX_RE.test(query)) {
     const values = [];
     const where = buildWhere(scopeFilters, values);
     const prefixParam = addParam(values, `${query.toUpperCase()}%`);
@@ -770,8 +794,9 @@ export async function searchReadModelIncidentSuggestions(filters, {
   const descriptionLimit = Math.min(4, cap);
   const hostLimit = Math.min(5, cap);
 
+  const emptyRows = Promise.resolve({ rows: [] });
   const [incidentRows, companyRows, descriptionRows, hostRows] = await Promise.all([
-    pool.query(`
+    !kind || kind === "number" ? pool.query(`
       select number::text as number,
              coalesce(display_values->>'company_display', display_values->>'company', company::text) as company_label,
              coalesce(short_description, '') as short_description
@@ -779,15 +804,15 @@ export async function searchReadModelIncidentSuggestions(filters, {
        where ${where}
          and (number::text ilike ${likeParam} or coalesce(short_description, '') ilike ${likeParam})
        order by sys_updated_on desc nulls last, number asc
-       limit $${values.length + 1}`, [...values, incidentLimit]),
-    pool.query(`
+       limit $${values.length + 1}`, [...values, incidentLimit]) : emptyRows,
+    !kind || kind === "company" ? pool.query(`
       select distinct coalesce(display_values->>'company_display', display_values->>'company', company::text) as company_label
         from servicenow_incidents
        where ${where}
          and coalesce(display_values->>'company_display', display_values->>'company', company::text) ilike ${likeParam}
        order by company_label asc
-       limit $${values.length + 1}`, [...values, companyLimit]),
-    pool.query(`
+       limit $${values.length + 1}`, [...values, companyLimit]) : emptyRows,
+    !kind || kind === "description" ? pool.query(`
       select distinct on (left(coalesce(short_description, ''), 120))
              number::text as number,
              coalesce(short_description, '') as short_description
@@ -795,14 +820,14 @@ export async function searchReadModelIncidentSuggestions(filters, {
        where ${where}
          and coalesce(short_description, '') ilike ${likeParam}
        order by left(coalesce(short_description, ''), 120), sys_updated_on desc nulls last
-       limit $${values.length + 1}`, [...values, descriptionLimit]),
-    pool.query(`
+       limit $${values.length + 1}`, [...values, descriptionLimit]) : emptyRows,
+    !kind || kind === "host" ? pool.query(`
       select distinct coalesce(u_hostname_zabbix::text, '') as host_label
         from servicenow_incidents
        where ${where}
          and coalesce(u_hostname_zabbix::text, '') ilike ${likeParam}
        order by host_label asc
-       limit $${values.length + 1}`, [...values, hostLimit]),
+       limit $${values.length + 1}`, [...values, hostLimit]) : emptyRows,
   ]);
 
   const raw = [];

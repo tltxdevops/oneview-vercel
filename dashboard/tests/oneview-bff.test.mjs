@@ -195,7 +195,11 @@ test("falha transitória do database repete uma vez e mantém resposta live", as
   assert.equal(calls, 2);
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.data_source, "database");
-  assert.equal(logs.some((entry) => entry.event === "oneview_database_read_retry" && entry.attempt === 2), true);
+  const retryLog = logs.find((entry) => entry.event === "oneview_database_read_retry");
+  assert.deepEqual(
+    [retryLog?.attempt, retryLog?.retry, retryLog?.operation, retryLog?.error_class, retryLog?.db_pool_total, retryLog?.db_pool_idle, retryLog?.db_pool_waiting],
+    [2, 1, "/api/oneview/alerts", "database_unavailable", 0, 0, 0],
+  );
 });
 
 test("erro não transitório não repete leitura do database", async () => {
@@ -638,7 +642,7 @@ test("log oneview_request é estruturado e não contém detalhes sensíveis", as
     fallback: async () => ({ items: [{ id: "safe" }] }),
     logger: (entry) => entries.push(JSON.parse(entry)),
   })(request(), res);
-  assert.deepEqual(entries, [{
+  assert.deepEqual(entries.map(({ operation, retry, db_pool_total, db_pool_idle, db_pool_waiting, ...entry }) => entry), [{
     event: "oneview_request",
     route: "/api/oneview/alerts",
     data_source: "snapshot",
@@ -649,6 +653,10 @@ test("log oneview_request é estruturado e não contém detalhes sensíveis", as
     error_class: "none",
   }]);
   assert.equal(Number.isInteger(entries[0].duration_ms), true);
+  assert.deepEqual(
+    [entries[0].operation, entries[0].retry, entries[0].db_pool_total, entries[0].db_pool_idle, entries[0].db_pool_waiting],
+    ["/api/oneview/alerts", 0, 0, 0, 0],
+  );
   assert.doesNotMatch(JSON.stringify(entries), /nao-vazar|interno|password/i);
 });
 

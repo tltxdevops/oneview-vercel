@@ -213,6 +213,7 @@ export function isDefaultAlertsWarmQuery(state: {
   severities: string[];
   acknowledgedSource: string;
   oneviewAckStatus?: string;
+  ackActor?: string;
   search: string;
 }) {
   return (state.view ?? DEFAULT_ALERTS_FETCH.view) === DEFAULT_ALERTS_FETCH.view
@@ -228,6 +229,7 @@ export function isDefaultAlertsWarmQuery(state: {
     && state.severities.length === 0
     && state.acknowledgedSource === "all"
     && (state.oneviewAckStatus ?? "all") === "all"
+    && !(state.ackActor ?? "").trim()
     && !state.search.trim();
 }
 
@@ -238,8 +240,14 @@ export type AlertsUrlState = {
   severities: OneViewSeverity[];
   status: AlertsStatusFilter;
   incidentState?: "all" | "8";
+  incidentStates?: string[];
+  incidentNumber?: string;
   acknowledgedSource: AlertsAckFilter;
   oneviewAckStatus: AlertsOneViewAckFilter;
+  oneviewAckStatuses?: Array<Exclude<AlertsOneViewAckFilter, "all"> | "processing">;
+  ackActor?: string;
+  hostSearch?: string;
+  problemSearch?: string;
   dateField: AlertsDateField;
   datePreset: AlertsDatePreset;
   dateRange?: DateRange;
@@ -259,13 +267,19 @@ export function writeAlertsUrlParams(state: AlertsUrlState) {
   for (const datasource of state.datasources ?? []) next.append("datasource", datasource);
   for (const severity of state.severities) next.append("severity", severity);
   if (state.status) next.set("status", state.status);
-  if (state.incidentState && state.incidentState !== "all") next.set("incident_state", state.incidentState);
+  if (state.incidentStates?.length) for (const value of state.incidentStates) next.append("incident_state", value);
+  else if (state.incidentState && state.incidentState !== "all") next.set("incident_state", state.incidentState);
+  if (state.incidentNumber?.trim()) next.set("incident_number", state.incidentNumber.trim().toUpperCase());
   if (state.acknowledgedSource === "acknowledged") next.set("acknowledged_source", "true");
   if (state.acknowledgedSource === "unacknowledged") next.set("acknowledged_source", "false");
   if (state.acknowledgedSource === "all") {
     // omit
   }
-  if (state.oneviewAckStatus !== "all") next.set("oneview_ack_status", state.oneviewAckStatus);
+  if (state.oneviewAckStatuses?.length) for (const value of state.oneviewAckStatuses) next.append("oneview_ack_status", value);
+  else if (state.oneviewAckStatus !== "all") next.set("oneview_ack_status", state.oneviewAckStatus);
+  if (state.ackActor?.trim()) next.set("ack_actor", state.ackActor.trim());
+  if (state.hostSearch?.trim()) next.set("host_search", state.hostSearch.trim());
+  if (state.problemSearch?.trim()) next.set("problem_search", state.problemSearch.trim());
   next.set("date_field", state.dateField);
   if (state.datePreset !== "all" && state.datePreset !== "custom") next.set("date_preset", state.datePreset);
   if (state.datePreset === "custom") {

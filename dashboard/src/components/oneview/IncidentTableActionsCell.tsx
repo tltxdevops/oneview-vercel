@@ -1,4 +1,5 @@
 import { IncidentDetailActions } from "@/components/oneview/IncidentDetailActions";
+import type { IncidentTableActionId } from "@/components/oneview/IncidentActions";
 import type { AlertArtifactModel } from "@/lib/oneview-alert-artifact";
 import type { OneViewIncident } from "@/lib/oneview-api";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ type Props = {
   incident: IncidentTableActionsIncident;
   /** Listas nunca resolvem correlação. O drawer é o único carregamento sob demanda. */
   alertArtifact?: AlertArtifactModel | null;
+  visibleActions?: readonly IncidentTableActionId[];
   className?: string;
   onActionComplete?: () => void;
 };
@@ -29,6 +31,7 @@ type Props = {
 export function IncidentTableActionsCell({
   incident,
   alertArtifact,
+  visibleActions,
   className,
   onActionComplete,
 }: Props) {
@@ -54,6 +57,7 @@ export function IncidentTableActionsCell({
         incident={incident}
         alertArtifact={resolvedArtifact}
         placement="table-cell"
+        visibleActions={visibleActions}
         onClaimed={onActionComplete}
         onWorkNoteAdded={onActionComplete}
         onAttachmentAdded={onActionComplete}

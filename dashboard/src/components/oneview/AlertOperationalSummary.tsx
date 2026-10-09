@@ -10,6 +10,7 @@ import { SeverityBadge } from "@/components/badges/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { OneViewAlert } from "@/lib/oneview-api";
+import { sourceAckRowKind } from "@/lib/oneview-alert-source-ack";
 
 function formatDateTime(value?: string | null) {
   if (!value) return "—";
@@ -122,7 +123,8 @@ export function AlertOperationalSummary({ alert, className, children }: AlertOpe
   const showPending = scope === "unknown" || (!scope && !alert.customer_name);
   const hostName = canonicalHostName(alert);
   const resolved = isResolvedAlert(alert);
-  const ackPending = !alert.acknowledged_source;
+  const originAck = sourceAckRowKind(alert);
+  const ackPending = originAck === "pending";
 
   const metaRows: Array<[string, string]> = [
     ["Início", formatDateTime(alert.first_seen_at)],
@@ -174,7 +176,7 @@ export function AlertOperationalSummary({ alert, className, children }: AlertOpe
               : "border-emerald-200 bg-emerald-50 text-emerald-700",
           )}
         >
-          {ackPending ? "ACK pendente" : "ACK"}
+          {ackPending ? "ACK pendente" : originAck === "acknowledged" ? "ACK" : "Sem ACK"}
         </Badge>
       </div>
 

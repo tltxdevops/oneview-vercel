@@ -38,6 +38,9 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
+import { useAlertDrawerLiveRefresh } from "@/hooks/useAlertDrawerLiveRefresh";
+import { shouldInvalidateAlertList } from "@/lib/oneview-alert-live-refresh";
+import { sourceAckRowBadgeStatus, sourceAckRowKind, sourceAckRowLabel } from "@/lib/oneview-alert-source-ack";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
@@ -55,6 +58,7 @@ import {
   fetchAlert,
   fetchAlertHistory,
   fetchIncidents,
+  invalidateOneViewReadCache,
   formatNullableCount,
   formatOneViewSeverityLabel,
   bucketOneViewReadNow,
@@ -444,7 +448,7 @@ function MonitorAlertRow({
   freshTone?: FreshAttentionTone | null;
   liveTransition?: LiveTransition | null;
 }) {
-  const acked = Boolean(alert.acknowledged_source);
+  const originAck = sourceAckRowKind(alert);
   const fresh = Boolean(freshTone);
   const clientLabel = operationalClientLabel({
     key: alert.customer_key,
@@ -472,7 +476,7 @@ function MonitorAlertRow({
         {fresh ? <span className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider text-[hsl(var(--ov-color-danger))]"><span className="ov-fresh-dot" aria-hidden="true" />Novo</span> : null}
       </span>
     ),
-    ack: <span key="ack"><OneViewSemanticStatusBadge status={acked ? "monitoring-normalized" : "classification-pending"} label={acked ? "Com ACK" : "Sem ACK"} showDot={false} /></span>,
+    ack: <span key="ack"><OneViewSemanticStatusBadge status={sourceAckRowBadgeStatus(originAck)} label={sourceAckRowLabel(originAck)} showDot={false} /></span>,
     started: <span key="started" className="block truncate text-xs tabular-nums text-muted-foreground">{formatCompactFirstSeen(alert.first_seen_at || alert.started_at)}</span>,
     duration: <span key="duration" className="block truncate text-xs tabular-nums text-muted-foreground">{formatDurationSeconds(alert.duration_seconds)}</span>,
     action: <span key="action" className="inline-flex h-7 items-center justify-center gap-1 text-xs font-medium text-primary">Abrir<Eye className="h-3 w-3" aria-hidden="true" /></span>,
@@ -562,6 +566,8 @@ export default function MonitoringPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<OneViewIncident | null>(null);
   const detailRequest = useRef<AbortController | null>(null);
+  const detailInFlightRef = useRef(false);
+  const detailOwnerRef = useRef<object | null>(null);
   const [navOpen, setNavOpen] = useState(() => {
     try {
       const raw = sessionStorage.getItem("oneview-monitor-sidebar-open");
@@ -873,13 +879,8 @@ export default function MonitoringPage() {
   }, [monitoringQueryKey]);
 
   const refreshAll = useCallback(async () => {
-    if (inFlight.current) {
-      const generation = queryGenerationRef.current;
-      if (generation.inFlightGeneration() === generation.peek()) {
-        return inFlight.current;
-      }
-      listsAbort.current?.abort();
-    }
+    if (inFlight.current && queryGenerationRef.current.inFlightGeneration() === queryGenerationRef.current.peek()) return inFlight.current;
+    if (inFlight.current) listsAbort.current?.abort();
     pollGenerationRef.current += 1;
     const pollGeneration = pollGenerationRef.current;
     const queryGeneration = queryGenerationRef.current.begin();
@@ -1224,27 +1225,37 @@ export default function MonitoringPage() {
     return () => window.clearInterval(timer);
   }, [alertTransitions, incidentTransitions]);
 
-  const loadSelectedAlert = useCallback(async (alertId: string) => {
-    detailRequest.current?.abort();
-    const controller = new AbortController();
-    detailRequest.current = controller;
-    setIsDetailLoading(true);
-    setDetailError(null);
-    // OV-P0-108 — mantém preview/detail existente enquanto carrega (sem flicker).
+  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal }) => {
+    if (options?.quiet && detailInFlightRef.current) return null;
+    if (!options?.quiet) detailRequest.current?.abort();
+    const controller = options?.signal ? null : new AbortController();
+    const signal = options?.signal ?? controller!.signal;
+    if (controller) detailRequest.current = controller;
+    const token = { id: alertId };
+    detailOwnerRef.current = token;
+    detailInFlightRef.current = true;
+    if (!options?.quiet) {
+      setIsDetailLoading(true);
+      setDetailError(null);
+    }
     try {
       const results = await Promise.allSettled([
-        fetchAlert(alertId, controller.signal),
-        fetchAlertHistory(alertId, controller.signal),
+        fetchAlert(alertId, signal),
+        fetchAlertHistory(alertId, signal),
       ]);
-      if (controller.signal.aborted) return;
+      if (signal.aborted) return null;
       const errors: string[] = [];
       if (results[0].status === "fulfilled") setDetail(results[0].value);
-      else errors.push(results[0].reason instanceof Error ? results[0].reason.message : "Detalhe indisponível.");
+      else if (!options?.quiet) errors.push(results[0].reason instanceof Error ? results[0].reason.message : "Detalhe indisponível.");
       if (results[1].status === "fulfilled") setHistory(results[1].value);
-      else errors.push(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
+      else if (!options?.quiet) errors.push(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
       if (errors.length) setDetailError(errors[0]);
+      return results[0].status === "fulfilled" ? results[0].value.item : null;
     } finally {
-      if (!controller.signal.aborted) setIsDetailLoading(false);
+      if (detailOwnerRef.current === token) {
+        detailInFlightRef.current = false;
+        if (!options?.quiet && !signal.aborted) setIsDetailLoading(false);
+      }
     }
   }, []);
 
@@ -1376,6 +1387,16 @@ export default function MonitoringPage() {
   }, []);
 
   const selectedAlert = detail?.item ?? selectedPreview;
+  useAlertDrawerLiveRefresh({
+    alertId: selectedAlertId,
+    alert: selectedAlert,
+    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    onTransition: (transition) => {
+      if (!shouldInvalidateAlertList(transition)) return;
+      invalidateOneViewReadCache("/oneview/alerts");
+      void refreshAll();
+    },
+  });
   const historyItems = (history?.items ?? []).filter(
     (item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal",
   );
