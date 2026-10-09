@@ -19,6 +19,7 @@ export type OneViewDashboardWidget = {
   defaultSize: DashboardWidgetSize;
   itemLimitOptions?: readonly number[];
   defaultItemLimit?: number;
+  defaultHidden?: boolean;
   allowedPages: OneViewDashboardPage[];
 };
 
@@ -108,6 +109,7 @@ export const ONEVIEW_DASHBOARD_WIDGETS: OneViewDashboardWidget[] = [
     defaultSize: { width: 8, height: 4 },
     itemLimitOptions: [3, 5, 7, 10, 15],
     defaultItemLimit: 7,
+    defaultHidden: true,
     allowedPages: ["home"],
   },
   {
@@ -296,7 +298,7 @@ export function createOneViewDashboardLayout(
         order,
         width: clampWidth(size.width, widget),
         height: clampHeight(size.height, widget),
-        hidden: false,
+        hidden: Boolean(widget.defaultHidden),
         pinned: false,
         itemLimit: clampItemLimit(widget.defaultItemLimit, widget),
       };
@@ -481,6 +483,29 @@ export function resetOneViewDashboardPreferences(actorId?: string | null) {
   return preferences;
 }
 
+const RECENT_EVENTS_HIDDEN_MIGRATION = "oneview.dashboard-layout.migrate.recent-events-default-hidden";
+
+function migrateHomeRecentEventsHidden(
+  layout: OneViewDashboardLayout,
+  actorId?: string | null,
+): OneViewDashboardLayout {
+  if (layout.page !== "home") return layout;
+  const widgets = compactOneViewDashboardWidgets(layout.widgets).map((item) => (
+    item.id === "recent-events" ? { ...item, hidden: true } : item
+  ));
+  const next = { ...layout, widgets };
+  if (typeof window === "undefined") return next;
+  const key = `${RECENT_EVENTS_HIDDEN_MIGRATION}:${dashboardActorStorageKey(actorId)}:${layout.template}`;
+  try {
+    if (window.localStorage.getItem(key) === "1") return layout;
+    window.localStorage.setItem(key, "1");
+    writeOneViewDashboardLayout(next, actorId);
+    return next;
+  } catch {
+    return next;
+  }
+}
+
 export function readOneViewDashboardLayout(
   page: OneViewDashboardPage,
   actorId: string | null | undefined,
@@ -490,7 +515,10 @@ export function readOneViewDashboardLayout(
   if (typeof window === "undefined") return createOneViewDashboardLayout(page, template, widgets);
   try {
     const raw = window.localStorage.getItem(oneViewDashboardStorageKey(page, actorId, template));
-    return normalizeOneViewDashboardLayout(raw ? JSON.parse(raw) : null, page, template, widgets);
+    return migrateHomeRecentEventsHidden(
+      normalizeOneViewDashboardLayout(raw ? JSON.parse(raw) : null, page, template, widgets),
+      actorId,
+    );
   } catch {
     return createOneViewDashboardLayout(page, template, widgets);
   }
@@ -520,7 +548,7 @@ export function applyOneViewDashboardTemplate(
     if (current?.pinned) return { ...current };
     return {
       ...item,
-      hidden: Boolean(current?.hidden),
+      hidden: current ? Boolean(current.hidden) : Boolean(item.hidden),
       pinned: false,
       itemLimit: current?.itemLimit ?? item.itemLimit,
     };

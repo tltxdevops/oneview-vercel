@@ -39,6 +39,9 @@ export const SOURCE_ACK_POLL_TIMEOUT_MS = 45_000;
 type Props = {
   alert: OneViewAlert;
   variant?: "icon" | "button";
+  buttonLabel?: string;
+  waitingLabel?: string;
+  className?: string;
   /** When false, the parent drawer owns the 2s fetchAlert poll. */
   livePollEnabled?: boolean;
   onRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
@@ -54,7 +57,16 @@ function confirmField(label: string, value: string) {
   );
 }
 
-export function AlertSourceAckAction({ alert, variant = "icon", livePollEnabled = true, onRequestAccepted, onAcknowledged }: Props) {
+export function AlertSourceAckAction({
+  alert,
+  variant = "icon",
+  buttonLabel = "Reconhecer alerta",
+  waitingLabel = "Aguardando confirmação da origem",
+  className,
+  livePollEnabled = true,
+  onRequestAccepted,
+  onAcknowledged,
+}: Props) {
   const [phase, setPhase] = useState<AlertSourceAckPhase>("idle");
   const [comment, setComment] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -202,9 +214,10 @@ export function AlertSourceAckAction({ alert, variant = "icon", livePollEnabled 
       className={cn(
         variant === "button" ? "ov-control-official-compact h-8 gap-1.5 px-2.5" : "ov-control-official-compact h-7 min-h-7 w-7 px-0",
         (visual === "acknowledged" || waitingForOrigin) && "text-emerald-600",
+        className,
       )}
       disabled={!canOpen || submitting || waitingForOrigin}
-      aria-label={waitingForOrigin ? "Aguardando confirmação da origem" : ariaLabel}
+      aria-label={waitingForOrigin ? waitingLabel : ariaLabel}
       aria-disabled={!canOpen || submitting || waitingForOrigin}
       data-source-ack-state={visual}
       data-source-ack-phase={phase}
@@ -214,7 +227,7 @@ export function AlertSourceAckAction({ alert, variant = "icon", livePollEnabled 
       }}
     >
       {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-      {variant === "button" ? <span>{waitingForOrigin ? "Aguardando confirmação da origem" : "Reconhecer alerta"}</span> : <span className="sr-only">{waitingForOrigin ? "Aguardando confirmação da origem" : ariaLabel}</span>}
+      {variant === "button" ? <span>{waitingForOrigin ? waitingLabel : buttonLabel}</span> : <span className="sr-only">{waitingForOrigin ? waitingLabel : ariaLabel}</span>}
     </OneViewButton>
   );
 

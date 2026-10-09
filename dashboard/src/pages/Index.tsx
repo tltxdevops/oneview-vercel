@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Check, ChevronsUpDown, Eye, Loader2 } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import {
   ClientIdentity,
@@ -11,6 +11,7 @@ import {
   operationalClientLabel,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
 import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -49,8 +50,22 @@ import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
 import { useAuthContext } from "@/context/AuthContext";
+import { useAlertDrawerLiveRefresh } from "@/hooks/useAlertDrawerLiveRefresh";
+import { shouldInvalidateAlertList } from "@/lib/oneview-alert-live-refresh";
+import {
+  detectLiveTransitions,
+  mergeLiveTransitionQueue,
+  prunePinnedByTransitions,
+  reconcileLiveTransitions,
+  sameLiveTransitionMap,
+  snapshotFromAlert,
+  toLiveSnapshotMap,
+  type LiveTransition,
+} from "@/lib/oneview-live-transition";
+import { sourceAckRowBadgeStatus, sourceAckRowKind, sourceAckRowLabel, type SourceAckTerminalStatus } from "@/lib/oneview-alert-source-ack";
 import { OV_FILTER_CHIP, OV_FILTER_CONTROL } from "@/lib/oneview-operational-ui";
 import {
+  AcknowledgeAlertResponse,
   AlertDetailResponse,
   AlertHistoryItem,
   AlertHistoryResponse,
@@ -64,6 +79,7 @@ import {
   OneViewSeverity,
   fetchAlert,
   fetchAlertHistory,
+  invalidateOneViewReadCache,
   fetchOperatorQueue,
   formatNullableCount,
   formatOneViewSeverityLabel,
@@ -77,6 +93,7 @@ import {
   DEFAULT_HOME_ALERT_MODE,
   DEFAULT_HOME_OPERATIONAL_WINDOW,
   HOME_ALERT_MODE,
+  HOME_ALERT_ACK_FILTER_OPTIONS,
   HOME_ALERTS_PAGE_SIZE,
   HOME_ALERT_STATUS_OPTIONS,
   HOME_EVENTS_LIMIT,
@@ -94,6 +111,7 @@ import {
   parseHomeOperationalWindow,
   toggleHomeSeveritySelection,
   type HomeAlertMode,
+  type HomeAlertAckFilter,
   type HomeAlertStatus,
   type HomeAlertSeverity,
   type HomeOperationalWindowPreset,
@@ -128,6 +146,8 @@ import {
 
 const SUMMARY_REFRESH_MS = 10_000;
 const LIST_REFRESH_MS = 10_000;
+const HOME_ALERT_SUCCESS_PULSE_DURATION_MS = 9_000;
+const HOME_ALERT_MISSING_PROOF_LIMIT = 8;
 const HOME_DASHBOARD_WIDGETS = dashboardWidgetsForPage("home").filter((widget) => widget.id !== "health");
 
 const HOME_EVENT_COLUMNS = [
@@ -207,7 +227,7 @@ const HOME_ALERT_COLUMN_WIDTH: Record<HomeAlertColumnId, string> = {
   ack: "7rem",
   started: "6.5rem",
   duration: "5.75rem",
-  action: "4rem",
+  action: "8.5rem",
 };
 const HOME_OPERATOR_COLUMN_WIDTH: Record<HomeOperatorColumnId, string> = {
   customer: "minmax(9rem,1fr)",
@@ -448,14 +468,22 @@ function HomeAlertRow({
   columns,
   gridTemplate,
   selected = false,
+  selectedAlertId = null,
+  transition,
+  onSourceAckRequestAccepted,
+  onSourceAcknowledged,
 }: {
   alert: OneViewAlert;
   onOpen: (alert: OneViewAlert) => void;
   columns: readonly HomeAlertColumnId[];
   gridTemplate: string;
   selected?: boolean;
+  selectedAlertId?: string | null;
+  transition?: LiveTransition;
+  onSourceAckRequestAccepted: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void;
+  onSourceAcknowledged: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
 }) {
-  const acked = Boolean(alert.acknowledged_source);
+  const originAck = sourceAckRowKind(alert);
   const clientLabel = operationalClientLabel({
     key: alert.customer_key,
     name: alert.customer_name,
@@ -476,25 +504,51 @@ function HomeAlertRow({
     host: <TruncatedText key="host" className="text-xs text-foreground/85">{canonicalHostName(alert)}</TruncatedText>,
     problem: <TruncatedText key="problem" className="text-xs text-muted-foreground">{alert.problem_name}</TruncatedText>,
     severity: <span key="severity"><OneViewSeverityBadge severity={alert.severity} showDot={false} /></span>,
-    ack: <span key="ack"><OneViewSemanticStatusBadge status={acked ? "monitoring-normalized" : "classification-pending"} label={acked ? "Com ACK" : "Sem ACK"} showDot={false} /></span>,
+    ack: <span key="ack"><OneViewSemanticStatusBadge status={sourceAckRowBadgeStatus(originAck)} label={sourceAckRowLabel(originAck)} showDot={false} /></span>,
     started: <span key="started" className="block truncate text-xs tabular-nums text-muted-foreground">{formatCompactFirstSeen(alert.first_seen_at || alert.started_at)}</span>,
     duration: <span key="duration" className="block truncate text-xs tabular-nums text-muted-foreground">{formatDurationSeconds(alert.duration_seconds)}</span>,
-    action: <span key="action" className="inline-flex h-7 items-center justify-center gap-1 text-xs font-medium text-primary">Abrir<Eye className="h-3 w-3" aria-hidden="true" /></span>,
+    action: (
+      <span
+        key="action"
+        className="inline-flex justify-center"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <AlertSourceAckAction
+          alert={alert}
+          variant="button"
+          buttonLabel="FAZER ACK"
+          waitingLabel="Aguardando"
+          livePollEnabled={selectedAlertId !== alert.id}
+          className="h-7 min-h-7 gap-1 px-2 text-[11px] font-semibold uppercase tracking-wide"
+          onRequestAccepted={onSourceAckRequestAccepted}
+          onAcknowledged={onSourceAcknowledged}
+        />
+      </span>
+    ),
   };
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onOpen(alert)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen(alert);
+        }
+      }}
       aria-current={selected ? "true" : undefined}
       className={cn(
-        "ov-monitoring-table-grid grid w-full min-h-12 items-center gap-x-3 border-b border-border/50 px-1 py-2 text-left transition-colors hover:bg-muted/50 last:border-b-0",
+        "ov-monitoring-table-grid grid w-full min-h-12 cursor-pointer items-center gap-x-3 border-b border-border/50 px-1 py-2 text-left transition-colors hover:bg-muted/50 last:border-b-0",
         selected && "bg-muted/55 ring-1 ring-inset ring-border/80",
+        transition && "ov-alert-success-transition",
       )}
       style={{ gridTemplateColumns: gridTemplate }}
       aria-label={`Abrir alerta ${alert.problem_name || alert.id}`}
     >
       {columns.map((column) => <span key={column} className={cn("min-w-0 overflow-hidden", homeColumnAlign(column))}>{cells[column]}</span>)}
-    </button>
+    </div>
   );
 }
 
@@ -577,6 +631,7 @@ export default function Index() {
   const [selectedSeverities, setSelectedSeverities] = useState<HomeAlertSeverity[]>([]);
   const [severityFilterOpen, setSeverityFilterOpen] = useState(false);
   const [alertStatus, setAlertStatus] = useState<HomeAlertStatus>("active");
+  const [alertAckFilter, setAlertAckFilter] = useState<HomeAlertAckFilter>("pending");
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>([]);
   const [clientFilterOpen, setClientFilterOpen] = useState(false);
   const [eventSearch, setEventSearch] = useState("");
@@ -594,6 +649,7 @@ export default function Index() {
 
   const [recentMetrics, setRecentMetrics] = useState<RecentOperationalMetrics | null>(warmedMetrics);
   const [homeAlerts, setHomeAlerts] = useState<OneViewAlert[]>(() => warmedHome?.items ?? []);
+  const [homeAlertTransitions, setHomeAlertTransitions] = useState<Map<string, LiveTransition>>(new Map());
   const [alertsTotal, setAlertsTotal] = useState(warmedHome?.total ?? 0);
   const [incidentsMode, setIncidentsMode] = useState<IncidentsQueueMode>(INCIDENTS_QUEUE_MODE.unassigned);
   const [incidentsAssignedTo, setIncidentsAssignedTo] = useState<string[]>([]);
@@ -632,6 +688,14 @@ export default function Index() {
   const hasSecondaryListsRef = useRef(false);
   const quietUpdatesRef = useRef(0);
   const detailRequest = useRef<AbortController | null>(null);
+  const detailInFlightRef = useRef(false);
+  const detailOwnerRef = useRef<object | null>(null);
+  const homeAlertsRef = useRef<OneViewAlert[]>(warmedHome?.items ?? []);
+  const homeAlertSnapshotsRef = useRef<Map<string, ReturnType<typeof snapshotFromAlert>>>(new Map());
+  const homeAlertSnapshotReadyRef = useRef(false);
+  const homeAlertTransitionsRef = useRef<Map<string, LiveTransition>>(new Map());
+  const homeAlertConsumedTransitionsRef = useRef<Set<string>>(new Set());
+  const homeAlertPinnedRef = useRef<Map<string, OneViewAlert>>(new Map());
 
   const beginQuietUpdate = useCallback(() => {
     quietUpdatesRef.current += 1;
@@ -699,10 +763,11 @@ export default function Index() {
     severity: selectedSeverities,
     customers: selectedCustomerKeys,
     status: alertStatus,
+    acknowledgedSource: alertAckFilter === "pending" ? false : alertAckFilter === "acknowledged" ? true : undefined,
     windowPreset: homeWindow,
     fromDate: homeRange.fromDate,
     toDate: homeRange.toDate,
-  }), [alertMode, alertStatus, homeRange.fromDate, homeRange.toDate, homeWindow, selectedCustomerKeys, selectedSeverities]);
+  }), [alertAckFilter, alertMode, alertStatus, homeRange.fromDate, homeRange.toDate, homeWindow, selectedCustomerKeys, selectedSeverities]);
 
   /** OV-P0-103 — Resumo operacional filtra a lista da Home (toggle local; sem navegar). */
   const changeAlertMode = useCallback((value: string) => {
@@ -771,6 +836,7 @@ export default function Index() {
       severity: selectedSeverities,
       customers: selectedCustomerKeys,
       status: alertStatus,
+      acknowledgedSource: alertAckFilter === "pending" ? false : alertAckFilter === "acknowledged" ? true : undefined,
       limit: alertItemLimit,
       from: homeRange.from,
       to: homeRange.to,
@@ -782,6 +848,55 @@ export default function Index() {
     try {
       const payload = await fetchHomeAlerts({ ...request, include: "items" });
       if (controller.signal.aborted || criticalAlertsRequest.current !== controller) return;
+      const nextSnapshots = toLiveSnapshotMap(payload.items.map((item) => snapshotFromAlert(item)));
+      const previousAlerts = new Map(homeAlertsRef.current.map((item) => [item.id, item]));
+      const missingIds = [...previousAlerts.keys()].filter((id) => !nextSnapshots.has(id));
+      const provenAlerts = new Map<string, OneViewAlert>();
+      if (homeAlertSnapshotReadyRef.current && missingIds.length) {
+        const proofs = await Promise.allSettled(missingIds.slice(0, HOME_ALERT_MISSING_PROOF_LIMIT).map(async (id) => {
+          const response = await fetchAlert(id, controller.signal);
+          return response.item;
+        }));
+        if (controller.signal.aborted || criticalAlertsRequest.current !== controller) return;
+        for (const proof of proofs) {
+          if (proof.status === "fulfilled" && proof.value?.id) {
+            provenAlerts.set(proof.value.id, proof.value);
+            const snapshot = snapshotFromAlert(proof.value);
+            if (snapshot) nextSnapshots.set(snapshot.id, snapshot);
+          }
+        }
+      }
+      const previousSnapshots = toLiveSnapshotMap([...homeAlertSnapshotsRef.current.values()]);
+      const detectedTransitions = detectLiveTransitions({
+        previousById: previousSnapshots,
+        nextById: nextSnapshots,
+        previousSnapshotReady: homeAlertSnapshotReadyRef.current,
+        consumedVersionKeys: homeAlertConsumedTransitionsRef.current,
+        now: Date.now(),
+        durationMs: HOME_ALERT_SUCCESS_PULSE_DURATION_MS,
+      }).filter((transition) => transition.kind === "resolved" || (
+        transition.kind === "acknowledged"
+        && previousSnapshots.get(transition.id)?.acknowledged_source !== true
+        && nextSnapshots.get(transition.id)?.acknowledged_source === true
+      ));
+      const reconciledTransitions = reconcileLiveTransitions({
+        current: homeAlertTransitionsRef.current,
+        detected: detectedTransitions,
+        consumedVersionKeys: homeAlertConsumedTransitionsRef.current,
+        now: Date.now(),
+      });
+      const nextPinned = new Map(homeAlertPinnedRef.current);
+      for (const transition of reconciledTransitions.active.values()) {
+        const proven = provenAlerts.get(transition.id);
+        if (proven) nextPinned.set(transition.id, proven);
+      }
+      homeAlertSnapshotsRef.current = nextSnapshots;
+      homeAlertSnapshotReadyRef.current = true;
+      homeAlertTransitionsRef.current = reconciledTransitions.active;
+      homeAlertConsumedTransitionsRef.current = reconciledTransitions.consumedVersionKeys;
+      homeAlertPinnedRef.current = prunePinnedByTransitions(nextPinned, reconciledTransitions.active, Date.now());
+      setHomeAlertTransitions((current) => sameLiveTransitionMap(current, reconciledTransitions.active) ? current : new Map(reconciledTransitions.active));
+      homeAlertsRef.current = payload.items;
       setHomeAlerts(payload.items);
       setAlertsTotal(payload.total);
       setListsMeta({
@@ -814,7 +929,7 @@ export default function Index() {
         setIsSummaryLoading(false);
       }
     }
-  }, [alertItemLimit, alertMode, alertOrder, alertSort, alertStatus, homeRange.from, homeRange.to, selectedCustomerKeys, setListSectionLoading, setSectionError, selectedSeverities]);
+  }, [alertAckFilter, alertItemLimit, alertMode, alertOrder, alertSort, alertStatus, homeRange.from, homeRange.to, selectedCustomerKeys, setListSectionLoading, setSectionError, selectedSeverities]);
 
   const loadLists = useCallback(async (mode: "initial" | "quiet" | "manual" = "quiet") => {
     if (mode === "quiet" && listsRequest.current && !listsRequest.current.signal.aborted) return;
@@ -955,27 +1070,37 @@ export default function Index() {
     homeRange.from,
     homeRange.to,
   ]);
-  const loadSelectedAlert = useCallback(async (alertId: string) => {
-    detailRequest.current?.abort();
-    const controller = new AbortController();
-    detailRequest.current = controller;
-    setIsDetailLoading(true);
-    setDetailError(null);
-    // OV-P0-108 — mantém preview/detail existente enquanto carrega (sem flicker).
+  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal }) => {
+    if (options?.quiet && detailInFlightRef.current) return null;
+    if (!options?.quiet) detailRequest.current?.abort();
+    const controller = options?.signal ? null : new AbortController();
+    const signal = options?.signal ?? controller!.signal;
+    if (controller) detailRequest.current = controller;
+    const token = { id: alertId };
+    detailOwnerRef.current = token;
+    detailInFlightRef.current = true;
+    if (!options?.quiet) {
+      setIsDetailLoading(true);
+      setDetailError(null);
+    }
     try {
       const results = await Promise.allSettled([
-        fetchAlert(alertId, controller.signal),
-        fetchAlertHistory(alertId, controller.signal),
+        fetchAlert(alertId, signal),
+        fetchAlertHistory(alertId, signal),
       ]);
-      if (controller.signal.aborted) return;
+      if (signal.aborted) return null;
       const errors: string[] = [];
       if (results[0].status === "fulfilled") setDetail(results[0].value);
-      else errors.push(results[0].reason instanceof Error ? results[0].reason.message : "Detalhe indisponível.");
+      else if (!options?.quiet) errors.push(results[0].reason instanceof Error ? results[0].reason.message : "Detalhe indisponível.");
       if (results[1].status === "fulfilled") setHistory(results[1].value);
-      else errors.push(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
+      else if (!options?.quiet) errors.push(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
       if (errors.length) setDetailError(errors[0]);
+      return results[0].status === "fulfilled" ? results[0].value.item : null;
     } finally {
-      if (!controller.signal.aborted) setIsDetailLoading(false);
+      if (detailOwnerRef.current === token) {
+        detailInFlightRef.current = false;
+        if (!options?.quiet && !signal.aborted) setIsDetailLoading(false);
+      }
     }
   }, []);
 
@@ -1024,6 +1149,35 @@ export default function Index() {
     }
   }, [searchParams, setSearchParams]);
 
+  const handleSourceAckRequestAccepted = useCallback((alert: OneViewAlert, result: AcknowledgeAlertResponse) => {
+    if (result.status !== "pending" || result.acknowledged_source) return;
+    const pending = (item: OneViewAlert) => item.id !== alert.id ? item : {
+      ...item,
+      source_ack_status: "pending" as const,
+      oneview_ack: {
+        status: "pending" as const,
+        requested_at: new Date().toISOString(),
+        processed_at: null,
+        actor_name: result.actor_name || null,
+        reason: null,
+        message: null,
+      },
+    };
+    homeAlertsRef.current = homeAlertsRef.current.map(pending);
+    setHomeAlerts((current) => current.map(pending));
+    setSelectedPreview((current) => current ? pending(current) : current);
+    setDetail((current) => current?.item.id === alert.id ? { ...current, item: pending(current.item) } : current);
+  }, []);
+
+  const handleSourceAcknowledged = useCallback(async (alert: OneViewAlert, _status: SourceAckTerminalStatus) => {
+    invalidateOneViewReadCache("/oneview/alerts");
+    invalidateOneViewReadCache(`/oneview/alerts/${alert.id}`);
+    await Promise.all([
+      loadCriticalHomeAlerts(),
+      selectedAlertId === alert.id ? loadSelectedAlert(alert.id) : Promise.resolve(),
+    ]);
+  }, [loadCriticalHomeAlerts, loadSelectedAlert, selectedAlertId]);
+
   useEffect(() => {
     if (!requestedAlertId) {
       if (selectedAlertId) {
@@ -1060,6 +1214,14 @@ export default function Index() {
   }, [loadCriticalHomeAlerts, loadLists]);
   useEffect(() => runAfterOneViewFirstUseful(() => void loadFacets()), [loadFacets]);
   useEffect(() => {
+    homeAlertSnapshotsRef.current = new Map();
+    homeAlertSnapshotReadyRef.current = false;
+    homeAlertTransitionsRef.current = new Map();
+    homeAlertConsumedTransitionsRef.current = new Set();
+    homeAlertPinnedRef.current = new Map();
+    setHomeAlertTransitions(new Map());
+  }, [alertAckFilter, alertMode, alertStatus, homeRange.from, homeRange.to, selectedCustomerKeys, selectedSeverities]);
+  useEffect(() => {
     if (clientFilterOpen) void loadFacets();
   }, [clientFilterOpen, loadFacets]);
   useEffect(() => {
@@ -1081,9 +1243,34 @@ export default function Index() {
     };
   }, [loadCriticalHomeAlerts, loadLists]);
   useEffect(() => () => detailRequest.current?.abort(), []);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const reconciled = reconcileLiveTransitions({
+        current: homeAlertTransitionsRef.current,
+        detected: [],
+        consumedVersionKeys: homeAlertConsumedTransitionsRef.current,
+        now: Date.now(),
+      });
+      homeAlertTransitionsRef.current = reconciled.active;
+      homeAlertConsumedTransitionsRef.current = reconciled.consumedVersionKeys;
+      homeAlertPinnedRef.current = prunePinnedByTransitions(homeAlertPinnedRef.current, reconciled.active, Date.now());
+      setHomeAlertTransitions((current) => sameLiveTransitionMap(current, reconciled.active) ? current : new Map(reconciled.active));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const lastCheckedAt = latestCheckedAt(...metas.map((meta) => meta.checkedAt), listsMeta.checkedAt);
   const selectedAlert = detail?.item ?? selectedPreview;
+  useAlertDrawerLiveRefresh({
+    alertId: selectedAlertId,
+    alert: selectedAlert,
+    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    onTransition: (transition) => {
+      if (!shouldInvalidateAlertList(transition)) return;
+      invalidateOneViewReadCache("/oneview/alerts");
+      void loadCriticalHomeAlerts();
+    },
+  });
   const historyItems = (history?.items ?? []).filter((item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal");
   const showInitialLoading = (isSummaryLoading && !hasSummaryRef.current)
     || (sectionLoading.alerts && !homeAlerts.length);
@@ -1102,7 +1289,16 @@ export default function Index() {
     to: homeRange.to,
   });
   const nextSortOrder = (active: boolean, current: SortOrder, defaultOrder: SortOrder = "asc"): SortOrder => active ? current === "asc" ? "desc" : "asc" : defaultOrder;
-  const visibleHomeAlerts = homeAlerts.slice(0, alertItemLimit);
+  const visibleHomeAlerts = useMemo(() => mergeLiveTransitionQueue({
+    serverItems: homeAlerts,
+    pinnedById: homeAlertPinnedRef.current,
+    transitions: homeAlertTransitions,
+    passesFilter: () => true,
+    filter: {
+      hideAcknowledged: alertAckFilter === "pending",
+      hideResolved: alertStatus === "active",
+    },
+  }).slice(0, alertItemLimit), [alertAckFilter, alertItemLimit, alertStatus, homeAlertTransitions, homeAlerts]);
   const visibleHomeIncidents = homeIncidents.slice(0, incidentItemLimit);
   const operatorItems = [...(operatorQueue?.items ?? [])].sort((left, right) => {
     const direction = operatorOrder === "asc" ? 1 : -1;
@@ -1398,6 +1594,18 @@ export default function Index() {
                   </SelectContent>
                 </Select>
               </OperationalFilterGroup>
+              <OperationalFilterGroup label="ACK" showDivider>
+                <Select value={alertAckFilter} onValueChange={(value) => setAlertAckFilter(value as HomeAlertAckFilter)}>
+                  <SelectTrigger className={cn(OV_FILTER_CONTROL, "w-[8.5rem]")} aria-label="Filtrar por ACK da origem">
+                    <SelectValue placeholder="ACK" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {HOME_ALERT_ACK_FILTER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </OperationalFilterGroup>
             </div> : null}
             {!dashboard.isWallboard ? (
               <div className="flex justify-end gap-2 border-b border-border/60 py-1">
@@ -1432,6 +1640,10 @@ export default function Index() {
                       columns={homeAlertColumnIds}
                       gridTemplate={homeAlertGrid}
                       selected={selectedAlertId === alert.id}
+                      selectedAlertId={selectedAlertId}
+                      transition={homeAlertTransitions.get(alert.id)}
+                      onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
+                      onSourceAcknowledged={handleSourceAcknowledged}
                     />
                   ))}
                 </div>
@@ -1664,13 +1876,8 @@ export default function Index() {
         historyItems={historyItems}
         isLoading={isDetailLoading}
         error={detailError}
-        onSourceAckRequestAccepted={(alert, result) => {
-          if (result.status !== "pending" || result.acknowledged_source) return;
-          const pending = (item: OneViewAlert) => ({ ...item, source_ack_status: "pending" as const, oneview_ack: { status: "pending" as const, requested_at: new Date().toISOString(), processed_at: null, actor_name: result.actor_name || null, reason: null, message: null } });
-          setSelectedPreview((current) => current?.id === alert.id ? pending(current) : current);
-          setDetail((current) => current?.item.id === alert.id ? { ...current, item: pending(current.item) } : current);
-        }}
-        onSourceAcknowledged={(alert) => loadSelectedAlert(alert.id)}
+        onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
+        onSourceAcknowledged={handleSourceAcknowledged}
         description="Consulta rápida sem sair da Home."
       />
     </AppLayout>

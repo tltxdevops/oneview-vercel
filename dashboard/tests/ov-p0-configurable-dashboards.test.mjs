@@ -29,6 +29,11 @@ test("OV-DASHBOARD: centraliza widgets, presets e persistÃªncia local V1", () =>
   assert.match(model, /pinned/);
   assert.match(model, /resetOneViewDashboardPreferences/);
   assert.match(model, /operational: \{[\s\S]*?"operational-summary": \{ width: 12, height: 2 \}/);
+  assert.match(model, /id: "recent-events"[\s\S]*?defaultHidden: true/);
+  assert.match(model, /hidden: Boolean\(widget\.defaultHidden\)/);
+  assert.match(model, /migrateHomeRecentEventsHidden/);
+  assert.match(model, /oneview\.dashboard-layout\.migrate\.recent-events-default-hidden/);
+  assert.match(model, /current \? Boolean\(current\.hidden\) : Boolean\(item\.hidden\)/);
 });
 
 test("OV-DASHBOARD: editor direto oferece arrastar, resize pelo canto e conclusÃ£o visÃ­vel", () => {
@@ -59,6 +64,9 @@ test("OV-DASHBOARD: editor direto oferece arrastar, resize pelo canto e conclusÃ
   assert.match(component, /Sair do wallboard/);
   assert.match(component, /aria-label="Organizar painel"/);
   assert.match(component, /ov-dashboard-organize-fab/);
+  assert.match(component, /ov-dashboard-organize-panel/);
+  assert.match(component, /collisionPadding=\{16\}/);
+  assert.match(component, /aria-label="Fechar organizador"/);
   assert.doesNotMatch(component, /Personalizar painel/);
   assert.match(component, /lastVisible/);
   assert.match(component, /draggedId/);
@@ -69,6 +77,9 @@ test("OV-DASHBOARD: editor direto oferece arrastar, resize pelo canto e conclusÃ
   assert.match(tokens, /ov-dashboard-resize-handle/);
   assert.match(tokens, /ov-dashboard-finish-button/);
   assert.match(tokens, /safe-area-inset-bottom/);
+  assert.match(tokens, /ov-dashboard-organize-panel/);
+  assert.match(tokens, /--radix-popover-content-available-height/);
+  assert.match(tokens, /100dvh/);
 });
 
 test("OV-DASHBOARD: telas operacionais compartilham o organizador responsivo", () => {
