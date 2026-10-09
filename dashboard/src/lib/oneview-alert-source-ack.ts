@@ -2,6 +2,7 @@ import type { OneViewAlert } from "@/lib/oneview-api";
 
 export type AlertSourceAckPhase = "idle" | "confirming" | "submitting" | "success" | "error";
 export type AlertSourceAckVisualState = "pending" | "acknowledged" | "resolved";
+export type SourceAckRowKind = "acknowledged" | "pending" | "none";
 export type SourceAckTerminalStatus = "confirmed" | "failed" | "cancelled";
 export type OneViewAckStatus = "none" | "pending" | "processing" | "success" | "cancelled" | "failed";
 
@@ -30,7 +31,15 @@ export function sourceAckTerminalMessage(status: SourceAckTerminalStatus): strin
   return "O reconhecimento no Zabbix não foi concluído.";
 }
 
-export function isSourceResolvedAlert(alert: OneViewAlert | null | undefined): boolean {
+export type SourceAckRowAlert = {
+  acknowledged_source?: boolean;
+  status_source?: string | null;
+  status_internal?: string | null;
+  resolved_at?: string | null;
+  source_ack?: { acknowledged?: boolean } | null;
+};
+
+export function isSourceResolvedAlert(alert: SourceAckRowAlert | null | undefined): boolean {
   if (!alert) return false;
   const sourceStatus = String(alert.status_source || "").trim().toLowerCase();
   const internalStatus = String(alert.status_internal || "").trim().toLowerCase();
@@ -58,6 +67,34 @@ export function sourceAckVisualState(alert: OneViewAlert | null | undefined): Al
   if (alert.source_ack) return alert.source_ack.acknowledged ? "acknowledged" : "pending";
   if (alert.acknowledged_source) return "acknowledged";
   return "pending";
+}
+
+/** Origin ACK column: never "Pendente" for a resolved alert. OneView ACK stays separate. */
+export function sourceAckRowKind(alert: SourceAckRowAlert | null | undefined): SourceAckRowKind {
+  if (!alert) return "none";
+  if (alert.acknowledged_source || alert.source_ack?.acknowledged) return "acknowledged";
+  if (isSourceResolvedAlert(alert)) return "none";
+  return "pending";
+}
+
+export function sourceAckRowLabel(kind: SourceAckRowKind): string {
+  if (kind === "acknowledged") return "Reconhecido";
+  if (kind === "pending") return "Pendente";
+  return "Sem ACK";
+}
+
+export function sourceAckRowBadgeStatus(
+  kind: SourceAckRowKind,
+): "incident-resolved" | "incident-waiting" | "incident-closed" {
+  if (kind === "acknowledged") return "incident-resolved";
+  if (kind === "pending") return "incident-waiting";
+  return "incident-closed";
+}
+
+export function sourceAckRowTone(kind: SourceAckRowKind): "success" | "warning" | "neutral" {
+  if (kind === "acknowledged") return "success";
+  if (kind === "pending") return "warning";
+  return "neutral";
 }
 
 export function sourceAckTooltip(alert: OneViewAlert | null | undefined): string {

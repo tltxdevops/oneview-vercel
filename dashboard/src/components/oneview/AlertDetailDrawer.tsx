@@ -42,7 +42,14 @@ import {
   fetchAlerts,
   formatOneViewSeverityLabel,
 } from "@/lib/oneview-api";
-import { oneViewAckStatusLabel, sourceAckIsPending, type SourceAckTerminalStatus } from "@/lib/oneview-alert-source-ack";
+import {
+  oneViewAckStatusLabel,
+  sourceAckIsPending,
+  sourceAckRowKind,
+  sourceAckRowLabel,
+  sourceAckRowTone,
+  type SourceAckTerminalStatus,
+} from "@/lib/oneview-alert-source-ack";
 import {
   buildAlertClientCommunication,
   type AlertClientCommunicationEdits,
@@ -396,11 +403,8 @@ export function AlertDetailDrawer({
   const ackBy = visualAlert
     ? safeActorName(visualAlert.oneview_ack?.actor_name || visualAlert.acknowledged_source_by || visualAlert.acknowledged_by)
     : null;
-  const sourceAckLabel = visualAlert?.acknowledged_source
-    ? "Reconhecido"
-    : sourceAckIsPending(visualAlert)
-      ? "Pendente"
-      : "Não reconhecido";
+  const originAckKind = sourceAckRowKind(visualAlert);
+  const sourceAckLabel = sourceAckRowLabel(originAckKind);
   const operatorTag = alert ? primaryPersistedOperatorTag(alert) : null;
   const fonteZabbix = alert ? zabbixSourceDisplayName(alert.datasource_name) : "Fonte não identificada";
   const hostVisible = alert ? displayHostField(alert.host_visible_name, canonicalHostName(alert)) : ORIGIN_UNAVAILABLE;
@@ -456,11 +460,13 @@ export function AlertDetailDrawer({
   const visibleRecurrenceEpisodes = recurrenceEpisodes.length ? recurrenceEpisodes : fallbackRecurrenceEpisodes;
   const previousHistoryEpisodes = visibleRecurrenceEpisodes.filter((item) => !item.current);
   const previousHistoryTotal = Math.max(previousHistoryEpisodes.length, Math.max(0, recurrenceTimelineTotal - 1));
-  const ackDetail = visualAlert?.acknowledged_source
+  const ackDetail = originAckKind === "acknowledged"
     ? [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem"
     : sourceAckIsPending(visualAlert)
       ? "Aguardando confirmação da origem"
-      : "Sem confirmação da origem";
+      : originAckKind === "pending"
+        ? "Sem confirmação da origem"
+        : "Resolvido sem reconhecimento na origem";
 
   return (
     <>
@@ -492,6 +498,7 @@ export function AlertDetailDrawer({
                   <AlertSourceAckAction
                     alert={visualAlert}
                     variant="button"
+                    livePollEnabled={false}
                     onRequestAccepted={onSourceAckRequestAccepted}
                     onAcknowledged={onSourceAcknowledged}
                   />
@@ -581,7 +588,7 @@ export function AlertDetailDrawer({
                       label="ACK"
                       value={sourceAckLabel}
                       detail={ackDetail}
-                      tone={visualAlert?.acknowledged_source ? "success" : "warning"}
+                      tone={sourceAckRowTone(originAckKind)}
                     />
                     <QuickFact
                       icon={<Clock3 className="h-3.5 w-3.5" />}
@@ -777,7 +784,7 @@ export function AlertDetailDrawer({
                     <AlertRecurrenceSignal alert={alert} />
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                       <DetailField label="Estado da origem" value={originStatusLabel(alert.alert_status || alert.status_source)} />
-                      <DetailField label="ACK origem" value={alert.acknowledged_source ? "Reconhecido" : "Não reconhecido"} />
+                      <DetailField label="ACK origem" value={sourceAckLabel} />
                       <DetailField label="ACK OneView" value={oneViewAckStatusLabel(alert.oneview_ack?.status)} />
                       <DetailField label="Responsável" value={ackBy || "Sem responsável"} />
                       <DetailField label="Primeira ocorrência" value={formatDateTime(alert.first_seen_at)} />

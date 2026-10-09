@@ -39,6 +39,8 @@ export const SOURCE_ACK_POLL_TIMEOUT_MS = 45_000;
 type Props = {
   alert: OneViewAlert;
   variant?: "icon" | "button";
+  /** When false, the parent drawer owns the 2s fetchAlert poll. */
+  livePollEnabled?: boolean;
   onRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
   onAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
 };
@@ -52,7 +54,7 @@ function confirmField(label: string, value: string) {
   );
 }
 
-export function AlertSourceAckAction({ alert, variant = "icon", onRequestAccepted, onAcknowledged }: Props) {
+export function AlertSourceAckAction({ alert, variant = "icon", livePollEnabled = true, onRequestAccepted, onAcknowledged }: Props) {
   const [phase, setPhase] = useState<AlertSourceAckPhase>("idle");
   const [comment, setComment] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +93,7 @@ export function AlertSourceAckAction({ alert, variant = "icon", onRequestAccepte
   }
 
   useEffect(() => {
-    if (!polling) return undefined;
+    if (!polling || !livePollEnabled) return undefined;
     const controller = new AbortController();
     const startedAt = Date.now();
     let stopped = false;
@@ -138,7 +140,7 @@ export function AlertSourceAckAction({ alert, variant = "icon", onRequestAccepte
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [alert.id, polling]);
+  }, [alert.id, livePollEnabled, polling]);
 
   async function submitExternalAck() {
     if (!canOpen || submitting) return;

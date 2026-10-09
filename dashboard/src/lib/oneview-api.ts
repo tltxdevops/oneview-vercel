@@ -712,6 +712,10 @@ export interface AlertListResponse extends OneViewResponseMeta {
     resolved: number;
     acknowledged_source: number;
     unacknowledged_source: number;
+    /** Active + origin-unacked. Resolved never counts. */
+    operational_pending: number;
+    /** oneview_ack.status in pending/processing only. */
+    oneview_ack_pending: number;
     /**
      * Faixa visual das cinco severidades Zabbix.
      * `high` inclui `critical` legado somente neste summary (item.severity permanece "critical").

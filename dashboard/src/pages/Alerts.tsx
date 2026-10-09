@@ -47,7 +47,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/context/AuthContext";
+import { useAlertDrawerLiveRefresh } from "@/hooks/useAlertDrawerLiveRefresh";
 import { useOneViewWarmRead } from "@/hooks/useOneViewWarmRead";
+import { shouldInvalidateAlertList } from "@/lib/oneview-alert-live-refresh";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
@@ -87,7 +89,11 @@ import {
 } from "@/lib/oneview-api";
 import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
 import { getOneViewFacets } from "@/lib/oneview-facets-store";
-import type { SourceAckTerminalStatus } from "@/lib/oneview-alert-source-ack";
+import {
+  sourceAckRowKind,
+  sourceAckRowLabel,
+  type SourceAckTerminalStatus,
+} from "@/lib/oneview-alert-source-ack";
 import {
   activeFreshAttentionIds,
   freshAttentionTone,
@@ -379,6 +385,9 @@ function sourceAckPresentation(alert: {
   acknowledged_by?: string | null;
   acknowledged_source_at?: string | null;
   acknowledged_at?: string | null;
+  status_source?: string | null;
+  status_internal?: string | null;
+  resolved_at?: string | null;
   source_ack?: {
     acknowledged?: boolean;
     actor_name?: string | null;
@@ -390,16 +399,7 @@ function sourceAckPresentation(alert: {
 } | null | undefined) {
   const sourceAck = alert?.source_ack;
   // source_ack é o reconhecimento selecionado pelo contrato atual.
-  if (sourceAck) {
-    if (!sourceAck.acknowledged) {
-      return {
-        status: "pending" as const,
-        actorLabel: null as string | null,
-        at: null as string | null,
-        comment: null as string | null,
-        historyAvailable: false,
-      };
-    }
+  if (sourceAck?.acknowledged) {
     return {
       status: "acknowledged" as const,
       actorLabel: historyActorLabel(sourceAck.actor_name, { allowWorkerLabel: false }),
@@ -408,20 +408,21 @@ function sourceAckPresentation(alert: {
       historyAvailable: sourceAck.history_available === true,
     };
   }
-  if (!alert || !alert.acknowledged_source) {
+  if (alert?.acknowledged_source) {
+    const actorLabel = historyActorLabel(alert.acknowledged_source_by || alert.acknowledged_by, { allowWorkerLabel: false });
     return {
-      status: "pending" as const,
-      actorLabel: null as string | null,
-      at: null as string | null,
+      status: "acknowledged" as const,
+      actorLabel,
+      at: alert.acknowledged_source_at || alert.acknowledged_at || null,
       comment: null as string | null,
       historyAvailable: false,
     };
   }
-  const actorLabel = historyActorLabel(alert.acknowledged_source_by || alert.acknowledged_by, { allowWorkerLabel: false });
+  const row = sourceAckRowKind(alert);
   return {
-    status: "acknowledged" as const,
-    actorLabel,
-    at: alert.acknowledged_source_at || alert.acknowledged_at || null,
+    status: row,
+    actorLabel: null as string | null,
+    at: null as string | null,
     comment: null as string | null,
     historyAvailable: false,
   };
@@ -1010,6 +1011,8 @@ export default function AlertsPage() {
   const alertSearchIntent = useRef<{ id: number; value: string } | null>(null);
   const alertSearchIntentId = useRef(0);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const detailInFlightRef = useRef(false);
+  const detailOwnerRef = useRef<object | null>(null);
   const summaryRequestRef = useRef<Promise<void> | null>(null);
   const summaryDeadlineRef = useRef(Date.now() + SUMMARY_REFRESH_MS);
   const stableSummaryDeadlineRef = useRef(Date.now());
@@ -1343,31 +1346,43 @@ export default function AlertsPage() {
     return request;
   }, []);
 
-  const loadSelectedAlert = useCallback(async (id: string) => {
-    detailRequestRef.current?.abort();
-    const controller = new AbortController();
-    detailRequestRef.current = controller;
-    setIsDetailLoading(true);
-    const results = await Promise.allSettled([
-      fetchAlert(id, controller.signal),
-      fetchAlertHistory(id, controller.signal),
-    ]);
-    if (controller.signal.aborted) return;
-    if (results[0].status === "fulfilled") {
-      setDetail(results[0].value);
-      setDetailMeta(metaOf(results[0].value));
-      setDetailError(null);
-    } else {
-      setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Detalhe indisponível.");
+  const loadSelectedAlert = useCallback(async (id: string, options?: { quiet?: boolean; signal?: AbortSignal }) => {
+    if (options?.quiet && detailInFlightRef.current) return null;
+    if (!options?.quiet) detailRequestRef.current?.abort();
+    const controller = options?.signal ? null : new AbortController();
+    const signal = options?.signal ?? controller!.signal;
+    if (controller) detailRequestRef.current = controller;
+    const token = { id };
+    detailOwnerRef.current = token;
+    detailInFlightRef.current = true;
+    if (!options?.quiet) setIsDetailLoading(true);
+    try {
+      const results = await Promise.allSettled([
+        fetchAlert(id, signal),
+        fetchAlertHistory(id, signal),
+      ]);
+      if (signal.aborted) return null;
+      if (results[0].status === "fulfilled") {
+        setDetail(results[0].value);
+        setDetailMeta(metaOf(results[0].value));
+        setDetailError(null);
+      } else if (!options?.quiet) {
+        setDetailError(results[0].reason instanceof Error ? results[0].reason.message : "Detalhe indisponível.");
+      }
+      if (results[1].status === "fulfilled") {
+        setHistory(results[1].value);
+        setHistoryMeta(metaOf(results[1].value));
+        setHistoryLoadError(null);
+      } else if (!options?.quiet) {
+        setHistoryLoadError(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
+      }
+      return results[0].status === "fulfilled" ? results[0].value.item : null;
+    } finally {
+      if (detailOwnerRef.current === token) {
+        detailInFlightRef.current = false;
+        if (!options?.quiet && !signal.aborted) setIsDetailLoading(false);
+      }
     }
-    if (results[1].status === "fulfilled") {
-      setHistory(results[1].value);
-      setHistoryMeta(metaOf(results[1].value));
-      setHistoryLoadError(null);
-    } else {
-      setHistoryLoadError(results[1].reason instanceof Error ? results[1].reason.message : "Histórico indisponível.");
-    }
-    setIsDetailLoading(false);
   }, []);
 
   useEffect(() => {
@@ -1483,7 +1498,7 @@ export default function AlertsPage() {
     ? filteredSummary.active
     : (hasActiveListFilters ? null : (metrics?.active_total ?? health?.counts?.active_alerts ?? null));
   const pendingTotal = filteredSummary
-    ? filteredSummary.unacknowledged_source
+    ? filteredSummary.operational_pending
     : (hasActiveListFilters ? null : (metrics ? (metrics.unacknowledged_total ?? 0) : null));
   const acknowledgedTotal = filteredSummary
     ? filteredSummary.acknowledged_source
@@ -1644,6 +1659,16 @@ export default function AlertsPage() {
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
   const selectedAlert = detail?.item ?? selectedPreview;
+  useAlertDrawerLiveRefresh({
+    alertId: selectedAlertId,
+    alert: selectedAlert,
+    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    onTransition: (transition) => {
+      if (!shouldInvalidateAlertList(transition)) return;
+      invalidateOneViewReadCache("/oneview/alerts");
+      void loadAlerts({ quiet: true, force: true });
+    },
+  });
   const selectedCustomer = selectedAlert ? customerPresentation(selectedAlert) : null;
   const selectedClassificationTags = selectedAlert ? safeClassificationTags(selectedAlert) : [];
   const groupedHistory = useMemo(() => groupHistoryItems(history?.items ?? []), [history?.items]);
@@ -1685,7 +1710,7 @@ export default function AlertsPage() {
       }
       return acknowledgementActors[0] || "Responsável não informado pela origem";
     }
-    return "Pendente";
+    return selectedAlert ? sourceAckRowLabel(sourceAckRowKind(selectedAlert)) : "Sem ACK";
   })();
   const sourceAcknowledgementComment = resolveOfficialAckComment(
     selectedSourceAck.comment,
@@ -2275,7 +2300,7 @@ export default function AlertsPage() {
                   started: <TableCell key="started" className="text-left font-mono ov-type-caption text-muted-foreground">{alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}</TableCell>,
                   duration: <TableCell key="duration" className="text-right font-mono ov-type-caption tabular-nums text-muted-foreground">{durationLabel}</TableCell>,
                   ack: (
-                    <TableCell key="ack" className="overflow-hidden text-left">{(() => { const ack = sourceAckPresentation(alert); if (ack.status !== "acknowledged") return <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />; const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido"; return <Tooltip><TooltipTrigger asChild><span className="inline-flex max-w-full"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" /></span></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}</TooltipContent></Tooltip>; })()}</TableCell>
+                    <TableCell key="ack" className="overflow-hidden text-left">{(() => { const ack = sourceAckPresentation(alert); if (ack.status === "pending") return <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />; if (ack.status !== "acknowledged") return <OneViewSemanticStatusBadge status="incident-closed" label="Sem ACK" />; const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido"; return <Tooltip><TooltipTrigger asChild><span className="inline-flex max-w-full"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" /></span></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}</TooltipContent></Tooltip>; })()}</TableCell>
                   ),
                   incident: <TableCell key="incident" className="text-left"><AlertServiceNowReferenceCell reference={alert.servicenow_reference} /></TableCell>,
                   status: <TableCell key="status" className="text-left"><OneViewSemanticStatusBadge status={isActive ? "monitoring-down" : "monitoring-normalized"} label={isActive ? "Ativo" : "Resolvido"} /></TableCell>,
@@ -2298,6 +2323,7 @@ export default function AlertsPage() {
                         <AlertSourceAckAction
                           alert={alert}
                           variant="icon"
+                          livePollEnabled={selectedAlertId !== alert.id}
                           onRequestAccepted={handleSourceAckRequestAccepted}
                           onAcknowledged={handleSourceAcknowledged}
                         />

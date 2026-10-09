@@ -9,7 +9,10 @@ import {
   compareAttentionRequiredEntries,
   getAttentionThresholds,
   isActiveAlert,
+  isOneViewAckPending,
+  isOperationalPendingAlert,
   isResolvedAlert,
+  isSourceAcknowledged,
   operationalDayBounds,
   safeCustomerIdentity,
 } from "./oneview-db.js";
@@ -253,7 +256,9 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
   }
   if (filters.severities.length) items = items.filter((item) => filters.severities.includes(item.severity));
   if (filters.status === "active") items = items.filter(isActiveAlert);
-  if (filters.status === "resolved") items = items.filter(isResolvedAlert);
+  if (filters.status === "resolved") {
+    items = items.filter((item) => String(item.status_source || "").toLowerCase() === "resolved");
+  }
   if (filters.acknowledged) {
     const expected = filters.acknowledged === "true";
     items = items.filter((item) => Boolean(item.acknowledged_internal || item.acknowledged_source) === expected);
@@ -373,8 +378,10 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
     total: filteredTotal,
     active: filteredItems.filter(isActiveAlert).length,
     resolved: filteredItems.filter(isResolvedAlert).length,
-    acknowledged_source: filteredItems.filter((item) => Boolean(item.acknowledged_source)).length,
-    unacknowledged_source: filteredItems.filter((item) => !item.acknowledged_source).length,
+    acknowledged_source: filteredItems.filter(isSourceAcknowledged).length,
+    unacknowledged_source: filteredItems.filter((item) => !isSourceAcknowledged(item)).length,
+    operational_pending: filteredItems.filter(isOperationalPendingAlert).length,
+    oneview_ack_pending: filteredItems.filter(isOneViewAckPending).length,
     by_severity: {
       information: filteredItems.filter((item) => item.severity === "information").length,
       warning: filteredItems.filter((item) => item.severity === "warning").length,
@@ -500,7 +507,7 @@ function dashboardSummaryPayload(snapshot, timeZone) {
     top_hosts: countBy(active, (alert) => alert.host_name || "-", (host_name, count) => ({ host_name, count }))
       .sort((left, right) => right.count - left.count)
       .slice(0, 10),
-    unacknowledged_total: active.filter((alert) => !(alert.acknowledged_internal || alert.acknowledged_source)).length,
+    unacknowledged_total: active.filter(isOperationalPendingAlert).length,
     longest_duration: [...active]
       .filter((alert) => Number.isFinite(alert.duration_seconds) && alert.duration_seconds >= 0)
       .sort((left, right) => right.duration_seconds - left.duration_seconds)
@@ -521,7 +528,7 @@ function dashboardSummaryPayload(snapshot, timeZone) {
 
 function grafanaSummaryPayload(snapshot) {
   const alerts = snapshotAlerts(snapshot).filter((alert) => alert.status_source === "active" && !alert.resolved_at);
-  const acknowledged = alerts.filter((alert) => alert.acknowledged_internal || alert.acknowledged_source).length;
+  const acknowledged = alerts.filter(isSourceAcknowledged).length;
   const total = alerts.length;
 
   return {

@@ -298,9 +298,7 @@ const ALERT_SORTS = Object.freeze({
 });
 
 const RESOLVED_ALERT_SQL = `(
-  a.resolved_at is not null
-  or lower(coalesce(a.status_source, '')) = 'resolved'
-  or lower(coalesce(a.status_internal, '')) in ('resolved', 'normalized')
+  lower(coalesce(a.status_source, '')) = 'resolved'
 )`;
 
 const ACTIVE_ALERT_SQL = `(
@@ -308,6 +306,11 @@ const ACTIVE_ALERT_SQL = `(
   and lower(coalesce(a.status_source, 'active')) = 'active'
   and lower(coalesce(a.status_internal, '')) not in ('resolved', 'normalized')
 )`;
+
+const SOURCE_ACK_SQL = `coalesce(a.acknowledged_source, false) = true`;
+const SOURCE_UNACK_SQL = `coalesce(a.acknowledged_source, false) = false`;
+/** Operational pending: active origin-unacked only. Resolved never counts. */
+const OPERATIONAL_PENDING_SQL = `(${ACTIVE_ALERT_SQL} and ${SOURCE_UNACK_SQL})`;
 
 const UNIDENTIFIED_CUSTOMER_SQL = `(
   a.customer_name is null
@@ -362,6 +365,8 @@ const LATEST_ONEVIEW_ACK_STATUS_SQL = `(select ack.status
    and ack.acknowledgement_type = 'source'
  order by ack.requested_at desc, ack.id desc
  limit 1)`;
+
+const ONEVIEW_ACK_PENDING_SQL = `${LATEST_ONEVIEW_ACK_STATUS_SQL} in ('pending', 'processing')`;
 
 export function isResolvedAlert(alert) {
   const sourceStatus = textValue(alert?.status_source).toLowerCase();
@@ -497,6 +502,31 @@ export function countDailyOperationalMetrics({ alerts = [], acknowledgements = [
 export function isActiveAlert(alert) {
   return !isResolvedAlert(alert)
     && textValue(alert?.status_source, "active").toLowerCase() === "active";
+}
+
+export function isSourceAcknowledged(alert) {
+  return Boolean(alert?.acknowledged_source);
+}
+
+export function isOperationalPendingAlert(alert) {
+  return isActiveAlert(alert) && !isSourceAcknowledged(alert);
+}
+
+export function isOneViewAckPending(alert) {
+  const status = textValue(alert?.oneview_ack?.status ?? alert?.oneview_ack_status ?? alert?.source_ack_status).toLowerCase();
+  return status === "pending" || status === "processing";
+}
+
+export function summarizeOperationalAckCounts(alerts = []) {
+  const items = Array.isArray(alerts) ? alerts : [];
+  return Object.freeze({
+    acknowledged_source: items.filter(isSourceAcknowledged).length,
+    unacknowledged_source: items.filter((item) => !isSourceAcknowledged(item)).length,
+    operational_pending: items.filter(isOperationalPendingAlert).length,
+    oneview_ack_pending: items.filter(isOneViewAckPending).length,
+    active: items.filter(isActiveAlert).length,
+    resolved: items.filter(isResolvedAlert).length,
+  });
 }
 
 function positiveInteger(value, fallback, { maximum } = {}) {
@@ -1271,6 +1301,8 @@ function alertFilteredSummary(row) {
     resolved: integerValue(row?.resolved, 0),
     acknowledged_source: integerValue(row?.acknowledged_source, 0),
     unacknowledged_source: integerValue(row?.unacknowledged_source, 0),
+    operational_pending: integerValue(row?.operational_pending, 0),
+    oneview_ack_pending: integerValue(row?.oneview_ack_pending, 0),
     by_severity: {
       information: integerValue(row?.information, 0),
       warning: integerValue(row?.warning, 0),
@@ -1310,8 +1342,10 @@ async function fetchAlertList(req, config, dataSourceNames) {
         count(*)::int as total,
         count(*) filter (where ${ACTIVE_ALERT_SQL})::int as active,
         count(*) filter (where ${RESOLVED_ALERT_SQL})::int as resolved,
-        count(*) filter (where coalesce(a.acknowledged_source, false))::int as acknowledged_source,
-        count(*) filter (where not coalesce(a.acknowledged_source, false))::int as unacknowledged_source,
+        count(*) filter (where ${SOURCE_ACK_SQL})::int as acknowledged_source,
+        count(*) filter (where ${SOURCE_UNACK_SQL})::int as unacknowledged_source,
+        count(*) filter (where ${OPERATIONAL_PENDING_SQL})::int as operational_pending,
+        count(*) filter (where ${ONEVIEW_ACK_PENDING_SQL})::int as oneview_ack_pending,
         count(*) filter (where a.severity = 'information')::int as information,
         count(*) filter (where a.severity = 'warning')::int as warning,
         count(*) filter (where a.severity = 'average')::int as average,
@@ -2593,8 +2627,7 @@ async function fetchDashboardSummaryPayload(
       group by a.host_name order by count desc, a.host_name asc limit 10`, scopeValues),
     queryRow(config, `select count(*)::int as value
       from alerts a join data_sources d on d.id = a.data_source_id
-      where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
-        and coalesce(a.acknowledged_source, false) = false`, scopeValues),
+      where d.name = any($1::text[]) and ${OPERATIONAL_PENDING_SQL}`, scopeValues),
     queryRows(
       config,
       `select a.id, ${SAFE_CUSTOMER_NAME_SQL} as client_name, a.host_name, a.problem_name,
@@ -2693,8 +2726,7 @@ async function fetchGrafanaSummaryPayload(config, dataSourceNames = getOperation
         from alerts a
         join data_sources d on d.id = a.data_source_id
         where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
-          and (coalesce(a.acknowledged_source, false) = true
-            or ${INTERNAL_ACKNOWLEDGED_SQL})
+          and ${SOURCE_ACK_SQL}
       `,
       scopeValues,
     ),
