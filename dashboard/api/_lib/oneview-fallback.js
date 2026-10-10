@@ -20,6 +20,7 @@ import { deriveOperationalScope } from "./oneview-operational-scope.js";
 import { emptyAlertRecurrenceReadModel } from "./oneview-recurrence.js";
 import { getOperationalDataSourceNames } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
+import { SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON } from "./oneview-source-acknowledge.js";
 
 const snapshotPath = new URL("../../src/lib/oneview-real-snapshot.safe.json", import.meta.url);
 let snapshotPromise;
@@ -118,6 +119,8 @@ function snapshotAlert(alert, generatedAt) {
     acknowledged_by: null,
     ack_request_status: null,
     source_ack_status: null,
+    source_ack_available: false,
+    source_ack_unavailable_reason: SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON,
     suppressed: Boolean(alert.suppressed),
     suppressed_until: alert.suppressed_until || null,
     maintenance_status: alert.maintenance_status || null,

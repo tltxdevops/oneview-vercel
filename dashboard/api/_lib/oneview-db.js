@@ -18,6 +18,7 @@ import { OPERATOR_TAG_EXISTS_SQL } from "./oneview-operator-tags.js";
 import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
 import { getAckRequestConfig } from "./oneview-ack-request.js";
+import { sourceAckCapability } from "./oneview-source-acknowledge.js";
 import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
 import {
   MAPS_SERVICENOW_COMPANY_WHERE_SQL,
@@ -237,18 +238,51 @@ function oneQueryValue(req, key) {
   return queryValues(req, key)[0] || "";
 }
 
+const TRANSIENT_CONNECTION_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "EPIPE", "ENOTFOUND", "EAI_AGAIN",
+  "08000", "08001", "08003", "08004", "08006", "57P01", "57P02", "57P03", "53300",
+]);
+
+function sanitizedPgCode(error) {
+  const code = String(error?.code || "");
+  return /^[0-9A-Z]{5}$/.test(code) ? code : null;
+}
+
 function databaseFailureCode(error) {
   const code = String(error?.code || "").toUpperCase();
   const message = String(error?.message || "").toLowerCase();
   if (["28P01", "28000"].includes(code) || message.includes("password authentication failed")) {
     return "database_authentication_failed";
   }
-  if (["ETIMEDOUT", "ESOCKETTIMEDOUT", "57014"].includes(code) || message.includes("timeout")) return "database_timeout";
+  if (code === "42501" || code === "42503") return "database_permission_denied";
+  if (code === "40P01") return "database_deadlock";
+  if (["42601", "42704", "42883", "42P02"].includes(code)) return "database_query_rejected";
+  if (code === "57014" || message.includes("canceling statement") || message.includes("statement timeout")) {
+    return "database_timeout";
+  }
+  if (
+    ["ETIMEDOUT", "ESOCKETTIMEDOUT"].includes(code)
+    || (message.includes("timeout") && !message.includes("timeout exceeded when trying to connect"))
+  ) {
+    return "database_timeout";
+  }
   if (code.includes("CERT") || message.includes("certificate") || message.includes("tls") || message.includes("ssl")) {
     return "database_tls_failed";
   }
   if (["42P01", "42703"].includes(code)) return "database_schema_unavailable";
+  if (
+    TRANSIENT_CONNECTION_CODES.has(code)
+    || message.includes("connection terminated")
+    || message.includes("connection refused")
+    || message.includes("timeout exceeded when trying to connect")
+  ) {
+    return "database_unavailable";
+  }
   return "database_unavailable";
+}
+
+export function classifyOneViewDatabaseError(error) {
+  return databaseFailureCode(error);
 }
 
 function poolSignature(config) {
@@ -1231,6 +1265,10 @@ function mapAlertRows(rows) {
       source_ack_status: ["pending", "processing", "failed", "cancelled"].includes(textValue(row.oneview_ack_status ?? row.source_ack_status))
         ? textValue(row.oneview_ack_status ?? row.source_ack_status)
         : null,
+      ...sourceAckCapability({
+        datasourceName: row.datasource_name ?? row.data_source_name,
+        syncEnabled: row.sync_enabled,
+      }),
       oneview_ack: oneViewAckReadModel(row),
       suppressed: Boolean(row.suppressed),
       suppressed_until: isoDate(row.suppressed_until),
@@ -1319,6 +1357,91 @@ function mapSyncLogRows(rows) {
   }));
 }
 
+const requestDbTelemetry = new WeakMap();
+
+export function readRequestDbTelemetry(req) {
+  return requestDbTelemetry.get(req) || null;
+}
+
+function rememberRequestDbTelemetry(req, stats) {
+  if (!req || typeof req !== "object") return;
+  requestDbTelemetry.set(req, stats);
+}
+
+function logSanitizedDatabaseError(error, { operation }) {
+  const errorClass = databaseFailureCode(error);
+  console.error(JSON.stringify({
+    event: "oneview_database_error",
+    operation: safeOperationName(operation),
+    pg_code: sanitizedPgCode(error),
+    database_timeout: errorClass === "database_timeout",
+    database_unavailable: errorClass === "database_unavailable",
+  }));
+}
+
+/**
+ * One checkout, one transaction, PgBouncer-safe timeouts.
+ * SET LOCAL via set_config(..., true) never goes through startup parameters.
+ */
+export async function withOneViewReadonlyTransaction(config, work, { pool: poolOverride, req, operation = "readonly_transaction" } = {}) {
+  const poolInstance = poolOverride || getOneViewDbPool(config);
+  const connectStarted = Date.now();
+  const stats = {
+    pool_wait_ms: 0,
+    db_query_count: 0,
+    db_query_total_ms: 0,
+    route_duration_ms: 0,
+    pool_total: 0,
+    pool_idle: 0,
+    pool_waiting: 0,
+  };
+  let client;
+  let began = false;
+  let failure;
+  const startedAt = Date.now();
+  try {
+    client = await poolInstance.connect();
+    stats.pool_wait_ms = Math.max(0, Date.now() - connectStarted);
+    await client.query("BEGIN");
+    began = true;
+    await client.query(
+      "select set_config('statement_timeout', $1, true), set_config('idle_in_transaction_session_timeout', $2, true)",
+      [String(config.statementTimeoutMs), String(config.idleInTransactionTimeoutMs)],
+    );
+    const query = async (text, values = []) => {
+      const queryStarted = Date.now();
+      stats.db_query_count += 1;
+      try {
+        return await client.query({ text, values });
+      } finally {
+        stats.db_query_total_ms += Math.max(0, Date.now() - queryStarted);
+      }
+    };
+    const result = await work(query);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    failure = error;
+    if (client && began) await client.query("ROLLBACK").catch(() => undefined);
+    logSanitizedDatabaseError(error, { operation, poolInstance });
+    throw error;
+  } finally {
+    if (client) client.release(failure);
+    const poolStats = poolStatsFor(poolInstance);
+    stats.route_duration_ms = Math.max(0, Date.now() - startedAt);
+    stats.pool_total = poolStats.db_pool_total;
+    stats.pool_idle = poolStats.db_pool_idle;
+    stats.pool_waiting = poolStats.db_pool_waiting;
+    rememberRequestDbTelemetry(req, stats);
+    logOneViewDbPoolMetric({
+      operation,
+      durationMs: stats.route_duration_ms,
+      error: failure,
+      poolInstance,
+    });
+  }
+}
+
 async function queryRows(config, text, values = []) {
   const result = await getOneViewDbPool(config).query({ text, values });
   return result.rows;
@@ -1382,8 +1505,7 @@ async function fetchAlertList(req, config, dataSourceNames) {
     dataSourceNames,
   );
 
-  const [summaryRow, temporalRow, itemRows] = await Promise.all([
-    include.summary ? queryRow(config, `
+  const summarySql = `
       select
         count(*)::int as total,
         count(*) filter (where ${ACTIVE_ALERT_SQL})::int as active,
@@ -1401,8 +1523,8 @@ async function fetchAlertList(req, config, dataSourceNames) {
       from alerts a
       join data_sources d on d.id = a.data_source_id
       ${whereSql}
-    `, params) : Promise.resolve(null),
-    include.temporal ? queryRow(config, `
+    `;
+  const temporalSql = `
       select
         count(*) filter (where a.first_seen_at >= now() - interval '15 minutes')::int as created_15m,
         count(*) filter (where a.first_seen_at >= now() - interval '1 hour')::int as created_1h,
@@ -1423,14 +1545,13 @@ async function fetchAlertList(req, config, dataSourceNames) {
       from alerts a
       join data_sources d on d.id = a.data_source_id
       ${baseWhereSql}
-    `, baseParams) : Promise.resolve(null),
-    include.items ? queryRows(
-      config,
-      `
+    `;
+  const itemsSql = `
         select
           a.id,
           a.data_source_id,
           d.name as datasource_name,
+          d.sync_enabled,
           a.client_name,
           a.customer_name,
           a.customer_key,
@@ -1514,10 +1635,18 @@ async function fetchAlertList(req, config, dataSourceNames) {
         order by ${orderSql}
         limit $${params.length + 1}
         offset $${params.length + 2}
-      `,
-      [...params, pageSize, offset],
-    ) : Promise.resolve([]),
-  ]);
+      `;
+  const read = await withOneViewReadonlyTransaction(config, async (query) => {
+    const summaryResult = include.summary ? await query(summarySql, params) : null;
+    const temporalResult = include.temporal ? await query(temporalSql, baseParams) : null;
+    const itemResult = include.items ? await query(itemsSql, [...params, pageSize, offset]) : null;
+    return {
+      summaryRow: summaryResult?.rows?.[0] || null,
+      temporalRow: temporalResult?.rows?.[0] || null,
+      itemRows: itemResult?.rows || [],
+    };
+  }, { req, operation: "alerts_list" });
+  const { summaryRow, temporalRow, itemRows } = read;
 
   const items = include.items ? mapAlertRows(itemRows) : [];
   if (items.length) await enrichMapsServiceNowReferences(items, config);
@@ -1699,7 +1828,7 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
       config,
       `
       select
-        a.id, a.data_source_id, d.name as datasource_name, a.client_name,
+        a.id, a.data_source_id, d.name as datasource_name, d.sync_enabled, a.client_name,
         a.customer_name, a.customer_key, a.customer_source, a.customer_confidence,
         a.source_event_id, a.source_problem_id, a.source_trigger_id, a.source_host_id,
         a.source_recovery_event_id,

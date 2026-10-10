@@ -25,6 +25,7 @@ type Props = {
   visibleActions?: readonly IncidentTableActionId[];
   className?: string;
   onActionComplete?: () => void;
+  mutationsBlocked?: boolean;
 };
 
 /** Ações SN inline em linhas de tabela — impede abrir drawer/linha ao interagir. */
@@ -34,6 +35,7 @@ export function IncidentTableActionsCell({
   visibleActions,
   className,
   onActionComplete,
+  mutationsBlocked = false,
 }: Props) {
   const hasIncident = Boolean(incident.sys_id && incident.number);
   const resolvedArtifact = alertArtifact ?? null;
@@ -58,6 +60,7 @@ export function IncidentTableActionsCell({
         alertArtifact={resolvedArtifact}
         placement="table-cell"
         visibleActions={visibleActions}
+        mutationsBlocked={mutationsBlocked}
         onClaimed={onActionComplete}
         onWorkNoteAdded={onActionComplete}
         onAttachmentAdded={onActionComplete}

@@ -97,6 +97,13 @@ export function sourceAckRowTone(kind: SourceAckRowKind): "success" | "warning" 
   return "neutral";
 }
 
+export const SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON = "Reconhecimento pelo OneView ainda não disponível nesta origem";
+
+export function sourceAckUnavailableReason(alert: OneViewAlert | null | undefined): string | null {
+  if (alert?.source_ack_available === true) return null;
+  return alert?.source_ack_unavailable_reason || SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON;
+}
+
 export function sourceAckTooltip(alert: OneViewAlert | null | undefined): string {
   const state = sourceAckVisualState(alert);
   if (state === "resolved") return "Alerta já resolvido";
@@ -104,9 +111,11 @@ export function sourceAckTooltip(alert: OneViewAlert | null | undefined): string
     const actor = sourceAckActorName(alert);
     return actor ? `Reconhecido por ${actor}` : "Reconhecido por origem";
   }
-  return "Reconhecer no Zabbix";
+  if (sourceAckIsPending(alert)) return "Aguardando confirmação da origem";
+  return sourceAckUnavailableReason(alert) || "Reconhecer no Zabbix";
 }
 
 export function sourceAckCanOpen(alert: OneViewAlert | null | undefined): boolean {
+  if (sourceAckUnavailableReason(alert)) return false;
   return sourceAckVisualState(alert) === "pending" && !sourceAckIsPending(alert);
 }

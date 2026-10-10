@@ -50,6 +50,7 @@ import { useAuthContext } from "@/context/AuthContext";
 import { useAlertDrawerLiveRefresh } from "@/hooks/useAlertDrawerLiveRefresh";
 import { useOneViewWarmRead } from "@/hooks/useOneViewWarmRead";
 import { shouldInvalidateAlertList } from "@/lib/oneview-alert-live-refresh";
+import { formatSnapshotCopyClock } from "@/lib/oneview-snapshot-actions";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
 import { useOneViewTableColumns } from "@/lib/oneview-table-preferences";
@@ -273,7 +274,7 @@ function inferAlertsView(query: URLSearchParams): AlertsView {
   if (sort === "first_seen_at") return "recent";
   return "recent";
 }
-type MetaState = { source?: OneViewDataSourceKind; checkedAt?: string; fallbackCode?: string | null };
+type MetaState = { source?: OneViewDataSourceKind; checkedAt?: string; fallbackCode?: string | null; copyGeneratedAt?: string };
 type SummaryFilter =
   | "total"
   | "active"
@@ -761,8 +762,13 @@ function latestCheckedAt(...values: Array<string | undefined>) {
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
 }
 
-function metaOf(response: { data_source?: OneViewDataSourceKind; checked_at?: string; fallback_code?: string | null }): MetaState {
-  return { source: response.data_source, checkedAt: response.checked_at, fallbackCode: response.fallback_code };
+function metaOf(response: { data_source?: OneViewDataSourceKind; checked_at?: string; fallback_code?: string | null; generated_at?: string }): MetaState {
+  return {
+    source: response.data_source,
+    checkedAt: response.checked_at,
+    fallbackCode: response.fallback_code,
+    copyGeneratedAt: response.data_source === "snapshot" ? response.generated_at : undefined,
+  };
 }
 
 function acknowledged(alert: OneViewAlert) {
@@ -1317,7 +1323,7 @@ export default function AlertsPage() {
       );
       setFreshAttentionIds((current) => sameStringSet(current, activeFreshIds) ? current : activeFreshIds);
 
-      if (!isFirstAlertSnapshot) {
+      if (!isFirstAlertSnapshot && safeResponse.data_source !== "snapshot") {
         const nextPopups: OperatorSeverityPopupItem[] = [];
         for (const alert of serverAlerts) {
           if (!activeFreshIds.has(alert.id) || severityPopupSeenRef.current.has(alert.id)) continue;
@@ -1541,6 +1547,16 @@ export default function AlertsPage() {
   const primaryMetas = [alertsMeta, metricsMeta];
   const hasSnapshot = primaryMetas.some((meta) => meta.source === "snapshot")
     || (selectedAlertId !== null && [detailMeta, historyMeta].some((meta) => meta.source === "snapshot"));
+  const alertsAreCopy = alertsMeta.source === "snapshot";
+  const detailIsCopy = selectedAlertId !== null && (detailMeta.source === "snapshot" || historyMeta.source === "snapshot");
+  const liveStateUnavailable = alertsAreCopy || detailIsCopy;
+  const snapshotCopyAt = [...primaryMetas, detailMeta, historyMeta].find((meta) => meta.source === "snapshot" && meta.copyGeneratedAt)?.copyGeneratedAt;
+  const alertsWereCopyRef = useRef(false);
+  useEffect(() => {
+    const wasCopy = alertsWereCopyRef.current;
+    alertsWereCopyRef.current = alertsAreCopy;
+    if (wasCopy && !alertsAreCopy && selectedAlertId) void loadSelectedAlert(selectedAlertId);
+  }, [alertsAreCopy, loadSelectedAlert, selectedAlertId]);
   const lastCheckedAt = latestCheckedAt(...baseMetas.map((meta) => meta.checkedAt), detailMeta.checkedAt, historyMeta.checkedAt);
   const fallbackCode = [...primaryMetas, detailMeta, historyMeta].find((meta) => meta.source === "snapshot" && meta.fallbackCode)?.fallbackCode;
 
@@ -1566,10 +1582,10 @@ export default function AlertsPage() {
   // Erro/ausência => "—"; zero válido => 0.
   const activeTotal = filteredSummary
     ? filteredSummary.active
-    : (hasActiveListFilters ? null : (metrics?.active_total ?? health?.counts?.active_alerts ?? null));
+    : (alertsAreCopy || hasActiveListFilters ? null : (metrics?.active_total ?? health?.counts?.active_alerts ?? null));
   const pendingTotal = filteredSummary
     ? filteredSummary.operational_pending
-    : (hasActiveListFilters ? null : (metrics ? (metrics.unacknowledged_total ?? 0) : null));
+    : (alertsAreCopy || hasActiveListFilters ? null : (metrics ? (metrics.unacknowledged_total ?? 0) : null));
   const acknowledgedTotal = filteredSummary
     ? filteredSummary.acknowledged_source
     : (hasActiveListFilters
@@ -1589,7 +1605,7 @@ export default function AlertsPage() {
       if (severity === "critical") return null;
       return severitySummary.by_severity?.[severity] ?? null;
     }
-    if (hasActiveListFilters) return null;
+    if (alertsAreCopy || hasActiveListFilters) return null;
     if (!metrics) return null;
     return severityCounts[severity] ?? 0;
   };
@@ -1636,14 +1652,14 @@ export default function AlertsPage() {
   };
 
   const customerCards = useMemo(() => {
-    const allCount = hasTemporalFilter ? null : (metrics?.active_total ?? health?.counts.active_alerts ?? null);
+    const allCount = alertsAreCopy || hasTemporalFilter ? null : (metrics?.active_total ?? health?.counts.active_alerts ?? null);
     const customers = augmentCustomerFacetsWithDedicatedDatasources(
       (facets?.customers ?? [])
         .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
         .map((customer) => ({
           ...customer,
           name: facetCustomerDisplayName(customer),
-          alerts_count: hasTemporalFilter ? null : customer.alerts_count,
+          alerts_count: alertsAreCopy || hasTemporalFilter ? null : customer.alerts_count,
         })),
       facets?.datasources,
     );
@@ -1656,7 +1672,7 @@ export default function AlertsPage() {
       },
       ...customers,
     ];
-  }, [facets?.customers, facets?.datasources, hasTemporalFilter, health?.counts.active_alerts, metrics?.active_total]);
+  }, [alertsAreCopy, facets?.customers, facets?.datasources, hasTemporalFilter, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
     if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
@@ -2284,10 +2300,9 @@ export default function AlertsPage() {
               <WifiOff className="mt-0.5 h-5 w-5 shrink-0" />
               <div>
                 <h2 className="ov-type-section-title">Dados em modo de contingência</h2>
-                <p className="ov-type-body">A conexão em tempo real está indisponível e os dados podem estar desatualizados.</p>
-                <p className="mt-1 ov-type-caption">
-                  Consulta: {formatDateTime(lastCheckedAt)}{fallbackCode ? ` · Código: ${safeDisplayText(fallbackCode)}` : ""}
-                </p>
+                <p className="ov-type-body">A conexão em tempo real está indisponível. A tabela e os indicadores abaixo são uma cópia, não o estado operacional atual.</p>
+                <p className="mt-1 text-sm font-semibold tabular-nums">{formatSnapshotCopyClock(snapshotCopyAt || lastCheckedAt)}</p>
+                {fallbackCode ? <p className="mt-1 ov-type-caption">Código: {safeDisplayText(fallbackCode)}</p> : null}
               </div>
             </div>
             <OneViewButton type="button" variant="secondary" className="ov-error-action" onClick={() => void refreshAll()} disabled={isRefreshing}>
@@ -2321,7 +2336,9 @@ export default function AlertsPage() {
                 {ALERTS_VIEWS.find((item) => item.id === alertsView)?.label ?? "Alertas"} · filtrados por {tableCustomerScope}
               </h2>
               <p className="ov-type-caption text-muted-foreground">
-                {alertsView === "forgotten"
+                {alertsAreCopy
+                  ? "Cópia da fila. Não é o estado operacional atual."
+                  : alertsView === "forgotten"
                   ? "Alertas ativos sem ACK acima do tempo esperado."
                   : "Fila por cliente para ação imediata"}
                 {isAlertsFilling
@@ -2592,6 +2609,7 @@ export default function AlertsPage() {
                               number: alert.servicenow_reference.number,
                             })}
                             visibleActions={ALERT_QUICK_INCIDENT_ACTIONS}
+                            mutationsBlocked={alertsAreCopy}
                             onActionComplete={() => void loadAlerts({ quiet: true })}
                           />
                         ) : null}
@@ -2601,6 +2619,7 @@ export default function AlertsPage() {
                           livePollEnabled={selectedAlertId !== alert.id}
                           onRequestAccepted={handleSourceAckRequestAccepted}
                           onAcknowledged={handleSourceAcknowledged}
+                          liveStateUnavailable={alertsAreCopy}
                         />
                         <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
                       </div>
@@ -2655,9 +2674,10 @@ export default function AlertsPage() {
         historyItems={history?.items ?? []}
         isLoading={isDetailLoading}
         error={detailError || historyLoadError}
-        description="Informações operacionais seguras e histórico do OneView."
+        description={alertsAreCopy ? "Cópia do alerta. Não é o estado operacional atual." : "Informações operacionais seguras e histórico do OneView."}
         onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
         onSourceAcknowledged={handleSourceAcknowledged}
+        liveStateUnavailable={liveStateUnavailable}
       />
       <OperatorDisasterPopup
         items={severityPopupEnabled ? severityPopups : []}

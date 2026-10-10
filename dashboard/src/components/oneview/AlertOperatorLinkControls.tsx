@@ -19,6 +19,7 @@ import {
   type OperatorReminder,
 } from "@/lib/oneview-api";
 import { operadorasAlertLinkPath } from "@/lib/oneview-operator-reminder-notification";
+import { SNAPSHOT_MUTATION_UNAVAILABLE_REASON } from "@/lib/oneview-snapshot-actions";
 
 function localDateTime(value?: string | null) {
   const date = value ? new Date(value) : new Date(Date.now() + 60 * 60_000);
@@ -90,7 +91,7 @@ function errorMessage(cause: unknown) {
   return cause instanceof Error ? cause.message : "Não foi possível atualizar o lembrete.";
 }
 
-export function AlertOperatorLinkControls({ alert, compact = false }: { alert: OneViewAlert; compact?: boolean }) {
+export function AlertOperatorLinkControls({ alert, compact = false, mutationsBlocked = false }: { alert: OneViewAlert; compact?: boolean; mutationsBlocked?: boolean }) {
   const link = useMemo(() => reminderIdentity(alert), [alert]);
   const [open, setOpen] = useState(false);
   const [reminders, setReminders] = useState<OperatorReminder[]>(() => link ? getCachedOperatorReminders(link) || [] : []);
@@ -125,6 +126,7 @@ export function AlertOperatorLinkControls({ alert, compact = false }: { alert: O
   }, [alert.id, link]);
 
   const openEditor = () => {
+    if (mutationsBlocked) return;
     const values = localDateTime(reminder?.scheduled_for);
     setDate(values.date);
     setTime(values.time);
@@ -136,7 +138,7 @@ export function AlertOperatorLinkControls({ alert, compact = false }: { alert: O
   };
 
   const save = async () => {
-    if (!link) return;
+    if (mutationsBlocked || !link) return;
     const scheduledFor = new Date(`${date}T${time}:00`);
     if (!date || !time || Number.isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now()) {
       setError("Escolha uma data e horário futuros.");
@@ -159,7 +161,7 @@ export function AlertOperatorLinkControls({ alert, compact = false }: { alert: O
   };
 
   const cancel = async () => {
-    if (!link || !reminder) return;
+    if (mutationsBlocked || !link || !reminder) return;
     setSaving(true);
     setError(null);
     try {
@@ -179,7 +181,7 @@ export function AlertOperatorLinkControls({ alert, compact = false }: { alert: O
   const editor = (
     <Popover open={open} onOpenChange={(next) => { if (!next) setOpen(false); }}>
       <PopoverTrigger asChild>
-        <Button type="button" size={compact ? "icon" : "sm"} variant="outline" className={compact ? "h-7 w-7" : undefined} disabled={!active || reminder?.status === "processing"} onClick={openEditor} aria-label="Lembrar sobre link de operadora">
+        <Button type="button" size={compact ? "icon" : "sm"} variant="outline" className={compact ? "h-7 w-7" : undefined} disabled={mutationsBlocked || !active || reminder?.status === "processing"} title={mutationsBlocked ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON : undefined} onClick={openEditor} aria-label={mutationsBlocked ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON : "Lembrar sobre link de operadora"}>
           <Bell className="h-4 w-4" />{compact ? <span className="sr-only">Lembrar</span> : reminder ? "Alterar lembrete" : "Lembrar"}
         </Button>
       </PopoverTrigger>

@@ -649,6 +649,9 @@ export interface OneViewAlert {
   acknowledged_by: string | null;
   ack_request_status?: "pending" | "processing" | null;
   source_ack_status?: "pending" | "processing" | "failed" | "cancelled" | null;
+  /** BFF allowlist. Absent or false means the ACK POST must not be offered. */
+  source_ack_available?: boolean;
+  source_ack_unavailable_reason?: string | null;
   oneview_ack?: {
     status: "none" | "pending" | "processing" | "success" | "cancelled" | "failed";
     requested_at: string | null;

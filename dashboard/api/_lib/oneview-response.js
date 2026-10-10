@@ -1,6 +1,6 @@
 import { methodNotAllowed, sendJson } from "./http.js";
 import { getOneViewConfig, getOneViewRoute } from "./oneview-config.js";
-import { fetchOneViewDatabase, getOneViewDbPoolStats, logOneViewDbPoolMetric } from "./oneview-db.js";
+import { fetchOneViewDatabase, getOneViewDbPoolStats, logOneViewDbPoolMetric, readRequestDbTelemetry } from "./oneview-db.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
 import { getOneViewSnapshotPayload } from "./oneview-fallback.js";
 import { invalidateOneViewSummaryCache, withOneViewSummaryCache } from "./oneview-runtime-cache.js";
@@ -91,16 +91,18 @@ function requestErrorClass(status) {
   return "none";
 }
 
-function writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode = null, status = 200) {
+function writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode = null, status = 200, req) {
   const code = Number(status);
   const pool = getOneViewDbPoolStats();
+  const telemetry = readRequestDbTelemetry(req);
+  const routeDurationMs = Math.max(Date.now() - startedAt, 0);
   logger(JSON.stringify({
     event: "oneview_request",
     operation: routeTemplate(routeName),
     retry: 0,
     route: routeTemplate(routeName),
     data_source: source,
-    duration_ms: Math.max(Date.now() - startedAt, 0),
+    duration_ms: routeDurationMs,
     rows: responseRows(payload),
     fallback_code: fallbackCode,
     status: Number.isInteger(code) ? code : 0,
@@ -108,6 +110,15 @@ function writeRequestLog(logger, routeName, startedAt, source, payload, fallback
     db_pool_total: pool.total,
     db_pool_idle: pool.idle,
     db_pool_waiting: pool.waiting,
+    ...(telemetry ? {
+      pool_wait_ms: telemetry.pool_wait_ms,
+      db_query_count: telemetry.db_query_count,
+      db_query_total_ms: telemetry.db_query_total_ms,
+      route_duration_ms: routeDurationMs,
+      pool_total: pool.total,
+      pool_idle: pool.idle,
+      pool_waiting: pool.waiting,
+    } : {}),
   }));
 }
 
@@ -130,7 +141,7 @@ export function createOneViewHandler(routeName, dependencies = {}) {
     if (!(await authorize(req, res, route.role))) return undefined;
 
     const finish = (status, payload, source, fallbackCode = null) => {
-      writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode, status);
+      writeRequestLog(logger, routeName, startedAt, source, payload, fallbackCode, status, req);
       return sendOneViewJson(res, status, payload, source, fallbackCode);
     };
 

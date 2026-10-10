@@ -44,6 +44,7 @@ import {
   type ServiceNowOperatorIdentity,
   type ServiceNowPutOnHoldResponse,
 } from "@/lib/oneview-api";
+import { SNAPSHOT_MUTATION_UNAVAILABLE_REASON } from "@/lib/oneview-snapshot-actions";
 import { defaultAlertAttachmentFileName, type AlertArtifactModel } from "@/lib/oneview-alert-artifact";
 import { captureElementToPng } from "@/lib/oneview-alert-summary-capture";
 import { cn } from "@/lib/utils";
@@ -66,6 +67,8 @@ type Props = {
   onWorkNoteAdded?: () => void;
   onAttachmentAdded?: () => void;
   onPutOnHold?: (result: ServiceNowPutOnHoldResponse) => void;
+  /** Snapshot copy. Claim, notes, hold and attach must not POST. */
+  mutationsBlocked?: boolean;
 };
 
 const PUT_ON_HOLD_ALLOWED_STATES = new Set(["1", "2"]);
@@ -86,6 +89,7 @@ export function IncidentActions({
   onWorkNoteAdded,
   onAttachmentAdded,
   onPutOnHold,
+  mutationsBlocked = false,
 }: Props) {
   const { toast } = useToast();
   const artifactCaptureRef = useRef<HTMLDivElement>(null);
@@ -184,7 +188,7 @@ export function IncidentActions({
   }
 
   async function claim(confirmReassign = false) {
-    if (!incident.sys_id || submitting) return;
+    if (mutationsBlocked || !incident.sys_id || submitting) return;
     setSubmitting(true);
     setActionError(null);
     try {
@@ -208,7 +212,7 @@ export function IncidentActions({
 
   async function addWorkNote() {
     const value = workNote.trim();
-    if (!incident.sys_id || submitting) return;
+    if (mutationsBlocked || !incident.sys_id || submitting) return;
     if (!value || value.length > 2_000) {
       setWorkNoteError("A anotação deve possuir entre 1 e 2000 caracteres.");
       return;
@@ -237,7 +241,7 @@ export function IncidentActions({
   }
 
   async function attachAlertDetails() {
-    if (!incident.sys_id || !alertArtifact || submitting) return;
+    if (mutationsBlocked || !incident.sys_id || !alertArtifact || submitting) return;
     setSubmitting(true);
     setActionError(null);
     try {
@@ -319,7 +323,7 @@ export function IncidentActions({
 
   async function putOnHold() {
     const state = String(resolvedState ?? (incident.state || "")).trim();
-    if (!incident.sys_id || !PUT_ON_HOLD_ALLOWED_STATES.has(state) || holdOptionsError || !holdVendor || !holdVendors.includes(holdVendor) || submitting) return;
+    if (mutationsBlocked || !incident.sys_id || !PUT_ON_HOLD_ALLOWED_STATES.has(state) || holdOptionsError || !holdVendor || !holdVendors.includes(holdVendor) || submitting) return;
     setSubmitting(true);
     setHoldError(null);
     setActionError(null);
@@ -346,21 +350,27 @@ export function IncidentActions({
     }
   }
 
-  const canClaim = Boolean(identity?.available && identity.noc_member && incident.sys_id && !assignedToSelf);
-  const canAddWorkNote = Boolean(identity?.available && incident.sys_id);
-  const canAttachAlert = Boolean(identity?.available && incident.sys_id && alertArtifact);
+  const canClaim = !mutationsBlocked && Boolean(identity?.available && identity.noc_member && incident.sys_id && !assignedToSelf);
+  const canAddWorkNote = !mutationsBlocked && Boolean(identity?.available && incident.sys_id);
+  const canAttachAlert = !mutationsBlocked && Boolean(identity?.available && incident.sys_id && alertArtifact);
   const incidentState = String(resolvedState ?? (incident.state || "")).trim();
   const stateUnknown = !incidentState;
   const holdStateAllowed = PUT_ON_HOLD_ALLOWED_STATES.has(incidentState);
   const onHoldAlready = incidentState === "3";
-  const canStartPutOnHold = Boolean(identity?.available && incident.sys_id && holdStateAllowed);
-  const canPutOnHold = Boolean(identity?.available && incident.sys_id && holdStateAllowed && !holdOptionsError && holdVendors.length > 0);
-  const canResolveHoldState = Boolean(identity?.available && incident.sys_id && stateUnknown);
-  const disabledReason = identityUnavailableMessage(identity, identityError);
-  const attachDisabledReason = !alertArtifact
+  const canStartPutOnHold = !mutationsBlocked && Boolean(identity?.available && incident.sys_id && holdStateAllowed);
+  const canPutOnHold = !mutationsBlocked && Boolean(identity?.available && incident.sys_id && holdStateAllowed && !holdOptionsError && holdVendors.length > 0);
+  const canResolveHoldState = !mutationsBlocked && Boolean(identity?.available && incident.sys_id && stateUnknown);
+  const disabledReason = mutationsBlocked
+    ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
+    : identityUnavailableMessage(identity, identityError);
+  const attachDisabledReason = mutationsBlocked
+    ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
+    : !alertArtifact
     ? "Não há alerta relacionado a este chamado."
     : disabledReason;
-  const holdDisabledReason = stateUnknown
+  const holdDisabledReason = mutationsBlocked
+    ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
+    : stateUnknown
       ? "Consulta o estado do chamado ao clicar."
       : onHoldAlready
       ? "Chamado já está em espera."
@@ -387,7 +397,7 @@ export function IncidentActions({
         : <p className="text-xs text-destructive">Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.</p>
     );
   }
-  if (!identity && !identityError) {
+  if (!mutationsBlocked && !identity && !identityError) {
     return (
       <Skeleton
         className={

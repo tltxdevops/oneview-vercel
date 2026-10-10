@@ -25,11 +25,13 @@ import {
   type ClientSharePreview,
   type ClientShareResolution,
 } from "@/lib/oneview-api";
+import { SNAPSHOT_MUTATION_UNAVAILABLE_REASON } from "@/lib/oneview-snapshot-actions";
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   message: ClientShareMessage;
+  mutationsBlocked?: boolean;
 };
 
 function idempotencyKey() {
@@ -93,7 +95,7 @@ function selectionHint(reason: ClientShareResolution["reason"] | undefined) {
   return "";
 }
 
-export function ClientShareDialog({ open, onOpenChange, message }: Props) {
+export function ClientShareDialog({ open, onOpenChange, message, mutationsBlocked = false }: Props) {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -170,7 +172,7 @@ export function ClientShareDialog({ open, onOpenChange, message }: Props) {
   }
 
   async function send() {
-    if (sending || !canSend || !selected) return;
+    if (mutationsBlocked || sending || !canSend || !selected) return;
     setSending(true);
     try {
       const result = await sendClientShare(message, keyRef.current, selected.destination_id);
@@ -267,7 +269,7 @@ export function ClientShareDialog({ open, onOpenChange, message }: Props) {
             {copying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Copy className="mr-2 h-4 w-4" />}
             Copiar texto
           </Button>
-          <Button type="button" disabled={loading || sending || !selected || !canSend} onClick={() => void send()}>
+          <Button type="button" disabled={mutationsBlocked || loading || sending || !selected || !canSend} title={mutationsBlocked ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON : undefined} onClick={() => void send()}>
             {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
             Enviar
           </Button>

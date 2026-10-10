@@ -40,6 +40,7 @@ export function IncidentDetailDrawer({
   alertArtifact: alertArtifactProp,
   showActions = true,
   onActionComplete,
+  mutationsBlocked = false,
 }: {
   incident: OneViewIncident | null;
   onOpenChange: (open: boolean) => void;
@@ -50,6 +51,7 @@ export function IncidentDetailDrawer({
   alertArtifact?: AlertArtifactModel | null;
   showActions?: boolean;
   onActionComplete?: () => void;
+  mutationsBlocked?: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<IncidentDetailDrawerTab>("summary");
   const [detail, setDetail] = useState<OneViewIncident | null>(null);
@@ -315,6 +317,7 @@ export function IncidentDetailDrawer({
                   }}
                   alertArtifact={alertArtifact}
                   placement="drawer-footer"
+                  mutationsBlocked={mutationsBlocked}
                   onClaimed={(result) => {
                     setLiveAssignee(result.incident.assigned_to_name);
                     bumpRefresh();

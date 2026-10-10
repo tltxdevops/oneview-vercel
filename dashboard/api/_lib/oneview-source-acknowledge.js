@@ -60,6 +60,18 @@ export function getSourceAcknowledgeConfig(env = process.env) {
   });
 }
 
+export const SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON = "Reconhecimento pelo OneView ainda não disponível nesta origem";
+
+/** Same allowlist the POST uses. The UI must not invent a second datasource list. */
+export function sourceAckCapability({ datasourceName, syncEnabled, config = getSourceAcknowledgeConfig() } = {}) {
+  const name = String(datasourceName || "").trim().toLowerCase();
+  const available = Boolean(config.enabled && syncEnabled && name && config.allowedDatasources.has(name));
+  return {
+    source_ack_available: available,
+    source_ack_unavailable_reason: available ? null : SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON,
+  };
+}
+
 function publicDatabaseError(error) {
   return error?.code === "actions_database_not_configured" ? "actions_database_not_configured" : "database_unavailable";
 }
@@ -123,8 +135,9 @@ export function createSourceAcknowledgeHandler({
         if (alert.status_source !== "active" || alert.resolved_at) return { error: "alert_not_active", status: 409 };
         if (!alert.source_event_id || !EVENT_ID_PATTERN.test(String(alert.source_event_id))) return { error: "source_event_id_missing", status: 409 };
         if (suppliedEventId && suppliedEventId !== String(alert.source_event_id)) return { error: "source_event_id_mismatch", status: 409 };
-        const datasource = String(alert.datasource_name || "").trim().toLowerCase();
-        if (!alert.sync_enabled || !config.allowedDatasources.has(datasource)) return { error: "datasource_not_allowed", status: 403 };
+        if (!sourceAckCapability({ datasourceName: alert.datasource_name, syncEnabled: alert.sync_enabled, config }).source_ack_available) {
+          return { error: "datasource_not_allowed", status: 403 };
+        }
 
         const existing = await client.query(
           `select id, status from alert_acknowledgements

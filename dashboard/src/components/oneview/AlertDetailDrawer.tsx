@@ -255,6 +255,7 @@ export type AlertDetailDrawerProps = {
   auditEmphasis?: boolean;
   onSourceAckRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
   onSourceAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
+  liveStateUnavailable?: boolean;
 };
 
 /**
@@ -273,6 +274,7 @@ export function AlertDetailDrawer({
   alertsQueueHref = null,
   onSourceAckRequestAccepted,
   onSourceAcknowledged,
+  liveStateUnavailable = false,
 }: AlertDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<AlertDetailDrawerTab>(
     ["summary", "history", "technical"].includes(defaultTab) ? defaultTab : "summary",
@@ -501,6 +503,7 @@ export function AlertDetailDrawer({
                     livePollEnabled={false}
                     onRequestAccepted={onSourceAckRequestAccepted}
                     onAcknowledged={onSourceAcknowledged}
+                    liveStateUnavailable={liveStateUnavailable}
                   />
                 ) : null}
                 <AlertOperationalShareActions
@@ -509,6 +512,7 @@ export function AlertDetailDrawer({
                   relatedIncidents={relatedIncidents}
                   historyItems={historyItems}
                   onCommunicationChange={handleCommunicationChange}
+                  liveStateUnavailable={liveStateUnavailable}
                 />
               </div>
             </SheetHeader>
@@ -806,7 +810,7 @@ export function AlertDetailDrawer({
                   </section>
 
                   {alert.operator_link ? (
-                    <AlertOperatorLinkControls alert={alert} />
+                    <AlertOperatorLinkControls alert={alert} mutationsBlocked={liveStateUnavailable} />
                   ) : operatorTag ? (
                     <section aria-label="Operadora" className="space-y-2">
                       <h3 className="text-sm font-semibold">Operadora</h3>
@@ -907,6 +911,7 @@ export function AlertDetailDrawer({
       stacked
       alertArtifact={nestedAlertArtifact}
       onOpenChange={(next) => { if (!next) setNestedIncident(null); }}
+      mutationsBlocked={liveStateUnavailable}
       description="Consulta rápida sem sair do alerta."
     />
     </>

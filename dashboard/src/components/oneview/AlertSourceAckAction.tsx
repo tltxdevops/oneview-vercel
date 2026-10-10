@@ -21,9 +21,11 @@ import {
   type AcknowledgeAlertResponse,
   type OneViewAlert,
 } from "@/lib/oneview-api";
+import { SNAPSHOT_MUTATION_UNAVAILABLE_REASON } from "@/lib/oneview-snapshot-actions";
 import {
   sourceAckCanOpen,
   sourceAckIsPending,
+  sourceAckUnavailableReason,
   sourceAckTerminalMessage,
   sourceAckTerminalStatus,
   sourceAckTooltip,
@@ -46,6 +48,8 @@ type Props = {
   livePollEnabled?: boolean;
   onRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
   onAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
+  /** List is a snapshot copy. Do not POST an acknowledgement against it. */
+  liveStateUnavailable?: boolean;
 };
 
 function confirmField(label: string, value: string) {
@@ -66,6 +70,7 @@ export function AlertSourceAckAction({
   livePollEnabled = true,
   onRequestAccepted,
   onAcknowledged,
+  liveStateUnavailable = false,
 }: Props) {
   const [phase, setPhase] = useState<AlertSourceAckPhase>("idle");
   const [comment, setComment] = useState("");
@@ -78,15 +83,24 @@ export function AlertSourceAckAction({
   const currentAlert = observedAlert?.id === alert.id ? observedAlert : alert;
   const visual = sourceAckVisualState(currentAlert);
   const waitingForOrigin = enqueued || sourceAckIsPending(currentAlert);
-  const tooltip = waitingForOrigin ? "Aguardando confirmação da origem" : sourceAckTooltip(currentAlert);
-  const canOpen = sourceAckCanOpen(currentAlert) && !enqueued;
+  const tooltip = liveStateUnavailable
+    ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
+    : waitingForOrigin
+      ? "Aguardando confirmação da origem"
+      : sourceAckTooltip(currentAlert);
+  const canOpen = !liveStateUnavailable && sourceAckCanOpen(currentAlert) && !enqueued;
   const submitting = phase === "submitting";
   const confirming = phase === "confirming" || phase === "submitting" || phase === "error";
-  const ariaLabel = visual === "acknowledged"
+  const unavailableReason = sourceAckUnavailableReason(currentAlert);
+  const ariaLabel = liveStateUnavailable
+    ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
+    : visual === "acknowledged"
     ? "Alerta reconhecido"
     : visual === "resolved"
       ? "Alerta já resolvido"
-      : "Reconhecer alerta";
+      : unavailableReason
+        ? "Reconhecimento indisponível nesta origem"
+        : "Reconhecer alerta";
 
   function openConfirm() {
     if (!canOpen || submitting) return;
@@ -155,7 +169,7 @@ export function AlertSourceAckAction({
   }, [alert.id, livePollEnabled, polling]);
 
   async function submitExternalAck() {
-    if (!canOpen || submitting) return;
+    if (liveStateUnavailable || !canOpen || submitting || currentAlert.source_ack_available !== true) return;
     const sourceEventId = String(alert.source_event_id || "").trim();
     if (!sourceEventId) {
       setPhase("error");

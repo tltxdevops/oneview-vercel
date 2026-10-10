@@ -23,6 +23,7 @@ import type {
   ClientShareMessage,
   OneViewAlert,
 } from "@/lib/oneview-api";
+import { SNAPSHOT_MUTATION_UNAVAILABLE_REASON } from "@/lib/oneview-snapshot-actions";
 
 type Props = {
   alert: OneViewAlert;
@@ -30,6 +31,7 @@ type Props = {
   relatedIncidents?: AlertRelatedIncident[];
   historyItems?: AlertHistoryItem[];
   onCommunicationChange: (edits: AlertClientCommunicationEdits) => void;
+  liveStateUnavailable?: boolean;
 };
 
 type BusyAction = "summary" | "print" | null;
@@ -76,6 +78,7 @@ export function AlertOperationalShareActions({
   relatedIncidents = [],
   historyItems = [],
   onCommunicationChange,
+  liveStateUnavailable = false,
 }: Props) {
   const { toast } = useToast();
   const printCardRef = useRef<HTMLDivElement>(null);
@@ -227,10 +230,13 @@ export function AlertOperationalShareActions({
         size="sm"
         variant="ghost"
         className="h-8 px-2.5 text-xs"
-        title="Enviar ao cliente ou copiar imagem"
-        aria-label="Enviar ao cliente"
-        disabled={!valid}
-        onClick={() => setClientPreviewOpen(true)}
+        title={liveStateUnavailable ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON : "Enviar ao cliente ou copiar imagem"}
+        aria-label={liveStateUnavailable ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON : "Enviar ao cliente"}
+        disabled={!valid || liveStateUnavailable}
+        onClick={() => {
+          if (liveStateUnavailable) return;
+          setClientPreviewOpen(true);
+        }}
       >
         <Send className="h-4 w-4" aria-hidden="true" />
         Enviar
@@ -252,7 +258,7 @@ export function AlertOperationalShareActions({
           setClientShareOpen(true);
         }}
       />
-      <ClientShareDialog open={clientShareOpen} onOpenChange={setClientShareOpen} message={clientShareMessage} />
+      <ClientShareDialog open={clientShareOpen} onOpenChange={setClientShareOpen} message={clientShareMessage} mutationsBlocked={liveStateUnavailable} />
     </div>
   );
 }

@@ -23,6 +23,7 @@ type Props = {
   onWorkNoteAdded?: () => void;
   onAttachmentAdded?: () => void;
   onPutOnHold?: (result: ServiceNowPutOnHoldResponse) => void;
+  mutationsBlocked?: boolean;
 };
 
 export function IncidentDetailActions({
@@ -35,6 +36,7 @@ export function IncidentDetailActions({
   onWorkNoteAdded,
   onAttachmentAdded,
   onPutOnHold,
+  mutationsBlocked = false,
 }: Props) {
   if (!incident.sys_id || !incident.number) return null;
 
@@ -49,6 +51,7 @@ export function IncidentDetailActions({
         onWorkNoteAdded={onWorkNoteAdded}
         onAttachmentAdded={onAttachmentAdded}
         onPutOnHold={onPutOnHold}
+        mutationsBlocked={mutationsBlocked}
       />
     );
   }
@@ -72,6 +75,7 @@ export function IncidentDetailActions({
         onWorkNoteAdded={onWorkNoteAdded}
         onAttachmentAdded={onAttachmentAdded}
         onPutOnHold={onPutOnHold}
+        mutationsBlocked={mutationsBlocked}
       />
     </section>
   );
