@@ -19,6 +19,12 @@ function csv(value) {
   return new Set(String(value || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean));
 }
 
+function syncIsEnabled(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  return ["true", "1", "t", "yes", "sim"].includes(value.trim().toLowerCase());
+}
+
 function headerValue(req, key) {
   const value = req.headers?.[key] ?? req.headers?.[key.toLowerCase()];
   return Array.isArray(value) ? value[0] : String(value || "");
@@ -53,10 +59,15 @@ function idempotencyKey(req, alertId, actorId, comment) {
   return `source-ack:${createHash("sha256").update(`${alertId}\n${actorId}\n${material}`).digest("hex")}`;
 }
 
+/** Homologated source. Other datasources stay closed unless named in the env allowlist. */
+const HOMOLOGATED_SOURCE_ACK_DATASOURCE = "teletex-http";
+
 export function getSourceAcknowledgeConfig(env = process.env) {
+  const allowedDatasources = csv(env.ONEVIEW_SOURCE_ACK_ALLOWED_DATASOURCES);
+  allowedDatasources.add(HOMOLOGATED_SOURCE_ACK_DATASOURCE);
   return Object.freeze({
     enabled: booleanValue(env.ONEVIEW_SOURCE_ACK_REQUEST_ENABLED, false),
-    allowedDatasources: csv(env.ONEVIEW_SOURCE_ACK_ALLOWED_DATASOURCES),
+    allowedDatasources,
   });
 }
 
@@ -65,7 +76,7 @@ export const SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON = "Reconhecimento pelo OneView
 /** Same allowlist the POST uses. The UI must not invent a second datasource list. */
 export function sourceAckCapability({ datasourceName, syncEnabled, config = getSourceAcknowledgeConfig() } = {}) {
   const name = String(datasourceName || "").trim().toLowerCase();
-  const available = Boolean(config.enabled && syncEnabled && name && config.allowedDatasources.has(name));
+  const available = Boolean(config.enabled && syncIsEnabled(syncEnabled) && name && config.allowedDatasources.has(name));
   return {
     source_ack_available: available,
     source_ack_unavailable_reason: available ? null : SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON,

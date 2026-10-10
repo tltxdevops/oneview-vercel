@@ -177,8 +177,72 @@ test("source ACK: rollback não deixa ACK sem outbox nem outbox sem ACK", async 
   }
 });
 
+test("source ACK: teletex-http com sync cria outbox; outras origens e sync desligado não", async () => {
+  const config = getSourceAcknowledgeConfig({ ONEVIEW_SOURCE_ACK_REQUEST_ENABLED: "true" });
+  assert.equal(config.allowedDatasources.has("teletex-http"), true);
+  for (const datasource of ["zurich", "rhp", "castrolanda", "fraport-for", "maps"]) {
+    assert.equal(config.allowedDatasources.has(datasource), false);
+  }
+  const accept = fakeDatabase();
+  const accepted = response();
+  await createSourceAcknowledgeHandler({
+    authorize: async () => operator,
+    transaction: accept.transaction,
+    configProvider: () => config,
+    idFactory: () => "id-accept",
+    logger: () => undefined,
+  })(request(), accepted);
+  assert.equal(accepted.statusCode, 202);
+  assert.equal(accept.state.outboxes.length, 1);
+  assert.equal(accept.state.outboxes[0].action_type, "zabbix_event_acknowledge");
+
+  for (const datasourceName of ["zurich", "rhp", "castrolanda", "fraport-for", "maps"]) {
+    const database = fakeDatabase({ alert: { datasource_name: datasourceName } });
+    const res = response();
+    await createSourceAcknowledgeHandler({
+      authorize: async () => operator,
+      transaction: database.transaction,
+      configProvider: () => config,
+      idFactory: () => "id-deny",
+      logger: () => undefined,
+    })(request(), res);
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.body.error, "datasource_not_allowed");
+    assert.equal(database.state.outboxes.length, 0);
+  }
+
+  const unsynced = fakeDatabase({ alert: { sync_enabled: false } });
+  const denied = response();
+  await createSourceAcknowledgeHandler({
+    authorize: async () => operator,
+    transaction: unsynced.transaction,
+    configProvider: () => config,
+    idFactory: () => "id-sync",
+    logger: () => undefined,
+  })(request(), denied);
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.body.error, "datasource_not_allowed");
+  assert.equal(unsynced.state.outboxes.length, 0);
+});
+
+test("source ACK: feature desligada responde source_acknowledge_disabled e não cria outbox", async () => {
+  const database = fakeDatabase();
+  const res = response();
+  await createSourceAcknowledgeHandler({
+    authorize: async () => operator,
+    transaction: database.transaction,
+    configProvider: () => getSourceAcknowledgeConfig({ ONEVIEW_SOURCE_ACK_REQUEST_ENABLED: "false" }),
+    idFactory: () => "id-off",
+    logger: () => undefined,
+  })(request(), res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.error, "source_acknowledge_disabled");
+  assert.equal(database.state.outboxes.length, 0);
+});
+
 test("source ACK: flag fail-closed e produtor não chama Zabbix", () => {
   assert.equal(getSourceAcknowledgeConfig({}).enabled, false);
+  assert.equal(getSourceAcknowledgeConfig({ ONEVIEW_SOURCE_ACK_REQUEST_ENABLED: "false", ONEVIEW_SOURCE_ACK_ALLOWED_DATASOURCES: "teletex-http,zurich" }).enabled, false);
   const source = fs.readFileSync(fileURLToPath(new URL("../api/_lib/oneview-source-acknowledge.js", import.meta.url)), "utf8");
   assert.match(source, /integration_outbox/);
   assert.doesNotMatch(source, /event\.acknowledge|api_jsonrpc|\bfetch\s*\(|\baxios\b/i);

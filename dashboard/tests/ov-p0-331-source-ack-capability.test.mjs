@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON,
+  getSourceAcknowledgeConfig,
   sourceAckCapability,
 } from "../api/_lib/oneview-source-acknowledge.js";
 import {
@@ -52,6 +53,22 @@ test("datasource ainda não homologado -> false com motivo explícito", () => {
   assert.equal(capability.source_ack_available, false);
   assert.equal(capability.source_ack_unavailable_reason, SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON);
   assert.equal(capability.source_ack_unavailable_reason, "Reconhecimento pelo OneView ainda não disponível nesta origem");
+});
+
+test("feature ligada sem allowlist ainda libera só teletex-http", () => {
+  const config = getSourceAcknowledgeConfig({ ONEVIEW_SOURCE_ACK_REQUEST_ENABLED: "true" });
+  assert.equal(sourceAckCapability({
+    datasourceName: "teletex-http",
+    syncEnabled: true,
+    config,
+  }).source_ack_available, true);
+  for (const datasourceName of ["zurich", "rhp", "castrolanda", "fraport", "fraport-for", "fraport-poa", "maps"]) {
+    assert.equal(sourceAckCapability({
+      datasourceName,
+      syncEnabled: true,
+      config,
+    }).source_ack_available, false, datasourceName);
+  }
 });
 
 test("sync desligado ou feature desligada também fecham a capability", () => {
