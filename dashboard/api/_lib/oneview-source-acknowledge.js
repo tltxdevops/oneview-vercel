@@ -76,8 +76,11 @@ export const SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON = "Reconhecimento pelo OneView
 /** Same allowlist the POST uses. The UI must not invent a second datasource list. */
 export function sourceAckCapability({ datasourceName, syncEnabled, config = getSourceAcknowledgeConfig() } = {}) {
   const name = String(datasourceName || "").trim().toLowerCase();
-  const available = Boolean(config.enabled && syncIsEnabled(syncEnabled) && name && config.allowedDatasources.has(name));
+  const supported = name === HOMOLOGATED_SOURCE_ACK_DATASOURCE;
+  const available = Boolean(supported && config.enabled && syncIsEnabled(syncEnabled) && config.allowedDatasources.has(name));
   return {
+    source_ack_supported: supported,
+    actor_ack_access: supported ? "unknown" : false,
     source_ack_available: available,
     source_ack_unavailable_reason: available ? null : SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON,
   };

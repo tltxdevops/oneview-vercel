@@ -39,6 +39,8 @@ test("teletex-http + sync_enabled -> source_ack_available true", () => {
     syncEnabled: true,
     config: allowedConfig,
   }), {
+    source_ack_supported: true,
+    actor_ack_access: "unknown",
     source_ack_available: true,
     source_ack_unavailable_reason: null,
   });

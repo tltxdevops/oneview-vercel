@@ -263,6 +263,11 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
       insufficient_role: "Seu usuário não possui permissão para solicitar reconhecimento.",
       ack_request_disabled: "A solicitação de reconhecimento está desabilitada.",
       datasource_not_allowed: "Esta fonte ainda não permite solicitação de reconhecimento.",
+      operator_event_access_denied: "Seu usuário Zabbix não possui acesso a este alerta.",
+      operator_not_found_in_zabbix: "Seu usuário ainda não está habilitado para reconhecimento nesta origem.",
+      source_event_not_found: "O evento não está mais disponível na origem.",
+      source_event_resolved: "O alerta já foi resolvido na origem.",
+      source_already_acknowledged: "O alerta já foi reconhecido na origem.",
       alert_already_recognized: "Este alerta já foi reconhecido no OneView.",
       source_acknowledge_not_implemented: "Reconhecimento no Zabbix ainda não está disponível.",
       invalid_source_event_id: "Event ID inválido para reconhecimento no Zabbix.",
@@ -493,6 +498,14 @@ export interface AcknowledgeAlertResponse {
   comment?: string | null;
 }
 
+export interface SourceAckAccessResponse {
+  source_ack_supported: boolean;
+  source_ack_available: boolean;
+  actor_ack_access: true | false | "unknown";
+  reason: string | null;
+  pending: boolean;
+}
+
 export interface AckRequestResponse {
   request_id: string;
   status: "recorded";
@@ -652,6 +665,9 @@ export interface OneViewAlert {
   /** BFF allowlist. Absent or false means the ACK POST must not be offered. */
   source_ack_available?: boolean;
   source_ack_unavailable_reason?: string | null;
+  source_ack_supported?: boolean;
+  actor_ack_access?: true | false | "unknown";
+  actor_ack_access_reason?: string | null;
   oneview_ack?: {
     status: "none" | "pending" | "processing" | "success" | "cancelled" | "failed";
     requested_at: string | null;
@@ -2813,6 +2829,13 @@ export async function acknowledgeAlert({
     },
   );
   return payload;
+}
+
+/** Drawer-only delegated Zabbix visibility probe. Never calls event.acknowledge. */
+export async function probeSourceAckAccess(alertId: string): Promise<SourceAckAccessResponse> {
+  return fetchApi<SourceAckAccessResponse>(`/oneview/alerts/${encodeURIComponent(alertId)}/source-ack-access`, {
+    method: "POST",
+  });
 }
 
 export async function fetchOperationsHealth(signal?: AbortSignal): Promise<OperationsHealthResponse> {

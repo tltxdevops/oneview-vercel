@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import {
   acknowledgeAlert,
   fetchAlert,
+  probeSourceAckAccess,
   type AcknowledgeAlertResponse,
   type OneViewAlert,
 } from "@/lib/oneview-api";
@@ -50,6 +51,8 @@ type Props = {
   onAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
   /** List is a snapshot copy. Do not POST an acknowledgement against it. */
   liveStateUnavailable?: boolean;
+  /** Only the detail drawer may execute the per-operator Zabbix access probe. */
+  probeEnabled?: boolean;
 };
 
 function confirmField(label: string, value: string) {
@@ -71,6 +74,7 @@ export function AlertSourceAckAction({
   onRequestAccepted,
   onAcknowledged,
   liveStateUnavailable = false,
+  probeEnabled = false,
 }: Props) {
   const [phase, setPhase] = useState<AlertSourceAckPhase>("idle");
   const [comment, setComment] = useState("");
@@ -78,17 +82,65 @@ export function AlertSourceAckAction({
   const [enqueued, setEnqueued] = useState(false);
   const [polling, setPolling] = useState(false);
   const [observedAlert, setObservedAlert] = useState<OneViewAlert | null>(null);
+  const [actorAckAccess, setActorAckAccess] = useState<true | false | "unknown">("unknown");
+  const [actorAckReason, setActorAckReason] = useState<string | null>(null);
   const onAcknowledgedRef = useRef(onAcknowledged);
   useEffect(() => { onAcknowledgedRef.current = onAcknowledged; }, [onAcknowledged]);
   const currentAlert = observedAlert?.id === alert.id ? observedAlert : alert;
+  const shouldProbe = probeEnabled
+    && !liveStateUnavailable
+    && currentAlert.source_ack_supported === true
+    && currentAlert.source_ack_available === true
+    && currentAlert.status_source === "active"
+    && !currentAlert.resolved_at
+    && !currentAlert.acknowledged_source;
+  useEffect(() => {
+    if (!shouldProbe) return undefined;
+    const controller = new AbortController();
+    let stopped = false;
+    let attempts = 0;
+    const probe = async () => {
+      if (stopped) return;
+      try {
+        const result = await probeSourceAckAccess(alert.id);
+        if (stopped || controller.signal.aborted) return;
+        setActorAckAccess(result.actor_ack_access);
+        setActorAckReason(result.reason);
+        if (result.pending && attempts++ < 10) window.setTimeout(() => void probe(), 2_000);
+      } catch {
+        // Transport/BFF failures must not be presented as a Zabbix permission denial.
+        if (!stopped) {
+          setActorAckAccess("unknown");
+          setActorAckReason(null);
+        }
+      }
+    };
+    setActorAckAccess("unknown");
+    setActorAckReason(null);
+    void probe();
+    return () => { stopped = true; controller.abort(); };
+  }, [alert.id, shouldProbe]);
   const visual = sourceAckVisualState(currentAlert);
   const waitingForOrigin = enqueued || sourceAckIsPending(currentAlert);
+  const accessMessage = actorAckReason === "operator_event_access_denied"
+    ? "Seu usuário Zabbix não possui acesso a este alerta."
+    : actorAckReason === "operator_not_found_in_zabbix"
+      ? "Seu usuário ainda não está habilitado para reconhecimento nesta origem."
+      : actorAckReason === "source_event_not_found"
+        ? "O evento não está mais disponível na origem."
+        : actorAckReason === "source_event_resolved"
+          ? "O alerta já foi resolvido na origem."
+          : actorAckReason === "source_already_acknowledged"
+            ? "O alerta já foi reconhecido na origem."
+            : null;
   const tooltip = liveStateUnavailable
     ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
     : waitingForOrigin
       ? "Aguardando confirmação da origem"
-      : sourceAckTooltip(currentAlert);
-  const canOpen = !liveStateUnavailable && sourceAckCanOpen(currentAlert) && !enqueued;
+      : shouldProbe && actorAckAccess === "unknown"
+        ? "Verificando acesso do usuário Zabbix..."
+        : accessMessage ?? sourceAckTooltip(currentAlert);
+  const canOpen = !liveStateUnavailable && sourceAckCanOpen(currentAlert) && actorAckAccess === true && !enqueued;
   const submitting = phase === "submitting";
   const confirming = phase === "confirming" || phase === "submitting" || phase === "error";
   const unavailableReason = sourceAckUnavailableReason(currentAlert);
@@ -98,7 +150,7 @@ export function AlertSourceAckAction({
     ? "Alerta reconhecido"
     : visual === "resolved"
       ? "Alerta já resolvido"
-      : unavailableReason
+    : accessMessage || unavailableReason
         ? "Reconhecimento indisponível nesta origem"
         : "Reconhecer alerta";
 
@@ -169,7 +221,7 @@ export function AlertSourceAckAction({
   }, [alert.id, livePollEnabled, polling]);
 
   async function submitExternalAck() {
-    if (liveStateUnavailable || !canOpen || submitting || currentAlert.source_ack_available !== true) return;
+    if (liveStateUnavailable || !canOpen || submitting || currentAlert.source_ack_available !== true || actorAckAccess !== true) return;
     const sourceEventId = String(alert.source_event_id || "").trim();
     if (!sourceEventId) {
       setPhase("error");

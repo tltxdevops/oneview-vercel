@@ -504,6 +504,7 @@ export function AlertDetailDrawer({
                     onRequestAccepted={onSourceAckRequestAccepted}
                     onAcknowledged={onSourceAcknowledged}
                     liveStateUnavailable={liveStateUnavailable}
+                    probeEnabled
                   />
                 ) : null}
                 <AlertOperationalShareActions
