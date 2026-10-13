@@ -41,6 +41,12 @@ test("probe é BFF-only, drawer-only, sem fallback/token/event.acknowledge", asy
   assert.match(ui, /!liveStateUnavailable/);
   assert.match(ui, /actorAckAccess === true/);
   assert.match(api, /source-ack-access/);
+  assert.match(api, /signal\?: AbortSignal/);
+  assert.match(ui, /source_ack_access_unavailable/);
+  assert.match(ui, /Não foi possível validar o acesso no Zabbix\./);
+  assert.match(ui, /Tentar novamente/);
+  assert.match(ui, /setActorAckAccess\(false\);\s*setActorAckReason\("source_ack_access_unavailable"\)/);
+  assert.match(ui, /SOURCE_ACK_ACCESS_MAX_POLLS/);
   assert.match(ui, /O alerta já foi resolvido na origem\./);
   assert.match(ui, /O alerta já foi reconhecido na origem\./);
   assert.doesNotMatch(probe, /event\.acknowledge|ZABBIX_TOKEN|api_jsonrpc|service account/i);
@@ -105,7 +111,7 @@ test("BFF enqueues only delegated probes; resolved or acknowledged alerts do not
     status_source: "active", resolved_at: null, acknowledged_source: false, datasource_name: "teletex-http", sync_enabled: true,
   };
   const pending = await run(active);
-  assert.equal(pending.statusCode, 200);
+  assert.equal(pending.statusCode, 202);
   assert.equal(pending.body.actor_ack_access, "unknown");
   assert.equal(rows.length, 1);
   assert.deepEqual(rows[0], {
@@ -115,9 +121,115 @@ test("BFF enqueues only delegated probes; resolved or acknowledged alerts do not
       actor_id: "guilherme", actor_username: "guilherme@teletex.com.br",
     },
   });
-  await run({ ...active, status_source: "resolved", resolved_at: "2026-10-13T11:00:00.000Z" });
-  await run({ ...active, acknowledged_source: true });
+  const resolved = await run({ ...active, status_source: "resolved", resolved_at: "2026-10-13T11:00:00.000Z" });
+  assert.equal(resolved.statusCode, 200);
+  assert.equal(resolved.body.actor_ack_access, false);
+  assert.equal(resolved.body.reason, "source_event_resolved");
+  const acknowledged = await run({ ...active, acknowledged_source: true });
+  assert.equal(acknowledged.statusCode, 200);
+  assert.equal(acknowledged.body.actor_ack_access, false);
+  assert.equal(acknowledged.body.reason, "source_already_acknowledged");
   assert.equal(rows.length, 1);
+});
+
+test("erro de banco retorna 503 terminal e log sanitizado", async () => {
+  const logs = [];
+  const handler = createSourceAckAccessHandler({
+    authorize: async () => ({ id: "guilherme", preferred_username: "guilherme@teletex.com.br" }),
+    transaction: async () => {
+      const error = new Error("password=secret host=private.internal");
+      error.code = "42703";
+      throw error;
+    },
+    configProvider: () => config,
+    logger: (entry) => logs.push(entry),
+  });
+  const res = {
+    statusCode: 200, body: null,
+    status(code) { this.statusCode = code; return this; },
+    setHeader() {},
+    end(value) { this.body = JSON.parse(value); },
+  };
+  await handler({ method: "POST", query: { id: "alert-1" } }, res);
+  assert.equal(res.statusCode, 503);
+  assert.deepEqual(res.body, { error: "source_ack_access_unavailable" });
+  assert.deepEqual(logs, [{
+    event: "source_ack_access_error",
+    stage: "transaction_start",
+    alert_id: "alert-1",
+    actor: "guilherme@teletex.com.br",
+    error_code: "42703",
+  }]);
+  assert.doesNotMatch(JSON.stringify(logs), /secret|private\.internal/);
+});
+
+test("503 registra o estágio exato sem vazar detalhes", async () => {
+  const active = {
+    id: "alert-1", data_source_id: "ds-1", source_event_id: "419733038", source_host_id: "39533",
+    status_source: "active", resolved_at: null, acknowledged_source: false,
+    datasource_name: "teletex-http", sync_enabled: true,
+  };
+  const response = () => ({
+    statusCode: 200, body: null,
+    status(code) { this.statusCode = code; return this; },
+    setHeader() {},
+    end(value) { this.body = JSON.parse(value); },
+  });
+  const failure = (code = "XX000") => Object.assign(new Error("token=never-log"), { code });
+  const cases = [
+    {
+      expected: "config",
+      configProvider: () => { throw failure("actions_database_not_configured"); },
+      transaction: async () => { throw new Error("must not run"); },
+    },
+    {
+      expected: "load_alert",
+      transaction: async (work) => work({ query: async () => { throw failure("42703"); } }),
+    },
+    {
+      expected: "lookup_cache",
+      transaction: async (work) => work({ query: async (sql) => {
+        if (/select a\.id/i.test(sql)) return { rows: [active] };
+        throw failure("42501");
+      }}),
+    },
+    {
+      expected: "insert_outbox",
+      transaction: async (work) => work({ query: async (sql) => {
+        if (/select a\.id/i.test(sql)) return { rows: [active] };
+        if (/select status, result_payload/i.test(sql)) return { rows: [] };
+        throw failure("23502");
+      }}),
+    },
+    {
+      expected: "transaction_commit",
+      transaction: async (work) => {
+        await work({ query: async (sql) => {
+          if (/select a\.id/i.test(sql)) return { rows: [active] };
+          if (/select status, result_payload/i.test(sql)) return { rows: [] };
+          if (/insert into integration_outbox/i.test(sql)) return { rows: [], rowCount: 1 };
+          throw new Error("unexpected query");
+        }});
+        throw failure("40001");
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    const logs = [];
+    const handler = createSourceAckAccessHandler({
+      authorize: async () => ({ id: "guilherme", preferred_username: "guilherme@teletex.com.br" }),
+      transaction: scenario.transaction,
+      configProvider: scenario.configProvider || (() => config),
+      logger: (entry) => logs.push(entry),
+      idFactory: () => "probe-1",
+      now: () => new Date("2026-10-13T12:00:00.000Z"),
+    });
+    const res = response();
+    await handler({ method: "POST", query: { id: "alert-1" } }, res);
+    assert.equal(res.statusCode, 503);
+    assert.equal(logs[0].stage, scenario.expected);
+    assert.doesNotMatch(JSON.stringify(logs), /never-log/);
+  }
 });
 
 test("cache positivo do evento A nunca autoriza evento B do mesmo host", async () => {

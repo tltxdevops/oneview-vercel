@@ -38,6 +38,8 @@ import {
 export const SOURCE_ACK_SUCCESS_TOAST = "Reconhecimento enviado ao Zabbix...";
 export const SOURCE_ACK_POLL_INTERVAL_MS = 2_000;
 export const SOURCE_ACK_POLL_TIMEOUT_MS = 45_000;
+export const SOURCE_ACK_ACCESS_TIMEOUT_MS = 10_000;
+export const SOURCE_ACK_ACCESS_MAX_POLLS = 10;
 
 type Props = {
   alert: OneViewAlert;
@@ -84,6 +86,7 @@ export function AlertSourceAckAction({
   const [observedAlert, setObservedAlert] = useState<OneViewAlert | null>(null);
   const [actorAckAccess, setActorAckAccess] = useState<true | false | "unknown">("unknown");
   const [actorAckReason, setActorAckReason] = useState<string | null>(null);
+  const [probeGeneration, setProbeGeneration] = useState(0);
   const onAcknowledgedRef = useRef(onAcknowledged);
   useEffect(() => { onAcknowledgedRef.current = onAcknowledged; }, [onAcknowledged]);
   const currentAlert = observedAlert?.id === alert.id ? observedAlert : alert;
@@ -96,30 +99,47 @@ export function AlertSourceAckAction({
     && !currentAlert.acknowledged_source;
   useEffect(() => {
     if (!shouldProbe) return undefined;
-    const controller = new AbortController();
     let stopped = false;
     let attempts = 0;
+    let retryTimer: number | undefined;
+    let requestController: AbortController | undefined;
     const probe = async () => {
       if (stopped) return;
+      requestController = new AbortController();
+      const timeoutTimer = window.setTimeout(() => requestController?.abort(), SOURCE_ACK_ACCESS_TIMEOUT_MS);
       try {
-        const result = await probeSourceAckAccess(alert.id);
-        if (stopped || controller.signal.aborted) return;
+        const result = await probeSourceAckAccess(alert.id, requestController.signal);
+        if (stopped || requestController.signal.aborted) return;
         setActorAckAccess(result.actor_ack_access);
         setActorAckReason(result.reason);
-        if (result.pending && attempts++ < 10) window.setTimeout(() => void probe(), 2_000);
+        if (result.pending) {
+          attempts += 1;
+          if (attempts < SOURCE_ACK_ACCESS_MAX_POLLS) {
+            retryTimer = window.setTimeout(() => void probe(), SOURCE_ACK_POLL_INTERVAL_MS);
+          } else {
+            setActorAckAccess(false);
+            setActorAckReason("source_ack_access_unavailable");
+          }
+        }
       } catch {
         // Transport/BFF failures must not be presented as a Zabbix permission denial.
         if (!stopped) {
-          setActorAckAccess("unknown");
-          setActorAckReason(null);
+          setActorAckAccess(false);
+          setActorAckReason("source_ack_access_unavailable");
         }
+      } finally {
+        window.clearTimeout(timeoutTimer);
       }
     };
     setActorAckAccess("unknown");
     setActorAckReason(null);
     void probe();
-    return () => { stopped = true; controller.abort(); };
-  }, [alert.id, shouldProbe]);
+    return () => {
+      stopped = true;
+      requestController?.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [alert.id, probeGeneration, shouldProbe]);
   const visual = sourceAckVisualState(currentAlert);
   const waitingForOrigin = enqueued || sourceAckIsPending(currentAlert);
   const accessMessage = actorAckReason === "operator_event_access_denied"
@@ -132,6 +152,8 @@ export function AlertSourceAckAction({
           ? "O alerta já foi resolvido na origem."
           : actorAckReason === "source_already_acknowledged"
             ? "O alerta já foi reconhecido na origem."
+            : actorAckReason === "source_ack_access_unavailable"
+              ? "Não foi possível validar o acesso no Zabbix."
             : null;
   const tooltip = liveStateUnavailable
     ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
@@ -141,6 +163,7 @@ export function AlertSourceAckAction({
         ? "Verificando acesso do usuário Zabbix..."
         : accessMessage ?? sourceAckTooltip(currentAlert);
   const canOpen = !liveStateUnavailable && sourceAckCanOpen(currentAlert) && actorAckAccess === true && !enqueued;
+  const probeFailed = actorAckReason === "source_ack_access_unavailable";
   const submitting = phase === "submitting";
   const confirming = phase === "confirming" || phase === "submitting" || phase === "error";
   const unavailableReason = sourceAckUnavailableReason(currentAlert);
@@ -299,14 +322,31 @@ export function AlertSourceAckAction({
 
   return (
     <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
-            {control}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>{tooltip}</TooltipContent>
-      </Tooltip>
+      <div className="flex flex-col items-start gap-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
+              {control}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{tooltip}</TooltipContent>
+        </Tooltip>
+        {probeFailed ? (
+          <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
+            <span>Não foi possível validar o acesso no Zabbix.</span>
+            <button
+              type="button"
+              className="font-semibold underline underline-offset-2"
+              onClick={(event) => {
+                event.stopPropagation();
+                setProbeGeneration((value) => value + 1);
+              }}
+            >
+              Tentar novamente
+            </button>
+          </div>
+        ) : null}
+      </div>
 
       <Dialog open={confirming} onOpenChange={closeConfirm}>
         <DialogContent className="z-[100] max-w-md" onClick={(event) => event.stopPropagation()}>

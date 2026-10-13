@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { methodNotAllowed, sendJson } from "./http.js";
 import { requireOneViewAuth } from "./oneview-auth.js";
-import { withOneViewActionsTransaction } from "./oneview-actions-db.js";
+import { classifyActionsFailure, withOneViewActionsTransaction } from "./oneview-actions-db.js";
 import { getSourceAcknowledgeConfig, sourceAckCapability } from "./oneview-source-acknowledge.js";
 
 const PROBE_ACTION_TYPE = "zabbix_event_access_probe";
@@ -21,12 +21,18 @@ function accessResponse(row) {
   return { actor_ack_access: "unknown", reason: null, pending: true };
 }
 
+function safeErrorCode(error) {
+  const code = String(error?.code || "").trim();
+  return /^[a-z0-9_.:-]{1,80}$/i.test(code) ? code : classifyActionsFailure(error);
+}
+
 export function createSourceAckAccessHandler({
   authorize = (req, res) => requireOneViewAuth(req, res, "operator"),
   transaction = withOneViewActionsTransaction,
   configProvider = getSourceAcknowledgeConfig,
   idFactory = randomUUID,
   now = () => new Date(),
+  logger = (entry) => console.error(JSON.stringify(entry)),
 } = {}) {
   return async function sourceAckAccessHandler(req, res) {
     if (req.method !== "POST") return methodNotAllowed(res, ["POST"]);
@@ -37,9 +43,13 @@ export function createSourceAckAccessHandler({
     const actorUsername = String(auth.preferred_username || auth.email || "").trim().slice(0, 255);
     if (!ALERT_ID_PATTERN.test(alertId)) return sendJson(res, 400, { error: "invalid_alert_id" });
     if (!actorId || !actorUsername) return sendJson(res, 401, { error: "authentication_required" });
-    const config = configProvider();
+    let stage = "config";
+    let responseStatus = 200;
     try {
+      const config = configProvider();
+      stage = "transaction_start";
       const result = await transaction(async (client) => {
+        stage = "load_alert";
         const alertResult = await client.query(
           `select a.id, a.data_source_id, a.source_event_id, a.source_host_id, a.status_source, a.resolved_at,
                   a.acknowledged_source, d.name as datasource_name, d.sync_enabled
@@ -48,12 +58,15 @@ export function createSourceAckAccessHandler({
         );
         const alert = alertResult.rows[0];
         if (!alert) return { error: "not_found", status: 404 };
+        stage = "validate_alert";
         const capability = sourceAckCapability({ datasourceName: alert.datasource_name, syncEnabled: alert.sync_enabled, config });
         if (!capability.source_ack_supported || !capability.source_ack_available) return { ...capability, pending: false };
-        if (alert.status_source !== "active" || alert.resolved_at || alert.acknowledged_source) return { actor_ack_access: "unknown", reason: "alert_not_active", pending: false };
+        if (alert.acknowledged_source) return { ...capability, actor_ack_access: false, reason: "source_already_acknowledged", pending: false };
+        if (alert.status_source !== "active" || alert.resolved_at) return { ...capability, actor_ack_access: false, reason: "source_event_resolved", pending: false };
         const hostId = String(alert.source_host_id || "").trim();
         const eventId = String(alert.source_event_id || "").trim();
-        if (!hostId || !/^\d+$/.test(eventId)) return { actor_ack_access: false, reason: "source_event_not_found", pending: false };
+        if (!hostId || !/^\d+$/.test(eventId)) return { ...capability, actor_ack_access: false, reason: "source_event_not_found", pending: false };
+        stage = "lookup_cache";
         const cached = await client.query(
           `select status, result_payload from integration_outbox
             where action_type = $1 and payload ->> 'data_source_id' = $2 and payload ->> 'actor_username' = $3
@@ -66,6 +79,7 @@ export function createSourceAckAccessHandler({
         const timestamp = now();
         const bucket = Math.floor(timestamp.getTime() / (CACHE_TTL_SECONDS * 1000));
         const outboxId = idFactory();
+        stage = "insert_outbox";
         await client.query(
           `insert into integration_outbox (
              id, aggregate_type, aggregate_id, data_source_id, alert_id, action_type, status, priority, payload,
@@ -77,12 +91,25 @@ export function createSourceAckAccessHandler({
             actor_id: actorId, actor_username: actorUsername,
           }), timestamp, probeKey(alert.data_source_id, actorUsername, hostId, eventId, bucket)],
         );
+        stage = "transaction_commit";
+        responseStatus = 202;
         return { ...capability, actor_ack_access: "unknown", reason: null, pending: true };
       });
       if (result.error) return sendJson(res, result.status, { error: result.error });
-      return sendJson(res, 200, result);
-    } catch {
-      return sendJson(res, 503, { error: "actions_database_not_configured" });
+      return sendJson(res, responseStatus, result);
+    } catch (error) {
+      try {
+        logger({
+          event: "source_ack_access_error",
+          stage,
+          alert_id: alertId,
+          actor: actorUsername,
+          error_code: safeErrorCode(error),
+        });
+      } catch {
+        // Logging failure must not alter the fail-closed response.
+      }
+      return sendJson(res, 503, { error: "source_ack_access_unavailable" });
     }
   };
 }

@@ -268,6 +268,7 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
       source_event_not_found: "O evento não está mais disponível na origem.",
       source_event_resolved: "O alerta já foi resolvido na origem.",
       source_already_acknowledged: "O alerta já foi reconhecido na origem.",
+      source_ack_access_unavailable: "Não foi possível validar o acesso no Zabbix.",
       alert_already_recognized: "Este alerta já foi reconhecido no OneView.",
       source_acknowledge_not_implemented: "Reconhecimento no Zabbix ainda não está disponível.",
       invalid_source_event_id: "Event ID inválido para reconhecimento no Zabbix.",
@@ -2832,9 +2833,10 @@ export async function acknowledgeAlert({
 }
 
 /** Drawer-only delegated Zabbix visibility probe. Never calls event.acknowledge. */
-export async function probeSourceAckAccess(alertId: string): Promise<SourceAckAccessResponse> {
+export async function probeSourceAckAccess(alertId: string, signal?: AbortSignal): Promise<SourceAckAccessResponse> {
   return fetchApi<SourceAckAccessResponse>(`/oneview/alerts/${encodeURIComponent(alertId)}/source-ack-access`, {
     method: "POST",
+    signal,
   });
 }
 
