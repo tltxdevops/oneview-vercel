@@ -89,7 +89,7 @@ export function createSourceAckAccessHandler({
           [outboxId, alert.id, alert.data_source_id, PROBE_ACTION_TYPE, JSON.stringify({
             alert_id: alert.id, data_source_id: alert.data_source_id, source_event_id: eventId, source_host_id: hostId,
             actor_id: actorId, actor_username: actorUsername,
-          }), timestamp, probeKey(alert.data_source_id, actorUsername, hostId, eventId, bucket)],
+          }), timestamp, probeKey(alert.data_source_id, actorUsername, hostId, eventId, bucket), actorId],
         );
         stage = "transaction_commit";
         responseStatus = 202;

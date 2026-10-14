@@ -90,7 +90,7 @@ test("BFF enqueues only delegated probes; resolved or acknowledged alerts do not
       if (normalized.startsWith("select a.id")) return { rows: alert ? [alert] : [] };
       if (normalized.startsWith("select status, result_payload")) return { rows: [] };
       if (normalized.startsWith("insert into integration_outbox")) {
-        rows.push({ action_type: values[3], payload: JSON.parse(values[4]) });
+        rows.push({ action_type: values[3], payload: JSON.parse(values[4]), created_by: values[7], parameter_count: values.length });
         return { rows: [] };
       }
       throw new Error(`unexpected query: ${normalized}`);
@@ -120,6 +120,8 @@ test("BFF enqueues only delegated probes; resolved or acknowledged alerts do not
       alert_id: "alert-1", data_source_id: "ds-1", source_event_id: "419733038", source_host_id: "39533",
       actor_id: "guilherme", actor_username: "guilherme@teletex.com.br",
     },
+    created_by: "guilherme",
+    parameter_count: 8,
   });
   const resolved = await run({ ...active, status_source: "resolved", resolved_at: "2026-10-13T11:00:00.000Z" });
   assert.equal(resolved.statusCode, 200);
