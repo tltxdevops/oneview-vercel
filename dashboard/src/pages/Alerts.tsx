@@ -29,7 +29,7 @@ import {
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
-import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
+import { AlertSourceAckRowAction } from "@/components/oneview/AlertSourceAckAction";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -50,6 +50,7 @@ import { useAuthContext } from "@/context/AuthContext";
 import { useAlertDrawerLiveRefresh } from "@/hooks/useAlertDrawerLiveRefresh";
 import { useOneViewWarmRead } from "@/hooks/useOneViewWarmRead";
 import { shouldInvalidateAlertList } from "@/lib/oneview-alert-live-refresh";
+import { createLatestRequestGate } from "@/lib/oneview-latest-request";
 import { formatSnapshotCopyClock } from "@/lib/oneview-snapshot-actions";
 import { useOneViewDashboardLayout } from "@/lib/oneview-dashboard-controller";
 import { useOneViewMetricStrip } from "@/lib/oneview-metric-strip-preferences";
@@ -311,6 +312,7 @@ const ALERTS_METRIC_OPTIONS = [
 /** OV-P0-255 — polling operacional 10s. */
 const SUMMARY_REFRESH_MS = 10_000;
 const ALERTS_REFRESH_MS = 10_000;
+const EMPTY_HISTORY_ITEMS: AlertHistoryItem[] = [];
 const STABLE_SUMMARY_REFRESH_MS = 30_000;
 /** Dez pulsos verdes de 900ms após ACK/resolução comprovados. */
 const ALERTS_SUCCESS_PULSE_DURATION_MS = 9_000;
@@ -1064,7 +1066,8 @@ export default function AlertsPage() {
   const [detailMeta, setDetailMeta] = useState<MetaState>({});
   const [historyMeta, setHistoryMeta] = useState<MetaState>({});
 
-  const alertsRequestRef = useRef<AbortController | null>(null);
+  const [alertsRequestGate] = useState(createLatestRequestGate);
+  const forgottenWaitingRef = useRef(false);
   const healthRef = useRef<OneViewHealthResponse | null>(health);
   healthRef.current = health;
   const alertsRequestIdRef = useRef(0);
@@ -1166,7 +1169,7 @@ export default function AlertsPage() {
   }, [actorId]);
 
   const loadAlerts = useCallback(async (options?: { quiet?: boolean; force?: boolean }) => {
-    if (options?.quiet && !options.force && alertsRequestRef.current && !alertsRequestRef.current.signal.aborted) return;
+    if (alertsRequestGate.shouldSkip(options)) return;
     if (feedbackQueryKeyRef.current !== feedbackQueryKey) {
       feedbackQueryKeyRef.current = feedbackQueryKey;
       freshKnownIdsRef.current = new Set();
@@ -1180,9 +1183,7 @@ export default function AlertsPage() {
       setFreshAttentionIds(new Set());
       setAlertTransitions(new Map());
     }
-    alertsRequestRef.current?.abort();
-    const controller = new AbortController();
-    alertsRequestRef.current = controller;
+    const controller = alertsRequestGate.begin();
     const requestId = ++alertsRequestIdRef.current;
     const searchIntent = alertSearchIntent.current?.value === debouncedSearch ? alertSearchIntent.current : null;
     if (!options?.quiet) {
@@ -1193,9 +1194,11 @@ export default function AlertsPage() {
       const requestTime = Date.now();
       const configuredStale = Number(healthRef.current?.thresholds?.alert_stale_minutes);
       const staleMinutes = Number.isFinite(configuredStale) && configuredStale > 0 ? configuredStale : null;
-      if (alertsView === "forgotten" && staleMinutes == null) {
+      forgottenWaitingRef.current = alertsView === "forgotten" && staleMinutes == null;
+      if (forgottenWaitingRef.current) {
+        // The forgotten window needs the health threshold; the effect below reloads once it arrives.
         if (requestId !== alertsRequestIdRef.current) return;
-        setIsAlertsLoading(Boolean(health == null));
+        if (!options?.quiet) setIsAlertsLoading(true);
         return;
       }
 
@@ -1359,12 +1362,14 @@ export default function AlertsPage() {
       setAlertsMeta(metaOf(safeResponse));
       setHasLoadedAlerts(true);
       setIsAlertsFilling(false);
+      setAlertsError(null);
       alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
     } catch (error) {
       if (controller.signal.aborted || isOneViewAbortError(error)) return;
       setAlertsError("Não foi possível carregar os alertas.");
     } finally {
-      if (requestId === alertsRequestIdRef.current) setIsAlertsLoading(false);
+      alertsRequestGate.finish(controller);
+      if (requestId === alertsRequestIdRef.current && !forgottenWaitingRef.current) setIsAlertsLoading(false);
       if (searchIntent && alertSearchIntent.current?.id === searchIntent.id) {
         alertSearchIntent.current = null;
         setAlertSearchLoading(false);
@@ -1420,7 +1425,7 @@ export default function AlertsPage() {
     return request;
   }, []);
 
-  const loadSelectedAlert = useCallback(async (id: string, options?: { quiet?: boolean; signal?: AbortSignal }) => {
+  const loadSelectedAlert = useCallback(async (id: string, options?: { quiet?: boolean; signal?: AbortSignal; fresh?: boolean }) => {
     if (options?.quiet && detailInFlightRef.current) return null;
     if (!options?.quiet) detailRequestRef.current?.abort();
     const controller = options?.signal ? null : new AbortController();
@@ -1431,9 +1436,10 @@ export default function AlertsPage() {
     detailInFlightRef.current = true;
     if (!options?.quiet) setIsDetailLoading(true);
     try {
+      const readOptions = { fresh: options?.fresh === true };
       const results = await Promise.allSettled([
-        fetchAlert(id, signal),
-        fetchAlertHistory(id, signal),
+        fetchAlert(id, signal, readOptions),
+        fetchAlertHistory(id, signal, readOptions),
       ]);
       if (signal.aborted) return null;
       if (results[0].status === "fulfilled") {
@@ -1482,8 +1488,24 @@ export default function AlertsPage() {
 
   useEffect(() => {
     void loadAlerts();
-    return () => alertsRequestRef.current?.abort();
-  }, [loadAlerts]);
+    return () => alertsRequestGate.abort();
+  }, [alertsRequestGate, loadAlerts]);
+
+  const configuredForgottenMinutes = Number(health?.thresholds?.alert_stale_minutes);
+  const forgottenThresholdReady = Number.isFinite(configuredForgottenMinutes) && configuredForgottenMinutes > 0;
+  useEffect(() => {
+    if (alertsView !== "forgotten" || !forgottenWaitingRef.current) return;
+    if (forgottenThresholdReady) {
+      forgottenWaitingRef.current = false;
+      void loadAlerts();
+      return;
+    }
+    if (!isSummaryLoading && (health != null || summaryError)) {
+      forgottenWaitingRef.current = false;
+      setIsAlertsLoading(false);
+      setAlertsError("Não foi possível determinar o limite de alertas esquecidos.");
+    }
+  }, [alertsView, forgottenThresholdReady, health, isSummaryLoading, loadAlerts, summaryError]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1541,9 +1563,9 @@ export default function AlertsPage() {
   }, [alertTransitions]);
 
   useEffect(() => () => {
-    alertsRequestRef.current?.abort();
+    alertsRequestGate.abort();
     detailRequestRef.current?.abort();
-  }, []);
+  }, [alertsRequestGate]);
 
   const baseMetas = [alertsMeta, metricsMeta, healthMeta, sourcesMeta, facetsMeta, operationsMeta];
   const primaryMetas = [alertsMeta, metricsMeta];
@@ -1808,11 +1830,13 @@ export default function AlertsPage() {
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
-  const selectedAlert = detail?.item ?? selectedPreview;
+  // Detail/history of the previously opened alert stay in state until the new ones arrive.
+  const selectedAlert = (detail?.item && detail.item.id === selectedAlertId ? detail.item : null) ?? selectedPreview;
+  const selectedHistoryItems = history && history.alert_id === selectedAlertId ? history.items : EMPTY_HISTORY_ITEMS;
   useAlertDrawerLiveRefresh({
     alertId: selectedAlertId,
     alert: selectedAlert,
-    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    refresh: (id, signal, fresh) => loadSelectedAlert(id, { quiet: true, signal, fresh }),
     onTransition: (transition) => {
       if (!shouldInvalidateAlertList(transition)) return;
       invalidateOneViewReadCache("/oneview/alerts");
@@ -1821,7 +1845,7 @@ export default function AlertsPage() {
   });
   const selectedCustomer = selectedAlert ? customerPresentation(selectedAlert) : null;
   const selectedClassificationTags = selectedAlert ? safeClassificationTags(selectedAlert) : [];
-  const groupedHistory = useMemo(() => groupHistoryItems(history?.items ?? []), [history?.items]);
+  const groupedHistory = useMemo(() => groupHistoryItems(selectedHistoryItems), [selectedHistoryItems]);
   const v1HistoryGroups = useMemo(
     () => groupedHistory.filter((group) => group.primary.event_type !== "internal_acknowledged" && group.primary.origin !== "oneview_internal"),
     [groupedHistory],
@@ -1833,7 +1857,7 @@ export default function AlertsPage() {
   const visibleHistoryItems = visibleHistoryGroups.flatMap((group) => group.items);
   const firstHistoryEventAt = visibleHistoryItems.at(-1)?.occurred_at ?? null;
   const lastHistoryEventAt = visibleHistoryItems[0]?.occurred_at ?? null;
-  const historyHasRecovery = history?.has_recovery ?? (history?.items ?? []).some((item) => /recovered|recovery|resolved|normaliz/i.test(item.event_type));
+  const historyHasRecovery = (history?.alert_id === selectedAlertId ? history?.has_recovery : undefined) ?? selectedHistoryItems.some((item) => /recovered|recovery|resolved|normaliz/i.test(item.event_type));
   const acknowledgementGroups = v1HistoryGroups.filter((group) => isAcknowledgementEvent(group.primary.event_type) && historyOrigin(group.primary) === "Zabbix");
   const historyHasAck = acknowledgementGroups.length > 0;
   const acknowledgementActors = [...new Set(acknowledgementGroups
@@ -2615,12 +2639,9 @@ export default function AlertsPage() {
                             onActionComplete={() => void loadAlerts({ quiet: true })}
                           />
                         ) : null}
-                        <AlertSourceAckAction
+                        <AlertSourceAckRowAction
                           alert={alert}
-                          variant="icon"
-                          livePollEnabled={selectedAlertId !== alert.id}
-                          onRequestAccepted={handleSourceAckRequestAccepted}
-                          onAcknowledged={handleSourceAcknowledged}
+                          onOpenDetail={openAlert}
                           liveStateUnavailable={alertsAreCopy}
                         />
                         <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
@@ -2673,7 +2694,7 @@ export default function AlertsPage() {
         open={selectedAlertId !== null}
         onOpenChange={(next) => { if (!next) closeAlert(); }}
         alert={selectedAlert}
-        historyItems={history?.items ?? []}
+        historyItems={selectedHistoryItems}
         isLoading={isDetailLoading}
         error={detailError || historyLoadError}
         description={alertsAreCopy ? "Cópia do alerta. Não é o estado operacional atual." : "Informações operacionais seguras e histórico do OneView."}

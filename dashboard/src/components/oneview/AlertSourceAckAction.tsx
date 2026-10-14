@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Clock, Loader2, Minus } from "lucide-react";
 import { toast } from "sonner";
 import { OneViewButton } from "@/components/oneview/OneViewDesignSystem";
 import { canonicalHostName, operationalClientLabel } from "@/components/oneview/ClientIdentity";
@@ -24,14 +24,18 @@ import {
 } from "@/lib/oneview-api";
 import { SNAPSHOT_MUTATION_UNAVAILABLE_REASON } from "@/lib/oneview-snapshot-actions";
 import {
+  reconcileSourceAckSubmission,
   sourceAckCanOpen,
   sourceAckIsPending,
+  sourceAckRowControl,
   sourceAckUnavailableReason,
   sourceAckTerminalMessage,
-  sourceAckTerminalStatus,
   sourceAckTooltip,
   sourceAckVisualState,
+  startSourceAckSubmission,
   type AlertSourceAckPhase,
+  type SourceAckSubmission,
+  type SourceAckSubmissionOutcome,
   type SourceAckTerminalStatus,
 } from "@/lib/oneview-alert-source-ack";
 
@@ -40,6 +44,24 @@ export const SOURCE_ACK_POLL_INTERVAL_MS = 2_000;
 export const SOURCE_ACK_POLL_TIMEOUT_MS = 45_000;
 export const SOURCE_ACK_ACCESS_TIMEOUT_MS = 10_000;
 export const SOURCE_ACK_ACCESS_MAX_POLLS = 10;
+export const SOURCE_ACK_RESOLVED_MESSAGE = "O alerta foi resolvido na origem antes da confirmação do reconhecimento.";
+export const SOURCE_ACK_TIMEOUT_MESSAGE = "Reconhecimento ainda aguardando confirmação da origem.";
+
+type SourceAckNotice = { alertId: string; tone: "success" | "error" | "info"; message: string };
+
+function newAttemptKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return `ack-${crypto.randomUUID()}`;
+  return `ack-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function outcomeNotice(alertId: string, outcome: SourceAckSubmissionOutcome): SourceAckNotice | null {
+  if (outcome.kind === "settled") {
+    return { alertId, tone: outcome.status === "confirmed" ? "success" : "error", message: sourceAckTerminalMessage(outcome.status) };
+  }
+  if (outcome.kind === "resolved") return { alertId, tone: "info", message: SOURCE_ACK_RESOLVED_MESSAGE };
+  if (outcome.kind === "timeout") return { alertId, tone: "info", message: SOURCE_ACK_TIMEOUT_MESSAGE };
+  return null;
+}
 
 type Props = {
   alert: OneViewAlert;
@@ -47,7 +69,10 @@ type Props = {
   buttonLabel?: string;
   waitingLabel?: string;
   className?: string;
-  /** When false, the parent drawer owns the 2s fetchAlert poll. */
+  /**
+   * When false, the parent must keep `alert` fresh while an ACK is in flight
+   * (the drawer does it through useAlertDrawerLiveRefresh).
+   */
   livePollEnabled?: boolean;
   onRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
   onAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
@@ -78,18 +103,39 @@ export function AlertSourceAckAction({
   liveStateUnavailable = false,
   probeEnabled = false,
 }: Props) {
+  const [scopeAlertId, setScopeAlertId] = useState(alert.id);
   const [phase, setPhase] = useState<AlertSourceAckPhase>("idle");
   const [comment, setComment] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [enqueued, setEnqueued] = useState(false);
-  const [polling, setPolling] = useState(false);
-  const [observedAlert, setObservedAlert] = useState<OneViewAlert | null>(null);
+  const [attemptKey, setAttemptKey] = useState<string | null>(null);
+  const [submission, setSubmission] = useState<SourceAckSubmission | null>(null);
+  const [polledAlert, setPolledAlert] = useState<OneViewAlert | null>(null);
+  const [notice, setNotice] = useState<SourceAckNotice | null>(null);
   const [actorAckAccess, setActorAckAccess] = useState<true | false | "unknown">("unknown");
   const [actorAckReason, setActorAckReason] = useState<string | null>(null);
   const [probeGeneration, setProbeGeneration] = useState(0);
+  const [timeoutTick, setTimeoutTick] = useState(0);
+  const submittingRef = useRef(false);
   const onAcknowledgedRef = useRef(onAcknowledged);
   useEffect(() => { onAcknowledgedRef.current = onAcknowledged; }, [onAcknowledged]);
-  const currentAlert = observedAlert?.id === alert.id ? observedAlert : alert;
+
+  // Same instance reused for another alert: drop everything tied to the previous one before rendering.
+  if (scopeAlertId !== alert.id) {
+    setScopeAlertId(alert.id);
+    setPhase("idle");
+    setComment("");
+    setError(null);
+    setAttemptKey(null);
+    setSubmission(null);
+    setPolledAlert(null);
+    setNotice(null);
+    setActorAckAccess("unknown");
+    setActorAckReason(null);
+  }
+
+  const activeSubmission = submission?.alertId === alert.id ? submission : null;
+  const currentAlert = activeSubmission && livePollEnabled && polledAlert?.id === alert.id ? polledAlert : alert;
+  const visibleNotice = notice?.alertId === alert.id ? notice : null;
   const shouldProbe = probeEnabled
     && !liveStateUnavailable
     && currentAlert.source_ack_supported === true
@@ -140,8 +186,61 @@ export function AlertSourceAckAction({
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, [alert.id, probeGeneration, shouldProbe]);
+
+  // Standalone use only: the drawer passes livePollEnabled={false} and feeds `alert` from its own poll.
+  useEffect(() => {
+    if (!activeSubmission || !livePollEnabled) return undefined;
+    const controller = new AbortController();
+    let inFlight = false;
+    const timer = window.setInterval(async () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
+      try {
+        const response = await fetchAlert(alert.id, controller.signal, { fresh: true });
+        if (!controller.signal.aborted) setPolledAlert(response.item);
+      } catch {
+        // Falha transitória no refetch isolado não interrompe a confirmação.
+      } finally {
+        inFlight = false;
+      }
+    }, SOURCE_ACK_POLL_INTERVAL_MS);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [activeSubmission, alert.id, livePollEnabled]);
+
+  useEffect(() => {
+    if (!activeSubmission) return undefined;
+    const outcome = reconcileSourceAckSubmission(activeSubmission, currentAlert, Date.now(), SOURCE_ACK_POLL_TIMEOUT_MS);
+    if (outcome.kind === "waiting") {
+      const remaining = activeSubmission.startedAt + SOURCE_ACK_POLL_TIMEOUT_MS - Date.now();
+      const timer = window.setTimeout(() => setTimeoutTick((value) => value + 1), Math.max(0, remaining) + 50);
+      return () => window.clearTimeout(timer);
+    }
+    setSubmission(null);
+    setPolledAlert(null);
+    const nextNotice = outcomeNotice(activeSubmission.alertId, outcome);
+    setNotice(nextNotice);
+    // An uncertain timeout must keep the original key. Rotate only after the
+    // read model proves a terminal outcome (or the alert itself is resolved).
+    if (outcome.kind === "settled" || outcome.kind === "resolved") setAttemptKey(null);
+    if (nextNotice?.tone === "success") toast.success(nextNotice.message);
+    else if (nextNotice?.tone === "error") toast.error(nextNotice.message);
+    else if (nextNotice) toast.message(nextNotice.message);
+    if (outcome.kind === "settled" && outcome.status !== "confirmed") {
+      // Revalidate delegated access before offering a retry.
+      setProbeGeneration((value) => value + 1);
+    }
+    const terminal: SourceAckTerminalStatus | null = outcome.kind === "settled"
+      ? outcome.status
+      : outcome.kind === "resolved" ? "cancelled" : null;
+    if (terminal) void Promise.resolve(onAcknowledgedRef.current?.(currentAlert, terminal)).catch(() => undefined);
+    return undefined;
+  }, [activeSubmission, currentAlert, timeoutTick]);
+
   const visual = sourceAckVisualState(currentAlert);
-  const waitingForOrigin = enqueued || sourceAckIsPending(currentAlert);
+  const waitingForOrigin = Boolean(activeSubmission) || sourceAckIsPending(currentAlert);
   const accessMessage = actorAckReason === "operator_event_access_denied"
     ? "Seu usuário Zabbix não possui acesso a este alerta."
     : actorAckReason === "operator_not_found_in_zabbix"
@@ -162,9 +261,13 @@ export function AlertSourceAckAction({
       : shouldProbe && actorAckAccess === "unknown"
         ? "Verificando acesso do usuário Zabbix..."
         : accessMessage ?? sourceAckTooltip(currentAlert);
-  const canOpen = !liveStateUnavailable && sourceAckCanOpen(currentAlert) && actorAckAccess === true && !enqueued;
-  const probeFailed = actorAckReason === "source_ack_access_unavailable";
   const submitting = phase === "submitting";
+  const canOpen = !liveStateUnavailable
+    && sourceAckCanOpen(currentAlert)
+    && actorAckAccess === true
+    && !activeSubmission
+    && !waitingForOrigin;
+  const probeFailed = actorAckReason === "source_ack_access_unavailable";
   const confirming = phase === "confirming" || phase === "submitting" || phase === "error";
   const unavailableReason = sourceAckUnavailableReason(currentAlert);
   const ariaLabel = liveStateUnavailable
@@ -181,6 +284,8 @@ export function AlertSourceAckAction({
     if (!canOpen || submitting) return;
     setError(null);
     setComment("");
+    setNotice(null);
+    setAttemptKey((current) => current ?? newAttemptKey());
     setPhase("confirming");
   }
 
@@ -190,67 +295,26 @@ export function AlertSourceAckAction({
       setPhase("idle");
       setComment("");
       setError(null);
+      // Preserve an attempted key across an ambiguous HTTP/network failure.
+      // A confirmation cancelled before POST has no attempt to preserve.
+      if (phase !== "error") setAttemptKey(null);
     }
   }
 
-  useEffect(() => {
-    if (!polling || !livePollEnabled) return undefined;
-    const controller = new AbortController();
-    const startedAt = Date.now();
-    let stopped = false;
-    const stop = () => {
-      stopped = true;
-      controller.abort();
-      setPolling(false);
-    };
-    const poll = async () => {
-      if (stopped || controller.signal.aborted) return;
-      try {
-        const response = await fetchAlert(alert.id, controller.signal);
-        if (stopped || controller.signal.aborted) return;
-        const refreshed = response.item;
-        setObservedAlert(refreshed);
-        const terminal = sourceAckTerminalStatus(refreshed);
-        if (terminal) {
-          stop();
-          setEnqueued(false);
-          if (terminal === "confirmed") toast.success(sourceAckTerminalMessage(terminal));
-          else toast.error(sourceAckTerminalMessage(terminal));
-          await onAcknowledgedRef.current?.(refreshed, terminal);
-          return;
-        }
-        if (!sourceAckIsPending(refreshed)) {
-          stop();
-          setEnqueued(false);
-          setObservedAlert(null);
-          return;
-        }
-        if (Date.now() - startedAt >= SOURCE_ACK_POLL_TIMEOUT_MS) {
-          stop();
-          setEnqueued(false);
-          setObservedAlert(null);
-          toast.message("Reconhecimento ainda aguardando confirmação da origem.");
-        }
-      } catch {
-        // Falha transitória no refetch isolado não interrompe a confirmação.
-      }
-    };
-    const timer = window.setInterval(() => void poll(), SOURCE_ACK_POLL_INTERVAL_MS);
-    return () => {
-      stopped = true;
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [alert.id, livePollEnabled, polling]);
-
   async function submitExternalAck() {
-    if (liveStateUnavailable || !canOpen || submitting || currentAlert.source_ack_available !== true || actorAckAccess !== true) return;
+    if (liveStateUnavailable || !canOpen || submitting || currentAlert.source_ack_available !== true) return;
+    if (actorAckAccess !== true || submittingRef.current) return;
     const sourceEventId = String(alert.source_event_id || "").trim();
     if (!sourceEventId) {
       setPhase("error");
       setError("Event ID indisponível para reconhecimento no Zabbix.");
       return;
     }
+    // Retries inside the same confirmation reuse the key, so a POST that landed but timed out is not duplicated.
+    const idempotencyKey = attemptKey ?? newAttemptKey();
+    if (!attemptKey) setAttemptKey(idempotencyKey);
+    const baseline = startSourceAckSubmission(currentAlert, Date.now());
+    submittingRef.current = true;
     setPhase("submitting");
     setError(null);
     try {
@@ -258,33 +322,26 @@ export function AlertSourceAckAction({
         alertId: alert.id,
         sourceEventId,
         comment: comment.trim() || undefined,
+        idempotencyKey,
       });
       const accepted = result.status === "pending" && !result.acknowledged_source;
-      setEnqueued(accepted);
-      setPolling(accepted);
-      setObservedAlert(accepted ? {
-        ...alert,
-        source_ack_status: "pending",
-        oneview_ack: {
-          status: "pending",
-          requested_at: new Date().toISOString(),
-          processed_at: null,
-          actor_name: result.actor_name || null,
-          reason: null,
-          message: null,
-        },
-      } : alert);
-      setPhase("success");
-      if (accepted) toast.success(SOURCE_ACK_SUCCESS_TOAST);
-      else toast.success("Reconhecido");
+      setSubmission(accepted ? { ...baseline, startedAt: Date.now() } : null);
+      setPolledAlert(null);
+      setPhase("idle");
+      setComment("");
+      if (accepted) {
+        toast.success(SOURCE_ACK_SUCCESS_TOAST);
+      } else {
+        setAttemptKey(null);
+        setNotice({ alertId: alert.id, tone: "success", message: sourceAckTerminalMessage("confirmed") });
+        toast.success("Reconhecido");
+      }
       try {
         await onRequestAccepted?.(alert, result);
         if (!accepted) await onAcknowledged?.(alert, "confirmed");
       } catch {
-        // ACK externo já confirmado; falha de refresh não assume erro de reconhecimento.
+        // ACK externo já aceito; falha de refresh não assume erro de reconhecimento.
       }
-      setPhase("idle");
-      setComment("");
     } catch (caught) {
       const message = caught instanceof Error
         ? caught.message
@@ -292,6 +349,8 @@ export function AlertSourceAckAction({
       setPhase("error");
       setError(message);
       toast.error(message);
+    } finally {
+      submittingRef.current = false;
     }
   }
 
@@ -309,13 +368,13 @@ export function AlertSourceAckAction({
       aria-label={waitingForOrigin ? waitingLabel : ariaLabel}
       aria-disabled={!canOpen || submitting || waitingForOrigin}
       data-source-ack-state={visual}
-      data-source-ack-phase={phase}
+      data-source-ack-phase={activeSubmission ? "waiting" : phase}
       onClick={(event) => {
         event.stopPropagation();
         openConfirm();
       }}
     >
-      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+      {submitting || activeSubmission ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
       {variant === "button" ? <span>{waitingForOrigin ? waitingLabel : buttonLabel}</span> : <span className="sr-only">{waitingForOrigin ? waitingLabel : ariaLabel}</span>}
     </OneViewButton>
   );
@@ -331,6 +390,18 @@ export function AlertSourceAckAction({
           </TooltipTrigger>
           <TooltipContent>{tooltip}</TooltipContent>
         </Tooltip>
+        {visibleNotice && !waitingForOrigin ? (
+          <p
+            className={cn(
+              "text-xs",
+              visibleNotice.tone === "error" ? "text-destructive" : visibleNotice.tone === "success" ? "text-emerald-600" : "text-muted-foreground",
+            )}
+            role={visibleNotice.tone === "error" ? "alert" : "status"}
+            data-source-ack-notice={visibleNotice.tone}
+          >
+            {visibleNotice.message}
+          </p>
+        ) : null}
         {probeFailed ? (
           <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
             <span>Não foi possível validar o acesso no Zabbix.</span>
@@ -392,5 +463,66 @@ export function AlertSourceAckAction({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+type RowProps = {
+  alert: OneViewAlert;
+  /** Opens this alert's drawer, where access is probed and the ACK is confirmed. */
+  onOpenDetail: (alert: OneViewAlert) => void;
+  liveStateUnavailable?: boolean;
+  className?: string;
+};
+
+/** Table cell: never probes or POSTs. Actionable alerts open the drawer; otherwise it only shows state. */
+export function AlertSourceAckRowAction({ alert, onOpenDetail, liveStateUnavailable = false, className }: RowProps) {
+  const control = sourceAckRowControl(alert, liveStateUnavailable);
+  if (control.kind === "open-detail") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <OneViewButton
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn("ov-control-official-compact h-7 min-h-7 w-7 px-0", className)}
+            aria-label={control.label}
+            data-source-ack-row="open-detail"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenDetail(alert);
+            }}
+          >
+            <Check className="h-4 w-4" />
+            <span className="sr-only">{control.label}</span>
+          </OneViewButton>
+        </TooltipTrigger>
+        <TooltipContent>{control.label}</TooltipContent>
+      </Tooltip>
+    );
+  }
+  const unavailable = liveStateUnavailable && control.tone === "muted" && sourceAckVisualState(alert) === "pending";
+  const label = unavailable ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON : control.label;
+  const Icon = control.tone === "success" ? Check : control.tone === "waiting" ? Clock : Minus;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          role="img"
+          tabIndex={0}
+          aria-label={label}
+          data-source-ack-row={control.tone}
+          className={cn(
+            "inline-flex h-7 w-7 items-center justify-center rounded-md",
+            control.tone === "success" ? "text-emerald-600" : control.tone === "waiting" ? "text-amber-600" : "text-muted-foreground/60",
+            className,
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Icon className="h-4 w-4" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }

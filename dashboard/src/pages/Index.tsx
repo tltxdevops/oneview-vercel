@@ -11,7 +11,7 @@ import {
   operationalClientLabel,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
-import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
+import { AlertSourceAckRowAction } from "@/components/oneview/AlertSourceAckAction";
 import { ClientFilterCombobox, type ClientFilterOption } from "@/components/oneview/ClientFilterCombobox";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -468,20 +468,14 @@ function HomeAlertRow({
   columns,
   gridTemplate,
   selected = false,
-  selectedAlertId = null,
   transition,
-  onSourceAckRequestAccepted,
-  onSourceAcknowledged,
 }: {
   alert: OneViewAlert;
   onOpen: (alert: OneViewAlert) => void;
   columns: readonly HomeAlertColumnId[];
   gridTemplate: string;
   selected?: boolean;
-  selectedAlertId?: string | null;
   transition?: LiveTransition;
-  onSourceAckRequestAccepted: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void;
-  onSourceAcknowledged: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
 }) {
   const originAck = sourceAckRowKind(alert);
   const clientLabel = operationalClientLabel({
@@ -514,13 +508,10 @@ function HomeAlertRow({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
-        <AlertSourceAckAction
+        <AlertSourceAckRowAction
           alert={alert}
-          variant="icon"
-          livePollEnabled={selectedAlertId !== alert.id}
+          onOpenDetail={onOpen}
           className="h-7 min-h-7 w-7 p-0"
-          onRequestAccepted={onSourceAckRequestAccepted}
-          onAcknowledged={onSourceAcknowledged}
         />
       </span>
     ),
@@ -1068,7 +1059,7 @@ export default function Index() {
     homeRange.from,
     homeRange.to,
   ]);
-  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal }) => {
+  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal; fresh?: boolean }) => {
     if (options?.quiet && detailInFlightRef.current) return null;
     if (!options?.quiet) detailRequest.current?.abort();
     const controller = options?.signal ? null : new AbortController();
@@ -1082,9 +1073,10 @@ export default function Index() {
       setDetailError(null);
     }
     try {
+      const readOptions = { fresh: options?.fresh === true };
       const results = await Promise.allSettled([
-        fetchAlert(alertId, signal),
-        fetchAlertHistory(alertId, signal),
+        fetchAlert(alertId, signal, readOptions),
+        fetchAlertHistory(alertId, signal, readOptions),
       ]);
       if (signal.aborted) return null;
       const errors: string[] = [];
@@ -1170,6 +1162,7 @@ export default function Index() {
   const handleSourceAcknowledged = useCallback(async (alert: OneViewAlert, _status: SourceAckTerminalStatus) => {
     invalidateOneViewReadCache("/oneview/alerts");
     invalidateOneViewReadCache(`/oneview/alerts/${alert.id}`);
+    invalidateOneViewReadCache(`/oneview/alerts/${alert.id}/history`);
     await Promise.all([
       loadCriticalHomeAlerts(),
       selectedAlertId === alert.id ? loadSelectedAlert(alert.id) : Promise.resolve(),
@@ -1258,18 +1251,19 @@ export default function Index() {
   }, []);
 
   const lastCheckedAt = latestCheckedAt(...metas.map((meta) => meta.checkedAt), listsMeta.checkedAt);
-  const selectedAlert = detail?.item ?? selectedPreview;
+  // Detail/history of the previously opened alert stay in state until the new ones arrive.
+  const selectedAlert = (detail?.item && detail.item.id === selectedAlertId ? detail.item : null) ?? selectedPreview;
   useAlertDrawerLiveRefresh({
     alertId: selectedAlertId,
     alert: selectedAlert,
-    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    refresh: (id, signal, fresh) => loadSelectedAlert(id, { quiet: true, signal, fresh }),
     onTransition: (transition) => {
       if (!shouldInvalidateAlertList(transition)) return;
       invalidateOneViewReadCache("/oneview/alerts");
       void loadCriticalHomeAlerts();
     },
   });
-  const historyItems = (history?.items ?? []).filter((item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal");
+  const historyItems = (history && history.alert_id === selectedAlertId ? history.items : []).filter((item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal");
   const showInitialLoading = (isSummaryLoading && !hasSummaryRef.current)
     || (sectionLoading.alerts && !homeAlerts.length);
   const showIncidentAnalysts = incidentsMode !== INCIDENTS_QUEUE_MODE.unassigned;
@@ -1638,10 +1632,7 @@ export default function Index() {
                       columns={homeAlertColumnIds}
                       gridTemplate={homeAlertGrid}
                       selected={selectedAlertId === alert.id}
-                      selectedAlertId={selectedAlertId}
                       transition={homeAlertTransitions.get(alert.id)}
-                      onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
-                      onSourceAcknowledged={handleSourceAcknowledged}
                     />
                   ))}
                 </div>

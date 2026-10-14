@@ -9,7 +9,7 @@ test("OV-P0-325: UI envia ACK e não o confirma localmente", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
   const drawer = await read("src/components/oneview/AlertDetailDrawer.tsx");
   const action = await read("src/components/oneview/AlertSourceAckAction.tsx");
-  assert.match(alerts, /<AlertSourceAckAction\s+alert=\{alert\}\s+variant="icon"/);
+  assert.match(alerts, /<AlertSourceAckRowAction\s+alert=\{alert\}\s+onOpenDetail=\{openAlert\}/);
   assert.match(drawer, /<AlertSourceAckAction[\s\S]*variant="button"/);
   assert.match(action, /Reconhecimento enviado ao Zabbix/);
   assert.match(action, /const accepted = result\.status === "pending" && !result\.acknowledged_source/);
@@ -25,8 +25,8 @@ test("OV-P0-325: polling ACK Ã© isolado, terminal e sem refresh global", async
 
   assert.match(action, /SOURCE_ACK_POLL_INTERVAL_MS = 2_000/);
   assert.match(action, /SOURCE_ACK_POLL_TIMEOUT_MS = 45_000/);
-  assert.match(action, /fetchAlert\(alert\.id, controller\.signal\)/);
-  assert.match(action, /sourceAckTerminalStatus\(refreshed\)/);
+  assert.match(action, /fetchAlert\(alert\.id, controller\.signal, \{ fresh: true \}\)/);
+  assert.match(action, /reconcileSourceAckSubmission\(activeSubmission, currentAlert, Date\.now\(\), SOURCE_ACK_POLL_TIMEOUT_MS\)/);
   assert.match(action, /Aguardando confirma..o da origem/);
   assert.match(action, /Reconhecido/);
   assert.match(action, /window\.clearInterval\(timer\)/);

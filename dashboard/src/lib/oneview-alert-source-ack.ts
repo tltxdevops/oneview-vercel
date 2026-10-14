@@ -119,3 +119,57 @@ export function sourceAckCanOpen(alert: OneViewAlert | null | undefined): boolea
   if (sourceAckUnavailableReason(alert)) return false;
   return sourceAckVisualState(alert) === "pending" && !sourceAckIsPending(alert);
 }
+
+export const SOURCE_ACK_SUBMISSION_TIMEOUT_MS = 45_000;
+
+/** One accepted ACK POST, tracked until the read model shows its outcome. */
+export type SourceAckSubmission = {
+  alertId: string;
+  /** `oneview_ack.requested_at` before the POST: a terminal status with this timestamp belongs to an older attempt. */
+  baselineRequestedAt: string | null;
+  startedAt: number;
+};
+
+export type SourceAckSubmissionOutcome =
+  | { kind: "waiting" }
+  | { kind: "settled"; status: SourceAckTerminalStatus }
+  | { kind: "resolved" }
+  | { kind: "timeout" }
+  | { kind: "stale" };
+
+export function startSourceAckSubmission(alert: OneViewAlert, now: number): SourceAckSubmission {
+  return { alertId: alert.id, baselineRequestedAt: alert.oneview_ack?.requested_at ?? null, startedAt: now };
+}
+
+export function reconcileSourceAckSubmission(
+  submission: SourceAckSubmission,
+  alert: OneViewAlert | null | undefined,
+  now: number,
+  timeoutMs = SOURCE_ACK_SUBMISSION_TIMEOUT_MS,
+): SourceAckSubmissionOutcome {
+  if (!alert || alert.id !== submission.alertId) return { kind: "stale" };
+  if (alert.acknowledged_source || alert.source_ack?.acknowledged) return { kind: "settled", status: "confirmed" };
+  const requestedAt = alert.oneview_ack?.requested_at ?? null;
+  if (requestedAt && requestedAt !== submission.baselineRequestedAt) {
+    const status = String(alert.oneview_ack?.status || "");
+    if (status === "success") return { kind: "settled", status: "confirmed" };
+    if (status === "failed" || status === "cancelled") return { kind: "settled", status };
+  }
+  if (isSourceResolvedAlert(alert)) return { kind: "resolved" };
+  if (now - submission.startedAt >= timeoutMs) return { kind: "timeout" };
+  return { kind: "waiting" };
+}
+
+export type SourceAckRowControl =
+  | { kind: "open-detail"; label: string }
+  | { kind: "status"; label: string; tone: "success" | "waiting" | "muted" };
+
+/** Row icon never probes or POSTs: an actionable alert opens the drawer, otherwise it only reports state. */
+export function sourceAckRowControl(alert: OneViewAlert | null | undefined, liveStateUnavailable = false): SourceAckRowControl {
+  const state = sourceAckVisualState(alert);
+  if (state === "resolved") return { kind: "status", label: "Alerta já resolvido", tone: "muted" };
+  if (state === "acknowledged") return { kind: "status", label: sourceAckTooltip(alert), tone: "success" };
+  if (sourceAckIsPending(alert)) return { kind: "status", label: "Aguardando confirmação da origem", tone: "waiting" };
+  if (!liveStateUnavailable && sourceAckCanOpen(alert)) return { kind: "open-detail", label: "Abrir detalhe para reconhecer" };
+  return { kind: "status", label: sourceAckUnavailableReason(alert) || "Reconhecimento indisponível", tone: "muted" };
+}

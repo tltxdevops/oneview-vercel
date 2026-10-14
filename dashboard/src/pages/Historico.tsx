@@ -806,7 +806,7 @@ export default function HistoricoPage() {
     };
   }, [loadAlerts, loadEvents, tab]);
 
-  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal; preview?: OneViewAlert | null }) => {
+  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal; preview?: OneViewAlert | null; fresh?: boolean }) => {
     if (options?.quiet && detailInFlightRef.current) return null;
     if (!options?.quiet) detailRequestRef.current?.abort();
     const controller = options?.signal ? null : new AbortController();
@@ -821,9 +821,10 @@ export default function HistoricoPage() {
       setDetailError(null);
     }
     try {
+      const readOptions = { fresh: options?.fresh === true };
       const results = await Promise.allSettled([
-        fetchAlert(alertId, signal),
-        fetchAlertHistory(alertId, signal),
+        fetchAlert(alertId, signal, readOptions),
+        fetchAlertHistory(alertId, signal, readOptions),
       ]);
       if (signal.aborted) return null;
       if (results[0].status === "fulfilled") setDetail(results[0].value.item);
@@ -851,7 +852,8 @@ export default function HistoricoPage() {
       return;
     }
     const preview = alertItems.find((item) => item.id === selectedAlertId) || null;
-    if (preview) setDetail((current) => current?.id === selectedAlertId ? current : preview);
+    setDetail((current) => current?.id === selectedAlertId ? current : preview);
+    if (detail?.id !== selectedAlertId) setDetailHistory([]);
     void loadSelectedAlert(selectedAlertId, { preview });
     return () => detailRequestRef.current?.abort();
     // OV-P0-108 — não re-fetch em refresh da tabela (alertItems); só quando o alert ID muda.
@@ -860,7 +862,7 @@ export default function HistoricoPage() {
   useAlertDrawerLiveRefresh({
     alertId: selectedAlertId,
     alert: detail,
-    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    refresh: (id, signal, fresh) => loadSelectedAlert(id, { quiet: true, signal, fresh }),
     onTransition: (transition) => {
       if (!shouldInvalidateAlertList(transition)) return;
       invalidateOneViewReadCache("/oneview/alerts");

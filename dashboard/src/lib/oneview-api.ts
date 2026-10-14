@@ -483,6 +483,8 @@ export interface AcknowledgeAlertInput {
   alertId: string;
   sourceEventId: string;
   comment?: string;
+  /** One key per confirmation; without it the BFF dedupes by alert+actor+comment and a retry replays the failed attempt. */
+  idempotencyKey?: string;
 }
 
 export interface AcknowledgeAlertResponse {
@@ -1272,12 +1274,27 @@ export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertList
   return fetchApi<AlertListResponse>(oneViewAlertsPath(params), { signal: params?.signal });
 }
 
-export async function fetchAlert(id: string, signal?: AbortSignal): Promise<AlertDetailResponse> {
-  return fetchApi<AlertDetailResponse>(`/oneview/alerts/${encodeURIComponent(id)}`, { signal });
+export type AlertReadOptions = { fresh?: boolean };
+
+/** `fresh` skips the 8s read cache and stores the server answer, so other readers stop seeing the pre-ACK copy. */
+export async function fetchAlert(id: string, signal?: AbortSignal, options?: AlertReadOptions): Promise<AlertDetailResponse> {
+  const path = `/oneview/alerts/${encodeURIComponent(id)}`;
+  if (options?.fresh) invalidateOneViewReadCache(path);
+  return fetchApi<AlertDetailResponse>(path, { signal });
 }
 
-export async function fetchAlertHistory(id: string, signal?: AbortSignal): Promise<AlertHistoryResponse> {
-  return fetchApi<AlertHistoryResponse>(`/oneview/alerts/${encodeURIComponent(id)}/history`, { signal });
+export async function fetchAlertHistory(id: string, signal?: AbortSignal, options?: AlertReadOptions): Promise<AlertHistoryResponse> {
+  const path = `/oneview/alerts/${encodeURIComponent(id)}/history`;
+  if (options?.fresh) invalidateOneViewReadCache(path);
+  return fetchApi<AlertHistoryResponse>(path, { signal });
+}
+
+/** List, detail and history of one alert. The generic post-mutation invalidation only reaches one of them. */
+export function invalidateAlertReadCache(alertId: string) {
+  const path = `/oneview/alerts/${encodeURIComponent(alertId)}`;
+  invalidateOneViewReadCache("/oneview/alerts");
+  invalidateOneViewReadCache(path);
+  invalidateOneViewReadCache(`${path}/history`);
 }
 
 export async function fetchGlobalHistory(params?: {
@@ -2820,17 +2837,20 @@ export async function acknowledgeAlert({
   alertId,
   sourceEventId,
   comment,
+  idempotencyKey,
 }: AcknowledgeAlertInput): Promise<AcknowledgeAlertResponse> {
   const payload = await fetchApi<AcknowledgeAlertResponse>(
     `/oneview/alerts/${encodeURIComponent(alertId)}/source-acknowledge`,
     {
       method: "POST",
+      ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
       body: JSON.stringify({
         source_event_id: sourceEventId,
         ...(comment?.trim() ? { comment: comment.trim() } : {}),
       }),
     },
   );
+  invalidateAlertReadCache(alertId);
   return payload;
 }
 

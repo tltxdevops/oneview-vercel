@@ -74,7 +74,7 @@ test("Alertas keeps claim, source ACK and details as fixed quick actions and ful
 
   assert.match(alerts, /const ALERT_QUICK_INCIDENT_ACTIONS = \["claim"\] as const/);
   assert.match(alerts, /visibleActions=\{ALERT_QUICK_INCIDENT_ACTIONS\}/);
-  assert.match(alerts, /<AlertSourceAckAction/);
+  assert.match(alerts, /<AlertSourceAckRowAction/);
   assert.match(alerts, /aria-label="Ver detalhes"/);
   assert.doesNotMatch(alerts, /<AlertTableActionPicker/);
   assert.doesNotMatch(alerts, /<AlertOperatorLinkControls/);

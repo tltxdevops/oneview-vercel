@@ -1225,7 +1225,7 @@ export default function MonitoringPage() {
     return () => window.clearInterval(timer);
   }, [alertTransitions, incidentTransitions]);
 
-  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal }) => {
+  const loadSelectedAlert = useCallback(async (alertId: string, options?: { quiet?: boolean; signal?: AbortSignal; fresh?: boolean }) => {
     if (options?.quiet && detailInFlightRef.current) return null;
     if (!options?.quiet) detailRequest.current?.abort();
     const controller = options?.signal ? null : new AbortController();
@@ -1239,9 +1239,10 @@ export default function MonitoringPage() {
       setDetailError(null);
     }
     try {
+      const readOptions = { fresh: options?.fresh === true };
       const results = await Promise.allSettled([
-        fetchAlert(alertId, signal),
-        fetchAlertHistory(alertId, signal),
+        fetchAlert(alertId, signal, readOptions),
+        fetchAlertHistory(alertId, signal, readOptions),
       ]);
       if (signal.aborted) return null;
       const errors: string[] = [];
@@ -1386,18 +1387,19 @@ export default function MonitoringPage() {
     detailRequest.current?.abort();
   }, []);
 
-  const selectedAlert = detail?.item ?? selectedPreview;
+  // Detail/history of the previously opened alert stay in state until the new ones arrive.
+  const selectedAlert = (detail?.item && detail.item.id === selectedAlertId ? detail.item : null) ?? selectedPreview;
   useAlertDrawerLiveRefresh({
     alertId: selectedAlertId,
     alert: selectedAlert,
-    refresh: (id, signal) => loadSelectedAlert(id, { quiet: true, signal }),
+    refresh: (id, signal, fresh) => loadSelectedAlert(id, { quiet: true, signal, fresh }),
     onTransition: (transition) => {
       if (!shouldInvalidateAlertList(transition)) return;
       invalidateOneViewReadCache("/oneview/alerts");
       void refreshAll();
     },
   });
-  const historyItems = (history?.items ?? []).filter(
+  const historyItems = (history && history.alert_id === selectedAlertId ? history.items : []).filter(
     (item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal",
   );
   const alertsHref = alertMode === MONITOR_ALERT_MODE.prioritary ? "/alertas?view=priority" : "/alertas?view=open";

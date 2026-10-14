@@ -103,8 +103,8 @@ test("OV-P0-73 Home: drawer e filtros preservados", async () => {
 test("OV-P0-73 Home: coluna Ação usa ícone de ACK, sem Abrir", async () => {
   const index = await read("src/pages/Index.tsx");
   const row = index.slice(index.indexOf("function HomeAlertRow"), index.indexOf("function HomeOperatorRow"));
-  assert.match(row, /<AlertSourceAckAction/);
-  assert.match(row, /variant="icon"/);
+  assert.match(row, /<AlertSourceAckRowAction/);
+  assert.match(row, /onOpenDetail=\{onOpen\}/);
   assert.doesNotMatch(row, />Abrir</);
   assert.doesNotMatch(row, /<Eye/);
   assert.match(index, /handleSourceAckRequestAccepted/);

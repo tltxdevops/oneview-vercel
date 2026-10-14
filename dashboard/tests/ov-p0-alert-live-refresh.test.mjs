@@ -120,11 +120,11 @@ test("telas: drawer 2s seletivo, lista 10s, sem poll global de facets/health/SN"
   assert.match(hook, /\[options\.alertId, shouldPoll\]/);
   assert.match(hook, /if \(!shouldPoll \|\| !alertId\) return undefined/);
   assert.match(alerts, /useAlertDrawerLiveRefresh/);
-  assert.match(alerts, /loadSelectedAlert\(id, \{ quiet: true, signal \}\)/);
+  assert.match(alerts, /loadSelectedAlert\(id, \{ quiet: true, signal, fresh \}\)/);
   assert.match(alerts, /loadAlerts\(\{ quiet: true, force: true \}\)/);
   assert.match(alerts, /ALERTS_REFRESH_MS = 10_000/);
-  assert.match(alerts, /fetchAlert\(id, signal\)/);
-  assert.match(alerts, /fetchAlertHistory\(id, signal\)/);
+  assert.match(alerts, /fetchAlert\(id, signal, readOptions\)/);
+  assert.match(alerts, /fetchAlertHistory\(id, signal, readOptions\)/);
   assert.match(monitoring, /useAlertDrawerLiveRefresh/);
   assert.match(monitoring, /REFRESH_MS = 10_000/);
   assert.match(drawer, /livePollEnabled=\{false\}/);
