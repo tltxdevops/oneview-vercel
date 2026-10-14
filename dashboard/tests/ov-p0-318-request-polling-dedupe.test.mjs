@@ -44,9 +44,11 @@ test("OV-P0-318 Chamados atualiza lista em 15 s sem recarregar metadados em poll
   assert.match(chamados, /setInterval\(refresh, INCIDENT_LIST_REFRESH_MS\)/);
   assert.match(chamados, /metadataRefreshRef\.current !== metadataRefreshVersion/);
   assert.doesNotMatch(chamados, /metadataRefreshRef\.current !== refreshVersion/);
-  assert.match(chamados, /includeCounts: includeMetadata/);
-  assert.match(chamados, /includeGlobalCounts: includeMetadata/);
-  assert.match(chamados, /includeFacets: includeMetadata/);
+  assert.match(chamados, /includeCounts: false/);
+  assert.match(chamados, /includeItems: false/);
+  assert.match(chamados, /includeCounts: true/);
+  assert.match(chamados, /includeGlobalCounts: true/);
+  assert.match(chamados, /includeFacets: true/);
   assert.match(chamados, /function refreshAfterIncidentAction\(\)[\s\S]*setMetadataRefreshVersion[\s\S]*setRefreshVersion/);
   assert.match(chamados, /onActionComplete=\{refreshAfterIncidentAction\}/);
   assert.match(chamados, /response\.global_counts \?\? previous\?\.global_counts/);

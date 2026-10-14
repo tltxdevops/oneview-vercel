@@ -33,7 +33,7 @@ export function useAlertDrawerLiveRefresh(options: {
     if (!shouldPoll || !alertId) return undefined;
     const poller = createAlertDrawerPoller({
       intervalMs: ALERT_DRAWER_POLL_MS,
-      shouldPoll: () => shouldPollAlertDrawer(alertRef.current),
+      shouldPoll: () => !document.hidden && shouldPollAlertDrawer(alertRef.current),
       currentAlert: () => alertRef.current,
       refresh: (signal) => refreshRef.current(alertId, signal),
       onTransition: (transition, next) => onTransitionRef.current?.(transition, next),

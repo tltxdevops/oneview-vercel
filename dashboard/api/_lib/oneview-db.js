@@ -3506,8 +3506,13 @@ export async function fetchOneViewDatabase(routeName, req, config) {
         return fetchGlobalHistoryPayload(req, dbConfig, dataSourceNames);
       case "operations-health":
         return fetchOperationsHealthPayload(dbConfig, dataSourceNames);
-      case "runtime-health":
-        return fetchRuntimeHealthPayload(dbConfig);
+      case "runtime-health": {
+        const view = oneQueryValue(req, "view");
+        if (view && view !== "summary") throw requestError("invalid_query");
+        return fetchRuntimeHealthPayload(dbConfig, {
+          summaryOnly: view === "summary",
+        });
+      }
       case "clients-summary":
         return fetchClientsSummaryPayload(req, dbConfig, dataSourceNames);
       case "data-sources":
@@ -4026,7 +4031,7 @@ export function classifyRuntimeWorker({ heartbeatAt = null, lastSuccessAt = null
   return successRatio <= 2 ? RUNTIME_STATUS.HEALTHY : RUNTIME_STATUS.STALE;
 }
 
-async function fetchRuntimeHealthPayload(config) {
+async function fetchRuntimeHealthPayload(config, { summaryOnly = false } = {}) {
   const startedAt = Date.now();
   const now = Date.now();
   const checkedAt = new Date(now).toISOString();
@@ -4046,7 +4051,9 @@ async function fetchRuntimeHealthPayload(config) {
     queryRow(config, "select 1 as reachable"),
     queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token, nullif(btrim(d.api_url), '') is not null as has_api_url from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
     queryRows(config, `select s.last_success_at, s.watermark_sys_updated_on, to_jsonb(s)->>'last_error' as last_error, to_jsonb(s)->>'status' as status from servicenow_sync_state s where s.sync_key = 'incident' limit 1`),
-    queryRows(config, `select worker_id, status, hostname, version, last_seen_at, last_cycle_at, last_error, metadata, updated_at from worker_heartbeats where worker_id = any($1::text[])`, [RUNTIME_WORKERS.map((worker) => worker.workerName)]),
+    queryRows(config, `select worker_id, status, hostname, version, last_seen_at, last_cycle_at, last_error, metadata, updated_at from worker_heartbeats where worker_id = any($1::text[])`, [summaryOnly
+      ? [THEO_DISPATCHER_HEARTBEAT_WORKER_ID]
+      : RUNTIME_WORKERS.map((worker) => worker.workerName)]),
     queryRow(config, `
       select
         (select coalesce(processed_at, updated_at)
@@ -4097,7 +4104,7 @@ async function fetchRuntimeHealthPayload(config) {
       where coalesce(d.type, 'zabbix') = 'zabbix'
       group by d.name
     `).catch(() => []),
-    queryRow(config, `
+    summaryOnly ? Promise.resolve(null) : queryRow(config, `
       select
         count(*) filter (
           where ${ACTIVE_ALERT_SQL}
@@ -4116,7 +4123,7 @@ async function fetchRuntimeHealthPayload(config) {
         )::int as db_classified_host_but_alert_unclassified
       from alerts a
     `).catch(() => ({ active_classifiable_but_unclassified: 0, db_classified_host_but_alert_unclassified: 0 })),
-    queryRow(config, `
+    summaryOnly ? Promise.resolve(null) : queryRow(config, `
       select count(*)::int as duplicate_incident_numbers
         from (
           select number
@@ -4126,7 +4133,7 @@ async function fetchRuntimeHealthPayload(config) {
           having count(distinct sys_id) > 1
         ) conflicts
     `).catch(() => ({ duplicate_incident_numbers: null })),
-    queryRow(config, `
+    summaryOnly ? Promise.resolve(null) : queryRow(config, `
       select
         count(*)::int as total_links,
         count(*) filter (
@@ -4148,7 +4155,7 @@ async function fetchRuntimeHealthPayload(config) {
         count(*) filter (where nullif(btrim(l.carrier_name), '') is not null)::int as carrier_known
       from zabbix_link_inventory l
     `).catch(() => null),
-    queryRow(config, `
+    summaryOnly ? Promise.resolve(null) : queryRow(config, `
       select
         count(distinct a.source_host_id)::int as total,
         count(distinct a.source_host_id) filter (where not (${UNIDENTIFIED_CUSTOMER_SQL}))::int as classified,
@@ -4163,7 +4170,7 @@ async function fetchRuntimeHealthPayload(config) {
       from alerts a
       where a.source_host_id is not null
     `).catch(() => null),
-    queryRow(config, `
+    summaryOnly ? Promise.resolve(null) : queryRow(config, `
       select
         count(*) filter (where status in ('pending', 'processing'))::int as pending,
         count(*) filter (where status = 'failed')::int as failed
@@ -4303,6 +4310,8 @@ async function fetchRuntimeHealthPayload(config) {
     checked_at: checkedAt,
   };
   components.push(runtimeComponent({ id: "servicenow-read-model", category: "SERVICENOW", name: "ServiceNow PROD Read Model", ...snBase, detail: "Leitura local PostgreSQL" }));
+  const workersByName = new Map(workerHeartbeats.map((worker) => [String(worker.worker_id || "").toLowerCase(), worker]));
+  if (!summaryOnly) {
   components.push(runtimeComponent({ id: "servicenow-watermark", category: "SERVICENOW", name: "ServiceNow Watermark", ...snBase, status: sn.watermark_sys_updated_on ? snStatus : RUNTIME_STATUS.UNKNOWN, detail: "watermark_sys_updated_on" }));
   components.push(runtimeComponent({ id: "servicenow-collector", category: "SERVICENOW", name: "ServiceNow Collector", ...snBase, detail: "Sem HTTP ServiceNow nesta requisição" }));
 
@@ -4330,7 +4339,6 @@ async function fetchRuntimeHealthPayload(config) {
     checked_at: checkedAt,
   }));
 
-  const workersByName = new Map(workerHeartbeats.map((worker) => [String(worker.worker_id || "").toLowerCase(), worker]));
   for (const definition of RUNTIME_WORKERS) {
     const worker = workersByName.get(definition.workerName) || null;
     const lastSuccess = metadataDate(worker?.metadata, "last_success_at");
@@ -4468,6 +4476,7 @@ async function fetchRuntimeHealthPayload(config) {
     metrics: ack.metrics,
     checked_at: checkedAt,
   }));
+  }
 
   const theoEnabled = String(process.env.THEO_ONEVIEW_AUTOMATION_ENABLED || "").toLowerCase() === "true";
   const theoConfigured = Boolean(String(process.env.THEO_ONEVIEW_URL || "").trim() && String(process.env.THEO_ONEVIEW_TOKEN || "").trim() && String(process.env.CRON_SECRET || "").trim());

@@ -1065,6 +1065,8 @@ export default function AlertsPage() {
   const [historyMeta, setHistoryMeta] = useState<MetaState>({});
 
   const alertsRequestRef = useRef<AbortController | null>(null);
+  const healthRef = useRef<OneViewHealthResponse | null>(health);
+  healthRef.current = health;
   const alertsRequestIdRef = useRef(0);
   const alertSearchIntent = useRef<{ id: number; value: string } | null>(null);
   const alertSearchIntentId = useRef(0);
@@ -1185,11 +1187,11 @@ export default function AlertsPage() {
     const searchIntent = alertSearchIntent.current?.value === debouncedSearch ? alertSearchIntent.current : null;
     if (!options?.quiet) {
       setIsAlertsLoading(true);
-      if (!hasLoadedAlerts) setAlertsError(null);
+      setAlertsError(null);
     }
     try {
       const requestTime = Date.now();
-      const configuredStale = Number(health?.thresholds?.alert_stale_minutes);
+      const configuredStale = Number(healthRef.current?.thresholds?.alert_stale_minutes);
       const staleMinutes = Number.isFinite(configuredStale) && configuredStale > 0 ? configuredStale : null;
       if (alertsView === "forgotten" && staleMinutes == null) {
         if (requestId !== alertsRequestIdRef.current) return;
@@ -1368,7 +1370,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [ackActorFilter, alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hasLoadedAlerts, health, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;

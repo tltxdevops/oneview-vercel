@@ -26,9 +26,9 @@ test("BFF skips summary and temporal SQL when include=items", async () => {
   const db = await read("api/_lib/oneview-db.js");
   const fallback = await read("api/_lib/oneview-fallback.js");
   assert.match(db, /export function parseAlertListInclude/);
-  assert.match(db, /include\.summary \? queryRow/);
-  assert.match(db, /include\.temporal \? queryRow/);
-  assert.match(db, /include\.items \? queryRows/);
+  assert.match(db, /include\.summary \? await query/);
+  assert.match(db, /include\.temporal \? await query/);
+  assert.match(db, /include\.items \? await query/);
   assert.match(db, /if \(include\.summary\) payload\.filtered_summary/);
   assert.match(db, /if \(include\.temporal\) payload\.temporal_counts/);
   assert.match(fallback, /include\.summary \? \{ filtered_summary/);
@@ -90,6 +90,7 @@ test("Home, Monitoramento, Chamados and Histórico split first-wave reads", asyn
   assert.match(monitoring, /fetchRecentOperationalMetrics/);
   assert.match(recent, /include: "summary"/);
   assert.match(chamados, /includeCounts: false/);
+  assert.match(chamados, /includeItems: false/);
   assert.match(chamados, /includeCounts: true/);
   assert.match(historico, /FIRST_ALERTS_PAGE_SIZE/);
   assert.match(historico, /include: "items"/);

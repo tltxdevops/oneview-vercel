@@ -80,7 +80,7 @@ test("OV-P0-165 runtime health is the single frontend health source", () => {
   const strip = read("src/components/oneview/PlatformHealthStrip.tsx");
   const settings = read("src/pages/Settings.tsx");
   const db = read("api/_lib/oneview-db.js");
-  assert.match(strip, /fetchRuntimeHealth\(\)/);
+  assert.match(strip, /fetchRuntimeHealthSummary\(\)/);
   assert.match(settings, /fetchRuntimeHealth\(\)/);
   assert.match(db, /from data_sources d where coalesce\(d.type, 'zabbix'\) = 'zabbix'/);
   assert.match(db, /servicenow_sync_state/);

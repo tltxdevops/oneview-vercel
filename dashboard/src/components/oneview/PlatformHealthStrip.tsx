@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { RuntimeHealthResponse, fetchRuntimeHealth } from "@/lib/oneview-api";
+import { RuntimeHealthResponse, fetchRuntimeHealthSummary } from "@/lib/oneview-api";
 import {
   readRuntimeHealthSnapshot,
   writeRuntimeHealthSnapshot,
@@ -10,7 +10,7 @@ import { formatRelativePtBr } from "@/lib/platform-health";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { runAfterOneViewFirstUseful } from "@/lib/oneview-performance";
 
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 60_000;
 
 export function PlatformHealthStrip({ className }: { className?: string }) {
   const [health, setHealth] = useState<RuntimeHealthResponse | null>(() => readRuntimeHealthSnapshot());
@@ -18,8 +18,9 @@ export function PlatformHealthStrip({ className }: { className?: string }) {
   const inFlight = useRef<Promise<void> | null>(null);
   const tipId = useId();
   const refresh = useCallback(async () => {
+    if (document.hidden) return;
     if (inFlight.current) return inFlight.current;
-    const request = fetchRuntimeHealth()
+    const request = fetchRuntimeHealthSummary()
       .then((payload) => {
         setHealth(payload);
         writeRuntimeHealthSnapshot(payload);
@@ -32,7 +33,14 @@ export function PlatformHealthStrip({ className }: { className?: string }) {
   useEffect(() => runAfterOneViewFirstUseful(() => void refresh()), [refresh]);
   useEffect(() => {
     const timer = window.setInterval(() => void refresh(), REFRESH_MS);
-    return () => window.clearInterval(timer);
+    const onVisibility = () => {
+      if (!document.hidden) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
   const items = useMemo(() => runtimeSummary(health), [health]);
   const snapshotAge = usingSnapshot ? formatRelativePtBr(health?.checked_at) : null;

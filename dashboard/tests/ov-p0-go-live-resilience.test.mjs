@@ -52,7 +52,8 @@ test("OV-P0 go-live: 503 / abort / keep-last payload / concorrência", async () 
   assert.match(chamados, /duplicatesLoading && !duplicatesPayload\?\.groups\?\.length/);
   assert.match(alerts, /controller.signal.aborted \|\| isOneViewAbortError/);
   assert.match(alerts, /onRetry=\{\(\) => void loadAlerts\(\)\}/);
-  assert.match(alerts, /if \(!hasLoadedAlerts\) setAlertsError\(null\)/);
+  assert.match(alerts, /setAlertsError\(null\)/);
+  assert.doesNotMatch(alerts.match(/const loadAlerts[\s\S]*?const loadSummaryResources/)?.[0] ?? "", /hasLoadedAlerts, health/);
   assert.match(monitoring, /(?:inFlightGeneration\(\) === generation.peek\(\)|queryGenerationRef\.current\.inFlightGeneration\(\) === queryGenerationRef\.current\.peek\(\))/);
   assert.match(monitoring, /isOneViewAbortError/);
   assert.match(settings, /OperationalErrorBanner/);

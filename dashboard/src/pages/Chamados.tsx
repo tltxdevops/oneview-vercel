@@ -428,6 +428,7 @@ export default function ChamadosPage() {
         if (!includeMetadata) return null;
         return fetchIncidents({
           ...listParams,
+          includeItems: false,
           includeCounts: true,
           includeGlobalCounts: true,
           includeFacets: true,

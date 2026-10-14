@@ -82,6 +82,7 @@ export const INCIDENT_ALLOWED_QUERY_KEYS = Object.freeze([
   "updated_from",
   "updated_to",
   "include_related_alert",
+  "include_items",
   "include_counts",
   "include_global_counts",
   "include_facets",
@@ -269,6 +270,7 @@ export function parseIncidentFilters(req) {
   const hasAssignee = booleanFlag(oneQuery(req, "has_assignee"), false);
   const includeUnassigned = booleanFlag(oneQuery(req, "include_unassigned"), false);
   const includeRelatedAlert = booleanFlag(oneQuery(req, "include_related_alert"), false);
+  const includeItems = booleanFlag(oneQuery(req, "include_items"), true);
   const includeCounts = booleanFlag(oneQuery(req, "include_counts"), true);
   const includeGlobalCounts = booleanFlag(oneQuery(req, "include_global_counts"), true);
   const includeFacets = booleanFlag(oneQuery(req, "include_facets"), true);
@@ -335,6 +337,7 @@ export function parseIncidentFilters(req) {
     has_assignee: unassigned ? false : hasAssignee,
     include_unassigned: unassigned ? false : includeUnassigned,
     include_related_alert: includeRelatedAlert,
+    include_items: includeItems,
     include_counts: includeCounts,
     include_global_counts: includeGlobalCounts,
     include_facets: includeFacets,

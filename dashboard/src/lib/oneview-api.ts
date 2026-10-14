@@ -1543,6 +1543,7 @@ export type FetchIncidentsParams = {
   updatedFrom?: string;
   updatedTo?: string;
   includeRelatedAlert?: boolean;
+  includeItems?: boolean;
   includeCounts?: boolean;
   includeGlobalCounts?: boolean;
   includeFacets?: boolean;
@@ -1589,6 +1590,7 @@ export function oneViewIncidentsPath(params?: FetchIncidentsParams): string {
   if (params?.updatedFrom) search.set("updated_from", params.updatedFrom);
   if (params?.updatedTo) search.set("updated_to", params.updatedTo);
   if (params?.includeRelatedAlert) search.set("include_related_alert", "true");
+  if (params?.includeItems === false) search.set("include_items", "false");
   if (params?.includeCounts === false) search.set("include_counts", "false");
   if (params?.includeGlobalCounts === false) search.set("include_global_counts", "false");
   if (params?.includeFacets === false) search.set("include_facets", "false");
@@ -2846,6 +2848,10 @@ export async function fetchOperationsHealth(signal?: AbortSignal): Promise<Opera
 
 export async function fetchRuntimeHealth(signal?: AbortSignal): Promise<RuntimeHealthResponse> {
   return fetchApi<RuntimeHealthResponse>("/oneview/runtime-health", { signal });
+}
+
+export async function fetchRuntimeHealthSummary(signal?: AbortSignal): Promise<RuntimeHealthResponse> {
+  return fetchApi<RuntimeHealthResponse>("/oneview/runtime-health?view=summary", { signal });
 }
 
 export const ONEVIEW_FACETS_PATH = "/oneview/clients-summary";

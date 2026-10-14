@@ -884,26 +884,32 @@ export async function fetchReadModelIncidentsPage(filters, {
   const exactLookup = Boolean(effectiveFilters.number || effectiveFilters.sys_id);
   const offset = exactLookup ? 0 : (effectiveFilters.page - 1) * effectiveFilters.page_size;
   const orderSql = incidentOrderSql(effectiveFilters);
+  const includeItems = effectiveFilters.include_items !== false;
+  const emptyResult = { rows: [] };
   const [pageResult, countResult, counts, globalCounts, facets, syncResult] = await Promise.all([
-    pool.query(`
+    includeItems ? pool.query(`
       select ${READ_MODEL_INCIDENT_SELECT}, ${identityConflictSelect()}
         from servicenow_incidents
        where ${where}
        order by ${orderSql}
        limit $${values.length + 1} offset $${values.length + 2}`,
-    [...values, effectiveFilters.page_size, offset]),
-    pool.query(`select count(*)::int as total from servicenow_incidents where ${where}`, values),
+    [...values, effectiveFilters.page_size, offset]) : Promise.resolve(emptyResult),
+    includeItems
+      ? pool.query(`select count(*)::int as total from servicenow_incidents where ${where}`, values)
+      : Promise.resolve(emptyResult),
     effectiveFilters.include_counts === false ? Promise.resolve(null) : fetchCounts(pool, effectiveFilters),
     effectiveFilters.include_global_counts === false ? Promise.resolve(null) : fetchGlobalCounts(pool),
     effectiveFilters.include_facets === false ? Promise.resolve(null) : fetchFacets(pool, effectiveFilters),
     pool.query("select last_success_at, watermark_sys_updated_on from servicenow_sync_state where sync_key = 'incident' limit 1"),
   ]);
-  const sla = await fetchTaskSlasByTask(pool, pageResult.rows.map((row) => row.sys_id));
+  const sla = includeItems
+    ? await fetchTaskSlasByTask(pool, pageResult.rows.map((row) => row.sys_id))
+    : { byTask: new Map(), availability: "not_requested", syncedAt: null };
   // Tag correlation is intentionally a detail lookup: the current alerts
   // schema has no index for ServiceNow tag JSON. Running it for every recent
   // incident would turn the operational queue into a slow scan. Exact GETs
   // may opt in and still execute one bounded batch, never one query per row.
-  const shouldResolveRelatedAlerts = Boolean(effectiveFilters.include_related_alert && exactLookup);
+  const shouldResolveRelatedAlerts = Boolean(includeItems && effectiveFilters.include_related_alert && exactLookup);
   const relatedAlerts = shouldResolveRelatedAlerts
     ? await relatedAlertResolver(pageResult.rows, { pool })
     : new Map();

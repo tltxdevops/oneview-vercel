@@ -64,7 +64,7 @@ const ROUTES = Object.freeze({
     ],
   }),
   "operations-health": Object.freeze({ upstreamPath: "/operations/health", role: "viewer", fallbackSafe: true, query: [] }),
-  "runtime-health": Object.freeze({ upstreamPath: "/runtime-health", role: "viewer", fallbackSafe: false, query: [] }),
+  "runtime-health": Object.freeze({ upstreamPath: "/runtime-health", role: "viewer", fallbackSafe: false, query: ["view"] }),
   "clients-summary": Object.freeze({
     upstreamPath: "/clients/summary",
     role: "viewer",
