@@ -229,6 +229,13 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
             <section>
               <h3 className="font-medium">Supressões anteriores</h3>
               <p>{status ? `${status.period_count} período(s) comprovado(s)` : "Carregando histórico"}</p>
+              <ul className="mt-2 space-y-2">
+                {(status?.periods || []).map((period) => (
+                  <li key={String(period.id || period.idempotency_key)} className="text-xs text-muted-foreground">
+                    {String(period.operator_name || period.operator_id || "origem")} · {String(period.reason || "sem motivo")} · início {String(period.started_at || "não comprovado")} · previsto {String(period.planned_end || "sem prazo")} · real {String(period.actual_end || "em aberto")}
+                  </li>
+                ))}
+              </ul>
             </section>
             <p className="text-muted-foreground">
               Remover supressão: {SUPPRESS_WRITES_ENABLED && status?.unsuppress.enabled ? "disponível para o período identificado" : removeReason}
