@@ -1775,7 +1775,7 @@ export default function Index() {
           aside={dashboard.isWallboard ? null : (
             <div className={HOME_PANEL_HEADER_ASIDE}>
               <HomePanelCount value={eventsTotal} />
-              <OperationalCta to="/historico">Abrir histórico</OperationalCta>
+              <OperationalCta to="/alertas?view=history">Abrir histórico</OperationalCta>
             </div>
           )}
           bodyClassName="px-0 pb-0"

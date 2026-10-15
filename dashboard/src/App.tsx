@@ -3,7 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense, type ReactNode } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
@@ -12,7 +12,20 @@ import SsoCallback from "@/pages/SsoCallback";
 import { getBrowserRouterBase } from "@/lib/basePath";
 
 const queryClient = new QueryClient();
-const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const HistoricoPage = lazy(() => import("@/pages/Historico")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras")); const SettingsPage = lazy(() => import("@/pages/Settings"));
+const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras")); const SettingsPage = lazy(() => import("@/pages/Settings"));
+
+function HistoricoRedirect() {
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  params.set("view", "history");
+  const recurrence = params.get("recurrence");
+  if (recurrence && !params.get("recurrence_key")) {
+    params.set("recurrence_key", recurrence);
+    params.delete("recurrence");
+  }
+  const query = params.toString();
+  return <Navigate to={query ? `/alertas?${query}` : "/alertas?view=history"} replace />;
+}
 const UiKitPage = lazy(() => import("@/pages/UiKit"));
 const routeFallback = (
   <div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">
@@ -49,7 +62,7 @@ const App = () => (
             <Route path="/" element={route(<Index />)} />
             <Route path="/monitoramento" element={route(<MonitoringPage />)} />
             <Route path="/alertas" element={route(<AlertsPage />)} />
-            <Route path="/historico" element={route(<HistoricoPage />)} />
+            <Route path="/historico" element={<HistoricoRedirect />} />
             {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={routeFallback}><BancoDadosPage /></Suspense>} />}
             {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={routeFallback}><CertificadosPage /></Suspense>} />}
             <Route path="/chamados" element={route(<ChamadosPage />)} />

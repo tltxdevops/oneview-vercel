@@ -71,7 +71,7 @@ export class OneViewErrorBoundary extends Component<OneViewErrorBoundaryProps, O
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/monitoramento")}>Monitoramento</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/alertas")}>Alertas</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/chamados")}>Chamados</a>
-            <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/historico")}>Histórico</a>
+            <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/alertas?view=history")}>Histórico</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/operadoras")}>Operadoras</a>
           </nav>
         ) : null}

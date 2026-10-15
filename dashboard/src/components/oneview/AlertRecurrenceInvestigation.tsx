@@ -34,7 +34,7 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 export function AlertRecurrenceInvestigation({ alert }: { alert: OneViewAlert }) {
   const previous = alert.recurrence_previous;
   const href = alert.recurrence_key
-    ? `/historico?tab=alertas&status=all&recurrence=${encodeURIComponent(alert.recurrence_key)}`
+    ? `/alertas?view=history&recurrence_key=${encodeURIComponent(alert.recurrence_key)}`
     : null;
 
   return (

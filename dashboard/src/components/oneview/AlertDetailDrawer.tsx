@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Activity, CheckCircle2, ChevronDown, Clock3, Eye, History, Info, Repeat2 } from "lucide-react";
+import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, Eye, History, Info, Repeat2 } from "lucide-react";
 import {
   CLASSIFICATION_PENDING_LABEL,
   ClientIdentity,
@@ -34,6 +34,7 @@ import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { recoveryEvidenceCaption, suppressionCaption } from "@/lib/oneview-suppression-copy";
 import {
@@ -146,11 +147,69 @@ function collectOperationalTags(alert: OneViewAlert) {
   ]);
 }
 
-function DetailField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function isCopyableValue(value: string): boolean {
+  const normalized = String(value || "").trim();
+  return Boolean(normalized) && normalized !== "—" && normalized !== ORIGIN_UNAVAILABLE && normalized !== "Alerta sem descrição";
+}
+
+async function copyPlainText(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    /* fallback abaixo */
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "true");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function CopyValueButton({ value, label }: { value: string; label: string }) {
+  const { toast } = useToast();
+  if (!isCopyableValue(value)) return null;
+  return (
+    <button
+      type="button"
+      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+      title={`Copiar ${label}`}
+      aria-label={`Copiar ${label}`}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void (async () => {
+          const ok = await copyPlainText(value);
+          toast(ok
+            ? { title: `${label} copiado` }
+            : { title: `Não foi possível copiar ${label}.`, variant: "destructive" });
+        })();
+      }}
+    >
+      <Copy className="h-3 w-3" aria-hidden="true" />
+    </button>
+  );
+}
+
+function DetailField({ label, value, mono, copyable }: { label: string; value: string; mono?: boolean; copyable?: boolean }) {
   return (
     <div>
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className={cn("mt-0.5 break-words font-semibold", mono && "font-mono")}>{value}</dd>
+      <dd className={cn("mt-0.5 flex items-start gap-1 break-words font-semibold", mono && "font-mono")}>
+        <span className="min-w-0 break-words">{value}</span>
+        {copyable ? <CopyValueButton value={value} label={label} /> : null}
+      </dd>
     </div>
   );
 }
@@ -671,8 +730,9 @@ export function AlertDetailDrawer({
 
                     <div className="mt-4 border-t border-border/60 pt-3">
                       <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Problema</p>
-                      <p className="mt-1 break-words text-sm font-semibold leading-5 text-foreground">
-                        {String(alert.problem_name || alert.trigger_description || "").trim() || "Alerta sem descrição"}
+                      <p className="mt-1 flex items-start gap-1 break-words text-sm font-semibold leading-5 text-foreground">
+                        <span className="min-w-0">{String(alert.problem_name || alert.trigger_description || "").trim() || "Alerta sem descrição"}</span>
+                        <CopyValueButton value={String(alert.problem_name || alert.trigger_description || "").trim()} label="Problema" />
                       </p>
                       {suppressionCaption(alert, formatDateTime) ? <p className="mt-1 text-xs text-muted-foreground">{suppressionCaption(alert, formatDateTime)}</p> : null}
                       {recoveryEvidenceCaption(alert) ? <p className="mt-1 text-xs text-muted-foreground">{recoveryEvidenceCaption(alert)}</p> : null}
@@ -805,7 +865,42 @@ export function AlertDetailDrawer({
                       </div>
                     </div>
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
-                      <DetailField label="Host" value={hostVisible} />
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Chamado</dt>
+                        <dd className="mt-0.5 flex items-start gap-1 font-semibold">
+                          {incidentReference?.number || incidentReference?.sys_id ? (
+                            <>
+                              <span className="min-w-0 break-words font-mono">{incidentReference.number || "Chamado"}</span>
+                              {incidentReference.number ? <CopyValueButton value={incidentReference.number} label="Chamado" /> : null}
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </dd>
+                        {incidentReference?.number || incidentReference?.sys_id ? (
+                          <button
+                            type="button"
+                            className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-primary hover:underline"
+                            onClick={() => {
+                              const related = relatedIncidents.find((item) => item.sys_id || item.number);
+                              setNestedIncident(relatedIncidentToOneViewIncident(related || {
+                                sys_id: incidentReference.sys_id || null,
+                                number: incidentReference.number || null,
+                                identity_conflict: false,
+                                state: null,
+                                priority: null,
+                                assignment_group: null,
+                                assigned_to: null,
+                                sys_updated_on: null,
+                                servicenow_url: incidentReference.url || null,
+                              }));
+                            }}
+                          >
+                            Ver chamado
+                          </button>
+                        ) : null}
+                      </div>
+                      <DetailField label="Host" value={hostVisible} copyable />
                       <DetailField label="Equipamento" value={hostTechnical === ORIGIN_UNAVAILABLE ? hostVisible : hostTechnical} />
                       <DetailField label="Início" value={formatDateTime(alert.first_seen_at)} />
                       <DetailField label="Estado" value={resolved ? "Resolvido" : "Ativo"} />
@@ -887,7 +982,7 @@ export function AlertDetailDrawer({
                         value={String(alert.problem_name || alert.trigger_description || "").trim() || "Alerta sem descrição"}
                       />
                       <DetailField label="Severidade" value={formatOneViewSeverityLabel(alert.severity)} />
-                      <DetailField label="Host visível" value={hostVisible} />
+                      <DetailField label="Host visível" value={hostVisible} copyable />
                       <DetailField label="Host técnico" value={hostTechnical} />
                     </dl>
                   </section>
@@ -936,7 +1031,7 @@ export function AlertDetailDrawer({
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                       <DetailField label="Nome visível" value={displayHostField(alert.host_visible_name) || hostName} />
                       <DetailField label="Nome técnico" value={displayHostField(alert.host_technical_name, ORIGIN_UNAVAILABLE)} />
-                      {primaryIp ? <DetailField label="IP principal" value={primaryIp} mono /> : null}
+                      {primaryIp ? <DetailField label="IP principal" value={primaryIp} mono copyable /> : null}
                       {iface ? <DetailField label="Interface" value={iface} /> : null}
                     </dl>
                   </section>

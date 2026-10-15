@@ -65,8 +65,18 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
   }
 
   async function openDialog() {
-    if (!SUPPRESS_WRITES_ENABLED) return;
     setOpen(true);
+    if (!SUPPRESS_WRITES_ENABLED) {
+      setWriteEnabled(false);
+      setUi("refused");
+      setDetail(SUPPRESS_UNAVAILABLE);
+      try {
+        await loadStatus();
+      } catch {
+        setStatus(null);
+      }
+      return;
+    }
     setUi("checking");
     setDetail(null);
     try {
@@ -170,22 +180,16 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
 
   return (
     <>
-      <div className="flex max-w-xs flex-col items-start gap-1" onClick={(event) => event.stopPropagation()}>
+      <div onClick={(event) => event.stopPropagation()}>
         <OneViewButton
           type="button"
           variant={variant === "row" ? "ghost" : "secondary"}
           size="sm"
-          disabled
-          aria-disabled="true"
           title={SUPPRESS_UNAVAILABLE}
-          onClick={(event) => { event.stopPropagation(); if (SUPPRESS_WRITES_ENABLED) void openDialog(); }}
+          onClick={(event) => { event.stopPropagation(); void openDialog(); }}
         >
           {variant === "row" ? "Suprimir" : "Suprimir alerta"}
         </OneViewButton>
-        <p className="text-xs text-muted-foreground">{SUPPRESS_UNAVAILABLE}</p>
-        <p className="text-xs text-muted-foreground">Supressão vigente: {existing}</p>
-        <p className="text-xs text-muted-foreground">Operador: {operator}</p>
-        <p className="text-xs text-muted-foreground">{removeReason}</p>
       </div>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
@@ -199,7 +203,8 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
             <p><span className="text-muted-foreground">Evento Zabbix:</span> {alert.source_event_id || "não informado"}</p>
             <p><span className="text-muted-foreground">Estado atual:</span> {alert.status_source || "desconhecido"}</p>
             <p><span className="text-muted-foreground">Supressão existente:</span> {existing}</p>
-            <p><span className="text-muted-foreground">Operador:</span> operador autenticado</p>
+            <p><span className="text-muted-foreground">Capacidade:</span> {SUPPRESS_UNAVAILABLE}</p>
+            <p><span className="text-muted-foreground">Operador:</span> {operator}</p>
             <div>
               <Label htmlFor="suppress-duration">Duração</Label>
               <select id="suppress-duration" className="mt-1 w-full rounded-md border bg-background px-2 py-1" value={duration} onChange={(event) => setDuration(Number(event.target.value))}>
@@ -226,7 +231,7 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
               <p>{status ? `${status.period_count} período(s) comprovado(s)` : "Carregando histórico"}</p>
             </section>
             <p className="text-muted-foreground">
-              Remover supressão: {status?.unsuppress.enabled ? "disponível para o período identificado" : (status?.unsuppress.reason || "suppression_not_identified")}
+              Remover supressão: {SUPPRESS_WRITES_ENABLED && status?.unsuppress.enabled ? "disponível para o período identificado" : removeReason}
             </p>
           </div>
           <DialogFooter>

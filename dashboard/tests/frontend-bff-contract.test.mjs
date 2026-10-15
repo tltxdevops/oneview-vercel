@@ -367,12 +367,10 @@ test("Home operacional NOC usa contratos OneView sem ranking de clientes", async
   assert.match(index, /ConfigurableMetricStrip[\s\S]*surface=\{false\}/);
   assert.match(index, /title="Links de operadoras"/);
   assert.match(app, /path="\/historico"/);
-  assert.match(app, /HistoricoPage/);
-  assert.match(sidebar, /name: "Histórico"/);
-  assert.match(sidebar, /href: "\/historico"/);
-  assert.match(sidebar, /icon: "history"/);
-  assert.ok(sidebar.indexOf('href: "/alertas"') < sidebar.indexOf('href: "/historico"'));
-  assert.doesNotMatch(sidebar, /name: "Histórico", href: "\/alertas"/);
+  assert.match(app, /HistoricoRedirect/);
+  assert.match(app, /view", "history"/);
+  assert.doesNotMatch(sidebar, /name: "Histórico"/);
+  assert.doesNotMatch(sidebar, /href: "\/historico"/);
   assert.match(historico, /SectionAccentTitle level=\{1\}>Histórico<\/SectionAccentTitle>/);
   assert.match(historico, /TabsTrigger value="alertas"/);
   assert.match(historico, /TabsTrigger value="eventos"/);
@@ -502,10 +500,12 @@ test("navegação lateral aponta somente para rotas registradas no App", async (
   assert.ok(sidebar.includes("baseNavigation"), "Sidebar deve montar navegação operacional estática");
 
   // Hrefs estáticos da navegação operacional.
-  for (const preserved of ["/", "/monitoramento", "/alertas", "/historico", "/chamados", "/operadoras"]) {
+  for (const preserved of ["/", "/monitoramento", "/alertas", "/chamados", "/operadoras"]) {
     assert.ok(sidebar.includes(`href: "${preserved}"`), `Sidebar deve preservar ${preserved}`);
     assert.ok(appRoutes.has(preserved), `App deve preservar ${preserved}`);
   }
+  assert.ok(!sidebar.includes('href: "/historico"'), "Sidebar não lista mais a página antiga de Histórico");
+  assert.ok(appRoutes.has("/historico"), "App preserva /historico como redirect");
 
   assert.ok(appRoutes.has("/chamados"), "App deve manter a rota /chamados");
   assert.ok(!sidebarHrefs.filter((href) => href !== "/chamados").includes("/kpis"));
@@ -552,13 +552,13 @@ test("OV-P0-20 navegação operacional diferencia Monitoramento, Alertas e Hist�
 
   assert.match(sidebar, /icon: "monitoring"/);
   assert.match(sidebar, /icon: "alerts"/);
-  assert.match(sidebar, /icon: "history"/);
+  assert.doesNotMatch(sidebar, /icon: "history"/);
   assert.match(iconMap, /monitoring:\s*Monitor/);
   assert.match(iconMap, /alerts:\s*Bell/);
   assert.match(iconMap, /history:\s*History/);
   assert.match(sidebar, /liveDot: true/);
-  assert.match(sidebar, /secondary: "Fila operacional"/);
-  assert.match(sidebar, /secondary: "Eventos e ações"/);
+  assert.match(sidebar, /secondary: "Central de Alertas"/);
+  assert.doesNotMatch(sidebar, /secondary: "Eventos e ações"/);
   assert.match(sidebar, /navToneClasses/);
   assert.match(sidebar, /bg-sidebar-accent/);
   assert.match(sidebar, /rounded-lg/);
@@ -1417,12 +1417,13 @@ test("Histórico operacional NOC é rota independente com paginação e filtros 
   ]);
 
   assert.match(app, /path="\/historico"/);
-  assert.match(app, /HistoricoPage/);
-  assert.match(sidebar, /href: "\/historico"/);
+  assert.match(app, /HistoricoRedirect/);
+  assert.match(app, /to=\{query \? `\/alertas\?\$\{query\}` : "\/alertas\?view=history"\}/);
+  assert.doesNotMatch(sidebar, /href: "\/historico"/);
   assert.doesNotMatch(historico, /Navigate to=\{?["'`]\/alertas|redirect.*\/alertas|window\.location.*\/alertas/i);
   assert.match(historico, /useSearchParams/);
   assert.match(historico, /fetchGlobalHistory/);
-  assert.match(historico, /pageSize: PAGE_SIZE/);
+  assert.match(historico, /pageSize: historyPageSize/);
   assert.match(historico, /PAGE_SIZE = 50/);
   assert.match(api, /search\.set\("page"/);
   assert.match(api, /search\.set\("page_size"/);

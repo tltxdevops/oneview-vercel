@@ -42,8 +42,7 @@ type NavItem = {
 const baseNavigation: NavItem[] = [
   { name: "Início", href: "/", icon: "home" },
   { name: "Monitoramento", href: "/monitoramento", icon: "monitoring", liveDot: true },
-  { name: "Alertas", href: "/alertas", icon: "alerts", secondary: "Fila operacional" },
-  { name: "Histórico", href: "/historico", icon: "history", secondary: "Eventos e ações" },
+  { name: "Alertas", href: "/alertas", icon: "alerts", secondary: "Central de Alertas" },
   { name: "Chamados", href: "/chamados", icon: "incidents", secondary: "ServiceNow" },
   { name: "Links", href: "/operadoras", icon: "links", secondary: "Conectividade" },
 ];

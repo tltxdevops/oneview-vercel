@@ -928,6 +928,7 @@ export default function AlertsPage() {
   const initialQueryRef = useRef(new URLSearchParams(searchParams));
   const initialQuery = initialQueryRef.current;
   const requestedAlertId = searchParams.get("alert");
+  const recurrenceKey = searchParams.get("recurrence_key") || searchParams.get("recurrence") || "";
   const warmedAlerts = useOneViewWarmRead<AlertListResponse>({
     cachePath: oneViewAlertsPath(firstAlertsFetchParams(bucketOneViewReadNow())),
   });
@@ -1145,8 +1146,9 @@ export default function AlertsPage() {
       pageSize,
       alert: requestedAlertId,
     });
+    if (recurrenceKey) next.set("recurrence_key", recurrenceKey);
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [ackActorFilter, alertsView, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   useEffect(() => {
     severityPopupSeenRef.current = readSeverityPopupSeen("alerts", actorId);
@@ -1195,6 +1197,7 @@ export default function AlertsPage() {
         operationalView: isOperationalQueue(alertsView) ? alertsView : undefined,
         incidentStates,
         incidentNumber: incidentNumber || undefined,
+        recurrenceKey: recurrenceKey || undefined,
         acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
         oneviewAckStatuses,
         ackActor: ackActorFilter || undefined,
@@ -1357,7 +1360,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;

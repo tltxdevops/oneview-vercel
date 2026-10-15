@@ -5,7 +5,7 @@ const routes: Record<string, () => Promise<unknown>> = {
   "/": () => import("@/pages/Index"),
   "/monitoramento": () => import("@/pages/Monitoring"),
   "/alertas": () => import("@/pages/Alerts"),
-  "/historico": () => import("@/pages/Historico"),
+  "/historico": () => import("@/pages/Alerts"),
   "/chamados": () => import("@/pages/Chamados"),
   "/operadoras": () => import("@/pages/Operadoras"),
   "/ui-kit": () => import("@/pages/UiKit"),
