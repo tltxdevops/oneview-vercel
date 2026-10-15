@@ -165,20 +165,25 @@ function normalizeRelatedAlert(alert) {
   };
 }
 
-const TERMINAL_DURATION_STATES = new Set(["6", "7", "8"]);
 const SLA_STALE_AFTER_MS = 5 * 60_000;
 
-function incidentOpenDurationSeconds(row, now = Date.now()) {
+function incidentResolvedLike(row) {
+  const state = text(row.state)?.toLowerCase();
+  const display = text(row.state_display)?.toLowerCase();
+  return state === "6" || display === "resolved";
+}
+
+export function incidentOpenDurationSeconds(row, now = Date.now()) {
   const openedAt = Date.parse(String(row.opened_at || ""));
   if (!Number.isFinite(openedAt)) return null;
-  let terminalAt = now;
-  if (TERMINAL_DURATION_STATES.has(text(row.state))) {
-    const terminal = text(row.state) === "6" ? row.resolved_at : (row.closed_at || row.resolved_at);
-    terminalAt = Date.parse(String(terminal || ""));
-    if (!Number.isFinite(terminalAt)) return null;
+  if (isTerminalServiceNowIncident(row)) {
+    const terminal = incidentResolvedLike(row) ? (row.resolved_at || row.closed_at) : (row.closed_at || row.resolved_at);
+    const terminalAt = Date.parse(String(terminal || ""));
+    if (!Number.isFinite(terminalAt) || terminalAt < openedAt) return null;
+    return Math.floor((terminalAt - openedAt) / 1000);
   }
-  if (terminalAt < openedAt) return null;
-  return Math.floor((terminalAt - openedAt) / 1000);
+  if (now < openedAt) return null;
+  return Math.floor((now - openedAt) / 1000);
 }
 
 function taskSlaState(row) {

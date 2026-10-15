@@ -54,6 +54,8 @@ type ClaimableIncident = {
   number: string | null;
   state?: string | null;
   identity_conflict?: boolean;
+  assigned_to?: string | null;
+  assigned_to_display?: string | null;
 };
 
 export type IncidentTableActionId = "claim" | "work_note" | "put_on_hold" | "attach_alert";
@@ -61,7 +63,7 @@ export type IncidentTableActionId = "claim" | "work_note" | "put_on_hold" | "att
 type Props = {
   incident: ClaimableIncident;
   alertArtifact?: AlertArtifactModel | null;
-  placement?: "inline" | "drawer-footer" | "table-cell";
+  placement?: "inline" | "drawer-footer" | "table-cell" | "header";
   visibleActions?: readonly IncidentTableActionId[];
   onClaimed?: (result: ServiceNowIncidentClaimResponse) => void;
   onWorkNoteAdded?: () => void;
@@ -70,6 +72,19 @@ type Props = {
   /** Snapshot copy. Claim, notes, hold and attach must not POST. */
   mutationsBlocked?: boolean;
 };
+
+function identityNamesMatch(left?: string | null, right?: string | null) {
+  const a = String(left || "").trim().toLowerCase();
+  const b = String(right || "").trim().toLowerCase();
+  return Boolean(a && b && a === b);
+}
+
+function assignedToCurrentOperator(incident: ClaimableIncident, identity: ServiceNowOperatorIdentity | null) {
+  const assigned = String(incident.assigned_to_display || incident.assigned_to || "").trim();
+  if (!assigned || !identity?.service_now_user) return false;
+  return identityNamesMatch(assigned, identity.service_now_user.name)
+    || identityNamesMatch(assigned, identity.service_now_user.email);
+}
 
 const PUT_ON_HOLD_ALLOWED_STATES = new Set(["1", "2"]);
 
@@ -144,7 +159,10 @@ export function IncidentActions({
     setResolvedState(null);
     setResolvingState(false);
     void fetchServiceNowOperatorIdentity(controller.signal)
-      .then(setIdentity)
+      .then((next) => {
+        if (controller.signal.aborted) return;
+        setIdentity(next);
+      })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setIdentityError(error instanceof Error ? error.message : "Ação indisponível temporariamente.");
@@ -152,6 +170,10 @@ export function IncidentActions({
       });
     return () => controller.abort();
   }, [incident.identity_conflict, incident.sys_id]);
+
+  useEffect(() => {
+    if (assignedToCurrentOperator(incident, identity)) setAssignedToSelf(true);
+  }, [identity, incident.assigned_to, incident.assigned_to_display]);
 
   useEffect(() => () => holdOptionsControllerRef.current?.abort(), []);
 
@@ -195,6 +217,10 @@ export function IncidentActions({
       const result = await requestServiceNowIncidentClaim({ sysId: incident.sys_id, confirmReassign });
       setAssignedToSelf(true);
       setConfirmation(null);
+      toast({
+        title: result.already_assigned ? "Chamado já estava atribuído a você" : "Chamado assumido",
+        description: result.incident.incident_number || incident.number || undefined,
+      });
       onClaimed?.(result);
     } catch (error) {
       if (error instanceof OneViewApiError && error.code === "INCIDENT_ASSIGNED_TO_OTHER" && !confirmReassign) {
@@ -203,7 +229,13 @@ export function IncidentActions({
           : "outro analista";
         setConfirmation({ currentAssignee });
       } else {
-        setActionError(error instanceof Error ? error.message : "Ação indisponível temporariamente.");
+        const message = error instanceof Error ? error.message : "Ação indisponível temporariamente.";
+        setActionError(message);
+        toast({
+          title: "Não foi possível assumir o chamado",
+          description: message,
+          variant: "destructive",
+        });
       }
     } finally {
       setSubmitting(false);
@@ -362,7 +394,9 @@ export function IncidentActions({
   const canResolveHoldState = !mutationsBlocked && Boolean(identity?.available && incident.sys_id && stateUnknown);
   const disabledReason = mutationsBlocked
     ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
-    : identityUnavailableMessage(identity, identityError);
+    : !incident.sys_id
+      ? "Aguardando identificação do chamado no ServiceNow."
+      : identityUnavailableMessage(identity, identityError);
   const attachDisabledReason = mutationsBlocked
     ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
     : !alertArtifact
@@ -387,8 +421,9 @@ export function IncidentActions({
   const holdMenuDisabled = (!canStartPutOnHold && !canResolveHoldState) || submitting || holdOptionsLoading || resolvingState;
 
   const isTableCell = placement === "table-cell";
+  const isHeader = placement === "header";
 
-  if (!incident.sys_id || !incident.number) return null;
+  if (!incident.sys_id && !incident.number) return null;
   if (!hasVisibleIncidentAction) return null;
   if (incident.identity_conflict) {
     return (
@@ -401,9 +436,9 @@ export function IncidentActions({
     return (
       <Skeleton
         className={
-          placement === "table-cell"
+          isTableCell
             ? "h-7 w-16"
-            : placement === "drawer-footer"
+            : isHeader || placement === "drawer-footer"
               ? "h-8 w-40"
               : "mt-3 h-8 w-40"
         }
@@ -413,7 +448,7 @@ export function IncidentActions({
 
   const rootClassName = placement === "drawer-footer"
     ? "space-y-2"
-    : isTableCell
+    : isTableCell || isHeader
       ? undefined
       : "mt-3 space-y-2 border-t border-border/60 pt-3";
 

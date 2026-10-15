@@ -774,7 +774,7 @@ function metaOf(response: { data_source?: OneViewDataSourceKind; checked_at?: st
 }
 
 function acknowledged(alert: OneViewAlert) {
-  return Boolean(alert.acknowledged_internal || alert.acknowledged_source);
+  return Boolean(alert.acknowledged_internal || alert.acknowledged_source || alert.source_ack?.acknowledged);
 }
 
 function sourceAcknowledged(alert: OneViewAlert | null | undefined) {
@@ -792,9 +792,30 @@ function isResolvedAlert(alert: OneViewAlert | null | undefined) {
   return Boolean(alert.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
 }
 
+function alertDurationFreezeMs(alert: OneViewAlert) {
+  const values: number[] = [];
+  if (alert.acknowledged_source || alert.source_ack?.acknowledged) {
+    values.push(
+      Date.parse(String(alert.source_ack?.acknowledged_at || "")),
+      Date.parse(String(alert.acknowledged_source_at || "")),
+      Date.parse(String(alert.acknowledged_at || "")),
+    );
+  }
+  if (alert.acknowledged_internal) {
+    values.push(Date.parse(String(alert.acknowledged_internal_at || "")));
+  }
+  if (isResolvedAlert(alert)) values.push(Date.parse(String(alert.resolved_at || "")));
+  const valid = values.filter((value) => Number.isFinite(value));
+  return valid.length ? Math.min(...valid) : Number.NaN;
+}
+
 function liveDurationSeconds(alert: OneViewAlert, now: number) {
-  if (isResolvedAlert(alert)) return alert.duration_seconds;
   const startedAt = Date.parse(String(alert.first_seen_at || ""));
+  if (isResolvedAlert(alert) || acknowledged(alert)) {
+    const freezeMs = alertDurationFreezeMs(alert);
+    if (!Number.isFinite(startedAt) || !Number.isFinite(freezeMs) || freezeMs < startedAt) return null;
+    return Math.floor((freezeMs - startedAt) / 1000);
+  }
   if (!Number.isFinite(startedAt)) return alert.duration_seconds;
   return Math.max(0, Math.floor((now - startedAt) / 1000));
 }
@@ -1821,12 +1842,12 @@ export default function AlertsPage() {
     },
   }).slice(0, pageSize);
 
-  const hasVisibleActiveAlerts = displayedAlerts.some((alert) => !isResolvedAlert(alert));
+  const hasVisibleLiveDuration = displayedAlerts.some((alert) => !isResolvedAlert(alert) && !acknowledged(alert));
   useEffect(() => {
-    if (!hasVisibleActiveAlerts) return undefined;
+    if (!hasVisibleLiveDuration) return undefined;
     const timer = window.setInterval(() => setDurationNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [hasVisibleActiveAlerts]);
+  }, [hasVisibleLiveDuration]);
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
@@ -2578,8 +2599,8 @@ export default function AlertsPage() {
                 });
                 const problemLabel = safeDisplayText(alert.problem_name, "Alerta sem descrição", 220);
                 const durationSeconds = liveDurationSeconds(alert, durationNow);
-                const durationLabel = Number.isFinite(Number(durationSeconds)) && Number(durationSeconds) >= 0
-                  ? formatDurationSeconds(Number(durationSeconds))
+                const durationLabel = durationSeconds != null && Number.isFinite(durationSeconds) && durationSeconds >= 0
+                  ? formatDurationSeconds(durationSeconds)
                   : "—";
                 const alertCells: Record<AlertTableColumnId, ReactNode> = {
                   severity: (
@@ -2700,6 +2721,7 @@ export default function AlertsPage() {
         description={alertsAreCopy ? "Cópia do alerta. Não é o estado operacional atual." : "Informações operacionais seguras e histórico do OneView."}
         onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
         onSourceAcknowledged={handleSourceAcknowledged}
+        onIncidentClaimed={() => { void loadAlerts({ quiet: true }); }}
         liveStateUnavailable={liveStateUnavailable}
       />
       <OperatorDisasterPopup

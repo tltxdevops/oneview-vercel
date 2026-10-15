@@ -137,8 +137,9 @@ test("OV-P0-108 drawer: sem flicker full-tab; oculta tags internas; Chamado rela
   assert.match(section, /extractServiceNowRefsFromAlertTags/);
   assert.match(section, /tagIncidentNumbers|incidentSysIds/);
   assert.match(section, /ProjectedIncidentCard|Carregando detalhe do chamado/);
-  assert.match(section, /Estado/);
-  assert.match(section, /Última atualização/);
+  assert.match(section, /Responsável/);
+  assert.match(section, /Sem responsável/);
+  assert.match(section, /Atualizado em/);
 
   assert.match(historico, /OV-P0-108/);
   assert.match(historico, /\[selectedAlertId\]/);

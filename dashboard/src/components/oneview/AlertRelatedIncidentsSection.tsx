@@ -7,9 +7,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { IncidentActions } from "@/components/oneview/IncidentActions";
 import { OneViewQuietRefreshIndicator } from "@/components/oneview/OneViewDesignSystem";
+import { displayIncidentField } from "@/components/oneview/OperationalIncidentsQueueList";
 import { ServiceNowDevLink } from "@/components/oneview/ServiceNowDevLink";
 import { buildProductionServiceNowIncidentLink } from "@/lib/oneview-inc-correlation";
+import type { AlertArtifactModel } from "@/lib/oneview-alert-artifact";
 import {
   AlertHistoryItem,
   AlertRelatedIncident,
@@ -17,7 +20,12 @@ import {
   OneViewAlert,
   OneViewIncident,
   fetchAlertRelatedIncidents,
+  fetchIncidentDetail,
+  formatDurationSeconds,
+  isOneViewAbortError,
+  type ServiceNowIncidentClaimResponse,
 } from "@/lib/oneview-api";
+import { incidentSlaLabel } from "@/lib/oneview-incident-sla";
 import {
   extractServiceNowIncidentNumbersForAlertEpisode,
   extractServiceNowRefsFromAlertTags,
@@ -88,6 +96,26 @@ function relationSourceLabel(source?: AlertRelatedIncidentsRelationSource | null
   return null;
 }
 
+function presentValue(value?: string | null) {
+  const text = String(value || "").trim();
+  if (!text || text === "—" || text.toLowerCase() === "undefined" || text.toLowerCase() === "nan") return null;
+  if (/^indispon/i.test(text)) return null;
+  return text;
+}
+
+function assigneeLabel(item: Pick<AlertRelatedIncident, "assigned_to" | "assigned_to_display">) {
+  return presentValue(item.assigned_to_display) || presentValue(item.assigned_to);
+}
+
+function IncidentDetailField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-[11px] text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 break-words text-sm font-semibold">{value}</dd>
+    </div>
+  );
+}
+
 export function relatedIncidentToOneViewIncident(item: AlertRelatedIncident): OneViewIncident {
   return {
     sys_id: item.sys_id,
@@ -119,15 +147,62 @@ export function relatedIncidentToOneViewIncident(item: AlertRelatedIncident): On
 
 function IncidentCard({
   item,
+  enrich,
+  alertArtifact,
+  mutationsBlocked,
   onOpenIncidentDetail,
+  onClaimed,
 }: {
   item: AlertRelatedIncident;
+  enrich?: boolean;
+  alertArtifact?: AlertArtifactModel | null;
+  mutationsBlocked?: boolean;
   onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
+  onClaimed?: (result: ServiceNowIncidentClaimResponse, incident: AlertRelatedIncident) => void;
 }) {
   const identityConflict = Boolean(item.identity_conflict);
   const url = identityConflict ? null : buildProductionServiceNowIncidentLink(item.sys_id);
   const number = displayValue(item.number);
   const description = String(item.short_description || "").trim();
+  const [detail, setDetail] = useState<OneViewIncident | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const sysId = String(item.sys_id || "").trim();
+
+  useEffect(() => {
+    if (!enrich || !sysId) {
+      setDetail(null);
+      setDetailLoading(false);
+      return;
+    }
+    let active = true;
+    setDetailLoading(true);
+    void fetchIncidentDetail(sysId)
+      .then((next) => {
+        if (active) setDetail(next);
+      })
+      .catch((error: unknown) => {
+        if (!active || isOneViewAbortError(error)) return;
+        setDetail(null);
+      })
+      .finally(() => {
+        if (active) setDetailLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [enrich, sysId]);
+
+  const assigned = assigneeLabel({
+    assigned_to: item.assigned_to || detail?.assigned_to,
+    assigned_to_display: item.assigned_to_display || detail?.assigned_to_display,
+  });
+  const group = presentValue(item.assignment_group_display)
+    || presentValue(item.assignment_group)
+    || presentValue(detail?.assignment_group_display)
+    || presentValue(detail?.assignment_group);
+  const openedAt = detail?.opened_at || detail?.sys_created_on || null;
+  const sla = detail?.sla_summary || detail?.slas?.[0] || null;
+
   return (
     <article className="rounded-lg border border-border/70 bg-muted/15 p-3" aria-label="Chamado relacionado">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -146,10 +221,13 @@ function IncidentCard({
           ) : (
             <p className="font-mono text-sm font-semibold">{number}</p>
           )}
-          <Badge variant="outline" className="text-[10px]">{displayValue(item.state_display, item.state)}</Badge>
-          <Badge variant="secondary" className="text-[10px]">{displayValue(item.priority_display, item.priority)}</Badge>
+          <Badge variant="outline" className="text-[10px]">{displayValue(item.state_display, item.state, detail?.state_display, detail?.state)}</Badge>
+          <Badge variant="secondary" className="text-[10px]">{displayValue(item.priority_display, item.priority, detail?.priority_display, detail?.priority)}</Badge>
+          {!assigned ? (
+            <Badge variant="outline" className="border-amber-300 bg-amber-50 text-[10px] text-amber-800">Sem responsável</Badge>
+          ) : null}
         </div>
-        <p className="text-[11px] text-muted-foreground">Atualizado em {formatDateTime(item.sys_updated_on)}</p>
+        <p className="text-[11px] text-muted-foreground">Atualizado em {formatDateTime(item.sys_updated_on || detail?.sys_updated_on)}</p>
       </div>
       {description ? (
         <p className="mt-2 line-clamp-2 text-sm font-medium leading-5" title={description}>{description}</p>
@@ -157,10 +235,39 @@ function IncidentCard({
       {identityConflict ? (
         <p className="mt-2 text-xs text-destructive">Inconsistência de identidade ServiceNow. Ações temporariamente indisponíveis.</p>
       ) : null}
+
+      <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+        <IncidentDetailField label="Responsável" value={assigned || "Sem responsável"} />
+        <IncidentDetailField label="Grupo" value={group || displayIncidentField(item.assignment_group_display, item.assignment_group)} />
+        {enrich ? (
+          <>
+            <IncidentDetailField label="Abertura" value={openedAt ? formatDateTime(openedAt) : detailLoading ? "Carregando…" : "Indisponível na origem"} />
+            <IncidentDetailField label="Tempo aberto" value={detail?.open_duration_seconds != null ? formatDurationSeconds(detail.open_duration_seconds) : detailLoading ? "Carregando…" : "Indisponível na origem"} />
+            <IncidentDetailField label="SLA" value={sla ? incidentSlaLabel(sla) : detailLoading ? "Carregando…" : "SLA indisponível"} />
+          </>
+        ) : null}
+      </dl>
+
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
-        <p className="min-w-0 truncate text-xs text-muted-foreground">
-          {displayValue(item.assigned_to_display, item.assigned_to)} · {displayValue(item.assignment_group_display, item.assignment_group)}
-        </p>
+        <div className="min-w-0">
+          {!identityConflict ? (
+            <IncidentActions
+              incident={{
+                sys_id: item.sys_id,
+                number: item.number,
+                state: item.state || detail?.state,
+                identity_conflict: identityConflict,
+                assigned_to: item.assigned_to || detail?.assigned_to,
+                assigned_to_display: assigned,
+              }}
+              alertArtifact={alertArtifact}
+              placement="header"
+              visibleActions={["claim"]}
+              mutationsBlocked={mutationsBlocked}
+              onClaimed={(result) => onClaimed?.(result, item)}
+            />
+          ) : null}
+        </div>
         <div className="flex flex-wrap gap-2">
           {onOpenIncidentDetail ? (
             <Button
@@ -205,6 +312,9 @@ type AlertRelatedIncidentsSectionProps = {
   onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
   onTimelineServiceNowReferenceChange?: (reference: AlertTimelineServiceNowReference | null) => void;
   onRelatedIncidentsChange?: (incidents: AlertRelatedIncident[]) => void;
+  alertArtifact?: AlertArtifactModel | null;
+  mutationsBlocked?: boolean;
+  onClaimed?: (result: ServiceNowIncidentClaimResponse, incident: AlertRelatedIncident) => void;
 };
 
 export function AlertRelatedIncidentsSection({
@@ -215,6 +325,9 @@ export function AlertRelatedIncidentsSection({
   onOpenIncidentDetail,
   onTimelineServiceNowReferenceChange,
   onRelatedIncidentsChange,
+  alertArtifact = null,
+  mutationsBlocked = false,
+  onClaimed,
 }: AlertRelatedIncidentsSectionProps) {
   const eligible = isIncidentEligibleSeverity(severity);
   const [loading, setLoading] = useState(false);
@@ -341,11 +454,15 @@ export function AlertRelatedIncidentsSection({
       </div>
       {hasIncidents ? (
         <div className="space-y-3">
-          {incidents.map((item) => (
+          {incidents.map((item, index) => (
             <IncidentCard
               key={item.sys_id || item.number || JSON.stringify(item)}
               item={item}
+              enrich={index === 0}
+              alertArtifact={alertArtifact}
+              mutationsBlocked={mutationsBlocked}
               onOpenIncidentDetail={onOpenIncidentDetail}
+              onClaimed={onClaimed}
             />
           ))}
           {loading ? <OneViewQuietRefreshIndicator className="mt-1" /> : null}

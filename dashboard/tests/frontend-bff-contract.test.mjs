@@ -1024,7 +1024,7 @@ test("rotas dinâmicas e rewrite SPA permanecem compatíveis com Vercel", async 
   assert.match(history, /createOneViewHandler\("alert-history"\)/);
   assert.match(operations, /createOneViewHandler\("operations-health"\)/);
   assert.match(globalHistory, /createOneViewHandler\("history"\)/);
-  assert.deepEqual(vercel.rewrites, [{ source: "/((?!api/.*).*)", destination: "/index.html" }]);
+  assert.deepEqual(vercel.rewrites, [{ source: "/((?!api/.*|assets/.*).*)", destination: "/index.html" }]);
 });
 
 test("alertas possui visualizações Recentes, Em aberto, Prioritários, Esquecidos, Resolvidos e Todos", async () => {
@@ -1233,6 +1233,9 @@ test("desenvolvimento local reconhece rotas V1 sem expor banco ao Vite", async (
   assert.match(localBff, /"alert-detail"/);
   assert.match(localBff, /"alert-history"/);
   assert.match(localBff, /"operations-health"/);
+  assert.match(localBff, /"\/api\/oneview\/servicenow\/me"/);
+  assert.match(localBff, /routeName === "incident-claim"/);
+  assert.match(localBff, /incidents\/\[sysId\]\/claim\.js/);
   assert.match(localCheck, /method: "POST"/);
   assert.match(envExample, /ONEVIEW_ACK_ENABLED=false/);
   assert.match(envExample, /ONEVIEW_ACK_REQUEST_ENABLED=false/);

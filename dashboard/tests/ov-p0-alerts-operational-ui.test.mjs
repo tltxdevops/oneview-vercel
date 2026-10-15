@@ -81,7 +81,12 @@ test("Alertas keeps claim, source ACK and details as fixed quick actions and ful
   assert.match(actions, /aria-label="Assumir chamado"/);
   assert.match(actions, /fetchIncidentDetail\(incident\.sys_id\)/);
   assert.match(actions, /Consulta o estado do chamado ao clicar/);
+  assert.match(actions, /Chamado assumido/);
+  assert.match(actions, /Não foi possível assumir o chamado/);
   assert.match(alertDrawer, /<IncidentDetailDrawer/);
+  assert.match(alertDrawer, /placement="header"/);
+  assert.match(alertDrawer, /visibleActions=\{\["claim"\]\}/);
+  assert.doesNotMatch(alertDrawer, /<div hidden>/);
   assert.equal(detailActions.match(/visibleActions=\{visibleActions\}/g)?.length, 1);
   assert.match(detailActions, /<IncidentActions\s+incident=\{incident\}\s+alertArtifact=\{alertArtifact\}\s+placement=\{placement\}\s+onClaimed=/);
 });

@@ -39,6 +39,8 @@ for (const file of [
   "api/oneview/incidents.js",
   "api/oneview/incidents/detail/[id].js",
   "api/oneview/incidents/related-alert.js",
+  "api/oneview/incidents/[sysId]/claim.js",
+  "api/oneview/servicenow/me.js",
   "api/oneview/alerts/related-incidents.js",
   "api/oneview/operator-queue.js",
   "api/_lib/oneview-incidents.js",
@@ -77,6 +79,8 @@ const routes = new Map([
   ["/api/oneview/links", "links"],
   ["/api/oneview/incidents", "incidents"],
   ["/api/oneview/incidents/related-alert", "incident-related-alert"],
+  ["/api/oneview/servicenow/me", "servicenow-me"],
+  ["/api/oneview/servicenow/put-on-hold-options", "servicenow-put-on-hold-options"],
   ["/api/oneview/operator-queue", "operator-queue"],
   ["/api/oneview/client-sharing/destinations", "client-sharing-destinations"],
   ["/api/oneview/client-sharing/preview", "client-sharing-preview"],
@@ -110,6 +114,18 @@ async function getHandler(routeName) {
             ? path.join("incidents", "related-alert.js")
           : routeName === "alert-related-incidents"
             ? path.join("alerts", "related-incidents.js")
+          : routeName === "servicenow-me"
+            ? path.join("servicenow", "me.js")
+          : routeName === "servicenow-put-on-hold-options"
+            ? path.join("servicenow", "put-on-hold-options.js")
+          : routeName === "incident-claim"
+            ? path.join("incidents", "[sysId]", "claim.js")
+          : routeName === "incident-work-note"
+            ? path.join("incidents", "[sysId]", "work-note.js")
+          : routeName === "incident-put-on-hold"
+            ? path.join("incidents", "[sysId]", "put-on-hold.js")
+          : routeName === "incident-alert-attachment"
+            ? path.join("incidents", "[sysId]", "alert-attachment.js")
           : routeName === "client-sharing-destinations"
             ? path.join("client-sharing", "destinations.js")
           : routeName === "client-sharing-preview"
@@ -131,6 +147,14 @@ function resolveRoute(pathname) {
   if (exact) return { routeName: exact, params: {} };
   const incidentDetail = pathname.match(/^\/api\/oneview\/incidents\/detail\/([^/]+)$/);
   if (incidentDetail) return { routeName: "incident-detail", params: { id: decodeURIComponent(incidentDetail[1]) } };
+  const incidentClaim = pathname.match(/^\/api\/oneview\/incidents\/([^/]+)\/claim$/);
+  if (incidentClaim) return { routeName: "incident-claim", params: { sysId: decodeURIComponent(incidentClaim[1]) } };
+  const incidentWorkNote = pathname.match(/^\/api\/oneview\/incidents\/([^/]+)\/work-note$/);
+  if (incidentWorkNote) return { routeName: "incident-work-note", params: { sysId: decodeURIComponent(incidentWorkNote[1]) } };
+  const incidentPutOnHold = pathname.match(/^\/api\/oneview\/incidents\/([^/]+)\/put-on-hold$/);
+  if (incidentPutOnHold) return { routeName: "incident-put-on-hold", params: { sysId: decodeURIComponent(incidentPutOnHold[1]) } };
+  const incidentAlertAttachment = pathname.match(/^\/api\/oneview\/incidents\/([^/]+)\/alert-attachment$/);
+  if (incidentAlertAttachment) return { routeName: "incident-alert-attachment", params: { sysId: decodeURIComponent(incidentAlertAttachment[1]) } };
   const linkReminders = pathname.match(/^\/api\/oneview\/links\/([^/]+)\/reminders$/);
   if (linkReminders) return { routeName: "link-reminders", params: { id: decodeURIComponent(linkReminders[1]) } };
   const linkDetail = pathname.match(/^\/api\/oneview\/links\/([^/]+)$/);
@@ -156,6 +180,12 @@ function routeTemplate(routeName) {
   if (routeName === "link-detail") return "/api/oneview/links/:id";
   if (routeName === "link-reminders") return "/api/oneview/links/:id/reminders";
   if (routeName === "incident-detail") return "/api/oneview/incidents/detail/:id";
+  if (routeName === "servicenow-me") return "/api/oneview/servicenow/me";
+  if (routeName === "servicenow-put-on-hold-options") return "/api/oneview/servicenow/put-on-hold-options";
+  if (routeName === "incident-claim") return "/api/oneview/incidents/:sysId/claim";
+  if (routeName === "incident-work-note") return "/api/oneview/incidents/:sysId/work-note";
+  if (routeName === "incident-put-on-hold") return "/api/oneview/incidents/:sysId/put-on-hold";
+  if (routeName === "incident-alert-attachment") return "/api/oneview/incidents/:sysId/alert-attachment";
   if (routeName === "operations-health") return "/api/oneview/operations/health";
   if (routeName === "runtime-health") return "/api/oneview/runtime-health";
   if (routeName === "incidents") return "/api/oneview/incidents";
@@ -292,6 +322,7 @@ const server = http.createServer(async (req, res) => {
     if ((route.routeName === "alert-ack-request" && req.method === "POST")
       || (route.routeName === "alert-source-acknowledge" && req.method === "POST")
       || (route.routeName === "link-reminders" && ["POST", "PATCH", "DELETE"].includes(req.method || ""))
+      || (["incident-claim", "incident-work-note", "incident-put-on-hold", "incident-alert-attachment"].includes(route.routeName) && req.method === "POST")
       || (["client-sharing-preview", "client-sharing-send", "client-sharing-smoke"].includes(route.routeName) && req.method === "POST")) {
       try {
         req.body = await readJsonBody(req);

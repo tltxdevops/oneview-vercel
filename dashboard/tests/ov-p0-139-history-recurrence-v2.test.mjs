@@ -53,8 +53,9 @@ test("OV-P0-139 Histórico do detalhe lista só ocorrências anteriores do mesmo
   assert.match(drawer, /filter\(\(item\) => !item\.current\)/);
   assert.match(drawer, /fetchAlerts\(\{/);
   assert.match(drawer, /recurrenceKey/);
-  assert.match(drawer, /<div hidden>/);
+  assert.doesNotMatch(drawer, /<div hidden>/);
   assert.match(drawer, /AlertRelatedIncidentsSection/);
+  assert.match(drawer, /visibleActions=\{\["claim"\]\}/);
   assert.doesNotMatch(drawer, /<AlertRecurrenceInvestigation/);
   assert.doesNotMatch(drawer, /Linha do tempo desta ocorrência/);
   assert.match(investigation, /Recorrência deste alerta/);

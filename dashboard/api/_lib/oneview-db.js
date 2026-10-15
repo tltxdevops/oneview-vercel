@@ -18,6 +18,7 @@ import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
 import { getAckRequestConfig } from "./oneview-ack-request.js";
 import { sourceAckCapability } from "./oneview-source-acknowledge.js";
+import { buildHostNetwork } from "./oneview-host-network.js";
 import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
 import {
   classifyCustomerIntegrity,
@@ -1820,6 +1821,7 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
         a.source_event_id, a.source_problem_id, a.source_trigger_id, a.source_host_id,
         a.source_recovery_event_id,
         a.host_name, a.host_visible_name, a.host_technical_name,
+        host_inventory.interfaces as host_interfaces,
         a.host_groups, a.event_tags, a.trigger_tags, a.host_tags,
         a.service_name, a.item_name, a.item_key, a.trigger_description, a.operational_data,
         a.problem_name,
@@ -1869,6 +1871,9 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
         (select count(*)::int from alert_acknowledgements ack where ack.alert_id = a.id) as acknowledgement_count
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      left join zabbix_host_inventory host_inventory
+        on host_inventory.data_source_id = a.data_source_id
+       and host_inventory.source_host_id = a.source_host_id
       left join lateral (
         select ack.status, ack.requested_at, ack.processed_at, ack.operator_name, ack.result_payload, ack.message
           from alert_acknowledgements ack
@@ -2026,6 +2031,7 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
     generated_at: generatedAt(),
     item: {
       ...item,
+      host_network: buildHostNetwork(row.host_interfaces),
       ...recurrence,
       recurrence_previous,
       same_problem: same_problem ? {

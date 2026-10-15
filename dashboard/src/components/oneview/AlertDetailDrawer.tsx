@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Activity, CheckCircle2, ChevronDown, Clock3, Eye, History, Info, Repeat2 } from "lucide-react";
 import {
   CLASSIFICATION_PENDING_LABEL,
@@ -10,10 +10,6 @@ import {
   normalizeOperationalScope,
   operationalClientLabel,
 } from "@/components/oneview/ClientIdentity";
-import {
-  interfaceFromAlertTags,
-  safeHostIp,
-} from "@/components/oneview/AlertOperationalSummary";
 import { AlertOperationalShareActions } from "@/components/oneview/AlertOperationalShareActions";
 import { AlertOperatorLinkControls } from "@/components/oneview/AlertOperatorLinkControls";
 import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
@@ -23,6 +19,7 @@ import {
   AlertRelatedIncidentsSection,
   relatedIncidentToOneViewIncident,
 } from "@/components/oneview/AlertRelatedIncidentsSection";
+import { IncidentActions } from "@/components/oneview/IncidentActions";
 import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { OneViewErrorBoundary } from "@/components/oneview/OneViewErrorBoundary";
@@ -39,6 +36,7 @@ import {
   OneViewAlert,
   OneViewIncident,
   type AcknowledgeAlertResponse,
+  type ServiceNowIncidentClaimResponse,
   fetchAlerts,
   formatOneViewSeverityLabel,
 } from "@/lib/oneview-api";
@@ -255,6 +253,7 @@ export type AlertDetailDrawerProps = {
   auditEmphasis?: boolean;
   onSourceAckRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
   onSourceAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
+  onIncidentClaimed?: (result?: ServiceNowIncidentClaimResponse) => void;
   liveStateUnavailable?: boolean;
 };
 
@@ -274,6 +273,7 @@ export function AlertDetailDrawer({
   alertsQueueHref = null,
   onSourceAckRequestAccepted,
   onSourceAcknowledged,
+  onIncidentClaimed,
   liveStateUnavailable = false,
 }: AlertDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<AlertDetailDrawerTab>(
@@ -292,9 +292,48 @@ export function AlertDetailDrawer({
     setTimelineServiceNowReference(reference);
   }, []);
 
-  const handleRelatedIncidentsChange = useCallback((items: AlertRelatedIncident[]) => {
-    setRelatedIncidents(items);
+  const claimedIncidentRef = useRef<{
+    number: string;
+    assignee: string | null;
+    group: string | null;
+    state: string | null;
+    updatedOn: string | null;
+  } | null>(null);
+
+  const overlayClaimedIncident = useCallback((items: AlertRelatedIncident[]) => {
+    const claimed = claimedIncidentRef.current;
+    if (!claimed) return items;
+    return items.map((item, index) => {
+      const itemNumber = String(item.number || "").trim().toUpperCase();
+      if (claimed.number && itemNumber !== claimed.number) return item;
+      if (!claimed.number && index !== 0) return item;
+      return {
+        ...item,
+        assigned_to: claimed.assignee,
+        assigned_to_display: claimed.assignee,
+        assignment_group: claimed.group ?? item.assignment_group,
+        assignment_group_display: claimed.group ?? item.assignment_group_display,
+        state: claimed.state ?? item.state,
+        sys_updated_on: claimed.updatedOn ?? item.sys_updated_on,
+      };
+    });
   }, []);
+
+  const handleRelatedIncidentsChange = useCallback((items: AlertRelatedIncident[]) => {
+    setRelatedIncidents(overlayClaimedIncident(items));
+  }, [overlayClaimedIncident]);
+
+  const applyClaimedIncident = useCallback((result: ServiceNowIncidentClaimResponse) => {
+    claimedIncidentRef.current = {
+      number: String(result.incident.incident_number || "").trim().toUpperCase(),
+      assignee: result.incident.assigned_to_name || null,
+      group: result.incident.assignment_group_name || null,
+      state: result.incident.state || null,
+      updatedOn: result.incident.updated_on || null,
+    };
+    setRelatedIncidents((current) => overlayClaimedIncident(current));
+    onIncidentClaimed?.(result);
+  }, [onIncidentClaimed, overlayClaimedIncident]);
 
   const handleCommunicationChange = useCallback((edits: AlertClientCommunicationEdits) => {
     setCommunicationEdits((current) => ({ ...current, ...edits }));
@@ -316,6 +355,7 @@ export function AlertDetailDrawer({
   }, [alert?.id]);
 
   useEffect(() => {
+    claimedIncidentRef.current = null;
     setTimelineServiceNowReference(null);
     setRelatedIncidents([]);
     setCommunicationEdits({});
@@ -394,8 +434,9 @@ export function AlertDetailDrawer({
   const resolved = alert ? isResolvedAlert(alert) : false;
   const visualAlert = alert;
   const temporalInconsistent = alert?.temporal_integrity === "source_clock_inconsistent";
-  const publicIp = alert ? safeHostIp(alert.host_ip) : null;
-  const iface = alert ? interfaceFromAlertTags(alert) : null;
+  const hostNetwork = alert?.host_network || null;
+  const primaryNetworkInterface = hostNetwork?.interfaces.find((item) => item.main) || null;
+  const secondaryIp = hostNetwork?.primary_ip ? null : primaryNetworkInterface?.ip || null;
   const tags = alert ? collectOperationalTags(alert) : [];
   const nestedAlertArtifact = useMemo(() => {
     if (!alert || !nestedIncident) return null;
@@ -444,6 +485,23 @@ export function AlertDetailDrawer({
     }
     return alert?.servicenow_reference || null;
   })();
+  const claimIncident = relatedIncidents.find((item) => item.sys_id || item.number)
+    || (alert?.servicenow_reference?.sys_id || alert?.servicenow_reference?.number
+      ? {
+          sys_id: alert.servicenow_reference.sys_id,
+          number: alert.servicenow_reference.number,
+          identity_conflict: false,
+          assigned_to: null,
+          assigned_to_display: null,
+        }
+      : null);
+  const headerAlertArtifact = alert && claimIncident
+    ? buildAlertArtifactFromOneViewAlert(alert, {
+        number: claimIncident.number,
+        assigned_to: claimIncident.assigned_to,
+        assigned_to_display: claimIncident.assigned_to_display,
+      })
+    : null;
   const fallbackRecurrenceEpisodes: RecurrenceTimelineEpisode[] = alert ? [
     recurrenceEpisodeFromAlert(alert, alert.id),
     ...(alert.recurrence_previous?.occurrence_at ? [{
@@ -507,6 +565,23 @@ export function AlertDetailDrawer({
                     probeEnabled
                   />
                 ) : null}
+                {claimIncident ? (
+                  <IncidentActions
+                    incident={{
+                      sys_id: claimIncident.sys_id,
+                      number: claimIncident.number,
+                      state: "state" in claimIncident ? claimIncident.state : null,
+                      identity_conflict: Boolean(claimIncident.identity_conflict),
+                      assigned_to: claimIncident.assigned_to,
+                      assigned_to_display: claimIncident.assigned_to_display,
+                    }}
+                    alertArtifact={headerAlertArtifact}
+                    placement="header"
+                    visibleActions={["claim"]}
+                    mutationsBlocked={liveStateUnavailable}
+                    onClaimed={applyClaimedIncident}
+                  />
+                ) : null}
                 <AlertOperationalShareActions
                   alert={alert}
                   communication={communication!}
@@ -531,20 +606,8 @@ export function AlertDetailDrawer({
 
               {error ? <OperationalErrorBanner className="mx-6 mt-4 px-3 py-2" message={error} /> : null}
 
-              <div hidden>
-                <AlertRelatedIncidentsSection
-                  sourceEventId={alert.source_event_id}
-                  severity={alert.severity}
-                  historyItems={historyItems}
-                  alert={alert}
-                  onOpenIncidentDetail={(item) => setNestedIncident(relatedIncidentToOneViewIncident(item))}
-                  onTimelineServiceNowReferenceChange={handleTimelineServiceNowReferenceChange}
-                  onRelatedIncidentsChange={handleRelatedIncidentsChange}
-                />
-              </div>
-
               <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
-                <TabsContent value="summary" className="mt-4 space-y-4">
+                <TabsContent value="summary" forceMount className="mt-4 space-y-4 data-[state=inactive]:hidden">
                   <section className="rounded-xl border border-border/70 bg-gradient-to-b from-muted/30 to-background p-4" aria-label="Cabeçalho do alerta">
                     <div className="flex min-w-0 items-start gap-3">
                       <ClientIdentity
@@ -687,6 +750,19 @@ export function AlertDetailDrawer({
                     </section>
                   ) : null}
 
+                  <AlertRelatedIncidentsSection
+                    sourceEventId={alert.source_event_id}
+                    severity={alert.severity}
+                    historyItems={historyItems}
+                    alert={alert}
+                    alertArtifact={headerAlertArtifact}
+                    mutationsBlocked={liveStateUnavailable}
+                    onOpenIncidentDetail={(item) => setNestedIncident(relatedIncidentToOneViewIncident(item))}
+                    onTimelineServiceNowReferenceChange={handleTimelineServiceNowReferenceChange}
+                    onRelatedIncidentsChange={handleRelatedIncidentsChange}
+                    onClaimed={(result) => applyClaimedIncident(result)}
+                  />
+
                   <section aria-label="Informações do alerta" className="rounded-lg border border-border/70 bg-background p-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <h3 className="text-sm font-semibold">Identificação</h3>
@@ -828,8 +904,15 @@ export function AlertDetailDrawer({
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                       <DetailField label="Nome visível" value={displayHostField(alert.host_visible_name) || hostName} />
                       <DetailField label="Nome técnico" value={displayHostField(alert.host_technical_name, ORIGIN_UNAVAILABLE)} />
-                      {publicIp ? <DetailField label="IP" value={publicIp} mono /> : null}
-                      {iface ? <DetailField label="Interface" value={iface} /> : null}
+                      {!hostNetwork?.interfaces.length ? <DetailField label="Rede" value={ORIGIN_UNAVAILABLE} /> : (
+                        <>
+                          {hostNetwork.primary_ip ? <DetailField label="IP principal" value={hostNetwork.primary_ip} mono /> : null}
+                          {hostNetwork.primary_dns ? <DetailField label="DNS" value={hostNetwork.primary_dns} mono /> : null}
+                          {secondaryIp ? <DetailField label="IP secundário" value={secondaryIp} mono /> : null}
+                          <DetailField label="Interface" value={hostNetwork.interface_type || ORIGIN_UNAVAILABLE} />
+                          {hostNetwork.port ? <DetailField label="Porta" value={hostNetwork.port} mono /> : null}
+                        </>
+                      )}
                     </dl>
                   </section>
 
@@ -913,6 +996,7 @@ export function AlertDetailDrawer({
       alertArtifact={nestedAlertArtifact}
       onOpenChange={(next) => { if (!next) setNestedIncident(null); }}
       mutationsBlocked={liveStateUnavailable}
+      onActionComplete={() => onIncidentClaimed?.()}
       description="Consulta rápida sem sair do alerta."
     />
     </>
