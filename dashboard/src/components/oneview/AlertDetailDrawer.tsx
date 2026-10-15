@@ -33,6 +33,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { recoveryEvidenceCaption, suppressionCaption } from "@/lib/oneview-suppression-copy";
 import {
   AlertHistoryItem,
   AlertRelatedIncident,
@@ -407,6 +408,14 @@ export function AlertDetailDrawer({
     : null;
   const originAckKind = sourceAckRowKind(visualAlert);
   const sourceAckLabel = sourceAckRowLabel(originAckKind);
+  const episodeDuration = alert
+    ? (resolved ? (alert.recovery_duration_seconds ?? alert.duration_seconds) : alert.duration_seconds)
+    : null;
+  const episodeDurationDetail = alert?.time_to_ack_seconds == null
+    ? (resolved ? "Até o recovery" : "Problema ainda ativo")
+    : resolved
+      ? `ACK em ${formatDurationSeconds(alert.time_to_ack_seconds)} · recovery confirmou o fim`
+      : `ACK em ${formatDurationSeconds(alert.time_to_ack_seconds)} · problema ainda ativo`;
   const operatorTag = alert ? primaryPersistedOperatorTag(alert) : null;
   const fonteZabbix = alert ? zabbixSourceDisplayName(alert.datasource_name) : "Fonte não identificada";
   const hostVisible = alert ? displayHostField(alert.host_visible_name, canonicalHostName(alert)) : ORIGIN_UNAVAILABLE;
@@ -584,6 +593,8 @@ export function AlertDetailDrawer({
                       <p className="mt-1 break-words text-sm font-semibold leading-5 text-foreground">
                         {String(alert.problem_name || alert.trigger_description || "").trim() || "Alerta sem descrição"}
                       </p>
+                      {suppressionCaption(alert, formatDateTime) ? <p className="mt-1 text-xs text-muted-foreground">{suppressionCaption(alert, formatDateTime)}</p> : null}
+                      {recoveryEvidenceCaption(alert) ? <p className="mt-1 text-xs text-muted-foreground">{recoveryEvidenceCaption(alert)}</p> : null}
                     </div>
                   </section>
 
@@ -598,8 +609,8 @@ export function AlertDetailDrawer({
                     <QuickFact
                       icon={<Clock3 className="h-3.5 w-3.5" />}
                       label="Duração"
-                      value={formatDurationSeconds(alert.duration_seconds)}
-                      detail={resolved ? "Episódio encerrado" : "Episódio atual"}
+                      value={formatDurationSeconds(episodeDuration)}
+                      detail={episodeDurationDetail}
                     />
                     <QuickFact
                       icon={<Repeat2 className="h-3.5 w-3.5" />}
@@ -704,6 +715,9 @@ export function AlertDetailDrawer({
                       <DetailField label="Equipamento" value={hostTechnical === ORIGIN_UNAVAILABLE ? hostVisible : hostTechnical} />
                       <DetailField label="Início" value={formatDateTime(alert.first_seen_at)} />
                       <DetailField label="Estado" value={resolved ? "Resolvido" : "Ativo"} />
+                      <DetailField label="Supressão" value={suppressionCaption(alert, formatDateTime) || "Sem supressão confirmada"} />
+                      {alert.suppression?.maintenance_id ? <DetailField label="Maintenance ID" value={alert.suppression.maintenance_id} /> : null}
+                      {alert.suppression?.user_id ? <DetailField label="Usuário Zabbix" value={alert.suppression.user_id} /> : null}
                     </dl>
                   </section>
 
