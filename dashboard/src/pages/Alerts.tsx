@@ -121,10 +121,11 @@ import {
   prunePinnedByTransitions,
   reconcileLiveTransitions,
   sameLiveTransitionMap,
-  snapshotFromAlert,
+  sourceConfirmedAlertSnapshot,
   toLiveSnapshotMap,
   type LiveTransition,
 } from "@/lib/oneview-live-transition";
+import { recoveryEvidenceCaption, suppressionCaption } from "@/lib/oneview-suppression-copy";
 import { ONEVIEW_SEVERITY_UI } from "@/lib/oneview-severity-visual";
 import {
   ALERTS_DATE_PRESET_OPTIONS,
@@ -172,7 +173,7 @@ import { toast } from "sonner";
 type RecognitionFilter = AlertsAckFilter;
 type OneViewAckFilter = AlertsOneViewAckFilter;
 type StatusFilter = "active" | "resolved" | "all";
-type AlertsView = "recent" | "open" | "priority" | "forgotten" | "resolved" | "all";
+type AlertsView = "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed";
 type SortField = AlertsSortKey | "client" | "datasource" | "host" | "problem" | "status" | "acknowledged_source" | "last_seen_at";
 type SortOrder = "asc" | "desc";
 type TemporalPreset = AlertsDatePreset;
@@ -227,14 +228,20 @@ const ALERT_TABLE_SORT_OPTIONS = [
 type ResolvedTemporalPreset = AlertsDatePreset;
 type HistoryFilter = "all" | "acknowledgements" | "changes" | "recovery" | "legacy";
 
-const ALERTS_VIEWS: Array<{ id: AlertsView; label: string }> = [
-  { id: "recent", label: "Recentes" },
-  { id: "open", label: "Em aberto" },
-  { id: "priority", label: "Prioritários" },
-  { id: "forgotten", label: "Esquecidos" },
-  { id: "resolved", label: "Resolvidos" },
-  { id: "all", label: "Todos" },
+const OPERATIONAL_QUEUES = ["pending", "acknowledged", "suppressed", "history", "unconfirmed"] as const;
+type OperationalQueue = (typeof OPERATIONAL_QUEUES)[number];
+
+const ALERTS_VIEWS: Array<{ id: OperationalQueue; label: string; description: string }> = [
+  { id: "pending", label: "Pendentes de ação", description: "Ativos na origem e sem ACK. Alta e Disaster reconhecidos ficam em Acompanhamento." },
+  { id: "acknowledged", label: "Acompanhamento", description: "Ativos na origem e já reconhecidos, inclusive High e Disaster." },
+  { id: "suppressed", label: "Suprimidos", description: "Problema ativo com supressão válida na origem. ACK e recovery não são supressão." },
+  { id: "history", label: "Histórico", description: "Resolvido com recovery comprovado ou registro legado, distinguido pela evidência." },
+  { id: "unconfirmed", label: "Em revisão", description: "Problemas antigos, órfãos ou inconclusivos. Não são resolvidos nem ocultados apenas pela idade." },
 ];
+
+function isOperationalQueue(view: string): view is OperationalQueue {
+  return (OPERATIONAL_QUEUES as readonly string[]).includes(view);
+}
 
 const ALERT_STATUS_OPTIONS = [
   { value: "active", label: "Ativo" },
@@ -261,26 +268,16 @@ const ONEVIEW_ACK_OPTIONS = [
 
 function inferAlertsView(query: URLSearchParams): AlertsView {
   const explicit = query.get("view");
-  if (explicit === "recent" || explicit === "open" || explicit === "priority" || explicit === "forgotten" || explicit === "resolved" || explicit === "all") {
-    return explicit;
-  }
-  const status = queryEnum(query.get("status"), ["active", "resolved", "all"] as const, "active");
-  const sort = query.get("sort");
-  const order = query.get("order");
-  const severities = query.getAll("severity");
-  if (status === "resolved") return "resolved";
-  if (status === "all") return "all";
-  if (severities.includes("disaster") || severities.includes("high")) return "priority";
-  if (sort === "first_seen_at" && order === "asc") return "forgotten";
-  if (sort === "first_seen_at") return "recent";
-  return "recent";
+  if (explicit && isOperationalQueue(explicit)) return explicit;
+  if (explicit === "resolved" || query.get("status") === "resolved") return "history";
+  return "pending";
 }
 type MetaState = { source?: OneViewDataSourceKind; checkedAt?: string; fallbackCode?: string | null; copyGeneratedAt?: string };
 type SummaryFilter =
-  | "total"
-  | "active"
   | "acknowledged"
   | "pending"
+  | "suppressed"
+  | "unconfirmed"
   | "information"
   | "warning"
   | "average"
@@ -298,9 +295,10 @@ const VISUAL_SEVERITY_STRIP: Array<Exclude<OneViewSeverity, "critical" | "not_cl
 ];
 
 const ALERTS_METRIC_OPTIONS = [
-  { id: "active", label: "Em acompanhamento", defaultSpan: 2 },
-  { id: "acknowledged", label: "Reconhecidos", defaultSpan: 2 },
-  { id: "pending", label: "Pendentes", defaultSpan: 2 },
+  { id: "pending", label: "Pendentes de ação", defaultSpan: 2 },
+  { id: "acknowledged", label: "Em acompanhamento", defaultSpan: 2 },
+  { id: "suppressed", label: "Suprimidos", defaultSpan: 2 },
+  { id: "unconfirmed", label: "Sem confirmação", defaultSpan: 2 },
   { id: "information", label: "Informação", defaultSpan: 1 },
   { id: "warning", label: "Warning", defaultSpan: 1 },
   { id: "average", label: "Average", defaultSpan: 1 },
@@ -314,8 +312,8 @@ const SUMMARY_REFRESH_MS = 10_000;
 const ALERTS_REFRESH_MS = 10_000;
 const EMPTY_HISTORY_ITEMS: AlertHistoryItem[] = [];
 const STABLE_SUMMARY_REFRESH_MS = 30_000;
-/** Dez pulsos verdes de 900ms após ACK/resolução comprovados. */
-const ALERTS_SUCCESS_PULSE_DURATION_MS = 9_000;
+/** Um destaque verde de 1,5s após mudança confirmada pelo backend. */
+const ALERTS_SUCCESS_PULSE_DURATION_MS = 1_500;
 const ALERTS_MISSING_PROOF_LIMIT = 3;
 /** Quinze ciclos vermelhos de 1.2s para alertas novos. */
 const ALERTS_FRESH_ATTENTION_DURATION_MS = 18_000;
@@ -372,9 +370,6 @@ function normalizeAlertResponse(response: AlertListResponse, requestedPage: numb
 }
 
 const severityCatalog = ONEVIEW_SEVERITY_UI;
-
-/** OV-P0-07 backlog: adicionar ordenação composta no BFF: severity → unacknowledged → duration. */
-const PRIORITY_VIEW_NOTE = "Prioritários usa sort=severity no BFF; desempate global por ACK/duração permanece em backlog.";
 
 const severityOrder: OneViewSeverity[] = [...ONEVIEW_V1_FILTER_SEVERITIES];
 
@@ -793,10 +788,11 @@ function isResolvedAlert(alert: OneViewAlert | null | undefined) {
 }
 
 function liveDurationSeconds(alert: OneViewAlert, now: number) {
-  if (isResolvedAlert(alert)) return alert.duration_seconds;
+  if (isResolvedAlert(alert)) return alert.recovery_duration_seconds ?? alert.duration_seconds;
   const startedAt = Date.parse(String(alert.first_seen_at || ""));
-  if (!Number.isFinite(startedAt)) return alert.duration_seconds;
-  return Math.max(0, Math.floor((now - startedAt) / 1000));
+  if (!Number.isFinite(startedAt) || now < startedAt) return alert.duration_seconds;
+  // ACK mede tempo de resposta; não encerra a indisponibilidade.
+  return Math.floor((now - startedAt) / 1000);
 }
 
 function ackRequestAllowedFor(alert: OneViewAlert | null | undefined, requestEnabled: boolean) {
@@ -812,6 +808,8 @@ const temporalDurations: Record<Exclude<ResolvedTemporalPreset, "all" | "custom"
   "24h": 24 * 60 * 60_000,
   "7d": 7 * 24 * 60 * 60_000,
   "30d": 30 * 24 * 60 * 60_000,
+  "90d": 90 * 24 * 60 * 60_000,
+  "365d": 365 * 24 * 60 * 60_000,
 };
 
 const temporalLabels: Record<ResolvedTemporalPreset, string> = {
@@ -824,6 +822,8 @@ const temporalLabels: Record<ResolvedTemporalPreset, string> = {
   "24h": "nas últimas 24 horas",
   "7d": "nos últimos 7 dias",
   "30d": "nos últimos 30 dias",
+  "90d": "nos últimos 90 dias",
+  "365d": "nos últimos 365 dias",
   custom: "no período personalizado",
 };
 
@@ -880,7 +880,7 @@ function rangeFromUrl(params: URLSearchParams, prefix: string): DateRange | unde
 }
 
 function temporalPresetFromUrl(value: string | null): ResolvedTemporalPreset {
-  const allowed = ["all", "15m", "30m", "1h", "2h", "6h", "24h", "7d", "30d", "custom"];
+  const allowed = ["all", "15m", "30m", "1h", "2h", "6h", "24h", "7d", "30d", "90d", "365d", "custom"];
   return allowed.includes(value ?? "") ? value as ResolvedTemporalPreset : "all";
 }
 
@@ -939,11 +939,13 @@ export default function AlertsPage() {
   const [facets, setFacets] = useState<OneViewFacetsResponse | null>(null);
   const [pagination, setPagination] = useState<AlertPagination>(emptyPagination);
   const [filteredSummary, setFilteredSummary] = useState<AlertListResponse["filtered_summary"]>(undefined);
+  const [queueCounts, setQueueCounts] = useState<NonNullable<AlertListResponse["operational_queues"]> | null>(null);
+  const [originSync, setOriginSync] = useState<NonNullable<AlertListResponse["origin_sync"]>>([]);
   const [temporalCounts, setTemporalCounts] = useState<AlertListResponse["temporal_counts"]>(undefined);
   const [snapshotCoverage, setSnapshotCoverage] = useState<{ partial: boolean; total_persisted: number; available_items: number } | null>(null);
 
   const [page, setPage] = useState(() => positiveQueryInteger(initialQuery.get("page"), 1, Number.MAX_SAFE_INTEGER));
-  const [pageSize, setPageSize] = useState(() => Number(queryEnum(initialQuery.get("page_size"), ["25", "50", "100"] as const, "50")));
+  const [pageSize, setPageSize] = useState(() => Number(queryEnum(initialQuery.get("page_size"), ["50", "100"] as const, "50")));
   const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(() => splitLegacyCustomerQuery(initialQuery.getAll("customer")).customers);
   const initialView = inferAlertsView(initialQuery);
   const [sourceAckFilter, setSourceAckFilter] = useState<RecognitionFilter>(() => {
@@ -953,7 +955,6 @@ export default function AlertsPage() {
     if (initialQuery.get("source_ack")) {
       return queryEnum(initialQuery.get("source_ack"), ["all", "acknowledged", "unacknowledged"] as const, "all");
     }
-    if (initialView === "priority" || initialView === "forgotten") return "unacknowledged";
     return "all";
   });
   const [oneviewAckStatuses, setOneviewAckStatuses] = useState<Array<Exclude<OneViewAckFilter, "all">>>(() => (
@@ -966,9 +967,7 @@ export default function AlertsPage() {
   const [alertsView, setAlertsView] = useState<AlertsView>(() => initialView);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => {
     if (initialQuery.get("status")) return queryEnum(initialQuery.get("status"), ["active", "resolved", "all"] as const, "active");
-    if (initialView === "resolved") return "resolved";
-    if (initialView === "all") return "all";
-    return "active";
+    return "all";
   });
   const [incidentStates, setIncidentStates] = useState<string[]>(() => (
     repeatedQueryValues(initialQuery, "incident_state").filter((value) => INCIDENT_STATE_OPTIONS.some((option) => option.value === value))
@@ -984,21 +983,17 @@ export default function AlertsPage() {
     if (initialQuery.get("sort")) {
       return queryEnum(initialQuery.get("sort"), ["last_seen_at", "first_seen_at", "resolved_at", "severity", "client", "datasource", "host", "problem", "duration", "status", "acknowledged_source", "acknowledged_at"] as const, "first_seen_at");
     }
-    if (initialView === "priority") return "severity";
-    if (initialView === "resolved") return "resolved_at";
-    if (initialView === "open" || initialView === "all") return "last_seen_at";
+    if (initialView === "history") return "resolved_at";
     return "first_seen_at";
   });
   const [sortOrder, setSortOrder] = useState<SortOrder>(() => {
     if (initialQuery.get("order")) return queryEnum(initialQuery.get("order"), ["asc", "desc"] as const, "desc");
-    if (initialView === "forgotten") return "asc";
     return "desc";
   });
   const [selectedSeverities, setSelectedSeverities] = useState<OneViewSeverity[]>(() => {
     // OV-P0-102: critical legado entra via expandHighFamilySeverities no fetch — sem chip Critical.
     const fromUrl = initialQuery.getAll("severity").filter(isOneViewSeverity).filter((s) => s !== "critical");
     if (fromUrl.length) return fromUrl;
-    if (initialView === "priority") return ["disaster", "high"];
     return [];
   });
   const [searchField, setSearchField] = useState<AlertsSearchField>(() => {
@@ -1067,7 +1062,6 @@ export default function AlertsPage() {
   const [historyMeta, setHistoryMeta] = useState<MetaState>({});
 
   const [alertsRequestGate] = useState(createLatestRequestGate);
-  const forgottenWaitingRef = useRef(false);
   const healthRef = useRef<OneViewHealthResponse | null>(health);
   healthRef.current = health;
   const alertsRequestIdRef = useRef(0);
@@ -1192,19 +1186,7 @@ export default function AlertsPage() {
     }
     try {
       const requestTime = Date.now();
-      const configuredStale = Number(healthRef.current?.thresholds?.alert_stale_minutes);
-      const staleMinutes = Number.isFinite(configuredStale) && configuredStale > 0 ? configuredStale : null;
-      forgottenWaitingRef.current = alertsView === "forgotten" && staleMinutes == null;
-      if (forgottenWaitingRef.current) {
-        // The forgotten window needs the health threshold; the effect below reloads once it arrives.
-        if (requestId !== alertsRequestIdRef.current) return;
-        if (!options?.quiet) setIsAlertsLoading(true);
-        return;
-      }
-
-      const dateBounds = alertsView === "forgotten"
-        ? { to: new Date(requestTime - (staleMinutes as number) * 60_000).toISOString() }
-        : alertsDateBounds(datePreset, dateRange, requestTime);
+      const dateBounds = alertsDateBounds(datePreset, dateRange, requestTime);
 
       let request: Parameters<typeof fetchAlerts>[0] = {
         page,
@@ -1212,6 +1194,7 @@ export default function AlertsPage() {
         customers: selectedCustomerKeys,
         severities: selectedSeverities,
         status: statusFilter,
+        operationalView: isOperationalQueue(alertsView) ? alertsView : undefined,
         incidentStates,
         incidentNumber: incidentNumber || undefined,
         acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
@@ -1225,10 +1208,8 @@ export default function AlertsPage() {
       };
 
       request = applySearchToFetchParams(request, searchField, debouncedSearch);
-      if (alertsView === "forgotten") {
-        request.firstSeenTo = dateBounds.to;
-      } else if (alertsDateActive(datePreset, dateRange)) {
-        request = applyDateFieldToFetchParams(request, "first_seen", dateBounds);
+      if (alertsDateActive(datePreset, dateRange)) {
+        request = applyDateFieldToFetchParams(request, dateField, dateBounds);
       }
 
       const shouldPrime = !options?.quiet && page === 1;
@@ -1260,9 +1241,10 @@ export default function AlertsPage() {
       const previousAlerts = previousAlertsRef.current;
       const nextAlertMap = new Map(serverAlerts.map((item) => [item.id, item]));
       const provenAlerts = new Map(nextAlertMap);
-      const provenSnapshots = toLiveSnapshotMap(serverAlerts.map((item) => snapshotFromAlert(item)));
+      const provenSnapshots = toLiveSnapshotMap(serverAlerts.map((item) => sourceConfirmedAlertSnapshot(item)));
       const missingIds = [...previousAlerts.keys()].filter((id) => !nextAlertMap.has(id));
-      const shouldProveMissing = statusFilter === "active"
+      const shouldProveMissing = isOperationalQueue(alertsView)
+        || statusFilter === "active"
         || sourceAckFilter === "unacknowledged"
         || oneviewAckStatuses.includes("pending");
 
@@ -1277,13 +1259,13 @@ export default function AlertsPage() {
         for (const proof of proofs) {
           if (proof.status !== "fulfilled" || !proof.value?.id) continue;
           provenAlerts.set(proof.value.id, proof.value);
-          const snapshot = snapshotFromAlert(proof.value);
+          const snapshot = sourceConfirmedAlertSnapshot(proof.value);
           if (snapshot) provenSnapshots.set(snapshot.id, snapshot);
         }
       }
 
       const detectedTransitions = detectLiveTransitions({
-        previousById: toLiveSnapshotMap([...previousAlerts.values()].map((item) => snapshotFromAlert(item))),
+        previousById: toLiveSnapshotMap([...previousAlerts.values()].map((item) => sourceConfirmedAlertSnapshot(item))),
         nextById: provenSnapshots,
         previousSnapshotReady: alertSnapshotReadyRef.current,
         consumedVersionKeys: alertConsumedKeysRef.current,
@@ -1357,6 +1339,8 @@ export default function AlertsPage() {
       setAlerts(normalized.items);
       setPagination(normalized.pagination);
       setFilteredSummary(safeResponse.filtered_summary);
+      if (safeResponse.operational_queues) setQueueCounts(safeResponse.operational_queues);
+      if (safeResponse.origin_sync) setOriginSync(safeResponse.origin_sync);
       setTemporalCounts(safeResponse.temporal_counts);
       setSnapshotCoverage(safeResponse.snapshot_coverage ?? null);
       setAlertsMeta(metaOf(safeResponse));
@@ -1366,16 +1350,16 @@ export default function AlertsPage() {
       alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
     } catch (error) {
       if (controller.signal.aborted || isOneViewAbortError(error)) return;
-      setAlertsError("Não foi possível carregar os alertas.");
+      setAlertsError("A sincronização não respondeu. A fila anterior foi mantida; isso não significa que não existam alertas.");
     } finally {
       alertsRequestGate.finish(controller);
-      if (requestId === alertsRequestIdRef.current && !forgottenWaitingRef.current) setIsAlertsLoading(false);
+      if (requestId === alertsRequestIdRef.current) setIsAlertsLoading(false);
       if (searchIntent && alertSearchIntent.current?.id === searchIntent.id) {
         alertSearchIntent.current = null;
         setAlertSearchLoading(false);
       }
     }
-  }, [ackActorFilter, alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1482,30 +1466,14 @@ export default function AlertsPage() {
   }, [loadAlerts, loadSelectedAlert, loadSummaryResources, selectedAlertId]);
 
   useEffect(() => {
-    if (alertsView !== "forgotten" && !hasLoadedAlerts) return;
+    if (!hasLoadedAlerts) return;
     void loadSummaryResources();
-  }, [alertsView, hasLoadedAlerts, loadSummaryResources]);
+  }, [hasLoadedAlerts, loadSummaryResources]);
 
   useEffect(() => {
     void loadAlerts();
     return () => alertsRequestGate.abort();
   }, [alertsRequestGate, loadAlerts]);
-
-  const configuredForgottenMinutes = Number(health?.thresholds?.alert_stale_minutes);
-  const forgottenThresholdReady = Number.isFinite(configuredForgottenMinutes) && configuredForgottenMinutes > 0;
-  useEffect(() => {
-    if (alertsView !== "forgotten" || !forgottenWaitingRef.current) return;
-    if (forgottenThresholdReady) {
-      forgottenWaitingRef.current = false;
-      void loadAlerts();
-      return;
-    }
-    if (!isSummaryLoading && (health != null || summaryError)) {
-      forgottenWaitingRef.current = false;
-      setIsAlertsLoading(false);
-      setAlertsError("Não foi possível determinar o limite de alertas esquecidos.");
-    }
-  }, [alertsView, forgottenThresholdReady, health, isSummaryLoading, loadAlerts, summaryError]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1585,7 +1553,7 @@ export default function AlertsPage() {
   const fallbackCode = [...primaryMetas, detailMeta, historyMeta].find((meta) => meta.source === "snapshot" && meta.fallbackCode)?.fallbackCode;
 
   const severityCounts = Object.fromEntries((metrics?.by_severity ?? []).map((item) => [item.severity, item.count]));
-  const hasTemporalFilter = alertsView !== "forgotten" && alertsDateActive(datePreset, dateRange);
+  const hasTemporalFilter = alertsDateActive(datePreset, dateRange);
   const hasActiveListFilters = Boolean(
     selectedCustomerKeys.length
     || selectedSeverities.length
@@ -1596,27 +1564,13 @@ export default function AlertsPage() {
     || Boolean(incidentNumber)
     || Boolean(hostColumnSearch)
     || Boolean(problemColumnSearch)
-    || statusFilter !== "active"
+    || statusFilter !== "all"
     || debouncedSearch
-    || hasTemporalFilter
-    || alertsView === "forgotten",
+    || hasTemporalFilter,
   );
   const listTotal = pagination.total_items;
-  // Indicadores refletem os mesmos filtros da lista (filtered_summary do BFF).
+  // Contadores das filas vêm do mesmo escopo BFF, sem reaproveitar "todos ativos".
   // Erro/ausência => "—"; zero válido => 0.
-  const activeTotal = filteredSummary
-    ? filteredSummary.active
-    : (alertsAreCopy || hasActiveListFilters ? null : (metrics?.active_total ?? health?.counts?.active_alerts ?? null));
-  const pendingTotal = filteredSummary
-    ? filteredSummary.operational_pending
-    : (alertsAreCopy || hasActiveListFilters ? null : (metrics ? (metrics.unacknowledged_total ?? 0) : null));
-  const acknowledgedTotal = filteredSummary
-    ? filteredSummary.acknowledged_source
-    : (hasActiveListFilters
-      ? null
-      : (activeTotal == null || pendingTotal == null
-        ? null
-        : Math.max(Number(activeTotal) - Number(pendingTotal), 0)));
   const temporalDescription = hasActiveListFilters ? "Nos filtros atuais" : null;
   const formatCardValue = (value: number | null | undefined) => formatNullableCount(value);
   const severitySummary = useMemo(
@@ -1636,22 +1590,28 @@ export default function AlertsPage() {
   // OV-P0-17 / OV-P0-41: indicadores operacionais + severidades na mesma faixa oficial.
   const operationalCards = [
     {
-      filter: "active" as const,
-      title: "Em acompanhamento",
-      value: activeTotal,
-      description: temporalDescription ?? "Ocorrências atualmente mantidas como ativas no OneView.",
+      filter: "pending" as const,
+      title: "Pendentes de ação",
+      value: queueCounts?.pending ?? null,
+      description: temporalDescription ?? "Ativos na origem, sem ACK e sem supressão vigente.",
     },
     {
       filter: "acknowledged" as const,
-      title: "Reconhecidos",
-      value: acknowledgedTotal,
-      description: temporalDescription ?? "Reconhecidos na origem",
+      title: "Em acompanhamento",
+      value: queueCounts?.acknowledged ?? null,
+      description: temporalDescription ?? "Reconhecidos na origem e ainda abertos.",
     },
     {
-      filter: "pending" as const,
-      title: "Pendentes",
-      value: pendingTotal,
-      description: temporalDescription ?? "Ativos sem ACK na origem",
+      filter: "suppressed" as const,
+      title: "Suprimidos",
+      value: queueCounts?.suppressed ?? null,
+      description: temporalDescription ?? "Ativos com supressão confirmada na origem.",
+    },
+    {
+      filter: "unconfirmed" as const,
+      title: "Sem confirmação",
+      value: queueCounts?.unconfirmed ?? null,
+      description: temporalDescription ?? "Estados inconclusivos mantidos para revisão.",
     },
   ];
   const severityCards = VISUAL_SEVERITY_STRIP.map((severity) => ({
@@ -1668,9 +1628,9 @@ export default function AlertsPage() {
   };
   const summaryCards = [...operationalCards, ...severityCards, notClassifiedCard];
   const summaryTone = (filter: SummaryFilter): "neutral" | "danger" | "success" | "warning" | "info" => {
-    if (filter === "active" || filter === "high" || filter === "disaster") return "danger";
+    if (filter === "high" || filter === "disaster") return "danger";
     if (filter === "acknowledged") return "success";
-    if (filter === "pending" || filter === "warning" || filter === "average") return "warning";
+    if (filter === "pending" || filter === "unconfirmed" || filter === "warning" || filter === "average") return "warning";
     if (filter === "information") return "info";
     return "neutral";
   };
@@ -1710,18 +1670,20 @@ export default function AlertsPage() {
     return safeDisplayText(selected?.name, "cliente selecionado");
   }, [customerCards, selectedCustomerKeys]);
 
+  const operationalQueue = isOperationalQueue(alertsView) ? alertsView : undefined;
   const fetchAlertTableSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
       q,
       limit: 10,
       customers: selectedCustomerKeys,
       severities: selectedSeverities,
-      status: statusFilter,
+      status: operationalQueue ? "all" : statusFilter,
+      operationalView: operationalQueue,
       acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
       oneviewAckStatuses,
       signal,
     }).then((response) => response.suggestions ?? [])
-  ), [oneviewAckStatuses, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const localCustomerSearchSuggestions = useMemo(() => customerCards
     .filter((customer) => customer.key !== "all")
@@ -1739,43 +1701,47 @@ export default function AlertsPage() {
       limit: 8,
       customers: selectedCustomerKeys,
       severities: selectedSeverities,
-      status: statusFilter,
+      status: operationalQueue ? "all" : statusFilter,
+      operationalView: operationalQueue,
       acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
       oneviewAckStatuses,
       kind: "actor",
       signal,
     }).then((response) => (response.suggestions ?? []).filter((item) => item.kind === "actor"))
-  ), [oneviewAckStatuses, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const fetchHostColumnSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
       q, kind: "host", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
-      status: statusFilter, problemSearch: problemColumnSearch || undefined, incidentStates,
+      status: operationalQueue ? "all" : statusFilter,
+      operationalView: operationalQueue, problemSearch: problemColumnSearch || undefined, incidentStates,
       incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
       acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
-  ), [ackActorFilter, incidentNumber, incidentStates, oneviewAckStatuses, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [ackActorFilter, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const fetchProblemColumnSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
       q, kind: "problem", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
-      status: statusFilter, hostSearch: hostColumnSearch || undefined, incidentStates,
+      status: operationalQueue ? "all" : statusFilter,
+      operationalView: operationalQueue, hostSearch: hostColumnSearch || undefined, incidentStates,
       incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
       acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
-  ), [ackActorFilter, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [ackActorFilter, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const fetchIncidentNumberSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
       q, kind: "number", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
-      status: statusFilter, hostSearch: hostColumnSearch || undefined, problemSearch: problemColumnSearch || undefined,
+      status: operationalQueue ? "all" : statusFilter,
+      operationalView: operationalQueue, hostSearch: hostColumnSearch || undefined, problemSearch: problemColumnSearch || undefined,
       incidentStates, oneviewAckStatuses,
       acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
-  ), [ackActorFilter, hostColumnSearch, incidentStates, oneviewAckStatuses, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [ackActorFilter, hostColumnSearch, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const applyAckActorFilter = useCallback((value: string) => {
     const next = value.trim().slice(0, 160);
@@ -1791,7 +1757,7 @@ export default function AlertsPage() {
       remove: () => setSelectedCustomerKeys((current) => current.filter((item) => item !== customerKey)),
     })),
     ...selectedSeverities.map((severity) => ({ key: `severity:${severity}`, label: severityCatalog[severity].label, remove: () => setSelectedSeverities((current) => current.filter((item) => item !== severity)) })),
-    statusFilter !== "active" ? { label: `Status: ${statusFilter === "resolved" ? "Resolvidos" : "Todos"}`, remove: () => setStatusFilter("active") } : null,
+    statusFilter !== "all" ? { label: `Status: ${statusFilter === "resolved" ? "Resolvidos" : "Ativos"}`, remove: () => setStatusFilter("all") } : null,
     ...incidentStates.map((value) => ({ key: `incident-state:${value}`, label: `Chamado: ${INCIDENT_STATE_OPTIONS.find((option) => option.value === value)?.label ?? value}`, remove: () => setIncidentStates((current) => current.filter((item) => item !== value)) })),
     incidentNumber ? { label: `Chamado: ${incidentNumber}`, remove: () => { setIncidentNumber(""); setIncidentNumberDraft(""); } } : null,
     sourceAckFilter !== "all" ? { label: `ACK origem: ${sourceAckFilter === "acknowledged" ? "Com ACK" : "Sem ACK"}`, remove: () => setSourceAckFilter("all") } : null,
@@ -1815,18 +1781,17 @@ export default function AlertsPage() {
     transitions: alertTransitions,
     passesFilter: () => true,
     filter: {
-      hideAcknowledged: sourceAckFilter === "unacknowledged" || oneviewAckStatuses.includes("pending"),
-      hideResolved: statusFilter === "active",
+      hideAcknowledged: alertsView === "pending" || sourceAckFilter === "unacknowledged" || oneviewAckStatuses.includes("pending"),
+      hideResolved: alertsView === "pending" || alertsView === "acknowledged" || (statusFilter === "active" && !isOperationalQueue(alertsView)),
       hideAssigned: false,
     },
   }).slice(0, pageSize);
 
-  const hasVisibleActiveAlerts = displayedAlerts.some((alert) => !isResolvedAlert(alert));
   useEffect(() => {
-    if (!hasVisibleActiveAlerts) return undefined;
+    if (!displayedAlerts.some((alert) => !isResolvedAlert(alert))) return undefined;
     const timer = window.setInterval(() => setDurationNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [hasVisibleActiveAlerts]);
+  }, [displayedAlerts]);
 
   const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
@@ -1911,8 +1876,8 @@ export default function AlertsPage() {
     setOneviewAckStatuses([]);
     setAckActorFilter("");
     setAckActorDraft("");
-    setAlertsView("recent");
-    setStatusFilter("active");
+    setAlertsView("pending");
+    setStatusFilter("all");
     setIncidentStates([]);
     setIncidentNumber("");
     setIncidentNumberDraft("");
@@ -1931,57 +1896,20 @@ export default function AlertsPage() {
   };
 
   const applyAlertsView = (view: AlertsView) => {
+    if (!isOperationalQueue(view)) return;
     setAlertsView(view);
     setPage(1);
-    setSourceAckFilter("all");
-    setDateRange(undefined);
-    if (view === "recent") {
-      setStatusFilter("all");
-      setSelectedSeverities([]);
-      setDatePreset("all");
-      setSortField("first_seen_at");
-      setSortOrder("desc");
-      return;
-    }
-    if (view === "open") {
-      setStatusFilter("active");
-      setSelectedSeverities([]);
-      setDatePreset("all");
-      setSortField("last_seen_at");
-      setSortOrder("desc");
-      return;
-    }
-    if (view === "priority") {
-      void PRIORITY_VIEW_NOTE;
-      setStatusFilter("active");
-      setSelectedSeverities(["disaster", "high"]);
-      setSourceAckFilter("unacknowledged");
-      setDatePreset("all");
-      setSortField("severity");
-      setSortOrder("desc");
-      return;
-    }
-    if (view === "forgotten") {
-      setStatusFilter("active");
-      setSelectedSeverities([]);
-      setSourceAckFilter("unacknowledged");
-      setDatePreset("all");
-      setSortField("first_seen_at");
-      setSortOrder("asc");
-      return;
-    }
-    if (view === "resolved") {
-      setStatusFilter("resolved");
-      setSelectedSeverities([]);
-      setDatePreset("all");
+    if (view === "history") {
       setSortField("resolved_at");
       setSortOrder("desc");
       return;
     }
-    setStatusFilter("all");
-    setSelectedSeverities([]);
-    setDatePreset("all");
-    setSortField("last_seen_at");
+    if (view === "acknowledged" || view === "suppressed") {
+      setSortField("last_seen_at");
+      setSortOrder("desc");
+      return;
+    }
+    setSortField("first_seen_at");
     setSortOrder("desc");
   };
 
@@ -2002,14 +1930,7 @@ export default function AlertsPage() {
       setPage(1);
       return;
     }
-    setSelectedSeverities([]);
-    setSourceAckFilter(filter === "acknowledged" ? "acknowledged" : filter === "pending" ? "unacknowledged" : "all");
-    setStatusFilter(filter === "total" ? "all" : filter === "active" ? "active" : hasTemporalFilter ? statusFilter : "active");
-    setAlertsView(filter === "total" ? "all" : "open");
-    setSortField("last_seen_at");
-    setSortOrder("desc");
-    setSearchQuery("");
-    setPage(1);
+    applyAlertsView(filter);
   };
 
   const summaryFilterIsActive = (filter: SummaryFilter) => {
@@ -2025,11 +1946,7 @@ export default function AlertsPage() {
       return selectedSeverities.length === 1 && selectedSeverities[0] === filter;
     }
     if (selectedSeverities.length > 0) return false;
-    if (filter === "total") return statusFilter === "all" && sourceAckFilter === "all";
-    if (filter === "active") return statusFilter === "active" && sourceAckFilter === "all";
-    if (filter === "acknowledged") return statusFilter === "active" && sourceAckFilter === "acknowledged";
-    if (filter === "pending") return statusFilter === "active" && sourceAckFilter === "unacknowledged";
-    return false;
+    return alertsView === filter;
   };
 
   const toggleCustomer = (key: string) => {
@@ -2292,7 +2209,7 @@ export default function AlertsPage() {
       selectedKeys={selectedCustomerKeys}
       selectedLabel={selectedCustomerLabel}
       onToggle={toggleCustomer}
-      countNoun={customerFilterCountNoun(alertsView === "priority" ? "prioritary" : "filter")}
+      countNoun={customerFilterCountNoun("filter")}
       triggerClassName="h-9 w-full min-w-0 max-w-none justify-between"
     />
   );
@@ -2315,7 +2232,7 @@ export default function AlertsPage() {
     <AppLayout
       enableAutoRefresh={false}
       showRefreshMeta={false}
-      clientSelect={<PageHeader title="Alertas" />}
+      clientSelect={<PageHeader title="Central de Alertas" />}
       contentClassName="gap-2 p-2 sm:p-3"
       wallboard={dashboard.isWallboard}
     >
@@ -2364,27 +2281,34 @@ export default function AlertsPage() {
               <p className="ov-type-caption text-muted-foreground">
                 {alertsAreCopy
                   ? "Cópia da fila. Não é o estado operacional atual."
-                  : alertsView === "forgotten"
-                  ? "Alertas ativos sem ACK acima do tempo esperado."
-                  : "Fila por cliente para ação imediata"}
+                  : (ALERTS_VIEWS.find((item) => item.id === alertsView)?.description ?? "Fila operacional")}
+                {originSync.some((item) => item.last_success_at)
+                  ? ` · Último sync ${formatSnapshotCopyClock(originSync.map((item) => item.last_success_at).filter((value): value is string => Boolean(value)).sort().at(-1) || "")}`
+                  : " · Último sync da origem sem registro"}
                 {isAlertsFilling
                   ? " · Exibindo os mais recentes · carregando o restante…"
                   : isAlertsLoading && hasTemporalFilter
                     ? " · Aplicando filtro de período…"
-                    : ` · Exibindo ${firstVisible.toLocaleString("pt-BR")}–${lastVisible.toLocaleString("pt-BR")} de ${listTotal.toLocaleString("pt-BR")} ${statusFilter === "resolved" ? "alertas resolvidos" : "alertas"}`}
+                    : ` · Exibindo ${firstVisible.toLocaleString("pt-BR")}–${lastVisible.toLocaleString("pt-BR")} de ${listTotal.toLocaleString("pt-BR")} alertas`}
                 {snapshotCoverage?.partial ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos` : ""}
               </p>
             </div>
-            <Tabs value={alertsView} onValueChange={(value) => applyAlertsView(value as AlertsView)}>
-              <TabsList aria-label="Visualizações de alertas" className="h-9 justify-start overflow-x-auto">
+            <Tabs value={isOperationalQueue(alertsView) ? alertsView : "pending"} onValueChange={(value) => applyAlertsView(value as AlertsView)}>
+              <TabsList aria-label="Filas operacionais de alertas" className="h-9 justify-start overflow-x-auto">
                 {ALERTS_VIEWS.map((view) => (
                   <TabsTrigger key={view.id} value={view.id} className="h-7">
                     {view.label}
+                    {queueCounts ? <span className="ml-1 tabular-nums text-muted-foreground">{queueCounts[view.id].toLocaleString("pt-BR")}</span> : null}
                   </TabsTrigger>
                 ))}
               </TabsList>
             </Tabs>
           </div>
+          {originSync.some((item) => item.stale) ? (
+            <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100" role="status">
+              Sincronização desatualizada em {originSync.filter((item) => item.stale).map((item) => item.datasource_name).join(", ")}. Os alertas ativos sem ACK continuam em Pendentes e nada foi marcado como resolvido.
+            </p>
+          ) : null}
         </header>
 
         <ConfigurableTableToolbar
@@ -2505,7 +2429,7 @@ export default function AlertsPage() {
 
               <OperationalFilterSection title="Exibição" gridClassName="lg:grid-cols-4">
                 <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Itens por página
-                  <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
+                  <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
                 </label>
               </OperationalFilterSection>
             </div>
@@ -2555,7 +2479,15 @@ export default function AlertsPage() {
                     <OperationalEmptyState
                       compact
                       icon={<CircleAlert className="h-7 w-7" />}
-                      title={hasLoadedAlerts ? "Nenhum alerta corresponde aos filtros selecionados." : "Carregando fila operacional..."}
+                      title={alertsError
+                        ? "A fila não foi atualizada porque a sincronização não respondeu."
+                        : !hasLoadedAlerts
+                          ? "Carregando fila operacional..."
+                          : originSync.some((item) => item.stale)
+                            ? "Nenhum alerta nesta fila. A sincronização da origem está desatualizada, então a ausência não confirma recuperação."
+                            : alertsView === "pending"
+                              ? "Nenhum alerta pendente de ação."
+                              : "Nenhum alerta nesta fila para os filtros atuais."}
                     />
                   </TableCell>
                 </TableRow>
@@ -2577,10 +2509,10 @@ export default function AlertsPage() {
                   operational_scope_label: alert.operational_scope_label,
                 });
                 const problemLabel = safeDisplayText(alert.problem_name, "Alerta sem descrição", 220);
-                const durationSeconds = liveDurationSeconds(alert, durationNow);
-                const durationLabel = Number.isFinite(Number(durationSeconds)) && Number(durationSeconds) >= 0
-                  ? formatDurationSeconds(Number(durationSeconds))
-                  : "—";
+                const durationLabel = formatDurationSeconds(liveDurationSeconds(alert, durationNow));
+                const suppressionText = suppressionCaption(alert, formatDateTime);
+                const legacyText = recoveryEvidenceCaption(alert);
+                const ackWait = alert.time_to_ack_seconds == null ? "" : ` · até o ACK ${formatDurationSeconds(alert.time_to_ack_seconds)}`;
                 const alertCells: Record<AlertTableColumnId, ReactNode> = {
                   severity: (
                     <TableCell key="severity" className="text-left">
@@ -2602,6 +2534,8 @@ export default function AlertsPage() {
                         <TooltipTrigger asChild>
                           <div className="min-w-0">
                             <p className="truncate ov-type-body font-medium">{problemLabel}</p>
+                            {suppressionText ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{suppressionText}</p> : null}
+                            {legacyText ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{legacyText}</p> : null}
                             {alert.operator_link ? (
                               <p className="mt-0.5 truncate text-[11px] font-medium text-primary">
                                 Link de operadora{[alert.operator_link.carrier_name, alert.operator_link.link_type, alert.operator_link.site_name].filter(Boolean).length
@@ -2616,9 +2550,9 @@ export default function AlertsPage() {
                     </TableCell>
                   ),
                   started: <TableCell key="started" className="text-left font-mono ov-type-caption text-muted-foreground">{alert.first_seen_at ? formatDateTime(alert.first_seen_at) : "—"}</TableCell>,
-                  duration: <TableCell key="duration" className="text-right font-mono ov-type-caption tabular-nums text-muted-foreground">{durationLabel}</TableCell>,
+                  duration: <TableCell key="duration" className="text-right font-mono ov-type-caption tabular-nums text-muted-foreground" title={isResolved ? "Duração até o recovery" : "Duração do problema ativo"}>{durationLabel}</TableCell>,
                   ack: (
-                    <TableCell key="ack" className="overflow-hidden text-left">{(() => { const ack = sourceAckPresentation(alert); if (ack.status === "pending") return <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />; if (ack.status !== "acknowledged") return <OneViewSemanticStatusBadge status="incident-closed" label="Sem ACK" />; const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido"; return <Tooltip><TooltipTrigger asChild><span className="inline-flex max-w-full"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" /></span></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}</TooltipContent></Tooltip>; })()}</TableCell>
+                    <TableCell key="ack" className="overflow-hidden text-left">{(() => { const ack = sourceAckPresentation(alert); if (ack.status === "pending") return <OneViewSemanticStatusBadge status="incident-waiting" label="Pendente" />; if (ack.status !== "acknowledged") return <OneViewSemanticStatusBadge status="incident-closed" label="Sem ACK" />; const ackLabel = ack.actorLabel ? `Reconhecido por ${ack.actorLabel}` : "Reconhecido"; return <Tooltip><TooltipTrigger asChild><span className="inline-flex max-w-full"><OneViewSemanticStatusBadge status="incident-resolved" label="Reconhecido" /></span></TooltipTrigger><TooltipContent side="top" className="max-w-xs break-words">{ackLabel}{ack.at ? ` · ${formatDateTime(ack.at)}` : ""}{ackWait}</TooltipContent></Tooltip>; })()}</TableCell>
                   ),
                   incident: <TableCell key="incident" className="text-left"><AlertServiceNowReferenceCell reference={alert.servicenow_reference} /></TableCell>,
                   status: <TableCell key="status" className="text-left"><OneViewSemanticStatusBadge status={isActive ? "monitoring-down" : "monitoring-normalized"} label={isActive ? "Ativo" : "Resolvido"} /></TableCell>,
@@ -2663,7 +2597,7 @@ export default function AlertsPage() {
                       selectedAlertId === alert.id && "bg-muted/60",
                       attentionTone === "high" && "ov-alert-fresh-attention-high",
                       attentionTone === "disaster" && "ov-alert-fresh-attention-disaster",
-                      liveTransition && "ov-alert-success-transition",
+                      liveTransition && "ov-alert-queue-confirm",
                     )}
                   >
                     {alertTableLayout.visibleColumns.map((column) => alertCells[column.id])}

@@ -17,6 +17,8 @@ export type AlertsDatePreset =
   | "24h"
   | "7d"
   | "30d"
+  | "90d"
+  | "365d"
   | "custom";
 export type AlertsSortKey =
   | "first_seen_at"
@@ -59,6 +61,8 @@ export const ALERTS_DATE_PRESET_OPTIONS: Array<{ id: Exclude<AlertsDatePreset, "
   { id: "24h", label: "Últimas 24 horas" },
   { id: "7d", label: "Últimos 7 dias" },
   { id: "30d", label: "Últimos 30 dias" },
+  { id: "90d", label: "Últimos 90 dias" },
+  { id: "365d", label: "Últimos 365 dias" },
 ];
 
 const DATE_PRESET_MS: Record<Exclude<AlertsDatePreset, "all" | "custom">, number> = {
@@ -70,6 +74,8 @@ const DATE_PRESET_MS: Record<Exclude<AlertsDatePreset, "all" | "custom">, number
   "24h": 24 * 60 * 60_000,
   "7d": 7 * 24 * 60 * 60_000,
   "30d": 30 * 24 * 60 * 60_000,
+  "90d": 90 * 24 * 60 * 60_000,
+  "365d": 365 * 24 * 60 * 60_000,
 };
 
 function isCalendarDateOnly(value: Date) {
@@ -171,8 +177,8 @@ export const ALERT_LIST_INCLUDE_ITEMS = "items";
 export const ALERT_LIST_INCLUDE_SUMMARY = "summary,temporal";
 
 export const DEFAULT_ALERTS_FETCH = {
-  view: "recent",
-  status: "active" as const,
+  view: "pending",
+  status: "all" as const,
   dateField: "first_seen" as const,
   datePreset: "all" as const,
   sort: "first_seen_at" as const,
@@ -186,6 +192,7 @@ export function defaultAlertsFetchParams(now = Date.now()): FetchAlertsParams {
     page: DEFAULT_ALERTS_FETCH.page,
     pageSize: DEFAULT_ALERTS_FETCH.pageSize,
     status: DEFAULT_ALERTS_FETCH.status,
+    operationalView: "pending" as const,
     sort: DEFAULT_ALERTS_FETCH.sort,
     order: DEFAULT_ALERTS_FETCH.order,
   }, DEFAULT_ALERTS_FETCH.dateField, alertsDateBounds(DEFAULT_ALERTS_FETCH.datePreset, undefined, now));
