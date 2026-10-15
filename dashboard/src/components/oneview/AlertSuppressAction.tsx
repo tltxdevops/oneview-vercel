@@ -19,6 +19,8 @@ import {
 } from "@/lib/oneview-suppress-flow";
 
 const POLL_LIMIT = 8;
+const SUPPRESS_WRITES_ENABLED = false;
+const SUPPRESS_UNAVAILABLE = "Escrita desligada até o canário real";
 
 function errorCode(error: unknown) {
   return error && typeof error === "object" && "code" in error ? String((error as { code?: string }).code || "") : "";
@@ -63,6 +65,7 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
   }
 
   async function openDialog() {
+    if (!SUPPRESS_WRITES_ENABLED) return;
     setOpen(true);
     setUi("checking");
     setDetail(null);
@@ -160,11 +163,30 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
     }
   }
 
+  const operator = alert.suppression?.user_id ? `usuário ${alert.suppression.user_id}` : "não identificado";
+  const removeReason = alert.suppression?.state === "active" && alert.suppression.origin === "manual"
+    ? "Remover supressão indisponível até o canário"
+    : "Remover supressão indisponível: período manual não identificado";
+
   return (
     <>
-      <OneViewButton type="button" variant={variant === "row" ? "ghost" : "secondary"} size="sm" onClick={(event) => { event.stopPropagation(); void openDialog(); }}>
-        Suprimir alerta
-      </OneViewButton>
+      <div className="flex max-w-xs flex-col items-start gap-1" onClick={(event) => event.stopPropagation()}>
+        <OneViewButton
+          type="button"
+          variant={variant === "row" ? "ghost" : "secondary"}
+          size="sm"
+          disabled
+          aria-disabled="true"
+          title={SUPPRESS_UNAVAILABLE}
+          onClick={(event) => { event.stopPropagation(); if (SUPPRESS_WRITES_ENABLED) void openDialog(); }}
+        >
+          {variant === "row" ? "Suprimir" : "Suprimir alerta"}
+        </OneViewButton>
+        <p className="text-xs text-muted-foreground">{SUPPRESS_UNAVAILABLE}</p>
+        <p className="text-xs text-muted-foreground">Supressão vigente: {existing}</p>
+        <p className="text-xs text-muted-foreground">Operador: {operator}</p>
+        <p className="text-xs text-muted-foreground">{removeReason}</p>
+      </div>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
