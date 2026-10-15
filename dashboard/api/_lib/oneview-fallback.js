@@ -17,6 +17,14 @@ import {
   safeCustomerIdentity,
 } from "./oneview-db.js";
 import { deriveOperationalScope } from "./oneview-operational-scope.js";
+import {
+  OPERATIONAL_QUEUE_VIEWS,
+  classifyOperationalQueue,
+  describeSuppression,
+  recoveryDurationSeconds,
+  recoveryEvidenceOf,
+  timeToAckSeconds,
+} from "./oneview-operational-queue.js";
 import { emptyAlertRecurrenceReadModel } from "./oneview-recurrence.js";
 import { getOperationalDataSourceNames } from "./oneview-scope.js";
 import { deriveAlertTemporalIntegrity } from "./oneview-temporal-integrity.js";
@@ -72,7 +80,7 @@ function snapshotAlert(alert, generatedAt) {
     host_technical_name: alert.host_technical_name,
     host_groups: alert.host_groups,
   });
-  return {
+  const normalized = {
     id: String(alert.id || ""),
     data_source_id: String(alert.data_source_id || ""),
     datasource_name: String(alert.datasource_name || alert.client_name || "Datasource OneView"),
@@ -130,9 +138,17 @@ function snapshotAlert(alert, generatedAt) {
     resolved_at: alert.resolved_at || null,
     source_recovery_event_id: alert.source_recovery_event_id ? String(alert.source_recovery_event_id) : null,
     duration_seconds: temporal.duration_seconds,
+    recovery_duration_seconds: recoveryDurationSeconds(alert),
+    time_to_ack_seconds: timeToAckSeconds(alert),
     temporal_integrity: temporal.temporal_integrity,
     created_at: alert.created_at || alert.first_seen_at || generatedAt,
     updated_at: alert.updated_at || alert.last_seen_at || generatedAt,
+  };
+  return {
+    ...normalized,
+    suppression: describeSuppression(normalized),
+    operational_queue: classifyOperationalQueue(normalized),
+    recovery_evidence: recoveryEvidenceOf(normalized),
   };
 }
 
@@ -334,6 +350,11 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
     });
   }
 
+  const queueScopeItems = [...items];
+  if (filters.operationalView) {
+    items = items.filter((item) => classifyOperationalQueue(item) === filters.operationalView);
+  }
+
   const severityRank = { disaster: 7, critical: 6, high: 5, average: 4, warning: 3, information: 2, not_classified: 1 };
   const valueOf = (item) => {
     if (filters.sort === "severity") return severityRank[item.severity] ?? 0;
@@ -408,6 +429,18 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
     generated_at: snapshot.generated_at,
     items: include.items ? filteredItems.slice(offset, offset + pageSize) : [],
     ...(include.summary ? { filtered_summary: filteredSummary } : {}),
+    ...(include.summary ? {
+      operational_queues: Object.fromEntries(OPERATIONAL_QUEUE_VIEWS.map((view) => [
+        view,
+        queueScopeItems.filter((item) => classifyOperationalQueue(item) === view).length,
+      ])),
+    } : {}),
+    origin_sync: (snapshot.data_sources || []).map((source) => ({
+      datasource_name: String(source.name || "Datasource OneView"),
+      state: "unknown",
+      stale: false,
+      last_success_at: source.last_success_at || source.last_sync_at || null,
+    })),
     ...(include.temporal ? {
       temporal_counts: {
         created: temporalGroup("first_seen_at"),

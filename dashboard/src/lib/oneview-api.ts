@@ -682,12 +682,33 @@ export interface OneViewAlert {
   suppressed: boolean;
   suppressed_until: string | null;
   maintenance_status: string | null;
+  suppression?: {
+    state: "active" | "expired" | "none" | "unavailable";
+    confirmation?: "confirmed" | "unconfirmed";
+    explicit_unconfirmed?: boolean;
+    origin: "maintenance" | "manual" | "unspecified" | null;
+    maintenance_id: string | null;
+    user_id: string | null;
+    started_at?: string | null;
+    suppress_until: string | null;
+    suppress_until_kind?: "finite" | "indefinite" | "unknown" | "unsupported" | null;
+    remaining_seconds?: number | null;
+    evidence: "problem_get" | "column" | "conflict" | "unavailable";
+  };
+  operational_queue?: "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed";
+  recovery_evidence?: "proven" | "legacy" | null;
   first_seen_at: string;
   started_at?: string;
   last_seen_at: string;
   resolved_at: string | null;
   source_recovery_event_id: string | null;
+  datasource_last_success_at?: string | null;
+  datasource_sync_state?: "fresh" | "stale" | "failed" | "unknown";
   duration_seconds: number | null;
+  /** Seconds from first_seen_at to resolved_at. Null while the problem is open. */
+  recovery_duration_seconds?: number | null;
+  /** Seconds from first_seen_at to the source acknowledgement. */
+  time_to_ack_seconds?: number | null;
   temporal_integrity?: "source_clock_inconsistent" | null;
   created_at: string;
   updated_at: string;
@@ -753,6 +774,19 @@ export interface AlertListResponse extends OneViewResponseMeta {
     /** Fora da faixa visual das cinco severidades. */
     not_classified: number;
   };
+  operational_queues?: {
+    pending: number;
+    acknowledged: number;
+    suppressed: number;
+    history: number;
+    unconfirmed: number;
+  };
+  origin_sync?: Array<{
+    datasource_name: string;
+    state: "fresh" | "stale" | "failed" | "unknown";
+    stale: boolean;
+    last_success_at: string | null;
+  }>;
   temporal_counts?: {
     created: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
     updated: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
@@ -1192,6 +1226,7 @@ export interface FetchAlertsParams {
   customerConfidences?: Array<"high" | "medium" | "low" | "unclassified">;
   severities?: string[];
   status?: "active" | "resolved" | "all";
+  operationalView?: "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed";
   incidentState?: string;
   incidentStates?: string[];
   incidentNumber?: string;
@@ -1237,6 +1272,7 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
+  if (params?.operationalView) search.set("operational_view", params.operationalView);
   if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
   else if (params?.incidentState) search.set("incident_state", params.incidentState);
   if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());
@@ -1736,6 +1772,7 @@ function appendAlertScopeQueryParams(search: URLSearchParams, params?: FetchAler
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
+  if (params?.operationalView) search.set("operational_view", params.operationalView);
   if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
   else if (params?.incidentState) search.set("incident_state", params.incidentState);
   if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());

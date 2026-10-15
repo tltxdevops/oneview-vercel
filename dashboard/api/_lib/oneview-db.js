@@ -18,6 +18,16 @@ import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
 import { getAckRequestConfig } from "./oneview-ack-request.js";
 import { sourceAckCapability } from "./oneview-source-acknowledge.js";
+import {
+  classifyOperationalQueue,
+  describeDatasourceSync,
+  describeSuppression,
+  isOperationalQueueView,
+  operationalQueueSql,
+  recoveryDurationSeconds,
+  recoveryEvidenceOf,
+  timeToAckSeconds,
+} from "./oneview-operational-queue.js";
 import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
 import {
   classifyCustomerIntegrity,
@@ -799,7 +809,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const datasources = [...new Set([...rawDatasources, ...splitCustomers.datasources])];
   const customerConfidences = queryValues(req, "customer_confidence").map((value) => value.toLowerCase());
   const severities = queryValues(req, "severity").map((value) => value.toLowerCase());
-  const status = (oneQueryValue(req, "status") || "active").toLowerCase();
+  const operationalView = oneQueryValue(req, "operational_view").toLowerCase();
+  const status = (oneQueryValue(req, "status") || (operationalView ? "all" : "active")).toLowerCase();
   const acknowledged = oneQueryValue(req, "acknowledged").toLowerCase();
   const acknowledgedSource = oneQueryValue(req, "acknowledged_source").toLowerCase();
   const acknowledgedInternal = oneQueryValue(req, "acknowledged_internal").toLowerCase();
@@ -831,6 +842,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (severities.some((value) => !ALERT_SEVERITIES.has(value))) throw requestError("invalid_query");
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
   if (!["active", "resolved", "all"].includes(status)) throw requestError("invalid_query");
+  if (operationalView && !isOperationalQueueView(operationalView)) throw requestError("invalid_query");
   if (acknowledged && !["true", "false"].includes(acknowledged)) throw requestError("invalid_query");
   if (acknowledgedSource && !["true", "false"].includes(acknowledgedSource)) throw requestError("invalid_query");
   if (acknowledgedInternal && !["true", "false"].includes(acknowledgedInternal)) throw requestError("invalid_query");
@@ -875,6 +887,10 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
     push("coalesce(a.customer_confidence, 'unclassified') = any(?::text[])", customerConfidences);
   }
   if (severities.length) push("a.severity = any(?::text[])", severities);
+  // operational_view defines the queue; status remains an optional intersection.
+  // status_internal alone never selects history.
+  const viewClause = operationalView ? operationalQueueSql(operationalView) : null;
+  if (viewClause) clauses.push(viewClause);
   if (status === "active") clauses.push(ACTIVE_ALERT_SQL);
   if (status === "resolved") clauses.push(RESOLVED_ALERT_SQL);
   // OV-P0-248: Home only. /alertas remains unfiltered unless it explicitly opts in.
@@ -968,6 +984,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (acknowledgedFrom) push("a.acknowledged_at >= ?", acknowledgedFrom);
   if (acknowledgedTo) push("a.acknowledged_at <= ?", acknowledgedTo);
 
+  const scopeClauses = viewClause ? clauses.filter((clause) => clause !== viewClause) : clauses;
   const direction = order.toUpperCase();
   const nullableSort = sort === "resolved_at" || sort === "acknowledged_at" ? " nulls last" : "";
   const secondarySql = sortSecondary
@@ -982,6 +999,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
     params,
     baseParams,
     baseWhereSql,
+    scopeParams: params,
+    scopeWhereSql: scopeClauses.length ? `where ${scopeClauses.join(" and ")}` : "",
     whereSql: clauses.length ? `where ${clauses.join(" and ")}` : "",
     orderSql: `${ALERT_SORTS[sort]} ${direction}${nullableSort}, ${secondarySql}, a.id desc`,
     filters: {
@@ -991,6 +1010,7 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       customerConfidences,
       severities,
       status,
+      operationalView,
       acknowledged,
       acknowledgedSource,
       acknowledgedInternal,
@@ -1171,6 +1191,8 @@ function mapAlertRows(rows) {
   return rows.map((row) => {
     const hosts = operationalHostFields(row);
     const temporal = deriveAlertTemporalIntegrity(row);
+    const suppression = describeSuppression(row);
+    const datasourceSync = describeDatasourceSync(row);
     const enrichmentState = classifyAlertEnrichment(row);
     const customerIdentity = safeCustomerIdentity(row);
     const scopeCustomer = customerIdentity.unidentified
@@ -1259,15 +1281,22 @@ function mapAlertRows(rows) {
         syncEnabled: row.sync_enabled,
       }),
       oneview_ack: oneViewAckReadModel(row),
-      suppressed: Boolean(row.suppressed),
-      suppressed_until: isoDate(row.suppressed_until),
+      suppressed: suppression.state === "active",
+      suppressed_until: suppression.suppress_until || isoDate(row.suppressed_until),
       maintenance_status: nullableText(sanitizeText(row.maintenance_status, "", 80)),
+      suppression,
+      operational_queue: classifyOperationalQueue(row),
+      recovery_evidence: recoveryEvidenceOf(row),
       first_seen_at: isoDate(row.first_seen_at, generatedAt()),
       started_at: isoDate(row.first_seen_at, generatedAt()),
       last_seen_at: isoDate(row.last_seen_at, generatedAt()),
       resolved_at: isoDate(row.resolved_at),
       source_recovery_event_id: nullableText(sanitizeText(row.source_recovery_event_id, "", 120)),
+      datasource_last_success_at: datasourceSync.last_success_at,
+      datasource_sync_state: datasourceSync.state,
       duration_seconds: temporal.duration_seconds,
+      recovery_duration_seconds: recoveryDurationSeconds(row),
+      time_to_ack_seconds: timeToAckSeconds(row),
       temporal_integrity: temporal.temporal_integrity,
       created_at: isoDate(row.created_at ?? row.first_seen_at, generatedAt()),
       updated_at: isoDate(row.updated_at ?? row.last_seen_at, generatedAt()),
@@ -1489,7 +1518,10 @@ function alertTemporalCounts(row) {
 }
 
 async function fetchAlertList(req, config, dataSourceNames) {
-  const { page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql, include } = buildAlertListQuery(
+  const {
+    page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql, include,
+    scopeParams, scopeWhereSql,
+  } = buildAlertListQuery(
     req,
     dataSourceNames,
   );
@@ -1605,9 +1637,23 @@ async function fetchAlertList(req, config, dataSourceNames) {
           a.suppressed,
           a.suppressed_until,
           a.maintenance_status,
+          a.payload_normalized->>'suppressed' as payload_suppressed,
+          a.payload_normalized->>'suppressed_source' as payload_suppressed_source,
+          a.payload_normalized->>'suppression_confirmation' as payload_suppression_confirmation,
+          a.payload_normalized->>'suppression_origin' as payload_suppression_origin,
+          a.payload_normalized->>'suppression_maintenance_id' as payload_suppression_maintenance_id,
+          a.payload_normalized->>'suppression_user_id' as payload_suppression_user_id,
+          a.payload_normalized->>'suppress_until' as payload_suppress_until,
+          a.payload_normalized->>'suppress_until_kind' as payload_suppress_until_kind,
+          a.payload_normalized->'suppression_data' as payload_suppression_data,
           a.first_seen_at,
           a.last_seen_at,
           a.resolved_at,
+          a.source_recovery_event_id,
+          d.last_success_at,
+          d.last_sync_at,
+          d.last_sync_status,
+          d.sync_interval_seconds,
           a.duration_seconds,
           a.created_at,
           a.updated_at
@@ -1625,17 +1671,38 @@ async function fetchAlertList(req, config, dataSourceNames) {
         limit $${params.length + 1}
         offset $${params.length + 2}
       `;
+  const queueSql = `
+      select
+        count(*) filter (where ${operationalQueueSql("pending")})::int as pending,
+        count(*) filter (where ${operationalQueueSql("acknowledged")})::int as acknowledged,
+        count(*) filter (where ${operationalQueueSql("suppressed")})::int as suppressed,
+        count(*) filter (where ${operationalQueueSql("history")})::int as history,
+        count(*) filter (where ${operationalQueueSql("unconfirmed")})::int as unconfirmed
+      from alerts a
+      join data_sources d on d.id = a.data_source_id
+      ${scopeWhereSql}
+    `;
+  const syncSql = `
+      select d.name, d.last_success_at, d.last_sync_at, d.last_sync_status, d.sync_interval_seconds
+        from data_sources d
+       where d.name = any($1::text[])
+       order by d.display_order, d.name
+    `;
   const read = await withOneViewReadonlyTransaction(config, async (query) => {
     const summaryResult = include.summary ? await query(summarySql, params) : null;
+    const queueResult = include.summary ? await query(queueSql, scopeParams) : null;
+    const syncResult = include.summary ? await query(syncSql, [operationalDataSourceNames(dataSourceNames)]) : null;
     const temporalResult = include.temporal ? await query(temporalSql, baseParams) : null;
     const itemResult = include.items ? await query(itemsSql, [...params, pageSize, offset]) : null;
     return {
       summaryRow: summaryResult?.rows?.[0] || null,
+      queueRow: queueResult?.rows?.[0] || null,
+      syncRows: syncResult?.rows || [],
       temporalRow: temporalResult?.rows?.[0] || null,
       itemRows: itemResult?.rows || [],
     };
   }, { req, operation: "alerts_list" });
-  const { summaryRow, temporalRow, itemRows } = read;
+  const { summaryRow, queueRow, syncRows, temporalRow, itemRows } = read;
 
   const items = include.items ? mapAlertRows(itemRows) : [];
   const itemCount = items.length;
@@ -1662,6 +1729,24 @@ async function fetchAlertList(req, config, dataSourceNames) {
     },
   };
   if (include.summary) payload.filtered_summary = alertFilteredSummary(summaryRow);
+  if (include.summary && queueRow) {
+    payload.operational_queues = {
+      pending: integerValue(queueRow.pending, 0),
+      acknowledged: integerValue(queueRow.acknowledged, 0),
+      suppressed: integerValue(queueRow.suppressed, 0),
+      history: integerValue(queueRow.history, 0),
+      unconfirmed: integerValue(queueRow.unconfirmed, 0),
+    };
+  }
+  payload.origin_sync = syncRows.map((row) => {
+    const sync = describeDatasourceSync(row);
+    return {
+      datasource_name: textValue(row.name),
+      state: sync.state,
+      stale: sync.stale,
+      last_success_at: sync.last_success_at,
+    };
+  });
   if (include.temporal) payload.temporal_counts = alertTemporalCounts(temporalRow);
   return payload;
 }
@@ -1859,6 +1944,15 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
         oneview_ack.result_payload ->> 'reason' as oneview_ack_reason,
         oneview_ack.message as oneview_ack_message,
         a.suppressed, a.suppressed_until, a.maintenance_status,
+        a.payload_normalized->>'suppressed' as payload_suppressed,
+        a.payload_normalized->>'suppressed_source' as payload_suppressed_source,
+        a.payload_normalized->>'suppression_confirmation' as payload_suppression_confirmation,
+        a.payload_normalized->>'suppression_origin' as payload_suppression_origin,
+        a.payload_normalized->>'suppression_maintenance_id' as payload_suppression_maintenance_id,
+        a.payload_normalized->>'suppression_user_id' as payload_suppression_user_id,
+        a.payload_normalized->>'suppress_until' as payload_suppress_until,
+        a.payload_normalized->>'suppress_until_kind' as payload_suppress_until_kind,
+        a.payload_normalized->'suppression_data' as payload_suppression_data,
         a.first_seen_at, a.last_seen_at, a.resolved_at, a.duration_seconds,
         a.created_at, a.updated_at,
         ((select count(*)::int from alert_history h where h.alert_id = a.id)
