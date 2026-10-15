@@ -324,10 +324,10 @@ export function OneViewTableSearchField({
   return (
     <Popover open={showPopover}>
       <PopoverAnchor asChild>
-        <label className={cn("relative min-w-[15rem] flex-1", className)}>
+        <div className={cn("relative block w-full min-w-0 flex-1", className)}>
           <Search
             aria-hidden="true"
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            className="pointer-events-none absolute left-3 top-1/2 z-[1] h-4 w-4 -translate-y-1/2 text-muted-foreground"
           />
           <Input
             id={inputId}
@@ -357,7 +357,7 @@ export function OneViewTableSearchField({
               if (event.key === "Escape") setFocused(false);
             }}
             placeholder={placeholder}
-            className={cn("h-9 pl-9", activityLabel && "pr-36 sm:pr-48")}
+            className={cn("h-9 w-full min-w-0 pl-9", activityLabel && "pr-36 sm:pr-48")}
             aria-label={ariaLabel}
             aria-expanded={showPopover}
             autoComplete="off"
@@ -374,7 +374,7 @@ export function OneViewTableSearchField({
               className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground"
             />
           ) : null}
-        </label>
+        </div>
       </PopoverAnchor>
       <PopoverContent
         align="start"

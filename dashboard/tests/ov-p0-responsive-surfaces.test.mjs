@@ -28,10 +28,10 @@ test("Operational filters adapt between wide desktop popover and compact bottom 
   assert.match(panel, /max-h-\[82dvh\]/);
   assert.match(panel, /overlayClassName="bg-black\/40"/);
   assert.match(panel, /COMPACT_FILTER_BREAKPOINT = 1024/);
-  assert.match(panel, /align="center"/);
+  assert.match(panel, /align="end"/);
   assert.match(panel, /width: "min\(58rem, calc\(100vw - 2rem\)\)"/);
   assert.match(panel, /maxHeight: "min\(78dvh, var\(--radix-popover-content-available-height\)\)"/);
-  assert.match(panel, /repeat\(auto-fit,minmax\(min\(100%,12rem\),1fr\)\)/);
+  assert.match(panel, /grid min-w-0 grid-cols-1 items-end/);
   assert.match(tools, /OperationalFilterPanel/);
   assert.match(tools, /lg:grid-cols-\[minmax\(18rem,1fr\)_auto\]/);
 });

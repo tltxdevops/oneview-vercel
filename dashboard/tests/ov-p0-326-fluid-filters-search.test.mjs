@@ -17,6 +17,8 @@ test("OV-P0-326 search is local-first, bounded, cached and abortable", async () 
   assert.match(field, /aria-label=\{`\$\{isClient \? "Cliente"/);
   assert.match(field, /event\.key === "ArrowDown"/);
   assert.match(field, /orderedSuggestions\[activeSuggestionIndex\]/);
+  assert.match(field, /relative block w-full min-w-0/);
+  assert.match(field, /h-9 w-full min-w-0 pl-9/);
 });
 
 test("OV-P0-326 Alerts applies client autocomplete additively and severity is multi-select", async () => {
@@ -26,6 +28,10 @@ test("OV-P0-326 Alerts applies client autocomplete additively and severity is mu
   assert.match(alerts, /isSearchSuggestionSelected/);
   assert.match(alerts, /repita para adicionar outros/);
   assert.match(alerts, /OperationalFacetMultiSelect/);
+  assert.match(alerts, /gridClassName="lg:grid-cols-3"/);
+  assert.match(alerts, /gridClassName="lg:grid-cols-4"/);
+  assert.match(alerts, /lg:col-span-2">Analista do ACK/);
+  assert.match(alerts, /triggerClassName="h-9 w-full min-w-0 max-w-none/);
   assert.doesNotMatch(alerts, /ZabbixSourceFilter|Campo de data|selectedDatasources/);
 });
 

@@ -11,7 +11,7 @@ export function oneViewAckStatusLabel(status: OneViewAckStatus | string | null |
   if (status === "success") return "Reconhecido";
   if (status === "cancelled") return "Cancelado";
   if (status === "failed") return "Falhou";
-  return "NÃ£o reconhecido";
+  return "Não reconhecido";
 }
 
 export function sourceAckIsPending(alert: OneViewAlert | null | undefined): boolean {

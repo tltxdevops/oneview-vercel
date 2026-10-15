@@ -2293,7 +2293,7 @@ export default function AlertsPage() {
       selectedLabel={selectedCustomerLabel}
       onToggle={toggleCustomer}
       countNoun={customerFilterCountNoun(alertsView === "priority" ? "prioritary" : "filter")}
-      triggerClassName="h-9 w-full justify-between"
+      triggerClassName="h-9 w-full min-w-0 max-w-none justify-between"
     />
   );
   const configurableSummaryItems = alertsMetrics.visibleMetrics.flatMap((metric) => {
@@ -2438,10 +2438,10 @@ export default function AlertsPage() {
             label: "Ordenar alertas",
           }}
           filters={(
-            <div className="grid min-w-0 grid-cols-1 gap-x-4 gap-y-3 lg:grid-cols-4">
-              <OperationalFilterSection title="Escopo" className="lg:col-span-4 [&>div]:lg:grid-cols-3">
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Severidade
+            <div className="grid min-w-0 grid-cols-1 gap-y-4">
+              <OperationalFilterSection title="Escopo" gridClassName="lg:grid-cols-3">
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Cliente{clientSelector}</label>
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Severidade
                   <OperationalFacetMultiSelect
                     label="Severidade"
                     options={severityOrder.map((severity) => ({ value: severity, label: severityCatalog[severity].label }))}
@@ -2451,25 +2451,25 @@ export default function AlertsPage() {
                     searchPlaceholder="Buscar severidade..."
                   />
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Estado
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Estado
                   <OperationalFacetMultiSelect label="Estado" options={ALERT_STATUS_OPTIONS} selectedValues={statusFilter === "all" ? [] : [statusFilter]} onChange={(values) => { setStatusFilter(values.length === 1 ? values[0] : "all"); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar estado..." />
                 </label>
               </OperationalFilterSection>
 
-              <OperationalFilterSection title="Chamado e ACK" className="lg:col-span-4 [&>div]:lg:grid-cols-4">
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Número do chamado
-                  <OneViewTableSearchField value={incidentNumberDraft} onChange={(value) => setIncidentNumberDraft(value.toUpperCase().slice(0, 40))} onSubmit={commitIncidentNumber} onSuggestionSelect={(suggestion) => suggestion.kind === "number" && commitIncidentNumber(suggestion.value)} fetchSuggestions={fetchIncidentNumberSuggestions} placeholder="Pesquisar INC..." ariaLabel="Filtrar número do chamado" className="w-full" />
+              <OperationalFilterSection title="Chamado e ACK" gridClassName="lg:grid-cols-4">
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Número do chamado
+                  <OneViewTableSearchField value={incidentNumberDraft} onChange={(value) => setIncidentNumberDraft(value.toUpperCase().slice(0, 40))} onSubmit={commitIncidentNumber} onSuggestionSelect={(suggestion) => suggestion.kind === "number" && commitIncidentNumber(suggestion.value)} fetchSuggestions={fetchIncidentNumberSuggestions} placeholder="Pesquisar INC..." ariaLabel="Filtrar número do chamado" className="w-full min-w-0" />
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Estado do chamado
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Estado do chamado
                   <OperationalFacetMultiSelect label="Estado do chamado" options={INCIDENT_STATE_OPTIONS} selectedValues={incidentStates} onChange={(values) => { setIncidentStates(values); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar estado..." />
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">ACK da origem
-                  <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="acknowledged">Com ACK</SelectItem><SelectItem value="unacknowledged">Sem ACK</SelectItem></SelectContent></Select>
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">ACK da origem
+                  <Select value={sourceAckFilter} onValueChange={(value) => { setSourceAckFilter(value as RecognitionFilter); setPage(1); }}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos</SelectItem><SelectItem value="acknowledged">Com ACK</SelectItem><SelectItem value="unacknowledged">Sem ACK</SelectItem></SelectContent></Select>
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Status do ACK OneView
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Status do ACK OneView
                   <OperationalFacetMultiSelect label="Status do ACK OneView" options={ONEVIEW_ACK_OPTIONS} selectedValues={oneviewAckStatuses} onChange={(values) => { setOneviewAckStatuses(values); setPage(1); }} allLabel="Todos" searchPlaceholder="Buscar status..." />
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Analista do ACK
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground lg:col-span-2">Analista do ACK
                   <OneViewTableSearchField
                     value={ackActorDraft}
                     onChange={setAckActorDraft}
@@ -2482,30 +2482,30 @@ export default function AlertsPage() {
                     ariaLabel="Pesquisar analista do ACK"
                     normalizeInc={false}
                     getSuggestionActionLabel={(suggestion) => suggestion.kind === "actor" ? "Filtrar analista" : null}
-                    className="w-full"
+                    className="w-full min-w-0"
                   />
                 </label>
               </OperationalFilterSection>
 
-              <OperationalFilterSection title="Busca e período" className="lg:col-span-4 [&>div]:lg:grid-cols-4">
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Campo da busca
-                  <Select value={searchField} onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SEARCH_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
+              <OperationalFilterSection title="Busca e período" gridClassName="lg:grid-cols-4">
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Campo da busca
+                  <Select value={searchField} onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SEARCH_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Período do início
-                  <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado</SelectItem></SelectContent></Select>
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Período do início
+                  <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado</SelectItem></SelectContent></Select>
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Host
-                  <OneViewTableSearchField value={hostColumnDraft} onChange={setHostColumnDraft} onSubmit={commitHostColumnSearch} onSuggestionSelect={(suggestion) => suggestion.kind === "host" && commitHostColumnSearch(suggestion.value)} fetchSuggestions={fetchHostColumnSuggestions} placeholder="Pesquisar host..." ariaLabel="Filtrar host" normalizeInc={false} className="w-full" />
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Host
+                  <OneViewTableSearchField value={hostColumnDraft} onChange={setHostColumnDraft} onSubmit={commitHostColumnSearch} onSuggestionSelect={(suggestion) => suggestion.kind === "host" && commitHostColumnSearch(suggestion.value)} fetchSuggestions={fetchHostColumnSuggestions} placeholder="Pesquisar host..." ariaLabel="Filtrar host" normalizeInc={false} className="w-full min-w-0" />
                 </label>
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Problema
-                  <OneViewTableSearchField value={problemColumnDraft} onChange={setProblemColumnDraft} onSubmit={commitProblemColumnSearch} onSuggestionSelect={(suggestion) => suggestion.kind === "problem" && commitProblemColumnSearch(suggestion.value)} fetchSuggestions={fetchProblemColumnSuggestions} placeholder="Pesquisar problema..." ariaLabel="Filtrar problema" normalizeInc={false} className="w-full" />
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Problema
+                  <OneViewTableSearchField value={problemColumnDraft} onChange={setProblemColumnDraft} onSubmit={commitProblemColumnSearch} onSuggestionSelect={(suggestion) => suggestion.kind === "problem" && commitProblemColumnSearch(suggestion.value)} fetchSuggestions={fetchProblemColumnSuggestions} placeholder="Pesquisar problema..." ariaLabel="Filtrar problema" normalizeInc={false} className="w-full min-w-0" />
                 </label>
                 {datePreset === "custom" ? <div className="min-w-0 [grid-column:1/-1]"><Calendar className="mx-auto max-w-full" mode="range" numberOfMonths={1} locale={ptBR} selected={dateRange} onSelect={(range) => { setDateRange(range); setPage(1); }} /></div> : null}
               </OperationalFilterSection>
 
-              <OperationalFilterSection title="Exibição" className="lg:col-span-1">
-                <label className="min-w-0 space-y-1 text-xs text-muted-foreground">Itens por página
-                  <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
+              <OperationalFilterSection title="Exibição" gridClassName="lg:grid-cols-4">
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Itens por página
+                  <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25</SelectItem><SelectItem value="50">50</SelectItem><SelectItem value="100">100</SelectItem></SelectContent></Select>
                 </label>
               </OperationalFilterSection>
             </div>

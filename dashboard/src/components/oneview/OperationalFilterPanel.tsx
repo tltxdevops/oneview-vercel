@@ -123,7 +123,7 @@ export function OperationalFilterPanel({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild><FilterTrigger activeFilterCount={activeFilterCount} /></PopoverTrigger>
       <PopoverContent
-        align="center"
+        align="end"
         sideOffset={8}
         collisionPadding={8}
         style={{
@@ -144,7 +144,7 @@ export function OperationalFilterPanel({
 
 export function OperationalFilterGrid({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn("grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2", className)}>
+    <div className={cn("grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-2", className)}>
       {children}
     </div>
   );
@@ -154,15 +154,17 @@ export function OperationalFilterSection({
   title,
   children,
   className,
+  gridClassName,
 }: {
   title: string;
   children: ReactNode;
   className?: string;
+  gridClassName?: string;
 }) {
   return (
     <section className={cn("min-w-0 space-y-2", className)}>
       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
-      <OperationalFilterGrid>{children}</OperationalFilterGrid>
+      <OperationalFilterGrid className={gridClassName}>{children}</OperationalFilterGrid>
     </section>
   );
 }
