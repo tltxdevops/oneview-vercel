@@ -335,7 +335,9 @@ test("UI keeps 50/100 pagination, long age filters and recovery-based duration",
   assert.match(query, /id: "90d"/);
   assert.match(query, /id: "365d"/);
   assert.match(alerts, /ACK mede tempo de resposta; não encerra a indisponibilidade/);
-  assert.match(drawer, /recovery confirmou o fim/);
-  assert.match(drawer, /problema ainda ativo/);
+  assert.match(drawer, /Até o recovery/);
+  assert.match(drawer, /Problema ainda ativo/);
+  assert.match(drawer, /Tempo até ACK/);
+  assert.doesNotMatch(drawer, /recovery confirmou o fim/);
   assert.doesNotMatch(drawer, /value=\{formatDurationSeconds\(alert\.recovery_duration_seconds\)\}/);
 });

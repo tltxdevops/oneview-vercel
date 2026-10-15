@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Activity, CheckCircle2, ChevronDown, Clock3, Eye, History, Info, Repeat2 } from "lucide-react";
 import {
   CLASSIFICATION_PENDING_LABEL,
@@ -17,6 +17,8 @@ import {
 import { AlertOperationalShareActions } from "@/components/oneview/AlertOperationalShareActions";
 import { AlertOperatorLinkControls } from "@/components/oneview/AlertOperatorLinkControls";
 import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
+import { AlertSuppressUnavailable } from "@/components/oneview/AlertSuppressUnavailable";
+import { IncidentActions } from "@/components/oneview/IncidentActions";
 import { AlertRecurrenceSignal } from "@/components/oneview/AlertRecurrenceSignal";
 import { AlertSameProblemContext } from "@/components/oneview/AlertRecurrenceInvestigation";
 import {
@@ -40,6 +42,7 @@ import {
   OneViewAlert,
   OneViewIncident,
   type AcknowledgeAlertResponse,
+  type ServiceNowIncidentClaimResponse,
   fetchAlerts,
   formatOneViewSeverityLabel,
 } from "@/lib/oneview-api";
@@ -75,6 +78,13 @@ function formatDateTime(value?: string | null) {
   return Number.isNaN(date.getTime())
     ? ORIGIN_UNAVAILABLE
     : date.toLocaleString("pt-BR", { timeZone: OPERATIONAL_TIME_ZONE });
+}
+
+function problemDurationSeconds(alert: OneViewAlert, resolved: boolean, now: number) {
+  if (resolved) return alert.recovery_duration_seconds ?? alert.duration_seconds;
+  const startedAt = Date.parse(String(alert.first_seen_at || ""));
+  if (!Number.isFinite(startedAt) || now < startedAt) return alert.duration_seconds;
+  return Math.floor((now - startedAt) / 1000);
 }
 
 function formatDurationSeconds(seconds: number | null | undefined) {
@@ -256,6 +266,7 @@ export type AlertDetailDrawerProps = {
   auditEmphasis?: boolean;
   onSourceAckRequestAccepted?: (alert: OneViewAlert, result: AcknowledgeAlertResponse) => void | Promise<void>;
   onSourceAcknowledged?: (alert: OneViewAlert, status: SourceAckTerminalStatus) => void | Promise<void>;
+  onIncidentClaimed?: (result?: ServiceNowIncidentClaimResponse) => void;
   liveStateUnavailable?: boolean;
 };
 
@@ -275,6 +286,7 @@ export function AlertDetailDrawer({
   alertsQueueHref = null,
   onSourceAckRequestAccepted,
   onSourceAcknowledged,
+  onIncidentClaimed,
   liveStateUnavailable = false,
 }: AlertDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<AlertDetailDrawerTab>(
@@ -289,13 +301,35 @@ export function AlertDetailDrawer({
   const [recurrenceTimelineLoading, setRecurrenceTimelineLoading] = useState(false);
   const [recurrenceTimelineError, setRecurrenceTimelineError] = useState<string | null>(null);
   const [recurrenceTimelineTotal, setRecurrenceTimelineTotal] = useState(0);
+  const [durationNow, setDurationNow] = useState(() => Date.now());
+  const claimedIncidentRef = useRef<{ number: string; assignee: string | null } | null>(null);
   const handleTimelineServiceNowReferenceChange = useCallback((reference: AlertTimelineServiceNowReference | null) => {
     setTimelineServiceNowReference(reference);
   }, []);
 
-  const handleRelatedIncidentsChange = useCallback((items: AlertRelatedIncident[]) => {
-    setRelatedIncidents(items);
+  const overlayClaimedIncident = useCallback((items: AlertRelatedIncident[]) => {
+    const claimed = claimedIncidentRef.current;
+    if (!claimed) return items;
+    return items.map((item, index) => {
+      const itemNumber = String(item.number || "").trim().toUpperCase();
+      if (claimed.number && itemNumber !== claimed.number) return item;
+      if (!claimed.number && index !== 0) return item;
+      return { ...item, assigned_to: claimed.assignee, assigned_to_display: claimed.assignee };
+    });
   }, []);
+
+  const handleRelatedIncidentsChange = useCallback((items: AlertRelatedIncident[]) => {
+    setRelatedIncidents(overlayClaimedIncident(items));
+  }, [overlayClaimedIncident]);
+
+  const applyClaimedIncident = useCallback((result: ServiceNowIncidentClaimResponse) => {
+    claimedIncidentRef.current = {
+      number: String(result.incident.incident_number || "").trim().toUpperCase(),
+      assignee: result.incident.assigned_to_name || null,
+    };
+    setRelatedIncidents((current) => overlayClaimedIncident(current));
+    onIncidentClaimed?.(result);
+  }, [onIncidentClaimed, overlayClaimedIncident]);
 
   const handleCommunicationChange = useCallback((edits: AlertClientCommunicationEdits) => {
     setCommunicationEdits((current) => ({ ...current, ...edits }));
@@ -317,6 +351,7 @@ export function AlertDetailDrawer({
   }, [alert?.id]);
 
   useEffect(() => {
+    claimedIncidentRef.current = null;
     setTimelineServiceNowReference(null);
     setRelatedIncidents([]);
     setCommunicationEdits({});
@@ -325,6 +360,12 @@ export function AlertDetailDrawer({
     setRecurrenceTimelineError(null);
     setRecurrenceTimelineTotal(0);
   }, [alert?.id]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const timer = window.setInterval(() => setDurationNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [open, alert?.id]);
 
   useEffect(() => {
     if (!open || !alert?.recurrence_key || !alert) {
@@ -408,14 +449,11 @@ export function AlertDetailDrawer({
     : null;
   const originAckKind = sourceAckRowKind(visualAlert);
   const sourceAckLabel = sourceAckRowLabel(originAckKind);
-  const episodeDuration = alert
-    ? (resolved ? (alert.recovery_duration_seconds ?? alert.duration_seconds) : alert.duration_seconds)
-    : null;
-  const episodeDurationDetail = alert?.time_to_ack_seconds == null
-    ? (resolved ? "Até o recovery" : "Problema ainda ativo")
-    : resolved
-      ? `ACK em ${formatDurationSeconds(alert.time_to_ack_seconds)} · recovery confirmou o fim`
-      : `ACK em ${formatDurationSeconds(alert.time_to_ack_seconds)} · problema ainda ativo`;
+  const episodeDuration = alert ? problemDurationSeconds(alert, resolved, durationNow) : null;
+  const episodeDurationDetail = resolved ? "Até o recovery" : "Problema ainda ativo";
+  const timeToAckLabel = alert?.time_to_ack_seconds == null
+    ? null
+    : `Tempo até ACK ${formatDurationSeconds(alert.time_to_ack_seconds)}`;
   const operatorTag = alert ? primaryPersistedOperatorTag(alert) : null;
   const fonteZabbix = alert ? zabbixSourceDisplayName(alert.datasource_name) : "Fonte não identificada";
   const hostVisible = alert ? displayHostField(alert.host_visible_name, canonicalHostName(alert)) : ORIGIN_UNAVAILABLE;
@@ -471,13 +509,27 @@ export function AlertDetailDrawer({
   const visibleRecurrenceEpisodes = recurrenceEpisodes.length ? recurrenceEpisodes : fallbackRecurrenceEpisodes;
   const previousHistoryEpisodes = visibleRecurrenceEpisodes.filter((item) => !item.current);
   const previousHistoryTotal = Math.max(previousHistoryEpisodes.length, Math.max(0, recurrenceTimelineTotal - 1));
-  const ackDetail = originAckKind === "acknowledged"
-    ? [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem"
-    : sourceAckIsPending(visualAlert)
-      ? "Aguardando confirmação da origem"
-      : originAckKind === "pending"
-        ? "Sem confirmação da origem"
-        : "Resolvido sem reconhecimento na origem";
+  const ackDetail = [
+    originAckKind === "acknowledged"
+      ? [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem"
+      : sourceAckIsPending(visualAlert)
+        ? "Aguardando confirmação da origem"
+        : originAckKind === "pending"
+          ? "Sem confirmação da origem"
+          : "Resolvido sem reconhecimento na origem",
+    timeToAckLabel,
+  ].filter(Boolean).join(" · ");
+  const claimIncident = relatedIncidents.find((item) => item.sys_id || item.number)
+    || (alert?.servicenow_reference?.sys_id || alert?.servicenow_reference?.number
+      ? {
+          sys_id: alert.servicenow_reference.sys_id,
+          number: alert.servicenow_reference.number,
+          state: null,
+          identity_conflict: false,
+          assigned_to: null,
+          assigned_to_display: null,
+        }
+      : null);
 
   return (
     <>
@@ -516,6 +568,21 @@ export function AlertDetailDrawer({
                     probeEnabled
                   />
                 ) : null}
+                {claimIncident ? (
+                  <IncidentActions
+                    incident={{
+                      sys_id: claimIncident.sys_id,
+                      number: claimIncident.number,
+                      state: claimIncident.state,
+                      identity_conflict: Boolean(claimIncident.identity_conflict),
+                    }}
+                    placement="inline"
+                    visibleActions={["claim"]}
+                    mutationsBlocked={liveStateUnavailable}
+                    onClaimed={applyClaimedIncident}
+                  />
+                ) : null}
+                <AlertSuppressUnavailable />
                 <AlertOperationalShareActions
                   alert={alert}
                   communication={communication!}

@@ -30,6 +30,7 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
 import { AlertSourceAckRowAction } from "@/components/oneview/AlertSourceAckAction";
+import { AlertSuppressUnavailable } from "@/components/oneview/AlertSuppressUnavailable";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -2512,7 +2513,7 @@ export default function AlertsPage() {
                 const durationLabel = formatDurationSeconds(liveDurationSeconds(alert, durationNow));
                 const suppressionText = suppressionCaption(alert, formatDateTime);
                 const legacyText = recoveryEvidenceCaption(alert);
-                const ackWait = alert.time_to_ack_seconds == null ? "" : ` · até o ACK ${formatDurationSeconds(alert.time_to_ack_seconds)}`;
+                const ackWait = alert.time_to_ack_seconds == null ? "" : ` · Tempo até ACK ${formatDurationSeconds(alert.time_to_ack_seconds)}`;
                 const alertCells: Record<AlertTableColumnId, ReactNode> = {
                   severity: (
                     <TableCell key="severity" className="text-left">
@@ -2578,6 +2579,7 @@ export default function AlertsPage() {
                           onOpenDetail={openAlert}
                           liveStateUnavailable={alertsAreCopy}
                         />
+                        <AlertSuppressUnavailable variant="row" />
                         <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
                       </div>
                     </TableCell>
@@ -2634,6 +2636,7 @@ export default function AlertsPage() {
         description={alertsAreCopy ? "Cópia do alerta. Não é o estado operacional atual." : "Informações operacionais seguras e histórico do OneView."}
         onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
         onSourceAcknowledged={handleSourceAcknowledged}
+        onIncidentClaimed={() => { void loadAlerts({ quiet: true }); }}
         liveStateUnavailable={liveStateUnavailable}
       />
       <OperatorDisasterPopup
