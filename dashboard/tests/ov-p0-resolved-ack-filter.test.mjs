@@ -76,6 +76,7 @@ test("P0 FILTER: front maps Estado/ACK da origem/ACK OneView without layout coup
   ]);
   assert.match(alerts, /(?:<SelectItem value="resolved">Resolvidos<\/SelectItem>|ALERT_STATUS_OPTIONS[\s\S]*value: "resolved", label: "Resolvido")/);
   assert.match(alerts, /status: statusFilter,/);
+  assert.match(alerts, /operationalView: isOperationalQueue\(alertsView\) \? alertsView : undefined/);
   assert.match(alerts, /acknowledgedSource: sourceAckFilter === "all" \? undefined : sourceAckFilter === "acknowledged"/);
   assert.match(alerts, /(?:oneviewAckStatus: oneviewAckFilter === "all" \? undefined : oneviewAckFilter|oneviewAckStatuses)/);
   assert.match(api, /if \(params\?\.status\) search\.set\("status", params\.status\)/);

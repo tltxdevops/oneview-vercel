@@ -77,6 +77,21 @@ export function liveTransitionLabel(kind: LiveTransitionKind, entity?: LiveEntit
   return "✓ Assumido por " + liveAssigneeLabel(entity);
 }
 
+/**
+ * Alerts queue flash. Internal ACK and status_internal do not count:
+ * only a source acknowledgement or status_source=resolved, compared
+ * between two backend snapshots, may start the green confirmation.
+ */
+export function sourceConfirmedAlertSnapshot(alert: Parameters<typeof snapshotFromAlert>[0]): LiveEntitySnapshot | null {
+  const snapshot = snapshotFromAlert(alert);
+  if (!snapshot) return null;
+  return {
+    ...snapshot,
+    acknowledged_internal: false,
+    status_internal: null,
+  };
+}
+
 export function snapshotFromAlert(alert: {
   id?: string | null;
   status_source?: string | null;

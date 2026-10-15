@@ -60,17 +60,20 @@ export function applyHistoryRiskPreset(
   };
 }
 
-/** Tempo até ACK = acknowledged_at - first_seen_at; só com ambos válidos. */
+/** Tempo até ACK a partir do relógio de histórico. A coluna acknowledged_at regravada pelo sync não prova o ACK. */
 export function timeToAckSeconds(alert: {
   first_seen_at?: string | null;
-  acknowledged_at?: string | null;
-  acknowledged_source_at?: string | null;
+  last_reopened_at?: string | null;
+  ack_history_first_at?: string | null;
+  source_event_id?: string | null;
+  ack_source_event_id?: string | null;
 }): number | null {
-  const firstRaw = alert.first_seen_at;
-  const ackRaw = alert.acknowledged_source_at || alert.acknowledged_at;
+  const firstRaw = alert.last_reopened_at || alert.first_seen_at;
+  const ackRaw = alert.ack_history_first_at;
   if (!firstRaw || !ackRaw) return null;
+  if (alert.source_event_id && alert.ack_source_event_id && alert.source_event_id !== alert.ack_source_event_id) return null;
   const firstMs = Date.parse(firstRaw);
   const ackMs = Date.parse(ackRaw);
-  if (!Number.isFinite(firstMs) || !Number.isFinite(ackMs)) return null;
-  return Math.max(0, Math.floor((ackMs - firstMs) / 1000));
+  if (!Number.isFinite(firstMs) || !Number.isFinite(ackMs) || ackMs < firstMs) return null;
+  return Math.floor((ackMs - firstMs) / 1000);
 }

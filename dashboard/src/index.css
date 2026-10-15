@@ -362,6 +362,21 @@ All colors MUST be HSL.
     animation: ov-live-transition-pulse 0.9s ease-in-out 3;
   }
 
+  .ov-alert-queue-confirm {
+    animation: ov-alert-queue-confirm 1.5s ease-out 1;
+  }
+
+  @keyframes ov-alert-queue-confirm {
+    0% {
+      box-shadow: inset 0 0 0 1.5px hsl(152 60% 36% / 0.7);
+      background-color: hsl(152 45% 45% / 0.16);
+    }
+    100% {
+      box-shadow: inset 0 0 0 1px hsl(152 60% 36% / 0);
+      background-color: transparent;
+    }
+  }
+
   /* /alertas: ACK/resolução confirmados permanecem visíveis por dez pulsos. */
   .ov-alert-success-transition {
     animation: ov-live-transition-pulse 0.9s ease-in-out 10;
@@ -390,7 +405,8 @@ All colors MUST be HSL.
 
   @media (prefers-reduced-motion: reduce) {
     .ov-live-transition,
-    .ov-alert-success-transition {
+    .ov-alert-success-transition,
+    .ov-alert-queue-confirm {
       animation: none;
       box-shadow: inset 0 0 0 1px hsl(152 60% 36% / 0.45);
       background-color: hsl(152 45% 45% / 0.08);

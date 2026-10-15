@@ -9,9 +9,9 @@ import { incidentOpenDurationSeconds } from "../api/_lib/oneview-incidents-read-
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const recovered = (first_seen_at, resolved_at) => ({
   status_source: "resolved",
+  source_recovery_event_id: "9001",
   first_seen_at,
   resolved_at,
-  source_recovery_event_id: "evt-recovery",
 });
 
 test("OV-P0-242 derives valid recovered durations, including zero", () => {
@@ -21,6 +21,11 @@ test("OV-P0-242 derives valid recovered durations, including zero", () => {
 
 test("OV-P0-242 marks inverted source time instead of returning a negative duration", () => {
   assert.deepEqual(deriveAlertTemporalIntegrity(recovered("2026-08-28T10:01:00.000Z", "2026-08-28T10:00:00.000Z")), { duration_seconds: null, temporal_integrity: "source_clock_inconsistent" });
+});
+
+test("OV-P0-242 does not invent duration without canonical recovery evidence", () => {
+  const legacy = { ...recovered("2026-08-28T10:00:00.000Z", "2026-08-28T10:01:30.000Z"), source_recovery_event_id: null };
+  assert.deepEqual(deriveAlertTemporalIntegrity(legacy), { duration_seconds: null, temporal_integrity: "source_recovery_unverified" });
 });
 
 test("OV-P0-242 excludes invalid rows from duration averages, not alert counts", () => {
@@ -46,21 +51,17 @@ test("OV-P0-242 preserves timestamps and prevents negative temporal UI/metrics",
   assert.match(recurrence, /Duração indisponível/);
 });
 
-test("OV-P0-242 freezes acknowledged alert duration at ACK and ignores later now", () => {
-  const first_seen_at = "2026-08-28T10:00:00.000Z";
-  const acknowledged_source_at = "2026-08-28T10:02:00.000Z";
+test("OV-P0-242 keeps acknowledged alert duration counting until recovery", () => {
   const laterNow = Date.parse("2026-08-28T11:00:00.000Z");
   const alert = {
     status_source: "active",
-    first_seen_at,
+    first_seen_at: "2026-08-28T10:00:00.000Z",
     acknowledged_source: true,
-    acknowledged_source_at,
+    acknowledged_source_at: "2026-08-28T10:02:00.000Z",
+    acknowledged_internal: true,
+    acknowledged_internal_at: "2026-08-28T10:01:30.000Z",
   };
-  assert.deepEqual(deriveAlertTemporalIntegrity(alert, laterNow), { duration_seconds: 120, temporal_integrity: null });
-  assert.deepEqual(deriveAlertTemporalIntegrity({ ...alert, acknowledged_internal: true, acknowledged_internal_at: "2026-08-28T10:01:30.000Z" }, laterNow), {
-    duration_seconds: 90,
-    temporal_integrity: null,
-  });
+  assert.deepEqual(deriveAlertTemporalIntegrity(alert, laterNow), { duration_seconds: 3600, temporal_integrity: null });
 });
 
 test("OV-P0-242 recovered duration stays on resolved_at when there is no ACK", () => {
@@ -71,28 +72,27 @@ test("OV-P0-242 recovered duration stays on resolved_at when there is no ACK", (
   );
 });
 
-test("OV-P0-242 recovered duration freezes at ACK when ACK is earlier than resolved_at", () => {
+test("OV-P0-242 recovered duration stays on resolved_at when ACK is earlier", () => {
   assert.deepEqual(deriveAlertTemporalIntegrity({
     ...recovered("2026-08-28T10:00:00.000Z", "2026-08-28T10:10:00.000Z"),
     acknowledged_source: true,
     acknowledged_source_at: "2026-08-28T10:03:00.000Z",
-  }), { duration_seconds: 180, temporal_integrity: null });
+  }), { duration_seconds: 600, temporal_integrity: null });
 });
 
-test("OV-P0-242 acknowledged alert without usable ACK time does not keep counting", () => {
+test("OV-P0-242 acknowledged alert without an ACK clock keeps counting", () => {
   assert.deepEqual(deriveAlertTemporalIntegrity({
     status_source: "active",
     first_seen_at: "2026-08-28T10:00:00.000Z",
     acknowledged_source: true,
-  }, Date.parse("2026-08-28T11:00:00.000Z")), { duration_seconds: null, temporal_integrity: "source_clock_inconsistent" });
+  }, Date.parse("2026-08-28T11:00:00.000Z")), { duration_seconds: 3600, temporal_integrity: null });
 });
 
-test("OV-P0-242 live table duration freezes on ACK timestamps", async () => {
+test("OV-P0-242 live table duration does not freeze on ACK", async () => {
   const alerts = await readFile(path.join(root, "src/pages/Alerts.tsx"), "utf8");
-  assert.match(alerts, /function alertDurationFreezeMs/);
-  assert.match(alerts, /if \(isResolvedAlert\(alert\) \|\| acknowledged\(alert\)\)/);
-  assert.match(alerts, /acknowledged_internal_at/);
-  assert.match(alerts, /source_ack\?\.acknowledged_at/);
+  assert.doesNotMatch(alerts, /function alertDurationFreezeMs/);
+  assert.doesNotMatch(alerts, /acknowledgementFreezeMs/);
+  assert.match(alerts, /problemEpisodeDurationSeconds/);
 });
 
 test("incident open duration freezes on resolved_at or closed_at", () => {

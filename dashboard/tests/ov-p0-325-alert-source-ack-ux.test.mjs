@@ -86,7 +86,7 @@ test("P0 alert status: cancelamento da origem é distinto do ACK cancelado", asy
 
   const alerts = await read("src/pages/Alerts.tsx");
   const drawer = await read("src/components/oneview/AlertDetailDrawer.tsx");
-  assert.match(alerts, /setStatusFilter\("active"\)/);
+  assert.match(alerts, /setStatusFilter\("all"\)/);
   assert.match(drawer, /\["cancelled", "canceled"\]\.includes\(status\)/);
 });
 

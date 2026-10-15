@@ -622,25 +622,6 @@ export interface OneViewAlert {
   host_visible_name: string | null;
   host_technical_name: string | null;
   host_ip: string | null;
-  host_network?: {
-    primary_ip: string | null;
-    primary_dns: string | null;
-    interface_type: string | null;
-    port: string | null;
-    available: string | null;
-    interfaces: Array<{
-      interfaceid: string | null;
-      type: number | null;
-      main: boolean;
-      useip: boolean;
-      ip: string | null;
-      dns: string | null;
-      port: string | null;
-      available: string | null;
-      error: string | null;
-      interface_type: string;
-    }>;
-  } | null;
   host_group: string | null;
   host_groups: Array<{ id: string | null; name: string }>;
   event_tags: Array<{ tag: string; value: string }>;
@@ -701,12 +682,35 @@ export interface OneViewAlert {
   suppressed: boolean;
   suppressed_until: string | null;
   maintenance_status: string | null;
+  suppression?: {
+    state: "active" | "expired" | "none" | "unavailable";
+    confirmation?: "confirmed" | "unconfirmed";
+    explicit_unconfirmed?: boolean;
+    origin: "maintenance" | "manual" | "unspecified" | null;
+    maintenance_id: string | null;
+    user_id: string | null;
+    started_at?: string | null;
+    suppress_until: string | null;
+    suppress_until_kind?: "finite" | "indefinite" | "unknown" | "unsupported" | null;
+    remaining_seconds?: number | null;
+    evidence: "problem_get" | "column" | "conflict" | "unavailable";
+  };
+  operational_queue?: "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed";
+  recovery_evidence?: "proven" | "legacy" | null;
   first_seen_at: string;
   started_at?: string;
   last_seen_at: string;
   resolved_at: string | null;
   source_recovery_event_id: string | null;
+  datasource_last_success_at?: string | null;
+  datasource_sync_state?: "fresh" | "stale" | "failed" | "unknown";
   duration_seconds: number | null;
+  last_reopened_at?: string | null;
+  ack_history_first_at?: string | null;
+  /** Proven recovery minus the current episode start. Null while the problem is open. */
+  recovery_duration_seconds?: number | null;
+  /** First confirmed source ACK minus the current episode start. Null without a history clock. */
+  time_to_ack_seconds?: number | null;
   temporal_integrity?: "source_clock_inconsistent" | null;
   created_at: string;
   updated_at: string;
@@ -772,6 +776,19 @@ export interface AlertListResponse extends OneViewResponseMeta {
     /** Fora da faixa visual das cinco severidades. */
     not_classified: number;
   };
+  operational_queues?: {
+    pending: number;
+    acknowledged: number;
+    suppressed: number;
+    history: number;
+    unconfirmed: number;
+  };
+  origin_sync?: Array<{
+    datasource_name: string;
+    state: "fresh" | "stale" | "failed" | "unknown";
+    stale: boolean;
+    last_success_at: string | null;
+  }>;
   temporal_counts?: {
     created: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
     updated: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
@@ -1211,6 +1228,7 @@ export interface FetchAlertsParams {
   customerConfidences?: Array<"high" | "medium" | "low" | "unclassified">;
   severities?: string[];
   status?: "active" | "resolved" | "all";
+  operationalView?: "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed";
   incidentState?: string;
   incidentStates?: string[];
   incidentNumber?: string;
@@ -1256,6 +1274,7 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
+  if (params?.operationalView) search.set("operational_view", params.operationalView);
   if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
   else if (params?.incidentState) search.set("incident_state", params.incidentState);
   if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());
@@ -1755,6 +1774,7 @@ function appendAlertScopeQueryParams(search: URLSearchParams, params?: FetchAler
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
+  if (params?.operationalView) search.set("operational_view", params.operationalView);
   if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
   else if (params?.incidentState) search.set("incident_state", params.incidentState);
   if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());
@@ -3063,6 +3083,47 @@ export function oneViewAlertToLegacyAlert(alert: OneViewAlert): Alert {
       source: alert.customer_source,
     }),
   };
+}
+
+export function problemIsResolved(alert: {
+  resolved_at?: string | null;
+  last_reopened_at?: string | null;
+  status_source?: string | null;
+  status_internal?: string | null;
+} | null | undefined): boolean {
+  if (!alert) return false;
+  const reopened = Date.parse(String(alert.last_reopened_at || ""));
+  const resolvedMs = Date.parse(String(alert.resolved_at || ""));
+  if (Number.isFinite(reopened) && (!Number.isFinite(resolvedMs) || resolvedMs < reopened)) return false;
+  const sourceStatus = String(alert.status_source || "").trim().toLowerCase();
+  const internalStatus = String(alert.status_internal || "").trim().toLowerCase();
+  return Boolean(alert.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
+}
+
+/** Active: now - episode start. Resolved: proven recovery - start. ACK and suppression do not stop the clock. */
+export function problemEpisodeDurationSeconds(alert: {
+  first_seen_at?: string | null;
+  last_reopened_at?: string | null;
+  resolved_at?: string | null;
+  status_source?: string | null;
+  status_internal?: string | null;
+  recovery_duration_seconds?: number | null;
+}, now: number): number | null {
+  const first = Date.parse(String(alert.first_seen_at || ""));
+  const reopened = Date.parse(String(alert.last_reopened_at || ""));
+  let start = first;
+  if (Number.isFinite(reopened)) {
+    if (!Number.isFinite(first) || reopened < first) return null;
+    start = reopened;
+  }
+  if (!Number.isFinite(start)) return null;
+  if (problemIsResolved(alert)) {
+    const recovery = alert.recovery_duration_seconds;
+    if (recovery == null || !Number.isFinite(recovery) || recovery < 0) return null;
+    return recovery;
+  }
+  if (now < start) return null;
+  return Math.floor((now - start) / 1000);
 }
 
 export function formatDurationSeconds(value: number | null | undefined): string {

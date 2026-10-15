@@ -13,13 +13,18 @@ import {
 import { AlertOperationalShareActions } from "@/components/oneview/AlertOperationalShareActions";
 import { AlertOperatorLinkControls } from "@/components/oneview/AlertOperatorLinkControls";
 import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
+import { AlertSuppressUnavailable } from "@/components/oneview/AlertSuppressUnavailable";
+import { IncidentActions } from "@/components/oneview/IncidentActions";
+import {
+  interfaceFromAlertTags,
+  safeHostIp,
+} from "@/components/oneview/AlertOperationalSummary";
 import { AlertRecurrenceSignal } from "@/components/oneview/AlertRecurrenceSignal";
 import { AlertSameProblemContext } from "@/components/oneview/AlertRecurrenceInvestigation";
 import {
   AlertRelatedIncidentsSection,
   relatedIncidentToOneViewIncident,
 } from "@/components/oneview/AlertRelatedIncidentsSection";
-import { IncidentActions } from "@/components/oneview/IncidentActions";
 import { IncidentDetailDrawer } from "@/components/oneview/IncidentDetailDrawer";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import { OneViewErrorBoundary } from "@/components/oneview/OneViewErrorBoundary";
@@ -30,6 +35,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { recoveryEvidenceCaption, suppressionCaption } from "@/lib/oneview-suppression-copy";
 import {
   AlertHistoryItem,
   AlertRelatedIncident,
@@ -39,6 +45,8 @@ import {
   type ServiceNowIncidentClaimResponse,
   fetchAlerts,
   formatOneViewSeverityLabel,
+  problemEpisodeDurationSeconds,
+  problemIsResolved,
 } from "@/lib/oneview-api";
 import {
   oneViewAckStatusLabel,
@@ -74,6 +82,10 @@ function formatDateTime(value?: string | null) {
     : date.toLocaleString("pt-BR", { timeZone: OPERATIONAL_TIME_ZONE });
 }
 
+function problemDurationSeconds(alert: OneViewAlert, now: number) {
+  return problemEpisodeDurationSeconds(alert, now);
+}
+
 function formatDurationSeconds(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "Duração indisponível";
   if (seconds < 60) return `${Math.round(seconds)} s`;
@@ -107,9 +119,7 @@ function confidenceLabel(value?: string | null) {
 }
 
 function isResolvedAlert(alert: OneViewAlert) {
-  const sourceStatus = String(alert.status_source || "").trim().toLowerCase();
-  const internalStatus = String(alert.status_internal || "").trim().toLowerCase();
-  return Boolean(alert.resolved_at) || sourceStatus === "resolved" || ["resolved", "normalized"].includes(internalStatus);
+  return problemIsResolved(alert);
 }
 
 function originStatusLabel(value?: string | null) {
@@ -288,10 +298,7 @@ export function AlertDetailDrawer({
   const [recurrenceTimelineLoading, setRecurrenceTimelineLoading] = useState(false);
   const [recurrenceTimelineError, setRecurrenceTimelineError] = useState<string | null>(null);
   const [recurrenceTimelineTotal, setRecurrenceTimelineTotal] = useState(0);
-  const handleTimelineServiceNowReferenceChange = useCallback((reference: AlertTimelineServiceNowReference | null) => {
-    setTimelineServiceNowReference(reference);
-  }, []);
-
+  const [durationNow, setDurationNow] = useState(() => Date.now());
   const claimedIncidentRef = useRef<{
     number: string;
     assignee: string | null;
@@ -299,7 +306,9 @@ export function AlertDetailDrawer({
     state: string | null;
     updatedOn: string | null;
   } | null>(null);
-
+  const handleTimelineServiceNowReferenceChange = useCallback((reference: AlertTimelineServiceNowReference | null) => {
+    setTimelineServiceNowReference(reference);
+  }, []);
   const overlayClaimedIncident = useCallback((items: AlertRelatedIncident[]) => {
     const claimed = claimedIncidentRef.current;
     if (!claimed) return items;
@@ -364,6 +373,12 @@ export function AlertDetailDrawer({
     setRecurrenceTimelineError(null);
     setRecurrenceTimelineTotal(0);
   }, [alert?.id]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const timer = window.setInterval(() => setDurationNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [open, alert?.id]);
 
   useEffect(() => {
     if (!open || !alert?.recurrence_key || !alert) {
@@ -434,9 +449,8 @@ export function AlertDetailDrawer({
   const resolved = alert ? isResolvedAlert(alert) : false;
   const visualAlert = alert;
   const temporalInconsistent = alert?.temporal_integrity === "source_clock_inconsistent";
-  const hostNetwork = alert?.host_network || null;
-  const primaryNetworkInterface = hostNetwork?.interfaces.find((item) => item.main) || null;
-  const secondaryIp = hostNetwork?.primary_ip ? null : primaryNetworkInterface?.ip || null;
+  const publicIp = alert ? safeHostIp(alert.host_ip) : null;
+  const iface = alert ? interfaceFromAlertTags(alert) : null;
   const tags = alert ? collectOperationalTags(alert) : [];
   const nestedAlertArtifact = useMemo(() => {
     if (!alert || !nestedIncident) return null;
@@ -448,6 +462,13 @@ export function AlertDetailDrawer({
     : null;
   const originAckKind = sourceAckRowKind(visualAlert);
   const sourceAckLabel = sourceAckRowLabel(originAckKind);
+  const episodeDuration = alert ? problemDurationSeconds(alert, durationNow) : null;
+  const episodeDurationDetail = episodeDuration == null
+    ? "Duração indisponível"
+    : resolved ? "Até o recovery" : "Problema ainda ativo";
+  const timeToAckLabel = alert?.time_to_ack_seconds == null
+    ? null
+    : `Tempo até ACK ${formatDurationSeconds(alert.time_to_ack_seconds)}`;
   const operatorTag = alert ? primaryPersistedOperatorTag(alert) : null;
   const fonteZabbix = alert ? zabbixSourceDisplayName(alert.datasource_name) : "Fonte não identificada";
   const hostVisible = alert ? displayHostField(alert.host_visible_name, canonicalHostName(alert)) : ORIGIN_UNAVAILABLE;
@@ -490,6 +511,7 @@ export function AlertDetailDrawer({
       ? {
           sys_id: alert.servicenow_reference.sys_id,
           number: alert.servicenow_reference.number,
+          state: null,
           identity_conflict: false,
           assigned_to: null,
           assigned_to_display: null,
@@ -520,13 +542,16 @@ export function AlertDetailDrawer({
   const visibleRecurrenceEpisodes = recurrenceEpisodes.length ? recurrenceEpisodes : fallbackRecurrenceEpisodes;
   const previousHistoryEpisodes = visibleRecurrenceEpisodes.filter((item) => !item.current);
   const previousHistoryTotal = Math.max(previousHistoryEpisodes.length, Math.max(0, recurrenceTimelineTotal - 1));
-  const ackDetail = originAckKind === "acknowledged"
-    ? [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem"
-    : sourceAckIsPending(visualAlert)
-      ? "Aguardando confirmação da origem"
-      : originAckKind === "pending"
-        ? "Sem confirmação da origem"
-        : "Resolvido sem reconhecimento na origem";
+  const ackDetail = [
+    originAckKind === "acknowledged"
+      ? [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem"
+      : sourceAckIsPending(visualAlert)
+        ? "Aguardando confirmação da origem"
+        : originAckKind === "pending"
+          ? "Sem confirmação da origem"
+          : "Resolvido sem reconhecimento na origem",
+    timeToAckLabel,
+  ].filter(Boolean).join(" · ");
 
   return (
     <>
@@ -582,6 +607,7 @@ export function AlertDetailDrawer({
                     onClaimed={applyClaimedIncident}
                   />
                 ) : null}
+                <AlertSuppressUnavailable />
                 <AlertOperationalShareActions
                   alert={alert}
                   communication={communication!}
@@ -647,6 +673,8 @@ export function AlertDetailDrawer({
                       <p className="mt-1 break-words text-sm font-semibold leading-5 text-foreground">
                         {String(alert.problem_name || alert.trigger_description || "").trim() || "Alerta sem descrição"}
                       </p>
+                      {suppressionCaption(alert, formatDateTime) ? <p className="mt-1 text-xs text-muted-foreground">{suppressionCaption(alert, formatDateTime)}</p> : null}
+                      {recoveryEvidenceCaption(alert) ? <p className="mt-1 text-xs text-muted-foreground">{recoveryEvidenceCaption(alert)}</p> : null}
                     </div>
                   </section>
 
@@ -661,8 +689,8 @@ export function AlertDetailDrawer({
                     <QuickFact
                       icon={<Clock3 className="h-3.5 w-3.5" />}
                       label="Duração"
-                      value={formatDurationSeconds(alert.duration_seconds)}
-                      detail={resolved ? "Episódio encerrado" : "Episódio atual"}
+                      value={formatDurationSeconds(episodeDuration)}
+                      detail={episodeDurationDetail}
                     />
                     <QuickFact
                       icon={<Repeat2 className="h-3.5 w-3.5" />}
@@ -780,6 +808,9 @@ export function AlertDetailDrawer({
                       <DetailField label="Equipamento" value={hostTechnical === ORIGIN_UNAVAILABLE ? hostVisible : hostTechnical} />
                       <DetailField label="Início" value={formatDateTime(alert.first_seen_at)} />
                       <DetailField label="Estado" value={resolved ? "Resolvido" : "Ativo"} />
+                      <DetailField label="Supressão" value={suppressionCaption(alert, formatDateTime) || "Sem supressão confirmada"} />
+                      {alert.suppression?.maintenance_id ? <DetailField label="Maintenance ID" value={alert.suppression.maintenance_id} /> : null}
+                      {alert.suppression?.user_id ? <DetailField label="Usuário Zabbix" value={alert.suppression.user_id} /> : null}
                     </dl>
                   </section>
 
@@ -904,15 +935,8 @@ export function AlertDetailDrawer({
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                       <DetailField label="Nome visível" value={displayHostField(alert.host_visible_name) || hostName} />
                       <DetailField label="Nome técnico" value={displayHostField(alert.host_technical_name, ORIGIN_UNAVAILABLE)} />
-                      {!hostNetwork?.interfaces.length ? <DetailField label="Rede" value={ORIGIN_UNAVAILABLE} /> : (
-                        <>
-                          {hostNetwork.primary_ip ? <DetailField label="IP principal" value={hostNetwork.primary_ip} mono /> : null}
-                          {hostNetwork.primary_dns ? <DetailField label="DNS" value={hostNetwork.primary_dns} mono /> : null}
-                          {secondaryIp ? <DetailField label="IP secundário" value={secondaryIp} mono /> : null}
-                          <DetailField label="Interface" value={hostNetwork.interface_type || ORIGIN_UNAVAILABLE} />
-                          {hostNetwork.port ? <DetailField label="Porta" value={hostNetwork.port} mono /> : null}
-                        </>
-                      )}
+                      {publicIp ? <DetailField label="IP" value={publicIp} mono /> : null}
+                      {iface ? <DetailField label="Interface" value={iface} /> : null}
                     </dl>
                   </section>
 

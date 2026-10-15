@@ -53,7 +53,9 @@ test("alertas usa paginação BFF, debounce e cancelamento", async () => {
   assert.match(alerts, /alertsRequestRef\.current\?\.abort\(\)/);
   assert.match(alerts, /requestId !== alertsRequestIdRef\.current/);
   assert.match(alerts, /if \(summaryRequestRef\.current\) return summaryRequestRef\.current/);
-  assert.match(alerts, /<SelectItem value="25">25<\/SelectItem>/);
+  assert.doesNotMatch(alerts, /<SelectItem value="25">25<\/SelectItem>/);
+  assert.match(alerts, /<SelectItem value="50">50<\/SelectItem>/);
+  assert.match(alerts, /<SelectItem value="100">100<\/SelectItem>/);
   assert.match(alerts, /<SelectItem value="50">50<\/SelectItem>/);
   assert.match(alerts, /<SelectItem value="100">100<\/SelectItem>/);
   assert.match(alerts, /Exibindo \$\{firstVisible\.toLocaleString\("pt-BR"\)\}–\$\{lastVisible\.toLocaleString\("pt-BR"\)\} de \$\{listTotal\.toLocaleString\("pt-BR"\)\}/);
@@ -801,7 +803,7 @@ test("cards de indicadores aplicam filtros rápidos sem textos redundantes", asy
   assert.match(alerts, /VISUAL_SEVERITY_STRIP/);
   assert.doesNotMatch(alerts, /Severidade fora da faixa visual/);
   assert.match(alerts, /title: "Em acompanhamento"/);
-  assert.match(alerts, /Ocorrências atualmente mantidas como ativas no OneView\./);
+  assert.match(alerts, /Reconhecidos na origem e ainda abertos\./);
   assert.match(alerts, /formatNullableCount|value === null \? "—" : Number\(value\)\.toLocaleString\("pt-BR"\)/);
   assert.match(alerts, /filteredSummary/);
   assert.match(alerts, /Indicadores de alertas/);
@@ -832,7 +834,7 @@ test("OV-P0-15B métricas enganosas: erro não vira zero e rótulos operacionais
   assert.doesNotMatch(index, /kpiCards|Novos nas últimas \$\{windowLabel\}/);
 
   assert.match(alerts, /title: "Em acompanhamento"/);
-  assert.match(alerts, /Ocorrências atualmente mantidas como ativas no OneView\./);
+  assert.match(alerts, /Reconhecidos na origem e ainda abertos\./);
   assert.match(alerts, /formatCardValue|formatNullableCount/);
   assert.match(alerts, /filteredSummary/);
   assert.match(alerts, /formatNullableCount|value === null \? "—"/);
@@ -1027,55 +1029,26 @@ test("rotas dinâmicas e rewrite SPA permanecem compatíveis com Vercel", async 
   assert.deepEqual(vercel.rewrites, [{ source: "/((?!api/.*|assets/.*).*)", destination: "/index.html" }]);
 });
 
-test("alertas possui visualizações Recentes, Em aberto, Prioritários, Esquecidos, Resolvidos e Todos", async () => {
+test("alertas possui filas Pendentes, Acompanhamento, Suprimidos, Histórico e Em revisão", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
-  assert.match(alerts, /type AlertsView = "recent" \| "open" \| "priority" \| "forgotten" \| "resolved" \| "all"/);
+  assert.match(alerts, /id: "pending", label: "Pendentes de ação"/);
+  assert.match(alerts, /id: "acknowledged", label: "Acompanhamento"/);
+  assert.match(alerts, /id: "suppressed", label: "Suprimidos"/);
+  assert.match(alerts, /id: "history", label: "Histórico"/);
+  assert.match(alerts, /id: "unconfirmed", label: "Em revisão"/);
+  assert.match(alerts, /sourceConfirmedAlertSnapshot/);
+  assert.match(alerts, /return "pending"/);
+  assert.match(alerts, /operationalView: isOperationalQueue\(alertsView\) \? alertsView : undefined/);
   assert.match(alerts, /applyAlertsView/);
-  assert.match(alerts, /label: "Recentes"/);
-  assert.match(alerts, /label: "Em aberto"/);
-  assert.match(alerts, /label: "Prioritários"/);
-  assert.match(alerts, /label: "Esquecidos"/);
-  assert.match(alerts, /label: "Resolvidos"/);
-  assert.match(alerts, /label: "Todos"/);
-  assert.match(alerts, /writeAlertsUrlParams|view: alertsView/);
   assert.match(alerts, /inferAlertsView/);
-  assert.match(alerts, /Visualizações de alertas/);
-
-  const recentBlock = alerts.match(/if \(view === "recent"\) \{[\s\S]*?return;\s*\}/);
-  assert.ok(recentBlock);
-  assert.match(recentBlock[0], /setStatusFilter\("all"\)/);
-  assert.match(recentBlock[0], /setDateField\("first_seen"\)/);
-  assert.match(recentBlock[0], /setSortField\("first_seen_at"\)/);
-  assert.match(recentBlock[0], /setSortOrder\("desc"\)/);
-
-  const openBlock = alerts.match(/if \(view === "open"\) \{[\s\S]*?return;\s*\}/);
-  assert.ok(openBlock);
-  assert.match(openBlock[0], /setStatusFilter\("active"\)/);
-  assert.match(openBlock[0], /setSortField\("last_seen_at"\)/);
-
-  const priorityBlock = alerts.match(/if \(view === "priority"\) \{[\s\S]*?return;\s*\}/);
-  assert.ok(priorityBlock);
-  assert.match(priorityBlock[0], /setStatusFilter\("active"\)/);
-  assert.match(priorityBlock[0], /setSelectedSeverities\(\["disaster", "high"\]\)/);
-  assert.match(priorityBlock[0], /setSourceAckFilter\("unacknowledged"\)/);
-  assert.match(priorityBlock[0], /setSortField\("severity"\)/);
-  assert.match(priorityBlock[0], /setSortOrder\("desc"\)/);
-  assert.doesNotMatch(priorityBlock[0], /\.sort\(|comparePriority|unacknowledged_minutes|duration_seconds/);
-
-  const forgottenBlock = alerts.match(/if \(view === "forgotten"\) \{[\s\S]*?return;\s*\}/);
-  assert.ok(forgottenBlock);
-  assert.match(forgottenBlock[0], /setStatusFilter\("active"\)/);
-  assert.match(forgottenBlock[0], /setSourceAckFilter\("unacknowledged"\)/);
-  assert.match(forgottenBlock[0], /setSortField\("first_seen_at"\)/);
-  assert.match(forgottenBlock[0], /setSortOrder\("asc"\)/);
-
-  const resolvedBlock = alerts.match(/if \(view === "resolved"\) \{[\s\S]*?return;\s*\}/);
-  assert.ok(resolvedBlock);
-  assert.match(resolvedBlock[0], /setStatusFilter\("resolved"\)/);
-  assert.match(resolvedBlock[0], /setSortField\("resolved_at"\)/);
-
-  assert.match(alerts, /setStatusFilter\("all"\)/);
+  assert.match(alerts, /Filas operacionais de alertas/);
+  assert.doesNotMatch(alerts, /setSelectedSeverities\(\["disaster", "high"\]\)/);
+  assert.doesNotMatch(alerts, /setDatePreset\("24h"\)/);
+  assert.doesNotMatch(alerts, /setDatePreset\("30d"\)/);
   assert.match(alerts, /setPage\(1\)/);
+  const switcher = alerts.match(/const applyAlertsView = \(view: AlertsView\) => \{[\s\S]*?\n  \};/);
+  assert.ok(switcher);
+  assert.doesNotMatch(switcher[0], /setSelectedSeverities|setSourceAckFilter|setDatePreset|setStatusFilter/);
 });
 
 test("fila operacional /alertas cobre contrato OV-P0-07", async () => {
@@ -1102,7 +1075,7 @@ test("fila operacional /alertas cobre contrato OV-P0-07", async () => {
   assert.doesNotMatch(alerts, /Atualizando\.\.\./);
   assert.match(alerts, /alertsError/);
   assert.match(alerts, /Tentar novamente/);
-  assert.match(alerts, /Nenhum alerta corresponde aos filtros selecionados/);
+  assert.match(alerts, /Nenhum alerta pendente de ação/);
   assert.match(alerts, /open=\{selectedAlertId !== null\}/);
   assert.match(alerts, /AlertDetailDrawer/);
   assert.match(alerts, /nextSearchParams\.set\("alert", alert\.id\)/);
@@ -1121,7 +1094,7 @@ test("fila operacional /alertas cobre contrato OV-P0-07", async () => {
   assert.doesNotMatch(alerts, /RITM\d+|SLA vencido|Sem chamado/);
   assert.doesNotMatch(alerts, /Integração ServiceNow em preparação/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
-  assert.match(await read("src/lib/alerts-table-columns.ts"), /incident: \{ label: "Chamado"/);
+  assert.match(alerts, /\{ id: "incident", label: "Chamado"/);
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(await read("src/components/oneview/AlertDetailDrawer.tsx"), /AlertRelatedIncidentsSection/);
 
@@ -1207,11 +1180,10 @@ test("fila de atenção permanece server-side; Esquecidos vive em /alertas (OV-P
   assert.match(api, /fetchAttentionRequired|AttentionRequiredResponse/);
   assert.doesNotMatch(index, /Atenção necessária|attentionMeta|attentionOpen|fetchAttentionRequired|attentionItems/);
   assert.doesNotMatch(index, /Esquecidos|forgotten/);
-  assert.match(alerts, /id: "forgotten", label: "Esquecidos"/);
-  assert.match(alerts, /Alertas ativos sem ACK acima do tempo esperado\./);
-  assert.match(alerts, /alert_stale_minutes/);
-  assert.match(alerts, /request\.firstSeenTo = dateBounds\.to|firstSeenTo: forgottenCutoff/);
-  assert.match(alerts, /setSortOrder\("asc"\)/);
+  assert.match(alerts, /id: "pending", label: "Pendentes de ação"/);
+  assert.match(alerts, /Ativos na origem e sem ACK/);
+  assert.match(alerts, /operational_view|operationalView/);
+  assert.doesNotMatch(alerts, /label: "Esquecidos"/);
   assert.doesNotMatch(monitoring, /Esquecidos|forgotten|alert_stale_minutes/);
   assert.doesNotMatch(route, /method:\s*"POST"|addAlertNote|assignAlert|updateAlertStatus/);
 });
@@ -1533,7 +1505,7 @@ test("OV-P0-34 Histórico consulta riscos e ACK com filtros server-side", async 
   assert.match(query, /sortSecondary: "resolved_at"/);
   assert.match(query, /RISK_SEVERITIES: OneViewSeverity\[] = \["disaster", "high"\]/);
   assert.match(query, /export function timeToAckSeconds/);
-  assert.match(query, /acknowledged_source_at \|\| alert\.acknowledged_at/);
+  assert.match(query, /ack_history_first_at/);
   assert.match(query, /Date\.parse\(firstRaw\)/);
   assert.match(query, /Date\.parse\(ackRaw\)/);
   assert.match(query, /return null/);
@@ -1813,13 +1785,13 @@ test("OV-P0-31 Home drawer, Esquecidos e ClientIdentity compartilhado", async ()
   assert.doesNotMatch(index, /MonitoringControlsRail/);
   assert.match(index, /Abrir resumo de \$\{/);
 
-  assert.match(alerts, /\{ id: "forgotten", label: "Esquecidos" \}/);
-  assert.match(alerts, /view === "forgotten"/);
-  assert.match(alerts, /alert_stale_minutes/);
-  assert.match(alerts, /request\.firstSeenTo = dateBounds\.to/);
+  assert.match(alerts, /id: "pending", label: "Pendentes de ação"/);
+  assert.match(alerts, /operationalView/);
+  assert.match(alerts, /source_recovery_event_id|Histórico/);
+  assert.doesNotMatch(alerts, /label: "Esquecidos"/);
   assert.match(alerts, /setSortField\("first_seen_at"\)/);
-  assert.match(alerts, /setSortOrder\("asc"\)/);
-  assert.match(alerts, /Alertas ativos sem ACK acima do tempo esperado\./);
+  assert.match(alerts, /setSortOrder\("desc"\)/);
+  assert.doesNotMatch(alerts, /Alertas ativos sem ACK acima do tempo esperado\./);
   assert.doesNotMatch(alerts, /MonitoringControlsRail/);
 
   assert.doesNotMatch(monitoring, /Esquecidos|forgotten|alert_stale_minutes/);
@@ -2063,24 +2035,22 @@ test("OV-P0-42B-VALIDATION: contrato windowed inválido permanece no client API"
 });
 
 test("OV-P0-41 Alertas: faixa de 5 severidades, Cliente na tabela, Chamado via referência SN", async () => {
-  const [alerts, columns] = await Promise.all([
-    read("src/pages/Alerts.tsx"),
-    read("src/lib/alerts-table-columns.ts"),
-  ]);
+  const alerts = await read("src/pages/Alerts.tsx");
   assert.match(alerts, /VISUAL_SEVERITY_STRIP/);
   assert.match(alerts, /"information",\s*"warning",\s*"average",\s*"high",\s*"disaster"/);
   assert.doesNotMatch(alerts, /Severidade fora da faixa visual/);
   assert.match(alerts, /notClassifiedCard/);
   assert.match(alerts, /setSelectedSeverities\(\(current\) => \(/);
   assert.match(alerts, /severities: selectedSeverities/);
-  assert.match(columns, /client: \{ label: "Cliente"/);
+  assert.match(alerts, /\{ id: "client", label: "Cliente"/);
   assert.match(alerts, /ClientIdentity/);
   assert.match(alerts, /TooltipContent/);
-  assert.match(columns, /incident: \{ label: "Chamado"/);
+  assert.match(alerts, /\{ id: "incident", label: "Chamado"/);
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(alerts, /title: "Em acompanhamento"/);
-  assert.match(alerts, /title: "Reconhecidos"/);
-  assert.match(alerts, /title: "Pendentes"/);
+  assert.match(alerts, /title: "Suprimidos"/);
+  assert.match(alerts, /title: "Sem confirmação"/);
+  assert.match(alerts, /title: "Pendentes de ação"/);
 });
 
 test("OV-P0-32 /alertas consolida filtros server-side, URL e indicadores", async () => {
@@ -2095,8 +2065,8 @@ test("OV-P0-32 /alertas consolida filtros server-side, URL e indicadores", async
   assert.match(alerts, /writeAlertsUrlParams/);
   assert.match(alerts, /applyDateFieldToFetchParams/);
   assert.match(alerts, /applySearchToFetchParams/);
-  assert.match(alerts, /setDebouncedSearch\(searchQuery\.trim\(\)\)/);
-  assert.match(alerts, /, 300\)/);
+  assert.match(alerts, /useOneViewCommittedSearch/);
+  assert.match(alerts, /commitAlertSearch/);
   assert.match(alerts, /date_field|dateField/);
   assert.match(alerts, /search_field|searchField/);
   assert.match(alerts, /acknowledged_source/);
@@ -2104,7 +2074,7 @@ test("OV-P0-32 /alertas consolida filtros server-side, URL e indicadores", async
   assert.match(alerts, /SelectItem value="active">Ativos/);
   assert.match(alerts, /SelectItem value="acknowledged">Com ACK/);
   assert.match(alerts, /SelectItem value="unacknowledged">Sem ACK/);
-  assert.match(alerts, /filteredSummary\s*\n\s*\? filteredSummary\.active/);
+  assert.match(alerts, /queueCounts\?\.acknowledged/);
   assert.match(alerts, /formatNullableCount|value === null \? "—"/);
   assert.doesNotMatch(alerts.match(/const loadAlerts[\s\S]*?finally/)?.[0] ?? "", /\.filter\(/);
   assert.doesNotMatch(alerts, /setAlerts\(.*\.filter\(/);

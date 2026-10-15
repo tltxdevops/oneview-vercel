@@ -100,7 +100,7 @@ test("summary SQL e cards usam pending operacional, sem misturar OneView ACK", a
   assert.match(db, /operational_pending: integerValue\(row\?\.operational_pending, 0\)/);
   assert.match(fallback, /operational_pending: filteredItems\.filter\(isOperationalPendingAlert\)\.length/);
   assert.match(fallback, /oneview_ack_pending: filteredItems\.filter\(isOneViewAckPending\)\.length/);
-  assert.match(alerts, /filteredSummary\.operational_pending/);
+  assert.match(alerts, /queueCounts\?\.pending/);
   assert.doesNotMatch(alerts, /pendingTotal = filteredSummary\s*\n\s*\? filteredSummary\.unacknowledged_source/);
   assert.match(metrics, /acknowledged_source = false/);
   assert.doesNotMatch(metrics, /acknowledged_internal = false/);
