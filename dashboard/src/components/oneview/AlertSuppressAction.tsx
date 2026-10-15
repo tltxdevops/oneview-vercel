@@ -39,6 +39,7 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
   const [detail, setDetail] = useState<string | null>(null);
   const [status, setStatus] = useState<SuppressStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [writeEnabled, setWriteEnabled] = useState(false);
   const active = alert.status_source === "active" && !alert.resolved_at;
   if (!active) return null;
 
@@ -52,7 +53,7 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
   const existing = suppressionCaption(alert, (value) => value) || "Nenhuma supressão confirmada";
   const reasonValid = reason.trim().length >= 3 && reason.trim().length <= 500;
   const indefiniteOk = duration !== 0 || indefiniteConfirmed;
-  const canSubmit = reasonValid && confirmed && indefiniteOk && !busy && ui !== "suppressed" && ui !== "awaiting" && ui !== "requesting";
+  const canSubmit = writeEnabled && reasonValid && confirmed && indefiniteOk && !busy && ui !== "suppressed" && ui !== "awaiting" && ui !== "requesting";
 
   async function loadStatus(outboxId?: string | null) {
     const next = await fetchSuppressStatus(alert.id, outboxId);
@@ -68,11 +69,15 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
     try {
       const access = await probeSuppressAccess(alert.id);
       await loadStatus();
-      if (access.actor_suppress_access === false) {
+      if (access.actor_suppress_access !== true) {
+        setWriteEnabled(false);
         setUi("refused");
-        setDetail(access.reason || "permissao_negada");
+        setDetail(access.reason === "suppress_disabled"
+          ? "Escrita desligada até o canário real"
+          : (access.reason || "permissao_negada"));
         return;
       }
+      setWriteEnabled(true);
       setUi(access.pending ? "checking" : null);
     } catch (error) {
       setUi("refused");
@@ -157,7 +162,7 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
 
   return (
     <>
-      <OneViewButton type="button" variant={variant === "row" ? "ghost" : "outline"} size="sm" onClick={(event) => { event.stopPropagation(); void openDialog(); }}>
+      <OneViewButton type="button" variant={variant === "row" ? "ghost" : "secondary"} size="sm" onClick={(event) => { event.stopPropagation(); void openDialog(); }}>
         Suprimir alerta
       </OneViewButton>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -203,8 +208,8 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
             </p>
           </div>
           <DialogFooter>
-            {ui === "inconclusive" ? <OneViewButton type="button" variant="outline" onClick={() => void reconcile()}>Verificar novamente</OneViewButton> : null}
-            <OneViewButton type="button" variant="outline" disabled={!status?.unsuppress.enabled || busy} onClick={() => void unsuppress()}>Remover supressão</OneViewButton>
+            {ui === "inconclusive" ? <OneViewButton type="button" variant="secondary" onClick={() => void reconcile()}>Verificar novamente</OneViewButton> : null}
+            <OneViewButton type="button" variant="secondary" disabled={!writeEnabled || !status?.unsuppress.enabled || busy} onClick={() => void unsuppress()}>Remover supressão</OneViewButton>
             <OneViewButton type="button" disabled={!canSubmit} onClick={() => void submit()}>Confirmar supressão</OneViewButton>
           </DialogFooter>
         </DialogContent>

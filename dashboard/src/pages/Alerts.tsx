@@ -30,7 +30,7 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
 import { AlertSourceAckRowAction } from "@/components/oneview/AlertSourceAckAction";
-import { AlertSuppressUnavailable } from "@/components/oneview/AlertSuppressUnavailable";
+import { AlertSuppressAction } from "@/components/oneview/AlertSuppressAction";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -231,15 +231,15 @@ const ALERT_TABLE_SORT_OPTIONS = [
 type ResolvedTemporalPreset = AlertsDatePreset;
 type HistoryFilter = "all" | "acknowledgements" | "changes" | "recovery" | "legacy";
 
-const OPERATIONAL_QUEUES = ["pending", "acknowledged", "suppressed", "history", "unconfirmed"] as const;
+const OPERATIONAL_QUEUES = ["pending", "acknowledged", "suppressed", "unconfirmed", "history"] as const;
 type OperationalQueue = (typeof OPERATIONAL_QUEUES)[number];
 
 const ALERTS_VIEWS: Array<{ id: OperationalQueue; label: string; description: string }> = [
-  { id: "pending", label: "Pendentes de ação", description: "Ativos na origem e sem ACK. Alta e Disaster reconhecidos ficam em Acompanhamento." },
+  { id: "pending", label: "Pendentes", description: "Ativos na origem e sem ACK. Alta e Disaster reconhecidos ficam em Acompanhamento." },
   { id: "acknowledged", label: "Acompanhamento", description: "Ativos na origem e já reconhecidos, inclusive High e Disaster." },
   { id: "suppressed", label: "Suprimidos", description: "Problema ativo com supressão válida na origem. ACK e recovery não são supressão." },
+  { id: "unconfirmed", label: "Em revisão", description: "Supressão não confirmada, problemas órfãos ou inconclusivos. Não são resolvidos nem ocultados." },
   { id: "history", label: "Histórico", description: "Resolvido com recovery comprovado ou registro legado, distinguido pela evidência." },
-  { id: "unconfirmed", label: "Em revisão", description: "Problemas antigos, órfãos ou inconclusivos. Não são resolvidos nem ocultados apenas pela idade." },
 ];
 
 function isOperationalQueue(view: string): view is OperationalQueue {
@@ -273,6 +273,7 @@ function inferAlertsView(query: URLSearchParams): AlertsView {
   const explicit = query.get("view");
   if (explicit && isOperationalQueue(explicit)) return explicit;
   if (explicit === "resolved" || query.get("status") === "resolved") return "history";
+  if (explicit === "recent" || explicit === "recentes") return "pending";
   return "pending";
 }
 type MetaState = { source?: OneViewDataSourceKind; checkedAt?: string; fallbackCode?: string | null; copyGeneratedAt?: string };
@@ -2575,7 +2576,7 @@ export default function AlertsPage() {
                           onOpenDetail={openAlert}
                           liveStateUnavailable={alertsAreCopy}
                         />
-                        <AlertSuppressUnavailable variant="row" />
+                        <AlertSuppressAction alert={alert} variant="row" />
                         <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
                       </div>
                     </TableCell>

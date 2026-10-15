@@ -52,7 +52,7 @@ test("a Central separa duração, tempo até ACK, claim e supressão indisponív
   const [alerts, drawer, suppress, env] = await Promise.all([
     readFile(new URL("../src/pages/Alerts.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/components/oneview/AlertDetailDrawer.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/components/oneview/AlertSuppressUnavailable.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/oneview/AlertSuppressAction.tsx", import.meta.url), "utf8"),
     readFile(new URL("../.env.local.example", import.meta.url), "utf8"),
   ]);
   assert.match(alerts, /Duração do problema ativo/);
@@ -68,10 +68,11 @@ test("a Central separa duração, tempo até ACK, claim e supressão indisponív
   assert.match(drawer, /Até o recovery/);
   assert.match(drawer, /Tempo até ACK/);
   assert.match(drawer, /visibleActions=\{\["claim"\]\}/);
-  assert.match(drawer, /AlertSuppressUnavailable/);
-  assert.match(suppress, /disabled/);
-  assert.match(suppress, /Supressão indisponível até a homologação do probe e do executor/);
-  assert.doesNotMatch(suppress, /requestSuppress|event\.acknowledge|action:\s*36|action:\s*64/);
+  assert.match(drawer, /AlertSuppressAction/);
+  assert.match(alerts, /AlertSuppressAction/);
+  assert.match(suppress, /writeEnabled/);
+  assert.match(suppress, /Escrita desligada até o canário real/);
+  assert.doesNotMatch(suppress, /action:\s*36|action:\s*64/);
   assert.match(env, /ONEVIEW_ACK_REQUEST_ENABLED=false/);
   assert.match(env, /ONEVIEW_ACK_EXECUTION_ENABLED=false/);
   assert.doesNotMatch(env, /ONEVIEW_SUPPRESS_REQUEST_ENABLED=true/);

@@ -13,7 +13,7 @@ import {
 import { AlertOperationalShareActions } from "@/components/oneview/AlertOperationalShareActions";
 import { AlertOperatorLinkControls } from "@/components/oneview/AlertOperatorLinkControls";
 import { AlertSourceAckAction } from "@/components/oneview/AlertSourceAckAction";
-import { AlertSuppressUnavailable } from "@/components/oneview/AlertSuppressUnavailable";
+import { AlertSuppressAction } from "@/components/oneview/AlertSuppressAction";
 import { IncidentActions } from "@/components/oneview/IncidentActions";
 import {
   interfaceFromAlertTags,
@@ -449,8 +449,9 @@ export function AlertDetailDrawer({
   const resolved = alert ? isResolvedAlert(alert) : false;
   const visualAlert = alert;
   const temporalInconsistent = alert?.temporal_integrity === "source_clock_inconsistent";
-  const publicIp = alert ? safeHostIp(alert.host_ip) : null;
-  const iface = alert ? interfaceFromAlertTags(alert) : null;
+  const hostNetwork = alert?.host_network || null;
+  const primaryIp = hostNetwork?.primary_ip || (alert ? safeHostIp(alert.host_ip) : null);
+  const iface = hostNetwork?.interface_type || (alert ? interfaceFromAlertTags(alert) : null);
   const tags = alert ? collectOperationalTags(alert) : [];
   const nestedAlertArtifact = useMemo(() => {
     if (!alert || !nestedIncident) return null;
@@ -607,7 +608,7 @@ export function AlertDetailDrawer({
                     onClaimed={applyClaimedIncident}
                   />
                 ) : null}
-                <AlertSuppressUnavailable />
+                {visualAlert ? <AlertSuppressAction alert={visualAlert} /> : null}
                 <AlertOperationalShareActions
                   alert={alert}
                   communication={communication!}
@@ -935,7 +936,7 @@ export function AlertDetailDrawer({
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                       <DetailField label="Nome visível" value={displayHostField(alert.host_visible_name) || hostName} />
                       <DetailField label="Nome técnico" value={displayHostField(alert.host_technical_name, ORIGIN_UNAVAILABLE)} />
-                      {publicIp ? <DetailField label="IP" value={publicIp} mono /> : null}
+                      {primaryIp ? <DetailField label="IP principal" value={primaryIp} mono /> : null}
                       {iface ? <DetailField label="Interface" value={iface} /> : null}
                     </dl>
                   </section>

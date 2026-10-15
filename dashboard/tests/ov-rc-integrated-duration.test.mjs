@@ -153,7 +153,7 @@ test("I list, drawer and history keep duration and time to ACK apart", async () 
   assert.match(history, /ack_history_first_at/);
   assert.doesNotMatch(history, /acknowledged_source_at \|\| alert\.acknowledged_at/);
   assert.doesNotMatch(temporal, /acknowledgementFreezeMs/);
-  assert.doesNotMatch(drawer, /host_network/);
+  assert.match(drawer, /IP principal/);
 });
 
 test("J pagination, filters and queues stay in place", async () => {
@@ -170,6 +170,6 @@ test("J pagination, filters and queues stay in place", async () => {
   assert.match(queue, /history:/);
   assert.match(database, /PROVEN_SOURCE_ACK_CLOCK_SQL/);
   assert.match(database, /action_type, ''\)\) in \('acknowledged', 'ack_message'\)/);
-  assert.doesNotMatch(database, /buildHostNetwork/);
-  assert.doesNotMatch(database, /zabbix_host_inventory/);
+  assert.match(database, /buildHostNetwork/);
+  assert.match(database, /zabbix_host_inventory/);
 });

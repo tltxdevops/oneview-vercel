@@ -622,6 +622,25 @@ export interface OneViewAlert {
   host_visible_name: string | null;
   host_technical_name: string | null;
   host_ip: string | null;
+  host_network?: {
+    primary_ip: string | null;
+    primary_dns: string | null;
+    interface_type: string | null;
+    port: string | null;
+    available: string | null;
+    interfaces: Array<{
+      interfaceid: string | null;
+      type: number | null;
+      main: boolean;
+      useip: boolean;
+      ip: string | null;
+      dns: string | null;
+      port: string | null;
+      available: string | null;
+      error: string | null;
+      interface_type: string;
+    }>;
+  } | null;
   host_group: string | null;
   host_groups: Array<{ id: string | null; name: string }>;
   event_tags: Array<{ tag: string; value: string }>;
