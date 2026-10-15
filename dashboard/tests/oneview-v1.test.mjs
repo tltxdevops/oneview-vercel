@@ -876,7 +876,8 @@ test("BFF seleciona enriquecimento seguro e histórico estruturado", async () =>
   assert.match(source, /ack_actor_name: ackActorName/);
   assert.match(source, /consolidateAlertHistoryItems\(mappedItems\)/);
   assert.doesNotMatch(source.match(/async function fetchAlertHistoryPayload[\s\S]*?export function classifyOperationalSource/)?.[0] ?? "", /actor_id/);
-  assert.doesNotMatch(source.match(/async function fetchAlertDetailPayload[\s\S]*?function historyTitle/)?.[0] ?? "", /payload_raw|payload_normalized|inventory/);
+  const detailQuery = source.match(/async function fetchAlertDetailPayload[\s\S]*?function historyTitle/)?.[0] ?? "";
+  assert.doesNotMatch(detailQuery, /payload_raw|inventory|select[\s\S]*?a\.payload_normalized\s*(?:,|\n)/);
 });
 
 test("timeline usa origem segura, horario da origem e registro no OneView sem descricao sintetica", async () => {
@@ -896,6 +897,7 @@ test("timeline usa origem segura, horario da origem e registro no OneView sem de
 test("tela usa status no BFF, nao filtra pagina localmente e oculta ACK em resolvidos", async () => {
   const pageSource = await readFile(new URL("../src/pages/Alerts.tsx", import.meta.url), "utf8");
   assert.match(pageSource, /status: statusFilter/);
+  assert.match(pageSource, /operationalView: isOperationalQueue\(alertsView\) \? alertsView : undefined/);
   assert.doesNotMatch(pageSource, /Reconhecer no OneView|<UserCheck className="h-3\.5 w-3\.5" \/> ACK<\/Button>/);
   assert.doesNotMatch(pageSource, /alerts\.filter\(/);
 });

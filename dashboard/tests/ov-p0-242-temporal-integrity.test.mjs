@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 import { deriveAlertTemporalIntegrity } from "../api/_lib/oneview-temporal-integrity.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const recovered = (first_seen_at, resolved_at) => ({ status_source: "resolved", first_seen_at, resolved_at });
+const recovered = (first_seen_at, resolved_at) => ({
+  status_source: "resolved",
+  source_recovery_event_id: "9001",
+  first_seen_at,
+  resolved_at,
+});
 
 test("OV-P0-242 derives valid recovered durations, including zero", () => {
   assert.deepEqual(deriveAlertTemporalIntegrity(recovered("2026-08-28T10:00:00.000Z", "2026-08-28T10:01:30.000Z")), { duration_seconds: 90, temporal_integrity: null });
@@ -15,6 +20,11 @@ test("OV-P0-242 derives valid recovered durations, including zero", () => {
 
 test("OV-P0-242 marks inverted source time instead of returning a negative duration", () => {
   assert.deepEqual(deriveAlertTemporalIntegrity(recovered("2026-08-28T10:01:00.000Z", "2026-08-28T10:00:00.000Z")), { duration_seconds: null, temporal_integrity: "source_clock_inconsistent" });
+});
+
+test("OV-P0-242 does not invent duration without canonical recovery evidence", () => {
+  const legacy = { ...recovered("2026-08-28T10:00:00.000Z", "2026-08-28T10:01:30.000Z"), source_recovery_event_id: null };
+  assert.deepEqual(deriveAlertTemporalIntegrity(legacy), { duration_seconds: null, temporal_integrity: "source_recovery_unverified" });
 });
 
 test("OV-P0-242 excludes invalid rows from duration averages, not alert counts", () => {

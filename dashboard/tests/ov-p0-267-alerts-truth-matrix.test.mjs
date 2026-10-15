@@ -73,8 +73,9 @@ test("OV-P0-267: seven operational sources stay in the allowlist including Maps"
 
 test("OV-P0-267: Alerts keeps datasource scope in the BFF contract without the header selector", async () => {
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
-  assert.match(alerts, /ZabbixSourceFilter/);
-  assert.match(alerts, /datasources: selectedDatasources/);
+  assert.match(alerts, /ClientFilterCombobox/);
+  assert.match(alerts, /customers: selectedCustomerKeys/);
+  assert.match(alerts, /augmentCustomerFacetsWithDedicatedDatasources/);
   assert.doesNotMatch(alerts, /datasourceCards/);
   assert.doesNotMatch(alerts, /FRAPORT|Zurich|Castrolanda/);
   const scope = await readFile(path.join(dashboardRoot, "api/_lib/oneview-scope.js"), "utf8");
@@ -108,8 +109,8 @@ test("OV-P0-267B: Home, Monitoramento and Alertas share explicit datasource quer
   assert.match(monitoring, /customers: params\.customers/);
   assert.match(monitoring, /datasources: params\.datasources/);
   assert.match(monitoring, /firstSeenFrom: isoAgo\(params\.windowMs, now\)/);
-  assert.match(alerts, /ZabbixSourceFilter/);
-  assert.match(alerts, /datasources: selectedDatasources/);
+  assert.match(alerts, /ClientFilterCombobox/);
+  assert.match(alerts, /customers: selectedCustomerKeys/);
 
   for (const datasource of OPERATIONAL) {
     for (const firstSeenFrom of [
@@ -241,19 +242,19 @@ test("OV-P0-267: KPI summary high aggregates critical legado; disaster stays sep
   assert.doesNotMatch(api, /if \(seen\.has\("disaster"\)\) seen\.add\("critical"\)/);
 });
 
-test("OV-P0-267: Alerts tabs apply only the documented filters", async () => {
+test("OV-P0-267: Alerts queues keep operator filters and do not resolve by age", async () => {
   const alerts = await readFile(path.join(dashboardRoot, "src/pages/Alerts.tsx"), "utf8");
-  assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDatePreset\("all"\)/);
-  assert.match(alerts, /if \(view === "recent"\) \{[\s\S]*setDateField\("first_seen"\)/);
-  assert.match(alerts, /if \(view === "open"\) \{[\s\S]*setDatePreset\("all"\)/);
-  assert.match(alerts, /if \(view === "priority"\) \{[\s\S]*setSelectedSeverities\(\["disaster", "high"\]\)/);
-  assert.match(alerts, /if \(view === "forgotten"\) \{[\s\S]*setSourceAckFilter\("unacknowledged"\)/);
-  assert.match(alerts, /if \(view === "resolved"\) \{[\s\S]*setStatusFilter\("resolved"\)/);
+  assert.match(alerts, /id: "pending", label: "Pendentes de ação"/);
+  assert.match(alerts, /return "pending"/);
   assert.doesNotMatch(alerts, /setDatePreset\("24h"\)/);
   assert.doesNotMatch(alerts, /setDatePreset\("30d"\)/);
+  const start = alerts.indexOf("const applyAlertsView");
+  const slice = alerts.slice(start, start + 700);
+  assert.ok(start >= 0);
+  assert.doesNotMatch(slice, /setDatePreset|setSelectedSeverities|setSourceAckFilter/);
   assert.match(alerts, /customers: selectedCustomerKeys/);
   assert.match(alerts, /writeAlertsUrlParams/);
-  assert.match(alerts, /options\?\.quiet && alertsRequestRef\.current && !alertsRequestRef\.current\.signal\.aborted/);
+  assert.match(alerts, /createLatestRequestGate/);
   assert.match(alerts, /if \(requestId !== alertsRequestIdRef\.current\) return/);
   assert.match(alerts, /ALERTS_REFRESH_MS = 10_000/);
   assert.match(alerts, /searchParams\.get\("alert"\)/);

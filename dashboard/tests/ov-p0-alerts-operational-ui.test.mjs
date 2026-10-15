@@ -18,13 +18,14 @@ test("Alertas consumes only frozen Operational UI primitives for its migrated sh
   assert.doesNotMatch(alerts, /ov-filter-control|OV_FILTER_CONTROL/);
 });
 
-test("Alertas keeps all nine KPI filters in one official KPI row", async () => {
+test("Alertas keeps operational queues and severity KPIs in one official row", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
 
   for (const label of [
     "Em acompanhamento",
-    "Reconhecidos",
-    "Pendentes",
+    "Pendentes de ação",
+    "Suprimidos",
+    "Sem confirmação",
     "information",
     "warning",
     "average",
@@ -41,8 +42,8 @@ test("Alertas keeps all nine KPI filters in one official KPI row", async () => {
 test("Alertas keeps Cliente in the collapsed table filters instead of crowding the topbar", async () => {
   const alerts = await read("src/pages/Alerts.tsx");
 
-  assert.match(alerts, /clientSelect=\{<PageHeader title="Alertas" \/>\}/);
-  assert.doesNotMatch(alerts, /<PageHeader title="Alertas" aside=\{clientSelector\}/);
+  assert.match(alerts, /clientSelect=\{<PageHeader title="Central de Alertas" \/>\}/);
+  assert.doesNotMatch(alerts, /<PageHeader title="Central de Alertas" aside=\{clientSelector\}/);
   assert.match(alerts, /<ConfigurableTableToolbar[\s\S]*?filters=\{\([\s\S]*?Cliente\{clientSelector\}/);
 });
 
