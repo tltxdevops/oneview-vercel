@@ -42,6 +42,9 @@ type HistoryLike = {
   ack_message?: string | null;
   previous_value?: unknown;
   current_value?: unknown;
+  source_event_id?: string | null;
+  occurred_at?: string | null;
+  created_at?: string | null;
 };
 
 export function extractServiceNowIncidentNumbersFromHistory(
@@ -64,6 +67,21 @@ export function extractServiceNowIncidentNumbersFromHistory(
   const extras = Array.isArray(extraTexts) ? extraTexts : [extraTexts];
   for (const extra of extras) texts.push(extra);
   return extractServiceNowIncidentNumbers(texts);
+}
+
+export function extractServiceNowIncidentNumbersForAlertEpisode(
+  items: HistoryLike[] | null | undefined,
+  { sourceEventId, episodeStartedAt }: { sourceEventId?: string | null; episodeStartedAt?: string | null },
+): string[] {
+  const eventId = String(sourceEventId || "").trim();
+  const episodeStart = Date.parse(String(episodeStartedAt || ""));
+  if (!eventId || !Number.isFinite(episodeStart)) return [];
+  const scoped = (Array.isArray(items) ? items : []).filter((item) => {
+    const itemEventId = String(item?.source_event_id || "").trim();
+    const occurredAt = Date.parse(String(item?.occurred_at || item?.created_at || ""));
+    return itemEventId === eventId && Number.isFinite(occurredAt) && occurredAt >= episodeStart;
+  });
+  return extractServiceNowIncidentNumbersFromHistory(scoped);
 }
 
 type TagLike = { tag?: string | null; name?: string | null; value?: string | null };

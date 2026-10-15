@@ -98,14 +98,14 @@ test("F: episódio recorrente não herda correlation_id de INC0084362 terminal",
   assert.deepEqual(result, { matched: false, relation_source: "none", incidents: [] });
 });
 
-test("H: MAPS e Congás passam pela mesma guarda terminal", async () => {
+test("H: host/problema MAPS não cria vínculo sem evidência determinística", async () => {
   const terminal = incident({ state: "8", closed_at: "2026-09-23T20:00:00.000Z" });
   const maps = await findReadModelRelatedIncidents({
     mapsDatasource: "maps",
     mapsHost: "maps-host-1",
     mapsProblemName: "Regressão temporal",
     alertEpisodeStartedAt: EPISODE_START,
-  }, { pool: poolWith([terminal]) });
+  }, { pool: poolWith([incident()]) });
   const congas = await findReadModelRelatedIncidents({
     sourceEventId: "episode-4362",
     alertEpisodeStartedAt: EPISODE_START,

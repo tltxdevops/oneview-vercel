@@ -19,7 +19,7 @@ import {
   fetchAlertRelatedIncidents,
 } from "@/lib/oneview-api";
 import {
-  extractServiceNowIncidentNumbersFromHistory,
+  extractServiceNowIncidentNumbersForAlertEpisode,
   extractServiceNowRefsFromAlertTags,
 } from "@/lib/oneview-inc-correlation";
 import type { AlertTimelineServiceNowReference } from "@/lib/oneview-alert-timeline";
@@ -85,7 +85,6 @@ function relationSourceLabel(source?: AlertRelatedIncidentsRelationSource | null
   if (source === "zabbix_servicenow_number") return "Referência INC Zabbix";
   if (source === "zabbix_inc_reference") return "Referência INC no histórico";
   if (source === "zabbix_event_id") return "Event ID Zabbix";
-  if (source === "operational_host") return "Host MAPS (ServiceNow)";
   return null;
 }
 
@@ -201,11 +200,6 @@ type AlertRelatedIncidentsSectionProps = {
     | "trigger_tags"
     | "host_tags"
     | "servicenow_reference"
-    | "datasource_name"
-    | "host_technical_name"
-    | "host_name"
-    | "host_visible_name"
-    | "problem_name"
     | "first_seen_at"
   > | null;
   onOpenIncidentDetail?: (incident: AlertRelatedIncident) => void;
@@ -237,20 +231,12 @@ export function AlertRelatedIncidentsSection({
   );
 
   const historyNumbers = useMemo(() => {
-    return extractServiceNowIncidentNumbersFromHistory(historyItems, [alert?.source_ack?.comment])
+    return extractServiceNowIncidentNumbersForAlertEpisode(historyItems, {
+      sourceEventId,
+      episodeStartedAt: alert?.first_seen_at,
+    })
       .filter((number) => !tagRefs.numbers.includes(number));
-  }, [alert, historyItems, tagRefs.numbers]);
-
-  const mapsBridge = useMemo(() => {
-    const datasource = String(alert?.datasource_name || "").trim().toLowerCase();
-    if (datasource !== "maps") return null;
-    const host = String(
-      alert?.host_technical_name || alert?.host_name || alert?.host_visible_name || "",
-    ).trim();
-    const problem = String(alert?.problem_name || "").trim();
-    if (!host) return null;
-    return { mapsDatasource: "maps", mapsHost: host, mapsProblemName: problem || null };
-  }, [alert]);
+  }, [alert?.first_seen_at, historyItems, sourceEventId, tagRefs.numbers]);
 
   const correlationKey = [
     String(sourceEventId || "").trim(),
@@ -258,8 +244,6 @@ export function AlertRelatedIncidentsSection({
     tagRefs.numbers.join(","),
     historyNumbers.join(","),
     String(alert?.first_seen_at || "").trim(),
-    mapsBridge?.mapsHost || "",
-    mapsBridge?.mapsProblemName || "",
   ].join("|");
 
   useEffect(() => {
@@ -269,7 +253,6 @@ export function AlertRelatedIncidentsSection({
       && !tagRefs.sysIds.length
       && !tagRefs.numbers.length
       && !historyNumbers.length
-      && !mapsBridge?.mapsHost
     ) {
       setLoading(false);
       setChecked(true);
@@ -309,9 +292,6 @@ export function AlertRelatedIncidentsSection({
         incidentNumbers: historyNumbers,
         tagIncidentNumbers: tagRefs.numbers,
         incidentSysIds: tagRefs.sysIds,
-        mapsDatasource: mapsBridge?.mapsDatasource || null,
-        mapsHost: mapsBridge?.mapsHost || null,
-        mapsProblemName: mapsBridge?.mapsProblemName || null,
       },
       controller.signal,
     )

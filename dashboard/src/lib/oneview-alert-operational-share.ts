@@ -5,7 +5,7 @@
 
 import { buildAlertOperationalTimeline } from "./oneview-alert-timeline.ts";
 import {
-  extractServiceNowIncidentNumbersFromHistory,
+  extractServiceNowIncidentNumbersForAlertEpisode,
   extractServiceNowRefsFromAlertTags,
   filterOperationalAlertTags,
   SERVICENOW_PROD_BASE_URL,
@@ -257,7 +257,10 @@ export function buildAlertRelatedIncidentsFetchParams(
   historyItems: AlertHistoryItem[] = [],
 ): FetchAlertRelatedIncidentsParams | null {
   const tagRefs = extractServiceNowRefsFromAlertTags(alert);
-  const historyNumbers = extractServiceNowIncidentNumbersFromHistory(historyItems, [alert.source_ack?.comment])
+  const historyNumbers = extractServiceNowIncidentNumbersForAlertEpisode(historyItems, {
+    sourceEventId: alert.source_event_id,
+    episodeStartedAt: alert.first_seen_at,
+  })
     .filter((number) => !tagRefs.numbers.includes(number));
   const sourceEventId = String(alert.source_event_id || "").trim();
   if (!sourceEventId && !tagRefs.sysIds.length && !tagRefs.numbers.length && !historyNumbers.length) {

@@ -187,7 +187,8 @@ test("SN-P0-27 handler: ?inc= + relation_source; SN indisponível", async () => 
     authorize: async () => ({ role: "viewer" }),
     featureFlagProvider: () => true,
     configProvider: () => snConfig,
-    lookupByNumber: async () => ({
+    lookup: async () => ({
+      relation_source: "zabbix_inc_reference",
       incidents: [{
         sys_id: "sys-a",
         number: "INC0067312",
@@ -205,7 +206,6 @@ test("SN-P0-27 handler: ?inc= + relation_source; SN indisponível", async () => 
       }],
       checked_at: "2026-08-11T12:00:00.000Z",
     }),
-    lookup: async () => ({ incidents: [] }),
     logger: () => undefined,
   });
   const res = responseMock();
@@ -219,7 +219,7 @@ test("SN-P0-27 handler: ?inc= + relation_source; SN indisponível", async () => 
     authorize: async () => ({ role: "viewer" }),
     featureFlagProvider: () => true,
     configProvider: () => snConfig,
-    correlate: async () => {
+    lookup: async () => {
       const error = new Error("upstream");
       error.code = "servicenow_unavailable";
       throw error;
@@ -253,7 +253,7 @@ test("SN-P0-27 FE wiring: drawer passa history; API envia inc; sem host fallback
 
   assert.match(api, /relation_source/);
   assert.match(api, /incidentNumbers|inc_refs|append\("inc"/);
-  assert.match(section, /extractServiceNowIncidentNumbersFromHistory/);
+  assert.match(section, /extractServiceNowIncidentNumbersForAlertEpisode/);
   assert.match(section, /historyItems/);
   assert.match(section, /relation_source|relationSource/);
   assert.match(drawer, /historyItems=\{historyItems\}/);

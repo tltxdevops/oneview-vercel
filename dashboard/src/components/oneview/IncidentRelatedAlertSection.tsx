@@ -36,6 +36,7 @@ export function useIncidentRelatedAlert(incident: OneViewIncident | null) {
   const [relatedAlert, setRelatedAlert] = useState<IncidentRelatedAlert | null>(null);
   const [loading, setLoading] = useState(false);
   const [checked, setChecked] = useState(false);
+  const [error, setError] = useState(false);
   const sysId = String(incident?.sys_id || "").trim();
   const number = String(incident?.number || "").trim();
   const sourceEventId = String(incident?.zabbix_event_id || "").trim();
@@ -46,6 +47,7 @@ export function useIncidentRelatedAlert(incident: OneViewIncident | null) {
       setRelatedAlert(null);
       setLoading(false);
       setChecked(hasIncident);
+      setError(false);
       return;
     }
     // Sem signal: drawer/detalhe compartilha cache/in-flight de 15 s por incidente.
@@ -53,16 +55,19 @@ export function useIncidentRelatedAlert(incident: OneViewIncident | null) {
     setRelatedAlert(null);
     setLoading(true);
     setChecked(false);
+    setError(false);
     fetchIncidentRelatedAlert({ sysId, number, sourceEventId })
       .then((response) => {
         if (!active) return;
         setRelatedAlert(response.matched && response.alert ? response.alert : null);
         setChecked(true);
+        setError(false);
       })
       .catch(() => {
         if (!active) return;
         setRelatedAlert(null);
         setChecked(true);
+        setError(true);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -70,7 +75,7 @@ export function useIncidentRelatedAlert(incident: OneViewIncident | null) {
     return () => { active = false; };
   }, [hasIncident, sysId, number, sourceEventId]);
 
-  return { relatedAlert, loading, checked };
+  return { relatedAlert, loading, checked, error };
 }
 
 export type IncidentRelatedAlertState = ReturnType<typeof useIncidentRelatedAlert>;
@@ -79,6 +84,7 @@ export function IncidentRelatedAlertContent({
   relatedAlert,
   loading,
   checked,
+  error,
 }: IncidentRelatedAlertState) {
 
   return (
@@ -89,6 +95,11 @@ export function IncidentRelatedAlertContent({
           <Skeleton className="h-4 w-2/3" />
           <Skeleton className="h-4 w-1/2" />
           <Skeleton className="h-4 w-1/3" />
+        </div>
+      ) : error ? (
+        <div className="space-y-1 rounded-md border border-border/70 p-3 text-sm text-muted-foreground">
+          <p className="font-medium text-foreground">Alerta relacionado indisponível</p>
+          <p>Não foi possível verificar a correlação com o OneView.</p>
         </div>
       ) : checked && relatedAlert ? (
         <div className="space-y-3 rounded-md border border-border/70 p-3">

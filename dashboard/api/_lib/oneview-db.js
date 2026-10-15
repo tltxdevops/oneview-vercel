@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import {
-  buildServiceNowIncidentDeepLink,
   projectServiceNowReferenceFromAlertTags,
   SERVICENOW_PROD_BASE_URL,
 } from "./oneview-inc-correlation.js";
@@ -20,16 +19,6 @@ import { buildOperationalSubject } from "./oneview-operational-subject.js";
 import { getAckRequestConfig } from "./oneview-ack-request.js";
 import { sourceAckCapability } from "./oneview-source-acknowledge.js";
 import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
-import {
-  MAPS_SERVICENOW_COMPANY_WHERE_SQL,
-  matchServiceNowOperationalBridge,
-  mapsServiceNowProblemCorrelationToken,
-  resolveServiceNowCompanyLabelFromRow,
-} from "./oneview-servicenow-customer-bridge.js";
-import {
-  parseColonHostProblemLine,
-  parseZabbixFieldsFromDescription,
-} from "./servicenow-normalize.js";
 import {
   classifyCustomerIntegrity,
   classifyIncidentIdentityIntegrity,
@@ -1649,8 +1638,6 @@ async function fetchAlertList(req, config, dataSourceNames) {
   const { summaryRow, temporalRow, itemRows } = read;
 
   const items = include.items ? mapAlertRows(itemRows) : [];
-  if (items.length) await enrichMapsServiceNowReferences(items, config);
-
   const itemCount = items.length;
   const totalItems = include.summary
     ? integerValue(summaryRow?.total, 0)
@@ -1961,7 +1948,6 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
   }
 
   const item = mapAlertRows([row])[0];
-  await enrichMapsServiceNowReferences([item], config);
   const recurrence = buildAlertRecurrenceReadModel({
     current: row,
     siblings: recurrenceSiblings,
@@ -3627,229 +3613,7 @@ function mapIncidentRelatedAlertRow(row, { sourceEventId = null } = {}) {
   };
 }
 
-/**
- * OV-MAPS — host explícito em fonte Zabbix dedicada (somente bridges configuradas).
- */
-export async function findAlertByOperationalDatasourceHost(
-  datasourceName,
-  hostName,
-  config = getOneViewDbConfig(),
-  { problemHint = null } = {},
-) {
-  const datasource = String(datasourceName || "").trim().toLowerCase();
-  const host = String(hostName || "").trim();
-  const problem = mapsServiceNowProblemCorrelationToken(problemHint)
-    || textValue(problemHint).slice(0, 200)
-    || null;
-  if (!datasource || !host || host.length > 253) return null;
-  if (datasource !== "maps") return null;
-
-  const alertSelect = `
-    select
-      a.id::text as id,
-      a.data_source_id::text as data_source_id,
-      a.source_event_id,
-      a.host_name,
-      a.host_visible_name,
-      a.host_technical_name,
-      a.customer_name,
-      a.customer_key,
-      a.customer_source,
-      a.client_name,
-      a.severity,
-      a.status_source,
-      a.problem_name,
-      a.trigger_description,
-      a.created_at,
-      a.first_seen_at,
-      a.resolved_at,
-      d.name::text as datasource_name
-    from alerts a
-    join data_sources d on d.id = a.data_source_id
-    where lower(d.name) = lower($1)
-      and (
-        lower(btrim(coalesce(a.host_technical_name, ''))) = lower($2)
-        or lower(btrim(coalesce(a.host_name, ''))) = lower($2)
-        or lower(btrim(coalesce(a.host_visible_name, ''))) = lower($2)
-      )`;
-
-  if (problem) {
-    const exact = await queryRow(
-      config,
-      `${alertSelect}
-        and lower(coalesce(a.problem_name, a.trigger_description, '')) like '%' || lower($3::text) || '%'
-      order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
-      limit 1`,
-      [datasource, host, problem],
-    );
-    if (exact) return mapIncidentRelatedAlertRow(exact);
-  }
-
-  const row = await queryRow(
-    config,
-    `${alertSelect}
-    order by a.last_seen_at desc nulls last, a.updated_at desc nulls last, a.id desc
-    limit 1`,
-    [datasource, host],
-  );
-  if (!row) return null;
-  return mapIncidentRelatedAlertRow(row);
-}
-
-export async function findServiceNowIncidentForMapsAlert(
-  { host, problemName } = {},
-  config = getOneViewDbConfig(),
-) {
-  const hostNorm = textValue(host);
-  const problemNorm = mapsServiceNowProblemCorrelationToken(problemName);
-  if (!hostNorm && !problemNorm) return null;
-
-  const row = await queryRow(
-    config,
-    `
-    select sys_id::text as sys_id, number::text as number
-    from servicenow_incidents
-    where ${MAPS_SERVICENOW_COMPANY_WHERE_SQL}
-      and (
-        $1::text is not null
-        and (
-          lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower($1)
-          or lower(coalesce(description, '')) like '%' || lower($1) || '%'
-        )
-        or (
-          $2::text is not null
-          and length($2::text) >= 12
-          and lower(coalesce(description, '')) like '%' || lower($2::text) || '%'
-        )
-      )
-    order by
-      case
-        when $1::text is not null
-         and (
-           lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower($1)
-           or lower(coalesce(description, '')) like '%' || lower($1) || '%'
-         )
-         and (
-           $2::text is null
-           or lower(coalesce(description, '')) like '%' || lower($2::text) || '%'
-         )
-        then 0
-        when $2::text is not null
-         and lower(coalesce(description, '')) like '%' || lower($2::text) || '%'
-        then 1
-        else 2
-      end,
-      sys_updated_on desc nulls last,
-      sys_id asc
-    limit 1
-    `,
-    [hostNorm || null, problemNorm || null],
-  );
-  if (!row) return null;
-  return {
-    sys_id: textValue(row.sys_id),
-    number: textValue(row.number),
-  };
-}
-
-async function enrichMapsServiceNowReferences(items, config = getOneViewDbConfig()) {
-  const targets = (items || []).filter((item) => {
-    if (item?.servicenow_reference?.number || item?.servicenow_reference?.sys_id) return false;
-    return String(item?.datasource_name || "").trim().toLowerCase() === "maps";
-  });
-  if (!targets.length) return;
-
-  // A lista pode conter 50 itens MAPS. NÃ£o consultar ServiceNow/read-model por
-  // linha: a mesma regra de match abaixo Ã© executada em uma Ãºnica query loteada.
-  const requested = new Map();
-  for (const item of targets) {
-    const host = textValue(item.host_technical_name || item.host_name || item.host_visible_name);
-    const problem = mapsServiceNowProblemCorrelationToken(item.problem_name);
-    if (!host && !problem) continue;
-    const key = `${host}\u0000${problem || ""}`;
-    if (!requested.has(key)) requested.set(key, { host, problem: problem || null });
-  }
-  if (!requested.size) return;
-
-  try {
-    const candidates = [...requested.values()];
-    const rows = await queryRows(
-      config,
-      `
-      with requested(host_name, problem_token) as (
-        select nullif(btrim(host_name), ''), nullif(btrim(problem_token), '')
-          from unnest($1::text[], $2::text[]) as input(host_name, problem_token)
-      )
-      select requested.host_name, requested.problem_token,
-             matched.sys_id::text as sys_id, matched.number::text as number
-        from requested
-        join lateral (
-          select sys_id, number
-            from servicenow_incidents
-           where ${MAPS_SERVICENOW_COMPANY_WHERE_SQL}
-             and (
-               requested.host_name is not null
-               and (
-                 lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower(requested.host_name)
-                 or lower(coalesce(description, '')) like '%' || lower(requested.host_name) || '%'
-               )
-               or (
-                 requested.problem_token is not null
-                 and length(requested.problem_token) >= 12
-                 and lower(coalesce(description, '')) like '%' || lower(requested.problem_token) || '%'
-               )
-             )
-           order by
-             case
-               when requested.host_name is not null
-                and (
-                  lower(btrim(coalesce(u_hostname_zabbix::text, ''))) = lower(requested.host_name)
-                  or lower(coalesce(description, '')) like '%' || lower(requested.host_name) || '%'
-                )
-                and (
-                  requested.problem_token is null
-                  or lower(coalesce(description, '')) like '%' || lower(requested.problem_token) || '%'
-                )
-               then 0
-               when requested.problem_token is not null
-                and lower(coalesce(description, '')) like '%' || lower(requested.problem_token) || '%'
-               then 1
-               else 2
-             end,
-             sys_updated_on desc nulls last,
-             sys_id asc
-           limit 1
-        ) matched on true
-      `,
-      [candidates.map((item) => item.host), candidates.map((item) => item.problem || "")],
-    );
-    const byTarget = new Map(rows.map((row) => [`${textValue(row.host_name)}\u0000${textValue(row.problem_token)}`, row]));
-    for (const item of targets) {
-      const host = textValue(item.host_technical_name || item.host_name || item.host_visible_name);
-      const problem = mapsServiceNowProblemCorrelationToken(item.problem_name) || "";
-      const incident = byTarget.get(`${host}\u0000${problem}`);
-      if (!incident?.number && !incident?.sys_id) continue;
-      item.servicenow_reference = {
-        number: textValue(incident.number) || null,
-        sys_id: textValue(incident.sys_id) || null,
-        url: buildServiceNowIncidentDeepLink(SERVICENOW_PROD_BASE_URL, incident.sys_id),
-        extra_count: 0,
-      };
-    }
-  } catch (error) {
-    // Enrichment nÃ£o pode derrubar a lista operacional. O drawer continua com
-    // sua correlaÃ§Ã£o canÃ´nica sob demanda; a linha fica sem chamado relacionado.
-    console.warn(JSON.stringify({
-      event: "maps_servicenow_list_enrichment_failed",
-      target_count: requested.size,
-      error_code: databaseFailureCode(error),
-    }));
-  }
-}
-
-/**
- * Lookup reverso incidente → alerta: tags SN, event id e host dedicado (MAPS).
- */
+/** Lookup reverso incidente → alerta: somente tag explícita ou Event ID. */
 export async function findAlertForIncidentReverseLookup(
   { sysId = null, number = null, zabbixEventId = null } = {},
   config = getOneViewDbConfig(),
@@ -3867,53 +3631,7 @@ export async function findAlertForIncidentReverseLookup(
     }
   }
 
-  const normalizedSysId = textValue(sysId).toLowerCase();
-  const normalizedNumber = textValue(number).toUpperCase();
-  let incident = null;
-  const incidentSelect = `
-    select company::text as company, display_values, description, u_hostname_zabbix::text as u_hostname_zabbix
-    from servicenow_incidents`;
-
-  if (/^[a-f0-9]{32}$/.test(normalizedSysId)) {
-    incident = await queryRow(
-      config,
-      `${incidentSelect}
-      where lower(sys_id::text) = $1
-      limit 1`,
-      [normalizedSysId],
-    );
-  } else if (/^INC\d{1,32}$/.test(normalizedNumber)) {
-    incident = await queryRow(
-      config,
-      `${incidentSelect}
-      where upper(number::text) = $1
-      order by sys_updated_on desc nulls last, sys_id asc
-      limit 1`,
-      [normalizedNumber],
-    );
-  } else {
-    return { relation_source: "none", alert: null };
-  }
-  if (!incident) return { relation_source: "none", alert: null };
-
-  const companyLabel = resolveServiceNowCompanyLabelFromRow(incident);
-  const bridge = matchServiceNowOperationalBridge(companyLabel);
-  if (!bridge) return { relation_source: "none", alert: null };
-
-  const colonHead = parseColonHostProblemLine(incident.description);
-  const parsed = parseZabbixFieldsFromDescription(incident.description);
-  const host = textValue(incident.u_hostname_zabbix) || colonHead.host || parsed.zabbix_host;
-  const problemHint = colonHead.problem;
-  if (!host) return { relation_source: "none", alert: null };
-
-  const alert = await findAlertByOperationalDatasourceHost(
-    bridge.datasource,
-    host,
-    config,
-    { problemHint },
-  );
-  if (!alert) return { relation_source: "none", alert: null };
-  return { relation_source: "operational_host", alert };
+  return { relation_source: "none", alert: null };
 }
 
 const RUNTIME_STATUS = Object.freeze({

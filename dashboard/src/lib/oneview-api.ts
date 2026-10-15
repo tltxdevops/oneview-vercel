@@ -2748,7 +2748,6 @@ export type AlertRelatedIncidentsRelationSource =
   | "zabbix_servicenow_number"
   | "zabbix_inc_reference"
   | "zabbix_event_id"
-  | "operational_host"
   | "none";
 
 export type AlertRelatedIncidentsResponse = OneViewResponseMeta & {
@@ -2774,10 +2773,6 @@ export type FetchAlertRelatedIncidentsParams = {
   incidentSysIds?: string[] | null;
   /** Corpus textual opcional (comentários/ACK/timeline) — BFF extrai INC. */
   texts?: string[] | null;
-  /** Ponte MAPS: host/problema do alerta dedicado. */
-  mapsDatasource?: string | null;
-  mapsHost?: string | null;
-  mapsProblemName?: string | null;
 };
 
 export async function fetchAlertRelatedIncidents(
@@ -2808,12 +2803,6 @@ export async function fetchAlertRelatedIncidents(
     const value = String(text || "").trim();
     if (value) search.append("text", value);
   }
-  const mapsHost = String(params.mapsHost || "").trim();
-  const mapsProblem = String(params.mapsProblemName || "").trim();
-  const mapsDatasource = String(params.mapsDatasource || "").trim();
-  if (mapsHost) search.set("maps_host", mapsHost);
-  if (mapsProblem) search.set("maps_problem", mapsProblem);
-  if (mapsDatasource) search.set("maps_datasource", mapsDatasource);
   return fetchApi<AlertRelatedIncidentsResponse>(
     `/oneview/alerts/related-incidents?${search.toString()}`,
     { signal, oneViewFresh: true },

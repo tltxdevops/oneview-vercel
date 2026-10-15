@@ -207,7 +207,7 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
   assert.match(api, /\/oneview\/alerts\/related-incidents/);
   const relatedIncidentsApi = api.slice(api.indexOf("fetchAlertRelatedIncidents"));
   assert.doesNotMatch(relatedIncidentsApi, /sysparm_|host fallback/i);
-  assert.match(relatedIncidentsApi, /maps_host/);
+  assert.doesNotMatch(relatedIncidentsApi, /maps_host|maps_problem|maps_datasource/);
 
   assert.match(section, /ServiceNowDevLink|Abrir no ServiceNow/);
   assert.doesNotMatch(section, /Abrir no ServiceNow DEV/);
@@ -215,7 +215,7 @@ test("SN-P0-16 frontend drawer + API + BFF route", async () => {
   assert.match(section, /assigned_to_display/);
   assert.match(section, /Atualizado em/);
   assert.match(section, /fetchAlertRelatedIncidents/);
-  assert.match(section, /maps_host|operational_host/);
+  assert.doesNotMatch(section, /maps_host|operational_host/);
   assert.doesNotMatch(section, /method:\s*["']POST["']/i);
   assert.doesNotMatch(section, /u_hostname_zabbix|cmdb_ci/);
 
