@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -7,21 +8,26 @@ import {
   buildOneViewAlertDeepLink,
   normalizeTheoChamado,
   claimEligibleTheoOutbox,
+  confirmTheoCanonicalOrigin,
   createTheoCanaryOutbox,
   createTheoSmokeOutbox,
   createTheoDispatchHandler,
+  evaluateTheoOriginConfirmation,
   finishTheoOutbox,
   recordTheoDispatcherHeartbeat,
   THEO_ACTION_TYPE,
   THEO_AUTO_ACTION_TYPE,
   THEO_AUTO_ACTION_TYPES,
   THEO_DISPATCH_AUTOMATION_ACTION_TYPES,
+  THEO_ORIGIN_RESOLVED_CODE,
+  THEO_ORIGIN_UNCONFIRMED_CODE,
   THEO_UNSEEN_ALERT_ACTION_TYPE,
   THEO_DISPATCHER_WORKER_NAME,
   theoCanaryDedupeKey,
   THEO_SMOKE_DEDUPE_KEY,
   theoSmokePayload,
 } from "../api/_lib/oneview-theo-dispatch.js";
+import { THEO_OPERATOR_REMINDER_ACTION_TYPE } from "../api/_lib/oneview-operator-reminder-execution.js";
 import { createOneViewHandler } from "../api/_lib/oneview-response.js";
 import { createTheoCronHandler } from "../api/internal/theo-cron.js";
 
@@ -102,6 +108,56 @@ function producedClaim(actionType = THEO_AUTO_ACTION_TYPE) {
       source_event_id: "338976923",
     },
   };
+}
+
+function confirmedActiveOrigin() {
+  return async () => ({ state: "active" });
+}
+
+function activeProducedAlert() {
+  return {
+    ...canaryAlert(),
+    data_source_id: "source-a",
+    source_event_id: "338976923",
+    status_internal: "new",
+  };
+}
+
+async function dispatchProduced(actionType, {
+  confirm = confirmedActiveOrigin(),
+  alerts = null,
+  timeoutMs = 2_000,
+  logger = () => undefined,
+} = {}) {
+  const sent = [];
+  const finished = [];
+  const confirmations = [];
+  let reads = 0;
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true, timeoutMs }),
+    claim: async () => producedClaim(actionType),
+    findProducedAlert: async () => {
+      reads += 1;
+      if (alerts) return alerts[Math.min(reads, alerts.length) - 1];
+      return activeProducedAlert();
+    },
+    confirmCanonicalOrigin: async (reference) => {
+      confirmations.push(reference);
+      return confirm(confirmations.length, reference);
+    },
+    finish: async (_client, result) => {
+      finished.push(result);
+      return { id: OUTBOX_ID, status: result.success ? "success" : "failed" };
+    },
+    fetchFn: async (_url, options) => {
+      sent.push(JSON.parse(options.body));
+      return { status: 200, headers: { get: () => null } };
+    },
+    logger,
+  });
+  const response = res();
+  await handler(req(), response);
+  return { response, sent, finished, confirmations, reads };
 }
 
 function dispatcher(overrides = {}) {
@@ -219,6 +275,7 @@ test("OV-P0-225 automatic dispatch drains a bounded FIFO batch sequentially", as
     configProvider: () => config({ automationEnabled: true, batchSize: 5 }),
     claim: async () => claimedRows.shift() || null,
     findProducedAlert: async () => canaryAlert(),
+    confirmCanonicalOrigin: confirmedActiveOrigin(),
     finish: async (_client, result) => { finished.push(result); return { id: result.outboxId, status: "success" }; },
     fetchFn: async () => { sent.push("sent"); return { status: 200, headers: { get: () => null } }; },
   });
@@ -262,6 +319,7 @@ test("OV-P0-251 unseen producer row uses the existing Theo payload with OneView 
   const handler = dispatcher({
     configProvider: () => config({ automationEnabled: true }),
     claim: async () => producedClaim(THEO_UNSEEN_ALERT_ACTION_TYPE),
+    confirmCanonicalOrigin: confirmedActiveOrigin(),
     findProducedAlert: async (reference) => {
       assert.deepEqual(reference, { alertId: CANARY_ALERT_ID, dataSourceId: "source-a", sourceEventId: "338976923" });
       return alert;
@@ -285,6 +343,7 @@ test("OV-P0-251 unseen payload without an explicit Incident has only the OneView
   const handler = dispatcher({
     configProvider: () => config({ automationEnabled: true }),
     claim: async () => producedClaim(THEO_UNSEEN_ALERT_ACTION_TYPE),
+    confirmCanonicalOrigin: confirmedActiveOrigin(),
     findProducedAlert: async () => ({ ...canaryAlert(), event_tags: [], trigger_tags: [], host_tags: [] }),
     fetchFn: async (_url, options) => { sent = JSON.parse(options.body); return { status: 200, headers: { get: () => null } }; },
   });
@@ -308,6 +367,7 @@ test("OV-P0-251 concurrent unseen dispatches claim and send a producer row once"
       claimedOnce = true;
       return producedClaim(THEO_UNSEEN_ALERT_ACTION_TYPE);
     },
+    confirmCanonicalOrigin: confirmedActiveOrigin(),
     findProducedAlert: async () => canaryAlert(),
     fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
   });
@@ -344,12 +404,190 @@ test("resolved or normalized producer rows are not sent", async () => {
   }
 });
 
+test("canonical origin gate sends only a confirmed-active alert and rechecks before POST", async () => {
+  for (const actionType of [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]) {
+    const result = await dispatchProduced(actionType);
+    assert.equal(result.sent.length, 1, actionType);
+    assert.equal(result.finished[0].success, true, actionType);
+    assert.equal(result.finished[0].actionType, actionType);
+    assert.equal(result.confirmations.length, 2, actionType);
+    assert.deepEqual(result.confirmations[0], {
+      alertId: CANARY_ALERT_ID,
+      dataSourceId: "source-a",
+      sourceEventId: "338976923",
+    });
+    assert.equal(result.sent[0].chamado, "INC0074751");
+    assert.equal(result.response.body.status, "success");
+  }
+});
+
+test("confirmed resolved origin blocks POST while the local row is still active", async () => {
+  for (const actionType of [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]) {
+    const result = await dispatchProduced(actionType, {
+      confirm: async () => ({ state: "resolved" }),
+    });
+    assert.equal(result.sent.length, 0, actionType);
+    assert.equal(result.reads, 1, actionType);
+    assert.equal(result.finished[0].errorCode, THEO_ORIGIN_RESOLVED_CODE);
+    assert.equal(result.finished[0].retryable, false);
+    assert.equal(result.finished[0].retryAfterSeconds, 0);
+    assert.equal(result.response.statusCode, 202);
+  }
+});
+
+test("recovery during processing blocks POST before the external send", async () => {
+  for (const actionType of [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]) {
+    const originRecovered = await dispatchProduced(actionType, {
+      confirm: async (attempt) => ({ state: attempt === 1 ? "active" : "resolved" }),
+    });
+    assert.equal(originRecovered.sent.length, 0, actionType);
+    assert.equal(originRecovered.confirmations.length, 2, actionType);
+    assert.equal(originRecovered.finished.at(-1).errorCode, THEO_ORIGIN_RESOLVED_CODE);
+    assert.equal(originRecovered.finished.at(-1).retryable, false);
+
+    const localRecovered = await dispatchProduced(actionType, {
+      alerts: [
+        activeProducedAlert(),
+        { ...activeProducedAlert(), status_source: "resolved", resolved_at: "2026-10-15T12:00:00.000Z" },
+      ],
+    });
+    assert.equal(localRecovered.sent.length, 0, actionType);
+    assert.equal(localRecovered.confirmations.length, 1, actionType);
+    assert.equal(localRecovered.finished.at(-1).errorCode, "alert_not_operationally_active");
+    assert.equal(localRecovered.finished.at(-1).retryable, false);
+  }
+});
+
+test("unavailable origin defers the notification without a POST", async () => {
+  const logs = [];
+  for (const actionType of [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]) {
+    const thrown = await dispatchProduced(actionType, {
+      confirm: async () => { throw new Error("zabbix token must-not-leak"); },
+      logger: (entry) => logs.push(entry),
+    });
+    assert.equal(thrown.sent.length, 0, actionType);
+    assert.equal(thrown.finished[0].errorCode, THEO_ORIGIN_UNCONFIRMED_CODE);
+    assert.equal(thrown.finished[0].retryable, true);
+    assert.equal(thrown.finished[0].retryAfterSeconds, 30);
+    assert.equal(thrown.response.body.retryable, true);
+    assert.equal(thrown.response.statusCode, 202);
+
+    const missing = await dispatchProduced(actionType, { confirm: async () => null });
+    assert.equal(missing.sent.length, 0, actionType);
+    assert.equal(missing.finished[0].retryable, true);
+    assert.equal(missing.finished[0].errorCode, THEO_ORIGIN_UNCONFIRMED_CODE);
+
+    const timedOut = await dispatchProduced(actionType, {
+      timeoutMs: 20,
+      confirm: () => new Promise(() => {}),
+    });
+    assert.equal(timedOut.sent.length, 0, actionType);
+    assert.equal(timedOut.finished[0].retryable, true);
+    assert.equal(timedOut.finished[0].errorCode, THEO_ORIGIN_UNCONFIRMED_CODE);
+  }
+  assert.equal(JSON.stringify(logs).includes("must-not-leak"), false);
+});
+
+test("production origin confirmer fails closed and does not query Zabbix", async () => {
+  const confirmation = await confirmTheoCanonicalOrigin();
+  assert.deepEqual(confirmation, { state: "unavailable", code: THEO_ORIGIN_UNCONFIRMED_CODE });
+  assert.equal(evaluateTheoOriginConfirmation({ state: "active" }, 1), null);
+  assert.equal(evaluateTheoOriginConfirmation({ state: "resolved" }, 2).retryable, false);
+  assert.equal(evaluateTheoOriginConfirmation({ state: "anything-else" }, 1).retryable, true);
+
+  const source = readFileSync(new URL("../api/_lib/oneview-theo-dispatch.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /jsonrpc|event\.get|token_encrypted|api_url/i);
+
+  for (const actionType of [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]) {
+    let sends = 0;
+    const handler = dispatcher({
+      configProvider: () => config({ automationEnabled: true }),
+      claim: async () => producedClaim(actionType),
+      findProducedAlert: async () => activeProducedAlert(),
+      finish: async (_client, result) => result,
+      fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+    });
+    const response = res();
+    await handler(req(), response);
+    assert.equal(sends, 0, actionType);
+    assert.equal(response.body.retryable, true);
+    assert.equal(response.body.code, THEO_ORIGIN_UNCONFIRMED_CODE);
+    assert.equal(response.statusCode, 202);
+  }
+});
+
+test("two dispatcher instances send a confirmed alert once", async () => {
+  for (const actionType of [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]) {
+    let claimedOnce = false;
+    let sends = 0;
+    const handler = dispatcher({
+      configProvider: () => config({ automationEnabled: true }),
+      claim: async () => {
+        if (claimedOnce) return null;
+        claimedOnce = true;
+        return producedClaim(actionType);
+      },
+      confirmCanonicalOrigin: confirmedActiveOrigin(),
+      findProducedAlert: async () => activeProducedAlert(),
+      fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+    });
+    const left = res();
+    const right = res();
+    await Promise.all([handler(req(), left), handler(req(), right)]);
+    assert.equal(sends, 1, actionType);
+    assert.deepEqual([left.body.status, right.body.status].sort(), ["not_eligible", "success"]);
+  }
+});
+
+test("smoke, canary, and operator reminders do not consult the origin gate", async () => {
+  let originCalls = 0;
+  const blockIfAsked = async () => { originCalls += 1; return { state: "resolved" }; };
+  let sends = 0;
+  const reminder = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    transaction: async (work) => work({ query: async () => ({ rows: [] }) }),
+    claim: async () => ({
+      ...claimed(),
+      action_type: THEO_OPERATOR_REMINDER_ACTION_TYPE,
+      aggregate_type: "operator_reminder",
+      aggregate_id: "reminder-1",
+    }),
+    confirmCanonicalOrigin: blockIfAsked,
+    fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+  });
+  const reminderResponse = res();
+  await reminder(req(), reminderResponse);
+  assert.equal(reminderResponse.body.status, "success");
+
+  const smoke = dispatcher({
+    confirmCanonicalOrigin: blockIfAsked,
+    fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+  });
+  const smokeResponse = res();
+  await smoke(req({ smoke: "1" }), smokeResponse);
+  assert.equal(smokeResponse.body.status, "success");
+
+  const canary = dispatcher({
+    findCanary: async () => canaryAlert(),
+    createCanary: async () => ({ id: OUTBOX_ID, status: "pending" }),
+    claim: async () => ({ ...claimed(), action_type: THEO_ACTION_TYPE, payload: buildTheoAlertPayload(canaryAlert()) }),
+    confirmCanonicalOrigin: blockIfAsked,
+    fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+  });
+  const canaryResponse = res();
+  await canary(req({ canary_alert_id: CANARY_ALERT_ID }), canaryResponse);
+  assert.equal(canaryResponse.body.status, "success");
+  assert.equal(sends, 3);
+  assert.equal(originCalls, 0);
+});
+
 test("OV-P0-214 a successful producer row is never sent again", async () => {
   let claims = 0;
   let sends = 0;
   const handler = dispatcher({
     configProvider: () => config({ automationEnabled: true }),
     claim: async () => (++claims === 1 ? producedClaim() : null),
+    confirmCanonicalOrigin: confirmedActiveOrigin(),
     findProducedAlert: async () => canaryAlert(),
     fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
   });

@@ -427,12 +427,63 @@ export function isTheoProducedAlertOperational(alert) {
     && internal !== "normalized";
 }
 
+export const THEO_ORIGIN_CONFIRMED_ACTIVE = "active";
+export const THEO_ORIGIN_CONFIRMED_RESOLVED = "resolved";
+export const THEO_ORIGIN_UNCONFIRMED_CODE = "origin_state_unconfirmed";
+export const THEO_ORIGIN_RESOLVED_CODE = "origin_confirmed_resolved";
+const SAFE_SOURCE_EVENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
+const SAFE_DATA_SOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
+
+/** Identity of the produced event. The local status columns are not included. */
+export function theoOriginReference(alert, producerPayload = {}) {
+  const source = payloadObject(alert);
+  const producer = payloadObject(producerPayload);
+  const alertId = text(source.id || producer.alert_id).toLowerCase();
+  const dataSourceId = text(source.data_source_id || producer.data_source_id);
+  const sourceEventId = text(source.source_event_id || producer.source_event_id);
+  if (!SAFE_ALERT_ID.test(alertId) || !SAFE_SOURCE_EVENT_ID.test(sourceEventId)) return null;
+  if (dataSourceId && !SAFE_DATA_SOURCE_ID.test(dataSourceId)) return null;
+  return Object.freeze({
+    alertId,
+    dataSourceId: dataSourceId || null,
+    sourceEventId,
+  });
+}
+
+/**
+ * Canonical origin gate.
+ *
+ * The worker has no request API, so this dispatcher cannot ask it whether the
+ * Zabbix event is still open. The alerts row is only a lagging copy and can
+ * still say active after the origin has recovered. Querying Zabbix from the
+ * browser or from this BFF is intentionally not implemented. Until a trusted
+ * confirmer is supplied, automatic alert delivery stays deferred.
+ */
+export async function confirmTheoCanonicalOrigin() {
+  return Object.freeze({ state: "unavailable", code: THEO_ORIGIN_UNCONFIRMED_CODE });
+}
+
+/** Active is the only send authorization. Anything else fails closed. */
+export function evaluateTheoOriginConfirmation(confirmation, attempts) {
+  const state = text(confirmation?.state).toLowerCase();
+  if (state === THEO_ORIGIN_CONFIRMED_ACTIVE) return null;
+  if (state === THEO_ORIGIN_CONFIRMED_RESOLVED) {
+    return Object.freeze({ code: THEO_ORIGIN_RESOLVED_CODE, retryable: false, retry_after_seconds: 0 });
+  }
+  return Object.freeze({
+    code: THEO_ORIGIN_UNCONFIRMED_CODE,
+    retryable: true,
+    retry_after_seconds: retryDelaySeconds(attempts),
+  });
+}
+
 export function createTheoDispatchHandler({
   transaction = withOneViewActionsTransaction,
   configProvider = getTheoDispatchConfig,
   createSmoke = createTheoSmokeOutbox,
   findCanary = findTheoCanaryAlert,
   findProducedAlert = findTheoProducedAlert,
+  confirmCanonicalOrigin = confirmTheoCanonicalOrigin,
   createCanary = createTheoCanaryOutbox,
   claim = claimEligibleTheoOutbox,
   finish = finishTheoOutbox,
@@ -528,53 +579,116 @@ export function createTheoDispatchHandler({
 
       if (!claimed) break;
       const claimedActionType = text(claimed.action_type) || actionType;
+      const recordClaimFailure = async (failure) => {
+        await transaction((client) => finish(client, {
+          actionType: claimedActionType,
+          outboxId: claimed.id,
+          lockedBy: lockId,
+          success: false,
+          retryable: failure.retryable,
+          httpStatus: null,
+          errorCode: failure.code,
+          retryAfterSeconds: failure.retry_after_seconds,
+        }));
+        try {
+          await transaction((client) => heartbeat(client, { success: false, errorCode: failure.code }));
+        } catch (error) {
+          logger(heartbeatFailureLog(error));
+        }
+        const latencyMs = Math.max(Date.now() - startedAt, 0);
+        logger({
+          event: "theo_dispatch",
+          outbox_id: claimed.id,
+          action_type: claimedActionType,
+          status: "failed",
+          code: failure.code,
+          retryable: failure.retryable,
+          latency_ms: latencyMs,
+        });
+        results.push({
+          outbox_id: claimed.id,
+          status: "failed",
+          code: failure.code,
+          http_status: null,
+          retryable: failure.retryable,
+          latency_ms: latencyMs,
+        });
+      };
       let payload;
       if (isTheoAutomaticActionType(claimedActionType)) {
         const producerPayload = payloadObject(claimed.payload);
-        let alert;
-        let enrichmentFailure = null;
-        try {
-          alert = await findProducedAlert({
-            alertId: producerPayload.alert_id,
-            dataSourceId: producerPayload.data_source_id,
-            sourceEventId: producerPayload.source_event_id,
-          });
-        } catch {
-          enrichmentFailure = { code: "database_unavailable", retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) };
-        }
-        if (!alert && !enrichmentFailure) {
-          enrichmentFailure = { code: "produced_alert_not_found", retryable: false, retry_after_seconds: 0 };
-        } else if (alert && !enrichmentFailure && !isTheoProducedAlertOperational(alert)) {
-          enrichmentFailure = { code: "alert_not_operationally_active", retryable: false, retry_after_seconds: 0 };
-        }
-        if (enrichmentFailure) {
-          await transaction((client) => finish(client, {
-            actionType: claimedActionType,
-            outboxId: claimed.id,
-            lockedBy: lockId,
-            success: false,
-            retryable: enrichmentFailure.retryable,
-            httpStatus: null,
-            errorCode: enrichmentFailure.code,
-            retryAfterSeconds: enrichmentFailure.retry_after_seconds,
-          }));
+        const loadProducedAlert = async () => {
           try {
-            await transaction((client) => heartbeat(client, { success: false, errorCode: enrichmentFailure.code }));
-          } catch (error) {
-            logger(heartbeatFailureLog(error));
+            return {
+              alert: await findProducedAlert({
+                alertId: producerPayload.alert_id,
+                dataSourceId: producerPayload.data_source_id,
+                sourceEventId: producerPayload.source_event_id,
+              }),
+              failure: null,
+            };
+          } catch {
+            return {
+              alert: null,
+              failure: { code: "database_unavailable", retryable: true, retry_after_seconds: retryDelaySeconds(claimed.attempts) },
+            };
           }
-          const latencyMs = Math.max(Date.now() - startedAt, 0);
-          logger({ event: "theo_dispatch", outbox_id: claimed.id, status: "failed", code: enrichmentFailure.code, retryable: enrichmentFailure.retryable, latency_ms: latencyMs });
-          results.push({
-            outbox_id: claimed.id,
-            status: "failed",
-            http_status: null,
-            retryable: enrichmentFailure.retryable,
-            latency_ms: latencyMs,
-          });
+        };
+        const localFailure = (alert, failure) => {
+          if (failure) return failure;
+          if (!alert) return { code: "produced_alert_not_found", retryable: false, retry_after_seconds: 0 };
+          if (!isTheoProducedAlertOperational(alert)) return { code: "alert_not_operationally_active", retryable: false, retry_after_seconds: 0 };
+          return null;
+        };
+        const confirmOriginNow = async (reference) => {
+          let timer;
+          try {
+            const confirmation = await Promise.race([
+              Promise.resolve().then(() => confirmCanonicalOrigin(Object.freeze({ ...reference }))),
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error("origin_confirm_timeout")), config.timeoutMs);
+              }),
+            ]);
+            return evaluateTheoOriginConfirmation(confirmation, claimed.attempts);
+          } catch {
+            return evaluateTheoOriginConfirmation(null, claimed.attempts);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        };
+        const loaded = await loadProducedAlert();
+        const blocked = localFailure(loaded.alert, loaded.failure);
+        if (blocked) {
+          await recordClaimFailure(blocked);
           continue;
         }
-        payload = buildTheoPayload(buildTheoAlertPayload(alert, now()), now());
+        const reference = theoOriginReference(loaded.alert, producerPayload);
+        const originFailure = reference
+          ? await confirmOriginNow(reference)
+          : evaluateTheoOriginConfirmation(null, claimed.attempts);
+        if (originFailure) {
+          await recordClaimFailure(originFailure);
+          continue;
+        }
+        const fresh = await loadProducedAlert();
+        const freshFailure = localFailure(fresh.alert, fresh.failure);
+        if (freshFailure) {
+          await recordClaimFailure(freshFailure);
+          continue;
+        }
+        const freshReference = theoOriginReference(fresh.alert, producerPayload);
+        const sameEvent = Boolean(reference && freshReference)
+          && reference.alertId === freshReference.alertId
+          && reference.dataSourceId === freshReference.dataSourceId
+          && reference.sourceEventId === freshReference.sourceEventId;
+        const freshOriginFailure = sameEvent
+          ? await confirmOriginNow(freshReference)
+          : evaluateTheoOriginConfirmation(null, claimed.attempts);
+        if (freshOriginFailure) {
+          await recordClaimFailure(freshOriginFailure);
+          continue;
+        }
+        payload = buildTheoPayload(buildTheoAlertPayload(fresh.alert, now()), now());
       } else {
         payload = buildTheoPayload(claimed.payload, now());
       }
