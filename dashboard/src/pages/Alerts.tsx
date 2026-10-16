@@ -28,6 +28,7 @@ import {
   isUnclassifiedClient,
 } from "@/components/oneview/ClientIdentity";
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
+import { CentralMaintenancesPanel } from "@/components/oneview/CentralMaintenancesPanel";
 import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
 import { AlertSourceAckRowAction } from "@/components/oneview/AlertSourceAckAction";
 import { AlertSuppressAction } from "@/components/oneview/AlertSuppressAction";
@@ -82,6 +83,7 @@ import {
   problemEpisodeDurationSeconds,
   problemIsResolved,
   formatNullableCount,
+  readFiniteCount,
   formatOneViewSeverityLabel,
   isOneViewAbortError,
   isOneViewSeverity,
@@ -144,6 +146,7 @@ import {
   writeAlertsUrlParams,
   type AlertsAckFilter,
   type AlertsOneViewAckFilter,
+  type AlertsDateField,
   type AlertsDatePreset,
   type AlertsSearchField,
   type AlertsSortKey,
@@ -176,7 +179,7 @@ import { toast } from "sonner";
 type RecognitionFilter = AlertsAckFilter;
 type OneViewAckFilter = AlertsOneViewAckFilter;
 type StatusFilter = "active" | "resolved" | "all";
-type AlertsView = "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed";
+type AlertsView = "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed" | "maintenances" | "normal" | "active_all";
 type SortField = AlertsSortKey | "client" | "datasource" | "host" | "problem" | "status" | "acknowledged_source" | "last_seen_at";
 type SortOrder = "asc" | "desc";
 type TemporalPreset = AlertsDatePreset;
@@ -271,6 +274,7 @@ const ONEVIEW_ACK_OPTIONS = [
 
 function inferAlertsView(query: URLSearchParams): AlertsView {
   const explicit = query.get("view");
+  if (explicit === "maintenances" || explicit === "normal" || explicit === "active_all") return explicit;
   if (explicit && isOperationalQueue(explicit)) return explicit;
   if (explicit === "resolved" || query.get("status") === "resolved") return "history";
   if (explicit === "recent" || explicit === "recentes") return "pending";
@@ -330,6 +334,22 @@ const emptyPagination: AlertPagination = {
   has_next: false,
   has_previous: false,
 };
+
+function originSyncList(value: unknown): NonNullable<AlertListResponse["origin_sync"]> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is NonNullable<AlertListResponse["origin_sync"]>[number] => (
+    Boolean(item && typeof item === "object")
+  ));
+}
+
+function formatQueueCount(
+  counts: NonNullable<AlertListResponse["operational_queues"]> | null,
+  view: OperationalQueue,
+) {
+  if (!counts) return null;
+  const n = readFiniteCount(counts[view]);
+  return n == null ? "—" : n.toLocaleString("pt-BR");
+}
 
 /**
  * Keeps the page renderable while a local/proxy process is being restarted or
@@ -961,6 +981,10 @@ export default function AlertsPage() {
       .filter((value): value is Exclude<OneViewAckFilter, "all"> => ["pending", "success", "cancelled", "failed"].includes(value))
   ));
   const oneviewAckFilter: OneViewAckFilter = oneviewAckStatuses.length === 1 ? oneviewAckStatuses[0] : "all";
+  const [suppressionOrigin, setSuppressionOrigin] = useState<"maintenance" | "manual" | "">(() => {
+    const value = initialQuery.get("suppression_origin");
+    return value === "maintenance" || value === "manual" ? value : "";
+  });
   const [ackActorFilter, setAckActorFilter] = useState(() => initialQuery.get("ack_actor")?.trim().slice(0, 160) || "");
   const [ackActorDraft, setAckActorDraft] = useState(() => initialQuery.get("ack_actor")?.trim().slice(0, 160) || "");
   const [alertsView, setAlertsView] = useState<AlertsView>(() => initialView);
@@ -1004,6 +1028,7 @@ export default function AlertsPage() {
   const [searchQuery, setSearchQuery] = useState(() => initialQuery.get("search") ?? initialQuery.get("host") ?? initialQuery.get("problem") ?? "");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [alertSearchLoading, setAlertSearchLoading] = useState(false);
+  const dateField: AlertsDateField = "first_seen";
   const [datePreset, setDatePreset] = useState<AlertsDatePreset>(() => {
     if (initialQuery.get("date_preset")) return temporalPresetFromUrl(initialQuery.get("date_preset"));
     if (initialQuery.get("date_from") || initialQuery.get("date_to")) return "custom";
@@ -1133,7 +1158,7 @@ export default function AlertsPage() {
       ackActor: ackActorFilter,
       hostSearch: hostColumnSearch,
       problemSearch: problemColumnSearch,
-      dateField: "first_seen",
+      dateField,
       datePreset,
       dateRange,
       searchField,
@@ -1147,8 +1172,9 @@ export default function AlertsPage() {
       alert: requestedAlertId,
     });
     if (recurrenceKey) next.set("recurrence_key", recurrenceKey);
+    if (suppressionOrigin) next.set("suppression_origin", suppressionOrigin);
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [ackActorFilter, alertsView, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter, suppressionOrigin]);
 
   useEffect(() => {
     severityPopupSeenRef.current = readSeverityPopupSeen("alerts", actorId);
@@ -1163,6 +1189,10 @@ export default function AlertsPage() {
   }, [actorId]);
 
   const loadAlerts = useCallback(async (options?: { quiet?: boolean; force?: boolean }) => {
+    if (alertsView === "maintenances") {
+      setIsAlertsLoading(false);
+      return;
+    }
     if (alertsRequestGate.shouldSkip(options)) return;
     if (feedbackQueryKeyRef.current !== feedbackQueryKey) {
       feedbackQueryKeyRef.current = feedbackQueryKey;
@@ -1193,8 +1223,10 @@ export default function AlertsPage() {
         pageSize,
         customers: selectedCustomerKeys,
         severities: selectedSeverities,
-        status: statusFilter,
+        status: alertsView === "normal" || alertsView === "active_all" ? "all" : statusFilter,
         operationalView: isOperationalQueue(alertsView) ? alertsView : undefined,
+        problemScope: alertsView === "normal" ? "normal" : alertsView === "active_all" ? "all" : undefined,
+        suppressionOrigin: alertsView === "suppressed" && suppressionOrigin ? suppressionOrigin : undefined,
         incidentStates,
         incidentNumber: incidentNumber || undefined,
         recurrenceKey: recurrenceKey || undefined,
@@ -1341,7 +1373,7 @@ export default function AlertsPage() {
       setPagination(normalized.pagination);
       setFilteredSummary(safeResponse.filtered_summary);
       if (safeResponse.operational_queues) setQueueCounts(safeResponse.operational_queues);
-      if (safeResponse.origin_sync) setOriginSync(safeResponse.origin_sync);
+      if (Array.isArray(safeResponse.origin_sync)) setOriginSync(originSyncList(safeResponse.origin_sync));
       setTemporalCounts(safeResponse.temporal_counts);
       setSnapshotCoverage(safeResponse.snapshot_coverage ?? null);
       setAlertsMeta(metaOf(safeResponse));
@@ -1360,7 +1392,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsRequestGate, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter, suppressionOrigin]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1569,7 +1601,7 @@ export default function AlertsPage() {
     || debouncedSearch
     || hasTemporalFilter,
   );
-  const listTotal = pagination.total_items;
+  const listTotal = readFiniteCount(pagination.total_items) ?? 0;
   // Contadores das filas vêm do mesmo escopo BFF, sem reaproveitar "todos ativos".
   // Erro/ausência => "—"; zero válido => 0.
   const temporalDescription = hasActiveListFilters ? "Nos filtros atuais" : null;
@@ -1637,7 +1669,7 @@ export default function AlertsPage() {
   };
 
   const customerCards = useMemo(() => {
-    const allCount = alertsAreCopy || hasTemporalFilter ? null : (metrics?.active_total ?? health?.counts.active_alerts ?? null);
+    const allCount = alertsAreCopy || hasTemporalFilter ? null : (metrics?.active_total ?? health?.counts?.active_alerts ?? null);
     const customers = augmentCustomerFacetsWithDedicatedDatasources(
       (facets?.customers ?? [])
         .filter((customer) => !isDatasourceOnlyFilterValue(customer.key) && !isDatasourceOnlyFilterValue(customer.name))
@@ -1657,7 +1689,7 @@ export default function AlertsPage() {
       },
       ...customers,
     ];
-  }, [alertsAreCopy, facets?.customers, facets?.datasources, hasTemporalFilter, health?.counts.active_alerts, metrics?.active_total]);
+  }, [alertsAreCopy, facets?.customers, facets?.datasources, hasTemporalFilter, health?.counts?.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
     if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
@@ -1794,8 +1826,9 @@ export default function AlertsPage() {
     return () => window.clearInterval(timer);
   }, [displayedAlerts]);
 
-  const firstVisible = pagination.total_items === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
-  const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
+  const originSyncItems = originSyncList(originSync);
+  const firstVisible = listTotal === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
+  const lastVisible = listTotal === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, listTotal);
   // Detail/history of the previously opened alert stay in state until the new ones arrive.
   const selectedAlert = (detail?.item && detail.item.id === selectedAlertId ? detail.item : null) ?? selectedPreview;
   const selectedHistoryItems = history && history.alert_id === selectedAlertId ? history.items : EMPTY_HISTORY_ITEMS;
@@ -1897,9 +1930,14 @@ export default function AlertsPage() {
   };
 
   const applyAlertsView = (view: AlertsView) => {
-    if (!isOperationalQueue(view)) return;
     setAlertsView(view);
     setPage(1);
+    if (view === "maintenances" || view === "normal" || view === "active_all") {
+      setSortField("first_seen_at");
+      setSortOrder("desc");
+      return;
+    }
+    if (!isOperationalQueue(view)) return;
     if (view === "history") {
       setSortField("resolved_at");
       setSortOrder("desc");
@@ -2025,7 +2063,7 @@ export default function AlertsPage() {
         acknowledged_internal_comment: ackComment.trim(),
         ack_request_status: null,
       } : alert));
-      setDetail((current) => current?.item.id === selectedAlert.id ? {
+      setDetail((current) => current?.item?.id === selectedAlert.id ? {
         ...current,
         item: {
           ...current.item,
@@ -2067,7 +2105,7 @@ export default function AlertsPage() {
     } : item;
     setAlerts((current) => current.map(pending));
     setSelectedPreview((current) => current ? pending(current) : current);
-    setDetail((current) => current?.item.id === alert.id ? { ...current, item: pending(current.item) } : current);
+    setDetail((current) => current?.item?.id === alert.id ? { ...current, item: pending(current.item) } : current);
   }, []);
 
   const handleSourceAcknowledged = useCallback(async (alert: OneViewAlert, _status: SourceAckTerminalStatus) => {
@@ -2277,43 +2315,58 @@ export default function AlertsPage() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h2 className="ov-type-section-title text-foreground">
-                {ALERTS_VIEWS.find((item) => item.id === alertsView)?.label ?? "Alertas"} · filtrados por {tableCustomerScope}
+                {alertsView === "maintenances" ? "Manutenções" : alertsView === "normal" ? "Normais" : alertsView === "active_all" ? "Todos" : (ALERTS_VIEWS.find((item) => item.id === alertsView)?.label ?? "Alertas")} · filtrados por {tableCustomerScope}
               </h2>
-              <p className="ov-type-caption text-muted-foreground">
+              <p className={cn("ov-type-caption text-muted-foreground", alertsView === "maintenances" && "hidden")}>
                 {alertsAreCopy
                   ? "Cópia da fila. Não é o estado operacional atual."
                   : (ALERTS_VIEWS.find((item) => item.id === alertsView)?.description ?? "Fila operacional")}
-                {originSync.some((item) => item.last_success_at)
-                  ? ` · Último sync ${formatSnapshotCopyClock(originSync.map((item) => item.last_success_at).filter((value): value is string => Boolean(value)).sort().at(-1) || "")}`
+                {originSyncItems.some((item) => item.last_success_at)
+                  ? ` · Último sync ${formatSnapshotCopyClock(originSyncItems.map((item) => item.last_success_at).filter((value): value is string => Boolean(value)).sort().at(-1) || "")}`
                   : " · Último sync da origem sem registro"}
                 {isAlertsFilling
                   ? " · Exibindo os mais recentes · carregando o restante…"
                   : isAlertsLoading && hasTemporalFilter
                     ? " · Aplicando filtro de período…"
                     : ` · Exibindo ${firstVisible.toLocaleString("pt-BR")}–${lastVisible.toLocaleString("pt-BR")} de ${listTotal.toLocaleString("pt-BR")} alertas`}
-                {snapshotCoverage?.partial ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos` : ""}
+                {snapshotCoverage?.partial && Number.isFinite(snapshotCoverage.total_persisted)
+                  ? ` disponíveis na cópia · ${snapshotCoverage.total_persisted.toLocaleString("pt-BR")} persistidos`
+                  : ""}
               </p>
             </div>
-            <Tabs value={isOperationalQueue(alertsView) ? alertsView : "pending"} onValueChange={(value) => applyAlertsView(value as AlertsView)}>
+            <div className="mb-2 flex flex-wrap gap-2" aria-label="Escopo dos problemas ativos">
+              <OneViewButton type="button" variant="secondary" aria-pressed={alertsView === "normal"} onClick={() => applyAlertsView("normal")}>Normais</OneViewButton>
+              <OneViewButton type="button" variant="secondary" aria-pressed={alertsView === "suppressed"} onClick={() => applyAlertsView("suppressed")}>Suprimidos</OneViewButton>
+              <OneViewButton type="button" variant="secondary" aria-pressed={alertsView === "active_all"} onClick={() => applyAlertsView("active_all")}>Todos</OneViewButton>
+            </div>
+            <Tabs value={alertsView} onValueChange={(value) => applyAlertsView(value as AlertsView)}>
               <TabsList aria-label="Filas operacionais de alertas" className="h-9 justify-start overflow-x-auto">
                 {ALERTS_VIEWS.map((view) => (
                   <TabsTrigger key={view.id} value={view.id} className="h-7">
                     {view.label}
-                    {queueCounts ? <span className="ml-1 tabular-nums text-muted-foreground">{queueCounts[view.id].toLocaleString("pt-BR")}</span> : null}
+                    {queueCounts ? <span className="ml-1 tabular-nums text-muted-foreground">{formatQueueCount(queueCounts, view.id)}</span> : null}
                   </TabsTrigger>
                 ))}
+                <TabsTrigger value="maintenances" className="h-7">Manutenções</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
-          {originSync.some((item) => item.stale) ? (
+          {originSyncItems.some((item) => item.stale) ? (
             <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100" role="status">
-              Sincronização desatualizada em {originSync.filter((item) => item.stale).map((item) => item.datasource_name).join(", ")}. Os alertas ativos sem ACK continuam em Pendentes e nada foi marcado como resolvido.
+              Sincronização desatualizada em {originSyncItems.filter((item) => item.stale).map((item) => item.datasource_name).join(", ")}. Os alertas ativos sem ACK continuam em Pendentes e nada foi marcado como resolvido.
             </p>
           ) : null}
-          {originSync.some((item) => item.snapshot_available === false && !item.stale && item.state !== "failed") ? (
+          {originSyncItems.some((item) => item.snapshot_available === false && !item.stale && item.state !== "failed") ? (
             <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100" role="status">
-              Sem snapshot completo identificado em {originSync.filter((item) => item.snapshot_available === false).map((item) => item.datasource_name).join(", ")}. A fila não foi esvaziada.
+              Sem snapshot completo identificado em {originSyncItems.filter((item) => item.snapshot_available === false).map((item) => item.datasource_name).join(", ")}. A fila não foi esvaziada.
             </p>
+          ) : null}
+          {alertsView === "suppressed" ? (
+            <div className="mt-3 flex flex-wrap gap-2" aria-label="Origem da supressão">
+              <OneViewButton type="button" variant="secondary" aria-pressed={suppressionOrigin === ""} onClick={() => { setSuppressionOrigin(""); setPage(1); }}>Todas</OneViewButton>
+              <OneViewButton type="button" variant="secondary" aria-pressed={suppressionOrigin === "manual"} onClick={() => { setSuppressionOrigin("manual"); setPage(1); }}>Manual</OneViewButton>
+              <OneViewButton type="button" variant="secondary" aria-pressed={suppressionOrigin === "maintenance"} onClick={() => { setSuppressionOrigin("maintenance"); setPage(1); }}>Manutenção</OneViewButton>
+            </div>
           ) : null}
           {alertsView === "unconfirmed" ? (
             <p className="mt-3 rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm" role="status">
@@ -2328,6 +2381,7 @@ export default function AlertsPage() {
         </header>
 
         <ConfigurableTableToolbar
+          className={alertsView === "maintenances" ? "hidden" : undefined}
           search={searchQuery}
           onSearchChange={(value) => { setSearchQuery(value); setPage(1); }}
           fetchSearchSuggestions={fetchAlertTableSuggestions}
@@ -2460,7 +2514,8 @@ export default function AlertsPage() {
 
         {alertsError ? <OperationalErrorBanner className="rounded-none border-x-0 border-t-0" message={alertsError} onRetry={() => void loadAlerts()} /> : null}
 
-        <div ref={alertTableLayout.containerRef} className="ov-operational-responsive relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto" aria-busy={isAlertsLoading || isAlertsFilling}>
+        {alertsView === "maintenances" ? <CentralMaintenancesPanel /> : null}
+        <div ref={alertTableLayout.containerRef} className={cn("ov-operational-responsive relative min-h-[280px] max-h-[calc(100vh-16rem)] overflow-auto", alertsView === "maintenances" && "hidden")} aria-busy={isAlertsLoading || isAlertsFilling}>
           {(isAlertsLoading || isAlertsFilling) && alerts.length > 0 ? <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-primary/15"><div className="h-full w-1/3 animate-pulse bg-primary" /></div> : null}
           <TooltipProvider delayDuration={250}>
           <Table className="ov-operational-table w-full table-fixed" style={{ minWidth: `${alertTableLayout.minimumTableWidth}px` }}>
@@ -2499,7 +2554,7 @@ export default function AlertsPage() {
                         ? "A fila não foi atualizada porque a sincronização não respondeu."
                         : !hasLoadedAlerts
                           ? "Carregando fila operacional..."
-                          : originSync.some((item) => item.stale)
+                          : originSyncItems.some((item) => item.stale)
                             ? "Nenhum alerta nesta fila. A sincronização da origem está desatualizada, então a ausência não confirma recuperação."
                             : alertsView === "pending"
                               ? "Nenhum alerta pendente de ação."
@@ -2626,11 +2681,11 @@ export default function AlertsPage() {
           </TooltipProvider>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-border/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className={cn("flex flex-col gap-3 border-t border-border/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between", alertsView === "maintenances" && "hidden")}>
           <p className="ov-type-caption text-muted-foreground">
             Página {pagination.total_pages === 0 ? 0 : pagination.page} de {pagination.total_pages}
             {" · "}
-            {pagination.total_items.toLocaleString("pt-BR")} resultado{pagination.total_items === 1 ? "" : "s"}
+            {listTotal.toLocaleString("pt-BR")} resultado{listTotal === 1 ? "" : "s"}
           </p>
           <div className="flex items-center gap-2">
             <OneViewButton type="button" variant="secondary" disabled={!pagination.has_previous || isAlertsLoading} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="h-4 w-4" />Anterior</OneViewButton>

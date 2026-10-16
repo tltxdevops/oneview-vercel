@@ -1286,6 +1286,9 @@ export interface FetchAlertsParams {
   excludeOperator?: boolean;
   /** Comma list: items, summary, temporal. Omitted = all three. */
   include?: string;
+  /** Active problems only: normal excludes suppressed and history; all keeps suppressed and excludes history. */
+  problemScope?: "normal" | "suppressed" | "all";
+  suppressionOrigin?: "maintenance" | "manual";
   signal?: AbortSignal;
 }
 
@@ -1300,6 +1303,8 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
   if (params?.operationalView) search.set("operational_view", params.operationalView);
+  if (params?.problemScope) search.set("problem_scope", params.problemScope);
+  if (params?.suppressionOrigin) search.set("suppression_origin", params.suppressionOrigin);
   if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
   else if (params?.incidentState) search.set("incident_state", params.incidentState);
   if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());
@@ -1335,6 +1340,39 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
 
 export async function fetchAlerts(params?: FetchAlertsParams): Promise<AlertListResponse> {
   return fetchApi<AlertListResponse>(oneViewAlertsPath(params), { signal: params?.signal });
+}
+
+export type MaintenanceCatalog = {
+  writes_enabled: boolean;
+  read_status: string;
+  read_reason: string;
+  items: unknown[];
+  compatibility: Array<{
+    datasource: string;
+    expected_version: string;
+    maintenance_get: boolean;
+    write_ready: boolean;
+    note: string;
+  }>;
+};
+
+export type MaintenancePreview = {
+  accepted: boolean;
+  can_confirm: boolean;
+  authorization: string | null;
+  operations: Array<{ datasource: string; blockers: string[]; host_count: number }>;
+};
+
+export function fetchMaintenanceCatalog(signal?: AbortSignal): Promise<MaintenanceCatalog> {
+  return fetchApi<MaintenanceCatalog>("/oneview/maintenances", { signal });
+}
+
+export function previewMaintenanceWindow(body: Record<string, unknown>, signal?: AbortSignal): Promise<MaintenancePreview> {
+  return fetchApi<MaintenancePreview>("/oneview/maintenances", {
+    method: "POST",
+    body: JSON.stringify({ action: "preview", ...body }),
+    signal,
+  });
 }
 
 export type AlertReadOptions = { fresh?: boolean };
@@ -1800,6 +1838,8 @@ function appendAlertScopeQueryParams(search: URLSearchParams, params?: FetchAler
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
   if (params?.status) search.set("status", params.status);
   if (params?.operationalView) search.set("operational_view", params.operationalView);
+  if (params?.problemScope) search.set("problem_scope", params.problemScope);
+  if (params?.suppressionOrigin) search.set("suppression_origin", params.suppressionOrigin);
   if (params?.incidentStates?.length) for (const value of params.incidentStates) search.append("incident_state", value);
   else if (params?.incidentState) search.set("incident_state", params.incidentState);
   if (params?.incidentNumber?.trim()) search.set("incident_number", params.incidentNumber.trim().toUpperCase());

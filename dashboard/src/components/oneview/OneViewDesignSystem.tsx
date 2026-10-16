@@ -105,7 +105,7 @@ export function OneViewSemanticStatusBadge({ status, label, showDot, className, 
   label?: string;
   showDot?: boolean;
 }) {
-  const definition = ONEVIEW_STATUS_CATALOG[status];
+  const definition = ONEVIEW_STATUS_CATALOG[status] ?? ONEVIEW_STATUS_CATALOG["incident-closed"];
   return <SemanticBadge label={label || definition.label} showDot={showDot} className={cn("ov-status-badge", definition.className, className)} data-oneview-status={status} {...props} />;
 }
 

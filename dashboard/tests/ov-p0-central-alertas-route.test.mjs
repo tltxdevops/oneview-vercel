@@ -22,5 +22,9 @@ test("canonical Central route is /central-alertas and old paths redirect with qu
   assert.match(sidebar, /href: "\/central-alertas"/);
   assert.match(sidebar, /secondary: "Central de Alertas"/);
   assert.match(read("src/pages/Alerts.tsx"), /PageHeader title="Central de Alertas"/);
+  assert.match(read("src/pages/Alerts.tsx"), /const dateField: AlertsDateField = "first_seen"/);
+  assert.match(read("src/pages/Alerts.tsx"), /function formatQueueCount/);
+  assert.match(read("src/pages/Alerts.tsx"), /readFiniteCount\(counts\[view\]\)/);
   assert.match(read("src/components/oneview/AlertSuppressAction.tsx"), /SUPPRESS_WRITES_ENABLED = false/);
+  assert.match(read("src/components/oneview/OneViewErrorBoundary.tsx"), /error\.message/);
 });

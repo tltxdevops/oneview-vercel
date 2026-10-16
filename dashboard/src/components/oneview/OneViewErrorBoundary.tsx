@@ -13,6 +13,7 @@ type OneViewErrorBoundaryProps = {
 type OneViewErrorBoundaryState = {
   hasError: boolean;
   nonce: number;
+  message: string;
 };
 
 function operationalHref(path: string) {
@@ -22,15 +23,17 @@ function operationalHref(path: string) {
 }
 
 export class OneViewErrorBoundary extends Component<OneViewErrorBoundaryProps, OneViewErrorBoundaryState> {
-  state: OneViewErrorBoundaryState = { hasError: false, nonce: 0 };
+  state: OneViewErrorBoundaryState = { hasError: false, nonce: 0, message: "" };
 
-  static getDerivedStateFromError(): Pick<OneViewErrorBoundaryState, "hasError"> {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error): Pick<OneViewErrorBoundaryState, "hasError" | "message"> {
+    const message = error instanceof Error && error.message
+      ? error.message.slice(0, 300)
+      : "Erro de renderização";
+    return { hasError: true, message };
   }
 
-  componentDidCatch(_error: Error, _info: ErrorInfo) {
-    void _error;
-    void _info;
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[oneview] route crash", error, info.componentStack);
   }
 
   componentDidUpdate(prevProps: OneViewErrorBoundaryProps) {
@@ -41,7 +44,7 @@ export class OneViewErrorBoundary extends Component<OneViewErrorBoundaryProps, O
   }
 
   reset = () => {
-    this.setState((current) => ({ hasError: false, nonce: current.nonce + 1 }));
+    this.setState((current) => ({ hasError: false, nonce: current.nonce + 1, message: "" }));
   };
 
   render() {
@@ -64,6 +67,9 @@ export class OneViewErrorBoundary extends Component<OneViewErrorBoundaryProps, O
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-foreground">{title}</h2>
           <p className="max-w-xl text-sm text-muted-foreground">{detail}</p>
+          {this.state.message ? (
+            <p className="max-w-xl font-mono text-xs text-muted-foreground">{this.state.message}</p>
+          ) : null}
         </div>
         {scope !== "drawer" ? (
           <nav className="flex flex-wrap gap-2" aria-label="Navegação operacional">
