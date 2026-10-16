@@ -69,6 +69,7 @@ const routes = new Map([
   ["/api/oneview/dashboard-summary", "dashboard-summary"],
   ["/api/oneview/grafana-summary", "grafana-summary"],
   ["/api/oneview/alerts", "alerts"],
+  ["/api/oneview/maintenances", "maintenances"],
   ["/api/oneview/alerts/related-incidents", "alert-related-incidents"],
   ["/api/oneview/attention-required", "attention-required"],
   ["/api/oneview/clients-summary", "clients-summary"],
@@ -324,7 +325,8 @@ const server = http.createServer(async (req, res) => {
       || (route.routeName === "alert-source-acknowledge" && req.method === "POST")
       || (route.routeName === "link-reminders" && ["POST", "PATCH", "DELETE"].includes(req.method || ""))
       || (["incident-claim", "incident-work-note", "incident-put-on-hold", "incident-alert-attachment"].includes(route.routeName) && req.method === "POST")
-      || (["client-sharing-preview", "client-sharing-send", "client-sharing-smoke"].includes(route.routeName) && req.method === "POST")) {
+      || (["client-sharing-preview", "client-sharing-send", "client-sharing-smoke"].includes(route.routeName) && req.method === "POST")
+      || (route.routeName === "maintenances" && req.method === "POST")) {
       try {
         req.body = await readJsonBody(req);
       } catch (error) {
