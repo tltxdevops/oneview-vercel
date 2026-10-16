@@ -1559,6 +1559,7 @@ async function fetchAlertList(req, config, dataSourceNames) {
         count(*) filter (where a.severity = 'not_classified')::int as not_classified
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
       ${whereSql}
     `;
   const temporalSql = `
@@ -1581,6 +1582,7 @@ async function fetchAlertList(req, config, dataSourceNames) {
         count(*) filter (where a.resolved_at >= now() - interval '30 days')::int as resolved_30d
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
       ${baseWhereSql}
     `;
   const itemsSql = `

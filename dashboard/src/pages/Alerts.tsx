@@ -314,6 +314,7 @@ const ALERTS_METRIC_OPTIONS = [
 /** OV-P0-255 — polling operacional 10s. */
 const SUMMARY_REFRESH_MS = 10_000;
 const ALERTS_REFRESH_MS = 10_000;
+const ALERTS_DATE_FIELD = "first_seen" as const;
 const EMPTY_HISTORY_ITEMS: AlertHistoryItem[] = [];
 const STABLE_SUMMARY_REFRESH_MS = 30_000;
 /** Um destaque verde de 1,5s após mudança confirmada pelo backend. */
@@ -1210,7 +1211,7 @@ export default function AlertsPage() {
 
       request = applySearchToFetchParams(request, searchField, debouncedSearch);
       if (alertsDateActive(datePreset, dateRange)) {
-        request = applyDateFieldToFetchParams(request, dateField, dateBounds);
+        request = applyDateFieldToFetchParams(request, ALERTS_DATE_FIELD, dateBounds);
       }
 
       const shouldPrime = !options?.quiet && page === 1;
@@ -1360,7 +1361,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;

@@ -11,9 +11,11 @@ import { OneViewErrorBoundary } from "@/components/oneview/OneViewErrorBoundary"
 import SsoCallback from "@/pages/SsoCallback";
 import { getBrowserRouterBase } from "@/lib/basePath";
 import { CENTRAL_ALERTAS_PATH, centralAlertasHref } from "@/lib/central-alertas-path";
+import { legacyHistoryRouteEnabled } from "@/lib/legacy-history-route";
 
 const queryClient = new QueryClient();
 const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras")); const SettingsPage = lazy(() => import("@/pages/Settings"));
+const HistoricoPage = legacyHistoryRouteEnabled ? lazy(() => import("@/pages/Historico")) : null;
 
 function PreserveSearchRedirect({ to }: { to: string }) {
   const { search } = useLocation();
@@ -71,7 +73,7 @@ const App = () => (
             <Route path={CENTRAL_ALERTAS_PATH} element={route(<AlertsPage />)} />
             <Route path="/alertas" element={<PreserveSearchRedirect to={CENTRAL_ALERTAS_PATH} />} />
             <Route path="/alerts" element={<PreserveSearchRedirect to={CENTRAL_ALERTAS_PATH} />} />
-            <Route path="/historico" element={<HistoricoRedirect />} />
+            <Route path="/historico" element={HistoricoPage ? route(<HistoricoPage />) : <HistoricoRedirect />} />
             {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={routeFallback}><BancoDadosPage /></Suspense>} />}
             {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={routeFallback}><CertificadosPage /></Suspense>} />}
             <Route path="/chamados" element={route(<ChamadosPage />)} />
