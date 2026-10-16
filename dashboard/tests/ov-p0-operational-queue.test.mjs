@@ -239,8 +239,56 @@ test("canonical worker suppression fields drive the read-only queue and counters
   });
   assert.match(operationalQueueSql("suppressed"), /suppression_confirmation/);
   assert.match(operationalQueueSql("unconfirmed"), /suppression_confirmation/);
+  assert.match(operationalQueueSql("suppressed"), /origin_snapshot_started_at/);
+  assert.match(operationalQueueSql("suppressed"), /origin_seen_in_complete_snapshot/);
+  assert.doesNotMatch(operationalQueueSql("suppressed"), /now\(\) - interval/);
   const module = readFileSync(new URL("../api/_lib/oneview-operational-queue.js", import.meta.url), "utf8");
+  assert.match(module, /snapshot_complete/);
+  assert.match(module, /snapshot_mode/);
+  assert.match(module, /event_stream_fast/);
+  assert.doesNotMatch(module, /fetched_count >= 10/);
   assert.doesNotMatch(module, /token\.create|event\.acknowledge|insert into|update alerts/);
+});
+
+test("stale suppression leaves Suprimidos without becoming recovery", () => {
+  const now = Date.parse("2026-10-16T12:30:00Z");
+  const current = {
+    ...active,
+    payload_suppressed_source: "true",
+    payload_suppression_confirmation: "confirmed",
+    last_seen_at: "2026-10-16T12:29:50Z",
+    origin_snapshot_started_at: "2026-10-16T12:29:40Z",
+    last_sync_status: "success",
+  };
+  assert.equal(classifyOperationalQueue(current, now), "suppressed");
+
+  const stale = {
+    ...current,
+    last_seen_at: "2026-10-14T08:00:00Z",
+  };
+  assert.equal(classifyOperationalQueue(stale, now), "unconfirmed");
+  assert.notEqual(classifyOperationalQueue(stale, now), "history");
+  assert.notEqual(classifyOperationalQueue(stale, now), "pending");
+
+  const unavailable = {
+    ...stale,
+    origin_snapshot_started_at: null,
+    last_sync_status: "failed",
+  };
+  assert.equal(classifyOperationalQueue(unavailable, now), "suppressed");
+
+  const explicitFalse = {
+    ...current,
+    payload_origin_seen_in_complete_snapshot: "false",
+  };
+  assert.equal(classifyOperationalQueue(explicitFalse, now), "unconfirmed");
+
+  const incompleteSnapshot = {
+    ...stale,
+    origin_snapshot_complete: false,
+    last_sync_status: "success",
+  };
+  assert.equal(classifyOperationalQueue(incompleteSnapshot, now), "suppressed");
 });
 
 test("five queues stay exclusive for the seven datasources and the sampled events", () => {

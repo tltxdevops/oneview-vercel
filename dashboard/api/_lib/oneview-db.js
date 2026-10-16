@@ -25,6 +25,7 @@ import {
   describeSuppression,
   isOperationalQueueView,
   operationalQueueSql,
+  ORIGIN_SNAPSHOT_JOIN_SQL,
   recoveryDurationSeconds,
   recoveryEvidenceOf,
   timeToAckSeconds,
@@ -1665,6 +1666,13 @@ async function fetchAlertList(req, config, dataSourceNames) {
           a.last_reopened_at,
           ${PROVEN_SOURCE_ACK_CLOCK_SQL} as ack_history_first_at,
           a.last_seen_at,
+          origin_snap.origin_snapshot_id,
+          origin_snap.origin_snapshot_started_at,
+          origin_snap.origin_snapshot_finished_at,
+          origin_snap.origin_snapshot_fetched,
+          origin_snap.origin_snapshot_mode,
+          origin_snap.origin_snapshot_complete,
+          a.payload_normalized->>'origin_seen_in_complete_snapshot' as payload_origin_seen_in_complete_snapshot,
           a.resolved_at,
           a.source_recovery_event_id,
           d.last_success_at,
@@ -1676,6 +1684,7 @@ async function fetchAlertList(req, config, dataSourceNames) {
           a.updated_at
         from alerts a
         join data_sources d on d.id = a.data_source_id
+        ${ORIGIN_SNAPSHOT_JOIN_SQL}
         left join lateral (
           select ack.status, ack.requested_at, ack.processed_at, ack.operator_name, ack.result_payload, ack.message
             from alert_acknowledgements ack
@@ -1697,11 +1706,16 @@ async function fetchAlertList(req, config, dataSourceNames) {
         count(*) filter (where ${operationalQueueSql("unconfirmed")})::int as unconfirmed
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
       ${scopeWhereSql}
     `;
   const syncSql = `
-      select d.name, d.last_success_at, d.last_sync_at, d.last_sync_status, d.sync_interval_seconds
+      select d.name, d.last_success_at, d.last_sync_at, d.last_sync_status, d.sync_interval_seconds,
+             origin_snap.origin_snapshot_id, origin_snap.origin_snapshot_started_at,
+             origin_snap.origin_snapshot_fetched, origin_snap.origin_snapshot_mode,
+             origin_snap.origin_snapshot_complete
         from data_sources d
+        ${ORIGIN_SNAPSHOT_JOIN_SQL}
        where d.name = any($1::text[])
        order by d.display_order, d.name
     `;
@@ -1762,6 +1776,12 @@ async function fetchAlertList(req, config, dataSourceNames) {
       state: sync.state,
       stale: sync.stale,
       last_success_at: sync.last_success_at,
+      snapshot_id: sync.snapshot?.id || null,
+      snapshot_started_at: sync.snapshot?.started_at || null,
+      snapshot_fetched: sync.snapshot?.fetched ?? null,
+      snapshot_mode: sync.snapshot?.mode || null,
+      snapshot_complete: sync.snapshot?.complete,
+      snapshot_available: Boolean(sync.snapshot?.available),
     };
   });
   if (include.temporal) payload.temporal_counts = alertTemporalCounts(temporalRow);

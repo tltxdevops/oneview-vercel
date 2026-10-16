@@ -22,6 +22,7 @@ for (const file of [
   "api/_lib/microsoft-sso.js",
   "api/_lib/oneview-response.js",
   "api/_lib/oneview-db.js",
+  "api/_lib/oneview-operational-queue.js",
   "api/_lib/oneview-config.js",
   "api/_lib/oneview-fallback.js",
   "api/oneview/dashboard-summary.js",

@@ -7,6 +7,9 @@
  * Suppression is read only from persisted Zabbix evidence:
  * payload_normalized.suppressed + suppression_data, or the alert columns
  * when the payload key is absent. The browser does not invent a window.
+ * Current suppression requires membership in the latest identified origin
+ * snapshot (sync_logs.id + snapshot_mode/snapshot_complete), not fetched_count
+ * heuristics and not age-from-now. Incomplete or failed snapshots keep flags.
  *
  * History keeps two evidence levels. Proven requires a non-zero
  * source_recovery_event_id. Legacy is status_source=resolved with
@@ -69,28 +72,87 @@ const EXPLICIT_UNCONFIRMED_SUPPRESSION_SQL = `(
   and lower(coalesce(a.payload_normalized->>'suppression_confirmation', '')) = 'unconfirmed'
 )`;
 
+const SUPPRESSION_FLAG_SQL = `(
+  (
+    lower(coalesce(a.payload_normalized->>'suppressed_source', a.payload_normalized->>'suppressed', '')) in ('true', '1')
+    and ${SUPPRESSION_WINDOW_OPEN_SQL}
+    and (
+      coalesce(a.payload_normalized->>'suppress_until', '') = ''
+      or (
+        a.payload_normalized->>'suppress_until' ~ '^[0-9]{4}-'
+        and (a.payload_normalized->>'suppress_until')::timestamptz > now()
+      )
+    )
+  )
+  or (
+    coalesce(a.suppressed, false) = true
+    and coalesce(a.payload_normalized->>'suppressed_source', a.payload_normalized->>'suppressed', '') = ''
+    and coalesce(a.payload_normalized->>'suppression_confirmation', '') = ''
+    and (a.suppressed_until is null or a.suppressed_until > now())
+  )
+)`;
+
+/**
+ * Latest automatic problem.get cycle for the datasource.
+ * event_stream_fast is not a snapshot. Completeness comes from the Worker
+ * payload: snapshot_complete=true, or legacy_limit below its own fetch limit.
+ * An explicitly incomplete cycle makes the snapshot unavailable.
+ */
+export const ORIGIN_SNAPSHOT_JOIN_SQL = `left join lateral (
+  select sl.id as origin_snapshot_id,
+         sl.started_at as origin_snapshot_started_at,
+         sl.finished_at as origin_snapshot_finished_at,
+         sl.fetched_count as origin_snapshot_fetched,
+         sl.payload->>'snapshot_mode' as origin_snapshot_mode,
+         case
+           when coalesce(sl.payload->>'snapshot_complete', '') in ('true', 't') then true
+           when coalesce(sl.payload->>'snapshot_mode', '') = 'legacy_limit'
+            and sl.fetched_count < coalesce(nullif(sl.payload->>'limit', '')::int, 1000)
+           then true
+           else false
+         end as origin_snapshot_complete
+    from sync_logs sl
+   where sl.data_source_id = d.id
+     and lower(coalesce(sl.status, '')) in ('success', 'ok', 'partial_success')
+     and coalesce(sl.sync_type, 'automatic') <> 'event_stream_fast'
+   order by coalesce(sl.finished_at, sl.started_at) desc
+   limit 1
+) origin_snap on true`;
+
+const ORIGIN_SNAPSHOT_UNAVAILABLE_SQL = `(
+  origin_snap.origin_snapshot_complete is not true
+  or lower(coalesce(d.last_sync_status, '')) in ('failed', 'error')
+)`;
+
+const SEEN_IN_LATEST_ORIGIN_SNAPSHOT_SQL = `(
+  origin_snap.origin_snapshot_complete is true
+  and a.last_seen_at is not null
+  and origin_snap.origin_snapshot_started_at is not null
+  and a.last_seen_at >= origin_snap.origin_snapshot_started_at
+)`;
+
+const CURRENT_ORIGIN_SUPPRESSION_SQL = `(
+  lower(coalesce(a.payload_normalized->>'origin_seen_in_complete_snapshot', '')) = 'true'
+  or (
+    coalesce(a.payload_normalized->>'origin_seen_in_complete_snapshot', '') = ''
+    and (${ORIGIN_SNAPSHOT_UNAVAILABLE_SQL} or ${SEEN_IN_LATEST_ORIGIN_SNAPSHOT_SQL})
+  )
+)`;
+
 const SUPPRESSION_ACTIVE_SQL = `(
   ${OPEN_PROBLEM_SQL}
   and ${SUPPRESSION_CONFIRMED_SQL}
-  and (
-    (
-      lower(coalesce(a.payload_normalized->>'suppressed_source', a.payload_normalized->>'suppressed', '')) in ('true', '1')
-      and ${SUPPRESSION_WINDOW_OPEN_SQL}
-      and (
-        coalesce(a.payload_normalized->>'suppress_until', '') = ''
-        or (
-          a.payload_normalized->>'suppress_until' ~ '^[0-9]{4}-'
-          and (a.payload_normalized->>'suppress_until')::timestamptz > now()
-        )
-      )
-    )
-    or (
-      coalesce(a.suppressed, false) = true
-      and coalesce(a.payload_normalized->>'suppressed_source', a.payload_normalized->>'suppressed', '') = ''
-      and coalesce(a.payload_normalized->>'suppression_confirmation', '') = ''
-      and (a.suppressed_until is null or a.suppressed_until > now())
-    )
-  )
+  and ${SUPPRESSION_FLAG_SQL}
+  and ${CURRENT_ORIGIN_SUPPRESSION_SQL}
+)`;
+
+const STALE_SUPPRESSION_SQL = `(
+  ${OPEN_PROBLEM_SQL}
+  and ${SUPPRESSION_CONFIRMED_SQL}
+  and ${SUPPRESSION_FLAG_SQL}
+  and lower(coalesce(a.payload_normalized->>'origin_seen_in_complete_snapshot', '')) <> 'true'
+  and not (${ORIGIN_SNAPSHOT_UNAVAILABLE_SQL})
+  and not (${SEEN_IN_LATEST_ORIGIN_SNAPSHOT_SQL})
 )`;
 
 const CLEAN_ACTIVE_SQL = `(
@@ -99,6 +161,7 @@ const CLEAN_ACTIVE_SQL = `(
   and not (${PROVEN_RECOVERY_ID_SQL})
   and lower(coalesce(a.status_internal, '')) not in ('normalized', 'resolved', 'hidden')
   and not (${SUPPRESSION_ACTIVE_SQL})
+  and not (${STALE_SUPPRESSION_SQL})
   and not (${EXPLICIT_UNCONFIRMED_SUPPRESSION_SQL})
   and not (
     lower(coalesce(a.payload_normalized->>'suppressed_source', a.payload_normalized->>'suppressed', '')) in ('false', '0')
@@ -306,6 +369,32 @@ function openForSuppression(alert) {
     && !provenRecoveryId(alert?.source_recovery_event_id);
 }
 
+function snapshotCompleteFlag(alert) {
+  const raw = alert?.origin_snapshot_complete;
+  if (raw === true || raw === false) return raw;
+  const value = text(raw).toLowerCase();
+  if (value === "true" || value === "t") return true;
+  if (value === "false" || value === "f") return false;
+  return null;
+}
+
+function originSnapshotUnavailable(alert) {
+  const status = text(alert?.last_sync_status).toLowerCase();
+  if (status === "failed" || status === "error") return true;
+  if (snapshotCompleteFlag(alert) === false) return true;
+  const started = clockMs(alert?.origin_snapshot_started_at);
+  return !Number.isFinite(started);
+}
+
+function seenInLatestOriginSnapshot(alert) {
+  if (text(alert?.payload_origin_seen_in_complete_snapshot).toLowerCase() === "true") return true;
+  if (text(alert?.payload_origin_seen_in_complete_snapshot).toLowerCase() === "false") return false;
+  const started = clockMs(alert?.origin_snapshot_started_at);
+  const seen = clockMs(alert?.last_seen_at);
+  if (!Number.isFinite(started) || !Number.isFinite(seen)) return null;
+  return seen >= started;
+}
+
 export function classifyOperationalQueue(alert, now = Date.now()) {
   if (recoveryEvidenceOf(alert)) return "history";
   const suppression = describeSuppression(alert, now);
@@ -315,7 +404,11 @@ export function classifyOperationalQueue(alert, now = Date.now()) {
   )) {
     return "unconfirmed";
   }
-  if (suppression.state === "active" && openForSuppression(alert)) return "suppressed";
+  if (suppression.state === "active" && openForSuppression(alert)) {
+    const seen = seenInLatestOriginSnapshot(alert);
+    if (seen === false && !originSnapshotUnavailable(alert)) return "unconfirmed";
+    return "suppressed";
+  }
   const source = text(alert?.status_source).toLowerCase();
   const internal = text(alert?.status_internal).toLowerCase();
   const cleanActive = source === "active"
@@ -379,8 +472,19 @@ export function describeDatasourceSync(row, now = Date.now()) {
   const status = text(row?.last_sync_status).toLowerCase();
   const failed = status === "failed" || status === "error";
   const success = Date.parse(row?.last_success_at || row?.last_sync_at || "");
+  const snapshotStarted = Date.parse(row?.origin_snapshot_started_at || "");
+  const snapshotFetched = Number(row?.origin_snapshot_fetched);
+  const complete = snapshotCompleteFlag(row);
+  const snapshot = {
+    id: text(row?.origin_snapshot_id) || null,
+    started_at: Number.isFinite(snapshotStarted) ? new Date(snapshotStarted).toISOString() : null,
+    fetched: Number.isFinite(snapshotFetched) ? snapshotFetched : null,
+    mode: text(row?.origin_snapshot_mode) || null,
+    complete,
+    available: complete === true,
+  };
   if (!Number.isFinite(success)) {
-    return { state: failed ? "failed" : "unknown", stale: failed, last_success_at: null };
+    return { state: failed ? "failed" : "unknown", stale: failed, last_success_at: null, snapshot };
   }
   const intervalSeconds = Number(row?.sync_interval_seconds);
   const interval = Number.isFinite(intervalSeconds) && intervalSeconds > 0 ? intervalSeconds : 300;
@@ -390,5 +494,6 @@ export function describeDatasourceSync(row, now = Date.now()) {
     state: stale ? (failed ? "failed" : "stale") : "fresh",
     stale,
     last_success_at: new Date(success).toISOString(),
+    snapshot,
   };
 }

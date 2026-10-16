@@ -2310,6 +2310,21 @@ export default function AlertsPage() {
               Sincronização desatualizada em {originSync.filter((item) => item.stale).map((item) => item.datasource_name).join(", ")}. Os alertas ativos sem ACK continuam em Pendentes e nada foi marcado como resolvido.
             </p>
           ) : null}
+          {originSync.some((item) => item.snapshot_available === false && !item.stale && item.state !== "failed") ? (
+            <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100" role="status">
+              Sem snapshot completo identificado em {originSync.filter((item) => item.snapshot_available === false).map((item) => item.datasource_name).join(", ")}. A fila não foi esvaziada.
+            </p>
+          ) : null}
+          {alertsView === "unconfirmed" ? (
+            <p className="mt-3 rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm" role="status">
+              Em revisão reúne evidência inconclusiva: supressão antiga fora do último problem.get persistido, confirmação ausente ou conflito. Ausência no snapshot não é recovery.
+            </p>
+          ) : null}
+          {alertsView === "suppressed" ? (
+            <p className="mt-3 rounded-md border px-3 py-2 text-sm text-muted-foreground" role="status">
+              Suprimidos exige problema aberto no último snapshot completo identificado (ciclo + datasource). Flags antigas fora desse ciclo vão para Em revisão.
+            </p>
+          ) : null}
         </header>
 
         <ConfigurableTableToolbar

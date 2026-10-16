@@ -807,6 +807,12 @@ export interface AlertListResponse extends OneViewResponseMeta {
     state: "fresh" | "stale" | "failed" | "unknown";
     stale: boolean;
     last_success_at: string | null;
+    snapshot_id?: string | null;
+    snapshot_started_at?: string | null;
+    snapshot_fetched?: number | null;
+    snapshot_mode?: string | null;
+    snapshot_complete?: boolean | null;
+    snapshot_available?: boolean;
   }>;
   temporal_counts?: {
     created: Record<"15m" | "1h" | "6h" | "24h" | "7d", number>;
