@@ -97,9 +97,25 @@ const SUPPRESSION_FLAG_SQL = `(
  * event_stream_fast is not a snapshot. Completeness comes from the Worker
  * payload: snapshot_complete=true, or legacy_limit below its own fetch limit.
  * An explicitly incomplete cycle makes the snapshot unavailable.
+ *
+ * One row per datasource. A lateral join per alert made the Central list
+ * exceed the read timeout and fall back to the snapshot copy.
+ * A non-numeric payload limit is treated as absent (default 1000), not as a
+ * cast error that blanks the live queue.
  */
-export const ORIGIN_SNAPSHOT_JOIN_SQL = `left join lateral (
-  select sl.id as origin_snapshot_id,
+const ORIGIN_SNAPSHOT_LIMIT_SQL = `coalesce(
+  case
+    when nullif(sl.payload->>'limit', '') ~ '^[0-9]{1,7}$'
+    then (sl.payload->>'limit')::int
+    else null
+  end,
+  1000
+)`;
+
+export const ORIGIN_SNAPSHOT_JOIN_SQL = `left join (
+  select distinct on (sl.data_source_id)
+         sl.data_source_id as origin_snapshot_data_source_id,
+         sl.id as origin_snapshot_id,
          sl.started_at as origin_snapshot_started_at,
          sl.finished_at as origin_snapshot_finished_at,
          sl.fetched_count as origin_snapshot_fetched,
@@ -107,17 +123,15 @@ export const ORIGIN_SNAPSHOT_JOIN_SQL = `left join lateral (
          case
            when coalesce(sl.payload->>'snapshot_complete', '') in ('true', 't') then true
            when coalesce(sl.payload->>'snapshot_mode', '') = 'legacy_limit'
-            and sl.fetched_count < coalesce(nullif(sl.payload->>'limit', '')::int, 1000)
+            and sl.fetched_count < ${ORIGIN_SNAPSHOT_LIMIT_SQL}
            then true
            else false
          end as origin_snapshot_complete
     from sync_logs sl
-   where sl.data_source_id = d.id
-     and lower(coalesce(sl.status, '')) in ('success', 'ok', 'partial_success')
+   where lower(coalesce(sl.status, '')) in ('success', 'ok', 'partial_success')
      and coalesce(sl.sync_type, 'automatic') <> 'event_stream_fast'
-   order by coalesce(sl.finished_at, sl.started_at) desc
-   limit 1
-) origin_snap on true`;
+   order by sl.data_source_id, coalesce(sl.finished_at, sl.started_at) desc, sl.id desc
+) origin_snap on origin_snap.origin_snapshot_data_source_id = d.id`;
 
 const ORIGIN_SNAPSHOT_UNAVAILABLE_SQL = `(
   origin_snap.origin_snapshot_complete is not true

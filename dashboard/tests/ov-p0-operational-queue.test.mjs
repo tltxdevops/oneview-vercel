@@ -246,6 +246,8 @@ test("canonical worker suppression fields drive the read-only queue and counters
   assert.match(module, /snapshot_complete/);
   assert.match(module, /snapshot_mode/);
   assert.match(module, /event_stream_fast/);
+  assert.match(module, /distinct on \(sl\.data_source_id\)/);
+  assert.doesNotMatch(module, /left join lateral/);
   assert.doesNotMatch(module, /fetched_count >= 10/);
   assert.doesNotMatch(module, /token\.create|event\.acknowledge|insert into|update alerts/);
 });

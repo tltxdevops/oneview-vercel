@@ -824,6 +824,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const customerConfidences = queryValues(req, "customer_confidence").map((value) => value.toLowerCase());
   const severities = queryValues(req, "severity").map((value) => value.toLowerCase());
   const operationalView = oneQueryValue(req, "operational_view").toLowerCase();
+  const problemScope = oneQueryValue(req, "problem_scope").toLowerCase();
+  const suppressionOrigin = oneQueryValue(req, "suppression_origin").toLowerCase();
   const status = (oneQueryValue(req, "status") || (operationalView ? "all" : "active")).toLowerCase();
   const acknowledged = oneQueryValue(req, "acknowledged").toLowerCase();
   const acknowledgedSource = oneQueryValue(req, "acknowledged_source").toLowerCase();
@@ -857,6 +859,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   if (customerConfidences.some((value) => !CUSTOMER_CONFIDENCES.has(value))) throw requestError("invalid_query");
   if (!["active", "resolved", "all"].includes(status)) throw requestError("invalid_query");
   if (operationalView && !isOperationalQueueView(operationalView)) throw requestError("invalid_query");
+  if (problemScope && !["normal", "suppressed", "all"].includes(problemScope)) throw requestError("invalid_query");
+  if (suppressionOrigin && !["maintenance", "manual"].includes(suppressionOrigin)) throw requestError("invalid_query");
   if (acknowledged && !["true", "false"].includes(acknowledged)) throw requestError("invalid_query");
   if (acknowledgedSource && !["true", "false"].includes(acknowledgedSource)) throw requestError("invalid_query");
   if (acknowledgedInternal && !["true", "false"].includes(acknowledgedInternal)) throw requestError("invalid_query");
@@ -905,6 +909,10 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   // status_internal alone never selects history.
   const viewClause = operationalView ? operationalQueueSql(operationalView) : null;
   if (viewClause) clauses.push(viewClause);
+  else if (problemScope === "normal") clauses.push(`(${operationalQueueSql("pending")} or ${operationalQueueSql("acknowledged")})`);
+  else if (problemScope === "suppressed") clauses.push(operationalQueueSql("suppressed"));
+  else if (problemScope === "all") clauses.push(`(${operationalQueueSql("pending")} or ${operationalQueueSql("acknowledged")} or ${operationalQueueSql("suppressed")})`);
+  if (suppressionOrigin) push(`lower(coalesce(a.payload_normalized->>'suppression_origin', '')) = ?`, suppressionOrigin);
   if (status === "active") clauses.push(ACTIVE_ALERT_SQL);
   if (status === "resolved") clauses.push(RESOLVED_ALERT_SQL);
   // OV-P0-248: Home only. /alertas remains unfiltered unless it explicitly opts in.
@@ -1025,6 +1033,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       severities,
       status,
       operationalView,
+      problemScope,
+      suppressionOrigin,
       acknowledged,
       acknowledgedSource,
       acknowledgedInternal,
@@ -1559,6 +1569,7 @@ async function fetchAlertList(req, config, dataSourceNames) {
         count(*) filter (where a.severity = 'not_classified')::int as not_classified
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
       ${whereSql}
     `;
   const temporalSql = `
@@ -1581,6 +1592,7 @@ async function fetchAlertList(req, config, dataSourceNames) {
         count(*) filter (where a.resolved_at >= now() - interval '30 days')::int as resolved_30d
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
       ${baseWhereSql}
     `;
   const itemsSql = `
