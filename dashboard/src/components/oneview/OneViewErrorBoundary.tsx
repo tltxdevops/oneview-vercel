@@ -69,9 +69,9 @@ export class OneViewErrorBoundary extends Component<OneViewErrorBoundaryProps, O
           <nav className="flex flex-wrap gap-2" aria-label="Navegação operacional">
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/")}>Início</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/monitoramento")}>Monitoramento</a>
-            <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/alertas")}>Alertas</a>
+            <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/central-alertas")}>Central de Alertas</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/chamados")}>Chamados</a>
-            <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/alertas?view=history")}>Histórico</a>
+            <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/central-alertas?view=history")}>Histórico</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/operadoras")}>Operadoras</a>
           </nav>
         ) : null}

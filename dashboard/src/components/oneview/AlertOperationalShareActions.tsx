@@ -123,7 +123,7 @@ export function AlertOperationalShareActions({
     incident_number: communication.incidentNumber,
     incident_state: currentRelatedIncident?.state_display || currentRelatedIncident?.state || null,
     servicenow_url: currentRelatedIncident?.servicenow_url || null,
-    oneview_url: typeof window === "undefined" ? null : `${window.location.origin}/alertas?alert=${encodeURIComponent(alert.id)}`,
+    oneview_url: typeof window === "undefined" ? null : `${window.location.origin}/central-alertas?alert=${encodeURIComponent(alert.id)}`,
     message_type: communication.messageType,
     route_key: explicitAlertRouteKey(alert),
     snapshot: { alert_id: alert.id, data_source_id: alert.data_source_id, source_event_id: alert.source_event_id },

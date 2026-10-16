@@ -10,9 +10,17 @@ import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { OneViewErrorBoundary } from "@/components/oneview/OneViewErrorBoundary";
 import SsoCallback from "@/pages/SsoCallback";
 import { getBrowserRouterBase } from "@/lib/basePath";
+import { CENTRAL_ALERTAS_PATH, centralAlertasHref } from "@/lib/central-alertas-path";
 
 const queryClient = new QueryClient();
 const Index = lazy(() => import("./pages/Index")); const MonitoringPage = lazy(() => import("@/pages/Monitoring")); const AlertsPage = lazy(() => import("@/pages/Alerts")); const ChamadosPage = lazy(() => import("@/pages/Chamados")); const OperadorasPage = lazy(() => import("@/pages/Operadoras")); const SettingsPage = lazy(() => import("@/pages/Settings"));
+
+function PreserveSearchRedirect({ to }: { to: string }) {
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  const query = params.toString();
+  return <Navigate to={query ? `${to}?${query}` : to} replace />;
+}
 
 function HistoricoRedirect() {
   const { search } = useLocation();
@@ -23,8 +31,7 @@ function HistoricoRedirect() {
     params.set("recurrence_key", recurrence);
     params.delete("recurrence");
   }
-  const query = params.toString();
-  return <Navigate to={query ? `/alertas?${query}` : "/alertas?view=history"} replace />;
+  return <Navigate to={centralAlertasHref(params)} replace />;
 }
 const UiKitPage = lazy(() => import("@/pages/UiKit"));
 const routeFallback = (
@@ -61,7 +68,9 @@ const App = () => (
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={route(<Index />)} />
             <Route path="/monitoramento" element={route(<MonitoringPage />)} />
-            <Route path="/alertas" element={route(<AlertsPage />)} />
+            <Route path={CENTRAL_ALERTAS_PATH} element={route(<AlertsPage />)} />
+            <Route path="/alertas" element={<PreserveSearchRedirect to={CENTRAL_ALERTAS_PATH} />} />
+            <Route path="/alerts" element={<PreserveSearchRedirect to={CENTRAL_ALERTAS_PATH} />} />
             <Route path="/historico" element={<HistoricoRedirect />} />
             {BancoDadosPage && <Route path="/banco-dados" element={<Suspense fallback={routeFallback}><BancoDadosPage /></Suspense>} />}
             {CertificadosPage && <Route path="/certificados" element={<Suspense fallback={routeFallback}><CertificadosPage /></Suspense>} />}

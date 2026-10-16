@@ -1418,7 +1418,8 @@ test("Histórico operacional NOC é rota independente com paginação e filtros 
 
   assert.match(app, /path="\/historico"/);
   assert.match(app, /HistoricoRedirect/);
-  assert.match(app, /to=\{query \? `\/alertas\?\$\{query\}` : "\/alertas\?view=history"\}/);
+  assert.match(app, /centralAlertasHref\(params\)/);
+  assert.match(app, /path=\{CENTRAL_ALERTAS_PATH\}|path="\/central-alertas"/);
   assert.doesNotMatch(sidebar, /href: "\/historico"/);
   assert.doesNotMatch(historico, /Navigate to=\{?["'`]\/alertas|redirect.*\/alertas|window\.location.*\/alertas/i);
   assert.match(historico, /useSearchParams/);

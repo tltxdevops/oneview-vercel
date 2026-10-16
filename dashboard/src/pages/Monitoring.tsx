@@ -1402,7 +1402,7 @@ export default function MonitoringPage() {
   const historyItems = (history && history.alert_id === selectedAlertId ? history.items : []).filter(
     (item) => item.event_type !== "internal_acknowledged" && item.origin !== "oneview_internal",
   );
-  const alertsHref = alertMode === MONITOR_ALERT_MODE.prioritary ? "/alertas?view=priority" : "/alertas?view=open";
+  const alertsHref = alertMode === MONITOR_ALERT_MODE.prioritary ? "/central-alertas?view=priority" : "/central-alertas?view=open";
   const chamadosHref = buildMonitoringChamadosHref({ mode: incidentsMode, assignedTo: incidentsAssignedTo });
 
   return (

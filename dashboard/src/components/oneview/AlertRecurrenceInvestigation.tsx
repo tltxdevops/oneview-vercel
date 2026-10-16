@@ -2,6 +2,7 @@ import { ArrowRight, Repeat2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AlertServiceNowReferenceCell } from "@/components/oneview/AlertServiceNowReferenceCell";
 import type { OneViewAlert } from "@/lib/oneview-api";
+import { centralAlertasHistoryHref } from "@/lib/central-alertas-path";
 
 const OPERATIONAL_TIME_ZONE = "America/Sao_Paulo";
 
@@ -34,7 +35,7 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 export function AlertRecurrenceInvestigation({ alert }: { alert: OneViewAlert }) {
   const previous = alert.recurrence_previous;
   const href = alert.recurrence_key
-    ? `/alertas?view=history&recurrence_key=${encodeURIComponent(alert.recurrence_key)}`
+    ? centralAlertasHistoryHref(new URLSearchParams({ recurrence_key: alert.recurrence_key }))
     : null;
 
   return (

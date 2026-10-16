@@ -66,7 +66,7 @@ test("OV-P0-73 Home: Eventos Cliente|Host|Problema|Severidade|Horário + Abrir h
   const index = await read("src/pages/Index.tsx");
 
   assert.match(index, /Abrir histórico/);
-  assert.match(index, /to="\/alertas\?view=history"/);
+  assert.match(index, /to="\/central-alertas\?view=history"/);
   assert.match(index, /HomePanelCount value=\{eventsTotal\}/);
   assert.match(index, /max-h-\[18rem\]|max-h-\[20rem\]/);
 

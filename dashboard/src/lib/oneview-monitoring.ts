@@ -311,8 +311,8 @@ export function buildMonitoringChamadosHref(params?: {
   return buildOperationalChamadosHref(params);
 }
 
-/** Deep-link /alertas a partir do modo atual do Monitoramento. */
+/** Deep-link /central-alertas a partir do modo atual do Monitoramento. */
 export function buildMonitoringAlertHref(alertId: string, mode: MonitorAlertMode) {
   const view = mode === MONITOR_ALERT_MODE.prioritary ? "priority" : "open";
-  return `/alertas?alert=${encodeURIComponent(alertId)}&view=${view}`;
+  return `/central-alertas?alert=${encodeURIComponent(alertId)}&view=${view}`;
 }

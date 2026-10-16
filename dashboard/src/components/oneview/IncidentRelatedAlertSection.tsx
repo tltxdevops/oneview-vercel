@@ -112,7 +112,7 @@ export function IncidentRelatedAlertContent({
             <DetailField label="Estado" value={alertStatusLabel(relatedAlert.status)} />
           </dl>
           <Button type="button" variant="secondary" size="sm" className="w-full sm:w-auto" asChild>
-            <Link to={relatedAlert.oneview_link || `/alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
+            <Link to={relatedAlert.oneview_link || `/central-alertas?alert=${encodeURIComponent(relatedAlert.id)}`}>
               Ver alerta
             </Link>
           </Button>

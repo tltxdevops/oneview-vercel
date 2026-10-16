@@ -1933,8 +1933,8 @@ export default function HistoricoPage() {
         auditEmphasis
         alertsQueueHref={
           detail?.id
-            ? `/alertas?alert=${encodeURIComponent(detail.id)}&from=historico`
-            : (selectedAlertId ? `/alertas?alert=${encodeURIComponent(selectedAlertId)}&from=historico` : null)
+            ? `/central-alertas?alert=${encodeURIComponent(detail.id)}&from=historico`
+            : (selectedAlertId ? `/central-alertas?alert=${encodeURIComponent(selectedAlertId)}&from=historico` : null)
         }
       />
     </AppLayout>

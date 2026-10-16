@@ -4,7 +4,9 @@ import { prefetchOneViewRouteData } from "@/lib/oneview-route-data-prefetch";
 const routes: Record<string, () => Promise<unknown>> = {
   "/": () => import("@/pages/Index"),
   "/monitoramento": () => import("@/pages/Monitoring"),
+  "/central-alertas": () => import("@/pages/Alerts"),
   "/alertas": () => import("@/pages/Alerts"),
+  "/alerts": () => import("@/pages/Alerts"),
   "/historico": () => import("@/pages/Alerts"),
   "/chamados": () => import("@/pages/Chamados"),
   "/operadoras": () => import("@/pages/Operadoras"),

@@ -485,7 +485,7 @@ export function buildHomeUnassignedChamadosHref() {
   return "/chamados?unassigned=true";
 }
 
-/** Deep-link /alertas a partir dos filtros atuais da Home. */
+/** Deep-link /central-alertas a partir dos filtros atuais da Home. */
 export function buildHomeAlertsHref(options: {
   mode: HomeAlertMode;
   severity?: string | string[] | null;
@@ -524,5 +524,5 @@ export function buildHomeAlertsHref(options: {
   if (options.mode === HOME_ALERT_MODE.prioritary && (!selected.length || isHomePrioritarySeveritySelection(selected))) {
     params.set("view", "priority");
   }
-  return `/alertas?${params.toString()}`;
+  return `/central-alertas?${params.toString()}`;
 }

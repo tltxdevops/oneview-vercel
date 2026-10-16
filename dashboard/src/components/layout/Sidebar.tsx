@@ -42,7 +42,7 @@ type NavItem = {
 const baseNavigation: NavItem[] = [
   { name: "Início", href: "/", icon: "home" },
   { name: "Monitoramento", href: "/monitoramento", icon: "monitoring", liveDot: true },
-  { name: "Alertas", href: "/alertas", icon: "alerts", secondary: "Central de Alertas" },
+  { name: "Alertas", href: "/central-alertas", icon: "alerts", secondary: "Central de Alertas" },
   { name: "Chamados", href: "/chamados", icon: "incidents", secondary: "ServiceNow" },
   { name: "Links", href: "/operadoras", icon: "links", secondary: "Conectividade" },
 ];

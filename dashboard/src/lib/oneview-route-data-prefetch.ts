@@ -29,7 +29,9 @@ export const ONEVIEW_ROUTE_DATA_PREFETCH_DEBOUNCE_MS = 300;
 export const ONEVIEW_DATA_PREFETCH_ROUTES = [
   "/",
   "/monitoramento",
+  "/central-alertas",
   "/alertas",
+  "/alerts",
   "/chamados",
   "/operadoras",
   "/historico",
@@ -75,7 +77,7 @@ async function warmRouteData(path: PrefetchRoute) {
     ]);
     return;
   }
-  if (path === "/alertas") {
+  if (path === "/alertas" || path === "/central-alertas" || path === "/alerts" || path === "/historico") {
     await Promise.allSettled([
       getOneViewFacets(),
       fetchAlerts(firstAlertsFetchParams(now)),
