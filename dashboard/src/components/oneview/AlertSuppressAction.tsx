@@ -43,7 +43,8 @@ export function AlertSuppressAction({ alert, variant = "button" }: { alert: OneV
   const [busy, setBusy] = useState(false);
   const [writeEnabled, setWriteEnabled] = useState(false);
   const active = alert.status_source === "active" && !alert.resolved_at;
-  if (!active) return null;
+  const suppressionConfirmed = alert.suppression?.state === "active" || alert.operational_queue === "suppressed";
+  if (!active || suppressionConfirmed) return null;
 
   const clientName = operationalClientLabel({
     key: alert.customer_key,

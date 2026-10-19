@@ -19,6 +19,7 @@ import {
   interfaceFromAlertTags,
   safeHostIp,
 } from "@/components/oneview/AlertOperationalSummary";
+import { AlertOperationalStateCallout } from "@/components/oneview/AlertOperationalStateCallout";
 import { AlertRecurrenceSignal } from "@/components/oneview/AlertRecurrenceSignal";
 import { AlertSameProblemContext } from "@/components/oneview/AlertRecurrenceInvestigation";
 import {
@@ -850,6 +851,11 @@ export function AlertDetailDrawer({
                     onTimelineServiceNowReferenceChange={handleTimelineServiceNowReferenceChange}
                     onRelatedIncidentsChange={handleRelatedIncidentsChange}
                     onClaimed={(result) => applyClaimedIncident(result)}
+                  />
+
+                  <AlertOperationalStateCallout
+                    alert={alert}
+                    incident={relatedIncidents.find((item) => item.sys_id || item.number) ?? null}
                   />
 
                   <section aria-label="Informações do alerta" className="rounded-lg border border-border/70 bg-background p-4">

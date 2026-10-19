@@ -149,6 +149,10 @@ import {
   type AlertsSortKey,
 } from "@/lib/alerts-query";
 import {
+  effectiveOperationalSourceAckParam,
+  reconcileSourceAckFilterForQueue,
+} from "@/lib/oneview-alerts-operational-filters";
+import {
   augmentCustomerFacetsWithDedicatedDatasources,
   customerFilterCountNoun,
   isDatasourceOnlyFilterValue,
@@ -1217,7 +1221,7 @@ export default function AlertsPage() {
         incidentStates,
         incidentNumber: incidentNumber || undefined,
         recurrenceKey: recurrenceKey || undefined,
-        acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+        acknowledgedSource: effectiveOperationalSourceAckParam(alertsView, sourceAckFilter),
         oneviewAckStatuses,
         ackActor: ackActorFilter || undefined,
         hostSearch: hostColumnSearch || undefined,
@@ -1701,7 +1705,7 @@ export default function AlertsPage() {
       severities: selectedSeverities,
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue,
-      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       oneviewAckStatuses,
       signal,
     }).then((response) => response.suggestions ?? [])
@@ -1725,7 +1729,7 @@ export default function AlertsPage() {
       severities: selectedSeverities,
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue,
-      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       oneviewAckStatuses,
       kind: "actor",
       signal,
@@ -1738,7 +1742,7 @@ export default function AlertsPage() {
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue, problemSearch: problemColumnSearch || undefined, incidentStates,
       incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
-      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
   ), [ackActorFilter, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
@@ -1749,7 +1753,7 @@ export default function AlertsPage() {
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue, hostSearch: hostColumnSearch || undefined, incidentStates,
       incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
-      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
   ), [ackActorFilter, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
@@ -1760,7 +1764,7 @@ export default function AlertsPage() {
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue, hostSearch: hostColumnSearch || undefined, problemSearch: problemColumnSearch || undefined,
       incidentStates, oneviewAckStatuses,
-      acknowledgedSource: sourceAckFilter === "all" ? undefined : sourceAckFilter === "acknowledged",
+      acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
   ), [ackActorFilter, hostColumnSearch, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
@@ -1921,6 +1925,11 @@ export default function AlertsPage() {
 
   const applyAlertsView = (view: AlertsView) => {
     if (!isOperationalQueue(view)) return;
+    const reconciled = reconcileSourceAckFilterForQueue(view, sourceAckFilter);
+    if (reconciled.adjusted) {
+      setSourceAckFilter(reconciled.filter);
+      toast.message(reconciled.message, { duration: 4500 });
+    }
     setAlertsView(view);
     setPage(1);
     if (datePreset !== "custom") setDateField(view === "history" ? "resolved" : ALERTS_DATE_FIELD);
@@ -2243,7 +2252,12 @@ export default function AlertsPage() {
     <label className="flex h-9 min-w-[8.5rem] items-center gap-1.5 text-xs text-muted-foreground" aria-label="Janela de tempo da Central">
       <span className="hidden xl:inline">Janela</span>
       <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}>
-        <SelectTrigger className="h-9 min-w-[7rem]" aria-label="Selecionar janela de tempo"><SelectValue /></SelectTrigger>
+        <SelectTrigger
+          className={cn("h-9 min-w-[7rem]", hasTemporalFilter && "border-primary/60 bg-primary/5 font-medium")}
+          aria-label="Selecionar janela de tempo"
+        >
+          <SelectValue />
+        </SelectTrigger>
         <SelectContent>
           <SelectItem value="24h">24 horas</SelectItem>
           <SelectItem value="7d">7 dias</SelectItem>

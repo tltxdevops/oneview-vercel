@@ -32,6 +32,7 @@ import {
   recoveryEvidenceOf,
   timeToAckSeconds,
 } from "./oneview-operational-queue.js";
+import { effectiveOperationalSourceAckQuery } from "./oneview-alerts-operational-filters.js";
 import { getServiceNowActionsConfig } from "./oneview-servicenow-actions.js";
 import {
   classifyCustomerIntegrity,
@@ -930,7 +931,8 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       acknowledged === "true",
     );
   }
-  if (acknowledgedSource) push("coalesce(a.acknowledged_source, false) = ?", acknowledgedSource === "true");
+  const effectiveAcknowledgedSource = effectiveOperationalSourceAckQuery(operationalView, acknowledgedSource);
+  if (effectiveAcknowledgedSource) push("coalesce(a.acknowledged_source, false) = ?", effectiveAcknowledgedSource === "true");
   if (acknowledgedInternal) push(`${INTERNAL_ACKNOWLEDGED_SQL} = ?`, acknowledgedInternal === "true");
   if (oneviewAckStatuses.length) {
     const expandedStatuses = [...new Set(oneviewAckStatuses.flatMap((value) => value === "pending" ? ["pending", "processing"] : [value]))];
