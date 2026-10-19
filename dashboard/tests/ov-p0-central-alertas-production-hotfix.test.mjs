@@ -9,8 +9,8 @@ test("Central uses a defined canonical date field and accepts the legacy recent 
   assert.match(alerts, /const ALERTS_DATE_FIELD = "first_seen" as const/);
   assert.match(alerts, /explicit === "recent" \|\| explicit === "recentes"/);
   assert.match(alerts, /initialQuery\.getAll\("severity"\)/);
-  assert.match(alerts, /applyDateFieldToFetchParams\(request, ALERTS_DATE_FIELD, dateBounds\)/);
-  assert.doesNotMatch(alerts, /\[ackActorFilter, alertsView, dateField,/);
+  assert.match(alerts, /applyDateFieldToFetchParams\(request, dateField, dateBounds\)/);
+  assert.match(alerts, /\[ackActorFilter, alertsView, dateField,/);
 });
 
 test("operational reads, including drawer detail, join the canonical origin snapshot", () => {
