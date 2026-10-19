@@ -2051,7 +2051,7 @@ test("OV-P0-41 Alertas: faixa de 5 severidades, Cliente na tabela, Chamado via r
   assert.match(alerts, /AlertServiceNowReferenceCell/);
   assert.match(alerts, /title: "Em acompanhamento"/);
   assert.match(alerts, /title: "Suprimidos"/);
-  assert.match(alerts, /title: "Sem confirmação"/);
+  assert.match(alerts, /title: "Em revisão"/);
   assert.match(alerts, /title: "Pendentes de ação"/);
 });
 

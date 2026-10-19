@@ -25,7 +25,7 @@ test("Alertas keeps operational queues and severity KPIs in one official row", a
     "Em acompanhamento",
     "Pendentes de ação",
     "Suprimidos",
-    "Sem confirmação",
+    "Em revisão",
     "information",
     "warning",
     "average",

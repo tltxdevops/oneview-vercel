@@ -904,6 +904,12 @@ export function AlertDetailDrawer({
                       <DetailField label="Equipamento" value={hostTechnical === ORIGIN_UNAVAILABLE ? hostVisible : hostTechnical} />
                       <DetailField label="Início" value={formatDateTime(alert.first_seen_at)} />
                       <DetailField label="Estado" value={resolved ? "Resolvido" : "Ativo"} />
+                      {!resolved ? (
+                        <DetailField
+                          label="Confirmação da origem"
+                          value={alert.origin_activity_confirmed ? "Confirmada no snapshot atual" : "Não confirmada — Em revisão"}
+                        />
+                      ) : null}
                       <DetailField label="Supressão" value={suppressionCaption(alert, formatDateTime) || "Sem supressão confirmada"} />
                       {alert.suppression?.maintenance_id ? <DetailField label="Maintenance ID" value={alert.suppression.maintenance_id} /> : null}
                       {alert.suppression?.user_id ? <DetailField label="Usuário Zabbix" value={alert.suppression.user_id} /> : null}

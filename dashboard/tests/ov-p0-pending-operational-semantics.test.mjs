@@ -11,6 +11,7 @@ import {
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 function alert(partial = {}) {
+  const observedAt = new Date().toISOString();
   return {
     id: "a1",
     status_source: "active",
@@ -18,6 +19,14 @@ function alert(partial = {}) {
     resolved_at: null,
     acknowledged_source: false,
     oneview_ack: { status: "none" },
+    last_success_at: observedAt,
+    last_sync_status: "success",
+    sync_interval_seconds: 3600,
+    origin_snapshot_complete: true,
+    origin_snapshot_started_at: observedAt,
+    last_seen_at: observedAt,
+    payload_origin_seen_in_complete_snapshot: "true",
+    suppressed: false,
     ...partial,
   };
 }
@@ -29,6 +38,15 @@ test("active + source unack -> pending; active + source ack -> recognized", () =
   assert.equal(isSourceAcknowledged(pending), false);
   assert.equal(isOperationalPendingAlert(recognized), false);
   assert.equal(isSourceAcknowledged(recognized), true);
+});
+
+test("active without fresh complete origin evidence is review, not pending", () => {
+  const unconfirmed = alert({
+    last_sync_status: "failed",
+    origin_snapshot_complete: false,
+    payload_origin_seen_in_complete_snapshot: "",
+  });
+  assert.equal(isOperationalPendingAlert(unconfirmed), false);
 });
 
 test("resolved + source unack/ack nunca é pending operacional", () => {

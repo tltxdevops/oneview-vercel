@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { getBrowserRouterBase } from "@/lib/basePath";
+import { legacyHistoryRouteEnabled } from "@/lib/legacy-history-route";
 
 export type OneViewErrorBoundaryScope = "global" | "route" | "drawer";
 
@@ -71,7 +72,9 @@ export class OneViewErrorBoundary extends Component<OneViewErrorBoundaryProps, O
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/monitoramento")}>Monitoramento</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/central-alertas")}>Central de Alertas</a>
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/chamados")}>Chamados</a>
-            <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/central-alertas?view=history")}>Histórico</a>
+            {legacyHistoryRouteEnabled ? (
+              <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/historico")}>Histórico</a>
+            ) : null}
             <a className="text-sm text-primary underline-offset-2 hover:underline" href={operationalHref("/operadoras")}>Operadoras</a>
           </nav>
         ) : null}

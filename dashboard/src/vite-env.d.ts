@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_ENABLE_LEGACY_HISTORY_PAGE?: string;
   readonly [key: string]: string | undefined;
   readonly VITE_AZURE_CLIENT_ID?: string;
   readonly VITE_AZURE_TENANT_ID?: string;

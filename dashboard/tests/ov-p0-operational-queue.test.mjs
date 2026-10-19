@@ -4,11 +4,14 @@ import test from "node:test";
 
 import { buildAlertListQuery } from "../api/_lib/oneview-db.js";
 import {
+  OPERATIONAL_QUEUE_CASE_SQL,
   OPERATIONAL_QUEUE_VIEWS,
+  ORIGIN_SNAPSHOT_JOIN_SQL,
   classifyOperationalQueue,
   describeDatasourceSync,
   describeSuppression,
   operationalQueueSql,
+  originActivityConfirmed,
   recoveryDurationSeconds,
   recoveryEvidenceOf,
   timeToAckSeconds,
@@ -24,17 +27,27 @@ const active = {
   acknowledged_source: false,
   resolved_at: null,
   source_recovery_event_id: null,
+  last_success_at: "2026-10-15T14:59:00Z",
+  last_sync_status: "success",
+  sync_interval_seconds: 3600,
+  origin_snapshot_complete: true,
+  origin_snapshot_started_at: "2026-10-15T14:58:00Z",
+  last_seen_at: "2026-10-15T14:59:30Z",
+  payload_origin_seen_in_complete_snapshot: "true",
+  suppressed: false,
 };
 
 test("pending is active and unacknowledged, including status_internal=new", () => {
-  assert.equal(classifyOperationalQueue(active), "pending");
-  assert.equal(classifyOperationalQueue({ ...active, status_internal: "viewed" }), "pending");
-  assert.equal(classifyOperationalQueue({ ...active, severity: "disaster", first_seen_at: "2020-01-01T00:00:00Z" }), "pending");
+  const now = Date.parse("2026-10-15T15:00:00Z");
+  assert.equal(classifyOperationalQueue(active, now), "pending");
+  assert.equal(classifyOperationalQueue({ ...active, status_internal: "viewed" }, now), "pending");
+  assert.equal(classifyOperationalQueue({ ...active, severity: "disaster", first_seen_at: "2020-01-01T00:00:00Z" }, now), "pending");
 });
 
 test("acknowledged high and disaster stay in follow-up", () => {
+  const now = Date.parse("2026-10-15T15:00:00Z");
   for (const severity of ["high", "disaster"]) {
-    assert.equal(classifyOperationalQueue({ ...active, severity, acknowledged_source: true }), "acknowledged");
+    assert.equal(classifyOperationalQueue({ ...active, severity, acknowledged_source: true }, now), "acknowledged");
   }
 });
 
@@ -63,9 +76,10 @@ test("history keeps proven recovery and legacy rows as different evidence", () =
 });
 
 test("acknowledged is not treated as resolved", () => {
+  const now = Date.parse("2026-10-15T15:00:00Z");
   const row = { ...active, acknowledged_source: true, status_internal: "acknowledged" };
-  assert.equal(classifyOperationalQueue(row), "acknowledged");
-  assert.notEqual(classifyOperationalQueue(row), "history");
+  assert.equal(classifyOperationalQueue(row, now), "acknowledged");
+  assert.notEqual(classifyOperationalQueue(row, now), "history");
 });
 
 test("operational view defaults status to all, preserves explicit status and never filters by age", () => {
@@ -101,7 +115,7 @@ test("snapshot fallback applies the same operational queue and returns scoped co
   assert.match(fallback, /origin_sync:/);
 });
 
-test("datasource sync failure is distinct from a fresh empty queue", () => {
+test("datasource sync failure routes open alerts to review, never pending", () => {
   const now = Date.parse("2026-10-15T15:00:00Z");
   assert.equal(describeDatasourceSync({
     last_success_at: "2026-10-15T14:59:00Z",
@@ -118,7 +132,7 @@ test("datasource sync failure is distinct from a fresh empty queue", () => {
     ...active,
     payload_suppressed: "false",
     last_sync_status: "failed",
-  }, now), "pending");
+  }, now), "unconfirmed");
 });
 
 test("suppression scenarios stay distinct from ack, recovery and an expired window", () => {
@@ -165,7 +179,7 @@ test("suppression scenarios stay distinct from ack, recovery and an expired wind
   assert.equal(classifyOperationalQueue(expired, now), "pending");
 
   assert.equal(classifyOperationalQueue({ ...active, acknowledged_source: true, payload_suppressed: "false" }, now), "acknowledged");
-  assert.equal(describeSuppression({ ...active }, now).state, "unavailable");
+  assert.equal(describeSuppression({ ...active }, now).state, "none");
   assert.equal(describeSuppression({ ...active }, now).explicit_unconfirmed, false);
 });
 
@@ -241,7 +255,7 @@ test("canonical worker suppression fields drive the read-only queue and counters
   assert.match(operationalQueueSql("unconfirmed"), /suppression_confirmation/);
   assert.match(operationalQueueSql("suppressed"), /origin_snapshot_started_at/);
   assert.match(operationalQueueSql("suppressed"), /origin_seen_in_complete_snapshot/);
-  assert.doesNotMatch(operationalQueueSql("suppressed"), /now\(\) - interval/);
+  assert.match(operationalQueueSql("suppressed"), /now\(\) -/);
   const module = readFileSync(new URL("../api/_lib/oneview-operational-queue.js", import.meta.url), "utf8");
   assert.match(module, /snapshot_complete/);
   assert.match(module, /snapshot_mode/);
@@ -250,12 +264,14 @@ test("canonical worker suppression fields drive the read-only queue and counters
   assert.doesNotMatch(module, /token\.create|event\.acknowledge|insert into|update alerts/);
 });
 
-test("stale suppression leaves Suprimidos without becoming recovery", () => {
+test("stale suppression moves to review without becoming recovery", () => {
   const now = Date.parse("2026-10-16T12:30:00Z");
   const current = {
     ...active,
     payload_suppressed_source: "true",
     payload_suppression_confirmation: "confirmed",
+    payload_origin_seen_in_complete_snapshot: "",
+    last_success_at: "2026-10-16T12:29:55Z",
     last_seen_at: "2026-10-16T12:29:50Z",
     origin_snapshot_started_at: "2026-10-16T12:29:40Z",
     last_sync_status: "success",
@@ -275,7 +291,7 @@ test("stale suppression leaves Suprimidos without becoming recovery", () => {
     origin_snapshot_started_at: null,
     last_sync_status: "failed",
   };
-  assert.equal(classifyOperationalQueue(unavailable, now), "suppressed");
+  assert.equal(classifyOperationalQueue(unavailable, now), "unconfirmed");
 
   const explicitFalse = {
     ...current,
@@ -288,7 +304,60 @@ test("stale suppression leaves Suprimidos without becoming recovery", () => {
     origin_snapshot_complete: false,
     last_sync_status: "success",
   };
-  assert.equal(classifyOperationalQueue(incompleteSnapshot, now), "suppressed");
+  assert.equal(classifyOperationalQueue(incompleteSnapshot, now), "unconfirmed");
+});
+
+test("suppressed NULL remains unknown and never becomes pending", () => {
+  const now = Date.parse("2026-10-15T15:00:00Z");
+  const unknown = { ...active, suppressed: null };
+  assert.equal(describeSuppression(unknown, now).state, "unavailable");
+  assert.equal(classifyOperationalQueue(unknown, now), "unconfirmed");
+  assert.equal(describeSuppression({ ...active, suppressed: false }, now).state, "none");
+  assert.equal(classifyOperationalQueue({ ...active, suppressed: false }, now), "pending");
+  assert.equal(classifyOperationalQueue({ ...unknown, payload_suppressed_source: "false" }, now), "pending");
+  assert.match(operationalQueueSql("pending"), /a\.suppressed is null/);
+});
+
+test("latest origin snapshot uses the datasource/start index path without a global sync_logs sort", () => {
+  assert.match(ORIGIN_SNAPSHOT_JOIN_SQL, /left join lateral/);
+  assert.match(ORIGIN_SNAPSHOT_JOIN_SQL, /sl\.data_source_id = d_snap\.id/);
+  assert.match(ORIGIN_SNAPSHOT_JOIN_SQL, /order by sl\.started_at desc, sl\.id desc/);
+  assert.match(ORIGIN_SNAPSHOT_JOIN_SQL, /limit 1/);
+  assert.match(ORIGIN_SNAPSHOT_JOIN_SQL, /offset 0/);
+  assert.doesNotMatch(ORIGIN_SNAPSHOT_JOIN_SQL, /distinct on/i);
+});
+
+test("aggregate queue classification preserves precedence in one CASE", () => {
+  assert.match(OPERATIONAL_QUEUE_CASE_SQL, /when[\s\S]*resolved_at[\s\S]*then 'history'/);
+  assert.match(OPERATIONAL_QUEUE_CASE_SQL, /then 'suppressed'/);
+  assert.match(OPERATIONAL_QUEUE_CASE_SQL, /then 'acknowledged'/);
+  assert.match(OPERATIONAL_QUEUE_CASE_SQL, /else 'pending'/);
+  assert.match(OPERATIONAL_QUEUE_CASE_SQL, /else 'unconfirmed'/);
+});
+
+test("origin confirmation precedence is resolved > review > suppressed > acknowledged > pending", () => {
+  const now = Date.parse("2026-10-15T15:00:00Z");
+  assert.equal(originActivityConfirmed(active, now), true);
+  assert.equal(classifyOperationalQueue({ ...active, acknowledged_source: false }, now), "pending");
+  assert.equal(classifyOperationalQueue({ ...active, acknowledged_source: true }, now), "acknowledged");
+  assert.equal(classifyOperationalQueue({
+    ...active,
+    payload_suppression_confirmation: "confirmed",
+    payload_suppressed_source: "true",
+  }, now), "suppressed");
+  assert.equal(classifyOperationalQueue({
+    ...active,
+    last_success_at: "2026-10-15T11:59:00Z",
+    payload_suppression_confirmation: "confirmed",
+    payload_suppressed_source: "true",
+  }, now), "unconfirmed");
+  assert.equal(classifyOperationalQueue({
+    ...active,
+    status_source: "resolved",
+    resolved_at: "2026-10-15T14:59:00Z",
+    source_recovery_event_id: "9001",
+    last_sync_status: "failed",
+  }, now), "history");
 });
 
 test("five queues stay exclusive for the seven datasources and the sampled events", () => {

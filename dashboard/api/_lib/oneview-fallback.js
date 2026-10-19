@@ -129,6 +129,7 @@ function snapshotAlert(alert, generatedAt) {
     source_ack_status: null,
     source_ack_available: false,
     source_ack_unavailable_reason: SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON,
+    origin_activity_confirmed: false,
     suppressed: Boolean(alert.suppressed),
     suppressed_until: alert.suppressed_until || null,
     maintenance_status: alert.maintenance_status || null,
@@ -438,8 +439,9 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
     origin_sync: (snapshot.data_sources || []).map((source) => ({
       datasource_name: String(source.name || "Datasource OneView"),
       state: "unknown",
-      stale: false,
+      stale: true,
       last_success_at: source.last_success_at || source.last_sync_at || null,
+      snapshot_available: false,
     })),
     ...(include.temporal ? {
       temporal_counts: {

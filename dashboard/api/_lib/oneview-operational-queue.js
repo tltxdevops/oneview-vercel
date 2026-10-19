@@ -7,9 +7,9 @@
  * Suppression is read only from persisted Zabbix evidence:
  * payload_normalized.suppressed + suppression_data, or the alert columns
  * when the payload key is absent. The browser does not invent a window.
- * Current suppression requires membership in the latest identified origin
- * snapshot (sync_logs.id + snapshot_mode/snapshot_complete), not fetched_count
- * heuristics and not age-from-now. Incomplete or failed snapshots keep flags.
+ * Every actionable queue requires a fresh, complete origin snapshot and
+ * membership in that snapshot. Incomplete, stale or failed origin reads are
+ * review evidence; they never turn status_source=active into an actionable row.
  *
  * History keeps two evidence levels. Proven requires a non-zero
  * source_recovery_event_id. Legacy is status_source=resolved with
@@ -97,31 +97,63 @@ const SUPPRESSION_FLAG_SQL = `(
  * event_stream_fast is not a snapshot. Completeness comes from the Worker
  * payload: snapshot_complete=true, or legacy_limit below its own fetch limit.
  * An explicitly incomplete cycle makes the snapshot unavailable.
+ *
+ * sync_logs is large and has an index on (data_source_id, started_at). Resolve
+ * one row per datasource through that index, then fence the seven-row relation
+ * before joining alerts. Full syncs are serialized per datasource, so the
+ * latest started cycle is the latest cycle; id is the deterministic tie-break.
  */
-export const ORIGIN_SNAPSHOT_JOIN_SQL = `left join lateral (
-  select sl.id as origin_snapshot_id,
-         sl.started_at as origin_snapshot_started_at,
-         sl.finished_at as origin_snapshot_finished_at,
-         sl.fetched_count as origin_snapshot_fetched,
-         sl.payload->>'snapshot_mode' as origin_snapshot_mode,
-         case
-           when coalesce(sl.payload->>'snapshot_complete', '') in ('true', 't') then true
-           when coalesce(sl.payload->>'snapshot_mode', '') = 'legacy_limit'
-            and sl.fetched_count < coalesce(nullif(sl.payload->>'limit', '')::int, 1000)
-           then true
-           else false
-         end as origin_snapshot_complete
+export const ORIGIN_SNAPSHOT_JOIN_SQL = `left join (
+  select
+    d_snap.id as data_source_id,
+    latest.origin_snapshot_id,
+    latest.origin_snapshot_started_at,
+    latest.origin_snapshot_finished_at,
+    latest.origin_snapshot_fetched,
+    latest.origin_snapshot_mode,
+    latest.origin_snapshot_complete
+  from data_sources d_snap
+  left join lateral (
+    select
+      sl.id as origin_snapshot_id,
+      sl.started_at as origin_snapshot_started_at,
+      sl.finished_at as origin_snapshot_finished_at,
+      sl.fetched_count as origin_snapshot_fetched,
+      sl.payload->>'snapshot_mode' as origin_snapshot_mode,
+      case
+        when coalesce(sl.payload->>'snapshot_complete', '') in ('true', 't') then true
+        when coalesce(sl.payload->>'snapshot_mode', '') = 'legacy_limit'
+         and sl.fetched_count < coalesce(nullif(sl.payload->>'limit', '')::int, 1000)
+        then true
+        else false
+      end as origin_snapshot_complete
     from sync_logs sl
-   where sl.data_source_id = d.id
-     and lower(coalesce(sl.status, '')) in ('success', 'ok', 'partial_success')
-     and coalesce(sl.sync_type, 'automatic') <> 'event_stream_fast'
-   order by coalesce(sl.finished_at, sl.started_at) desc
-   limit 1
-) origin_snap on true`;
+    where sl.data_source_id = d_snap.id
+      and lower(coalesce(sl.status, '')) in ('success', 'ok', 'partial_success')
+      and coalesce(sl.sync_type, 'automatic') <> 'event_stream_fast'
+    order by sl.started_at desc, sl.id desc
+    limit 1
+  ) latest on true
+  offset 0
+) origin_snap on origin_snap.data_source_id = d.id`;
 
 const ORIGIN_SNAPSHOT_UNAVAILABLE_SQL = `(
   origin_snap.origin_snapshot_complete is not true
   or lower(coalesce(d.last_sync_status, '')) in ('failed', 'error')
+)`;
+
+const UNKNOWN_SUPPRESSION_SQL = `(
+  ${OPEN_PROBLEM_SQL}
+  and coalesce(a.payload_normalized->>'suppressed_source', a.payload_normalized->>'suppressed', '') = ''
+  and a.suppressed is null
+)`;
+
+const ORIGIN_SYNC_FRESH_SQL = `(
+  lower(coalesce(d.last_sync_status, '')) not in ('failed', 'error')
+  and coalesce(d.last_success_at, d.last_sync_at) is not null
+  and coalesce(d.last_success_at, d.last_sync_at) >= now() - (
+    greatest(coalesce(d.sync_interval_seconds, 300) * 3, 900) * interval '1 second'
+  )
 )`;
 
 const SEEN_IN_LATEST_ORIGIN_SNAPSHOT_SQL = `(
@@ -129,6 +161,19 @@ const SEEN_IN_LATEST_ORIGIN_SNAPSHOT_SQL = `(
   and a.last_seen_at is not null
   and origin_snap.origin_snapshot_started_at is not null
   and a.last_seen_at >= origin_snap.origin_snapshot_started_at
+)`;
+
+const ORIGIN_ACTIVITY_CONFIRMED_SQL = `(
+  ${OPEN_PROBLEM_SQL}
+  and ${ORIGIN_SYNC_FRESH_SQL}
+  and origin_snap.origin_snapshot_complete is true
+  and (
+    lower(coalesce(a.payload_normalized->>'origin_seen_in_complete_snapshot', '')) = 'true'
+    or (
+      coalesce(a.payload_normalized->>'origin_seen_in_complete_snapshot', '') = ''
+      and ${SEEN_IN_LATEST_ORIGIN_SNAPSHOT_SQL}
+    )
+  )
 )`;
 
 const CURRENT_ORIGIN_SUPPRESSION_SQL = `(
@@ -141,6 +186,7 @@ const CURRENT_ORIGIN_SUPPRESSION_SQL = `(
 
 const SUPPRESSION_ACTIVE_SQL = `(
   ${OPEN_PROBLEM_SQL}
+  and ${ORIGIN_ACTIVITY_CONFIRMED_SQL}
   and ${SUPPRESSION_CONFIRMED_SQL}
   and ${SUPPRESSION_FLAG_SQL}
   and ${CURRENT_ORIGIN_SUPPRESSION_SQL}
@@ -160,9 +206,11 @@ const CLEAN_ACTIVE_SQL = `(
   and a.resolved_at is null
   and not (${PROVEN_RECOVERY_ID_SQL})
   and lower(coalesce(a.status_internal, '')) not in ('normalized', 'resolved', 'hidden')
+  and ${ORIGIN_ACTIVITY_CONFIRMED_SQL}
   and not (${SUPPRESSION_ACTIVE_SQL})
   and not (${STALE_SUPPRESSION_SQL})
   and not (${EXPLICIT_UNCONFIRMED_SUPPRESSION_SQL})
+  and not (${UNKNOWN_SUPPRESSION_SQL})
   and not (
     lower(coalesce(a.payload_normalized->>'suppressed_source', a.payload_normalized->>'suppressed', '')) in ('false', '0')
     and coalesce(a.suppressed, false) = true
@@ -176,6 +224,17 @@ const QUEUE_SQL = Object.freeze({
   history: HISTORY_SQL,
   unconfirmed: `(not ${HISTORY_SQL} and not ${CLEAN_ACTIVE_SQL} and not ${SUPPRESSION_ACTIVE_SQL})`,
 });
+
+/** One precedence evaluation per row for aggregate queue counters. */
+export const OPERATIONAL_QUEUE_CASE_SQL = `case
+  when ${HISTORY_SQL} then 'history'
+  when ${SUPPRESSION_ACTIVE_SQL} then 'suppressed'
+  when ${CLEAN_ACTIVE_SQL} then case
+    when coalesce(a.acknowledged_source, false) then 'acknowledged'
+    else 'pending'
+  end
+  else 'unconfirmed'
+end`;
 
 export function operationalQueueSql(view) {
   const sql = QUEUE_SQL[view];
@@ -229,7 +288,9 @@ function payloadFlag(alert) {
 }
 
 function columnFlag(alert) {
-  return alert?.suppressed === true || text(alert?.suppressed).toLowerCase() === "true";
+  if (alert?.suppressed === true || text(alert?.suppressed).toLowerCase() === "true") return true;
+  if (alert?.suppressed === false || text(alert?.suppressed).toLowerCase() === "false") return false;
+  return null;
 }
 
 function emptySuppression(state, evidence, confirmation = "unconfirmed", explicitUnconfirmed = false) {
@@ -285,10 +346,11 @@ export function describeSuppression(alert, now = Date.now()) {
     : (Number.isFinite(explicitUntil) && explicitUntil > nowMs ? new Date(explicitUntil).toISOString() : null);
   const explicitPast = Number.isFinite(explicitUntil) && explicitUntil <= nowMs && future.length === 0;
 
-  if (flagged === false && column) {
+  if (flagged === false && column === true) {
     return { ...emptySuppression("unavailable", "conflict", "unconfirmed"), maintenance_id: maintenanceId, user_id: userId };
   }
-  if (flagged == null && !column) return emptySuppression("unavailable", "unavailable", "unconfirmed");
+  if (flagged == null && column == null) return emptySuppression("unavailable", "unavailable", "unconfirmed");
+  if (flagged == null && column === false) return emptySuppression("none", "column", "confirmed");
   if (flagged === false || explicitPast) {
     const expired = allFinitePast || explicitPast;
     return {
@@ -395,9 +457,18 @@ function seenInLatestOriginSnapshot(alert) {
   return seen >= started;
 }
 
+export function originActivityConfirmed(alert, now = Date.now()) {
+  if (!openForSuppression(alert)) return false;
+  const sync = describeDatasourceSync(alert, now);
+  if (sync.state !== "fresh" || sync.snapshot.available !== true) return false;
+  return seenInLatestOriginSnapshot(alert) === true;
+}
+
 export function classifyOperationalQueue(alert, now = Date.now()) {
   if (recoveryEvidenceOf(alert)) return "history";
+  if (openForSuppression(alert) && !originActivityConfirmed(alert, now)) return "unconfirmed";
   const suppression = describeSuppression(alert, now);
+  if (suppression.state === "unavailable") return "unconfirmed";
   if (openForSuppression(alert) && (
     suppression.evidence === "conflict"
     || (suppression.explicit_unconfirmed && text(alert?.payload_suppression_confirmation).toLowerCase() === "unconfirmed")
