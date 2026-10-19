@@ -270,7 +270,13 @@ function filteredAlerts(snapshot, req, dataSourceNames) {
 
   if (filters.clients.length) items = items.filter((item) => filters.clients.includes(item.client_name));
   if (filters.customers.length) items = items.filter((item) => filters.customers.includes(item.customer_key || "unclassified"));
+  if (filters.excludedCustomers.length) {
+    items = items.filter((item) => !filters.excludedCustomers.includes(String(item.customer_key || "unclassified").trim().toLowerCase()));
+  }
   if (filters.datasources.length) items = items.filter((item) => filters.datasources.includes(item.datasource_name));
+  if (filters.excludedDatasources.length) {
+    items = items.filter((item) => !filters.excludedDatasources.includes(String(item.datasource_name || "").trim().toLowerCase()));
+  }
   if (filters.customerConfidences.length) {
     items = items.filter((item) => filters.customerConfidences.includes(item.customer_confidence || "unclassified"));
   }

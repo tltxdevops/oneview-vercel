@@ -3,6 +3,7 @@ import { endOfDay, format, startOfDay } from "date-fns";
 import type { FetchAlertsParams, OneViewSeverity } from "@/lib/oneview-api";
 
 export type AlertsStatusFilter = "active" | "resolved" | "all";
+export type AlertsCustomerFilterMode = "include" | "exclude";
 export type AlertsAckFilter = "all" | "acknowledged" | "unacknowledged";
 export type AlertsOneViewAckFilter = "all" | "pending" | "success" | "cancelled" | "failed";
 export type AlertsDateField = "first_seen" | "last_seen" | "acknowledged" | "resolved";
@@ -27,6 +28,26 @@ export type AlertsSortKey =
   | "duration"
   | "acknowledged_at"
   | "resolved_at";
+
+function normalizedCustomerFilterValues(values: string[]) {
+  return [...new Set(values
+    .map((value) => String(value || "").trim().toLowerCase().slice(0, 160))
+    .filter(Boolean))]
+    .slice(0, 20);
+}
+
+export function resolveAlertsCustomerFilter(included: string[], excluded: string[]): {
+  mode: AlertsCustomerFilterMode;
+  selectedKeys: string[];
+  conflict: boolean;
+} {
+  const includedKeys = normalizedCustomerFilterValues(included);
+  const excludedKeys = normalizedCustomerFilterValues(excluded);
+  if (excludedKeys.length) {
+    return { mode: "exclude", selectedKeys: excludedKeys, conflict: includedKeys.length > 0 };
+  }
+  return { mode: "include", selectedKeys: includedKeys, conflict: false };
+}
 
 export const ALERTS_DATE_FIELD_OPTIONS: Array<{ id: AlertsDateField; label: string }> = [
   { id: "first_seen", label: "Início" },
@@ -243,6 +264,7 @@ export function isDefaultAlertsWarmQuery(state: {
 export type AlertsUrlState = {
   view?: string;
   customers: string[];
+  excludedCustomers?: string[];
   datasources?: string[];
   severities: OneViewSeverity[];
   status: AlertsStatusFilter;
@@ -271,6 +293,7 @@ export function writeAlertsUrlParams(state: AlertsUrlState) {
   const next = new URLSearchParams();
   if (state.view) next.set("view", state.view);
   for (const customer of state.customers) next.append("customer", customer);
+  for (const customer of state.excludedCustomers ?? []) next.append("customer_exclude", customer);
   for (const datasource of state.datasources ?? []) next.append("datasource", datasource);
   for (const severity of state.severities) next.append("severity", severity);
   if (state.status) next.set("status", state.status);

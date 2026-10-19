@@ -820,10 +820,15 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
   const pageSize = positiveInteger(oneQueryValue(req, "page_size"), DEFAULT_ALERT_PAGE_SIZE, { maximum: MAX_ALERT_PAGE_SIZE });
   const clients = queryValues(req, "client").map((value) => value.slice(0, 160));
   const rawCustomers = queryValues(req, "customer").map((value) => value.slice(0, 160));
+  const rawExcludedCustomers = queryValues(req, "customer_exclude").map((value) => value.slice(0, 160));
   const rawDatasources = queryValues(req, "datasource").map((value) => value.slice(0, 160));
   const splitCustomers = splitAlertCustomerFilter(rawCustomers, getOperationalDataSourceNames());
-  const customers = splitCustomers.customers;
-  const datasources = [...new Set([...rawDatasources, ...splitCustomers.datasources])];
+  const splitExcludedCustomers = splitAlertCustomerFilter(rawExcludedCustomers, getOperationalDataSourceNames());
+  const customerFilterConflict = rawCustomers.length > 0 && rawExcludedCustomers.length > 0;
+  const customers = rawExcludedCustomers.length ? [] : splitCustomers.customers;
+  const datasources = [...new Set([...rawDatasources, ...(rawExcludedCustomers.length ? [] : splitCustomers.datasources)])];
+  const excludedCustomers = splitExcludedCustomers.customers;
+  const excludedDatasources = splitExcludedCustomers.datasources;
   const customerConfidences = queryValues(req, "customer_confidence").map((value) => value.toLowerCase());
   const severities = queryValues(req, "severity").map((value) => value.toLowerCase());
   const operationalView = oneQueryValue(req, "operational_view").toLowerCase();
@@ -899,7 +904,19 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
       push(`${SAFE_CUSTOMER_KEY_SQL} = any(?::text[])`, identifiedKeys);
     }
   }
+  if (excludedCustomers.length) {
+    const excludesUnidentified = excludedCustomers.some((value) => value.toLowerCase() === "unclassified");
+    const identifiedKeys = excludedCustomers.filter((value) => value.toLowerCase() !== "unclassified");
+    if (excludesUnidentified && identifiedKeys.length) {
+      push(`not (${UNIDENTIFIED_CUSTOMER_SQL} or ${SAFE_CUSTOMER_KEY_SQL} = any(?::text[]))`, identifiedKeys);
+    } else if (excludesUnidentified) {
+      clauses.push(`not (${UNIDENTIFIED_CUSTOMER_SQL})`);
+    } else {
+      push(`not (${SAFE_CUSTOMER_KEY_SQL} = any(?::text[]))`, identifiedKeys);
+    }
+  }
   if (datasources.length) push("d.name = any(?::text[])", datasources);
+  if (excludedDatasources.length) push("not (d.name = any(?::text[]))", excludedDatasources);
   if (customerConfidences.length) {
     push("coalesce(a.customer_confidence, 'unclassified') = any(?::text[])", customerConfidences);
   }
@@ -1024,7 +1041,11 @@ export function buildAlertListQuery(req, dataSourceNames = getOperationalDataSou
     filters: {
       clients,
       customers,
+      excludedCustomers,
       datasources,
+      excludedDatasources,
+      customerFilterMode: rawExcludedCustomers.length ? "exclude" : customers.length ? "include" : "all",
+      customerFilterConflict,
       customerConfidences,
       severities,
       status,

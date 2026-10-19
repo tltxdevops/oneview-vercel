@@ -1251,6 +1251,7 @@ export interface FetchAlertsParams {
   pageSize?: number;
   clients?: string[];
   customers?: string[];
+  excludedCustomers?: string[];
   datasources?: string[];
   customerConfidences?: Array<"high" | "medium" | "low" | "unclassified">;
   severities?: string[];
@@ -1297,6 +1298,7 @@ export function oneViewAlertsPath(params?: FetchAlertsParams): string {
   search.set("page_size", String(params?.pageSize ?? 50));
   for (const client of params?.clients ?? []) search.append("client", client);
   for (const customer of params?.customers ?? []) search.append("customer", customer);
+  for (const customer of params?.excludedCustomers ?? []) search.append("customer_exclude", customer);
   for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);
@@ -1385,6 +1387,7 @@ export async function fetchGlobalHistory(params?: {
   search.set("page", String(Math.max(1, params?.page ?? 1)));
   search.set("page_size", String(Math.min(params?.pageSize ?? 50, 100)));
   for (const customer of params?.customers ?? []) search.append("customer", customer);
+  for (const customer of params?.excludedCustomers ?? []) search.append("customer_exclude", customer);
   for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
   if (params?.eventType && params.eventType !== "all") search.set("event_type", params.eventType);
   if (params?.actors?.length) for (const actor of params.actors) search.append("actor", actor);
@@ -1797,6 +1800,7 @@ export async function fetchIncidentSearchSuggestions(
 function appendAlertScopeQueryParams(search: URLSearchParams, params?: FetchAlertsParams) {
   for (const client of params?.clients ?? []) search.append("client", client);
   for (const customer of params?.customers ?? []) search.append("customer", customer);
+  for (const customer of params?.excludedCustomers ?? []) search.append("customer_exclude", customer);
   for (const datasource of params?.datasources ?? []) search.append("datasource", datasource);
   for (const confidence of params?.customerConfidences ?? []) search.append("customer_confidence", confidence);
   for (const severity of canonicalizeSeveritiesForApi(params?.severities ?? [])) search.append("severity", severity);

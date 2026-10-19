@@ -140,8 +140,10 @@ import {
   firstAlertsFetchParams,
   FIRST_ALERTS_PAGE_SIZE,
   parseAlertsDateUrlValue,
+  resolveAlertsCustomerFilter,
   writeAlertsUrlParams,
   type AlertsAckFilter,
+  type AlertsCustomerFilterMode,
   type AlertsDateField,
   type AlertsOneViewAckFilter,
   type AlertsDatePreset,
@@ -966,7 +968,12 @@ export default function AlertsPage() {
 
   const [page, setPage] = useState(() => positiveQueryInteger(initialQuery.get("page"), 1, Number.MAX_SAFE_INTEGER));
   const [pageSize, setPageSize] = useState(() => Number(queryEnum(initialQuery.get("page_size"), ["50", "100"] as const, "50")));
-  const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(() => splitLegacyCustomerQuery(initialQuery.getAll("customer")).customers);
+  const initialCustomerFilter = useRef(resolveAlertsCustomerFilter(
+    splitLegacyCustomerQuery(initialQuery.getAll("customer")).customers,
+    initialQuery.getAll("customer_exclude"),
+  )).current;
+  const [customerFilterMode, setCustomerFilterMode] = useState<AlertsCustomerFilterMode>(initialCustomerFilter.mode);
+  const [selectedCustomerKeys, setSelectedCustomerKeys] = useState<string[]>(initialCustomerFilter.selectedKeys);
   const initialView = inferAlertsView(initialQuery);
   const [sourceAckFilter, setSourceAckFilter] = useState<RecognitionFilter>(() => {
     const ackSource = initialQuery.get("acknowledged_source");
@@ -1121,6 +1128,7 @@ export default function AlertsPage() {
     alertsView,
     page,
     pageSize,
+    customerFilterMode,
     selectedCustomerKeys,
     selectedSeverities,
     statusFilter,
@@ -1139,12 +1147,13 @@ export default function AlertsPage() {
     debouncedSearch,
     sortField,
     sortOrder,
-  }), [ackActorFilter, alertsView, dateField, datePreset, dateRange?.from, dateRange?.to, debouncedSearch, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }), [ackActorFilter, alertsView, dateField, customerFilterMode, datePreset, dateRange?.from, dateRange?.to, debouncedSearch, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   useEffect(() => {
     const next = writeAlertsUrlParams({
       view: alertsView,
-      customers: selectedCustomerKeys,
+      customers: customerFilterMode === "include" ? selectedCustomerKeys : [],
+      excludedCustomers: customerFilterMode === "exclude" ? selectedCustomerKeys : [],
       severities: selectedSeverities,
       status: statusFilter,
       incidentState: incidentStateFilter,
@@ -1171,7 +1180,12 @@ export default function AlertsPage() {
     });
     if (recurrenceKey) next.set("recurrence_key", recurrenceKey);
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, customerFilterMode, dateField, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+
+  useEffect(() => {
+    if (!initialCustomerFilter.conflict) return;
+    toast.message("URL com inclusão e exclusão de clientes: aplicada a exclusão.", { duration: 6000 });
+  }, [initialCustomerFilter.conflict]);
 
   useEffect(() => {
     severityPopupSeenRef.current = readSeverityPopupSeen("alerts", actorId);
@@ -1214,7 +1228,8 @@ export default function AlertsPage() {
       let request: Parameters<typeof fetchAlerts>[0] = {
         page,
         pageSize,
-        customers: selectedCustomerKeys,
+        customers: customerFilterMode === "include" ? selectedCustomerKeys : [],
+        excludedCustomers: customerFilterMode === "exclude" ? selectedCustomerKeys : [],
         severities: selectedSeverities,
         status: statusFilter,
         operationalView: isOperationalQueue(alertsView) ? alertsView : undefined,
@@ -1383,7 +1398,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, customerFilterMode, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1685,23 +1700,30 @@ export default function AlertsPage() {
   }, [alertsAreCopy, facets?.customers, facets?.datasources, hasTemporalFilter, health?.counts.active_alerts, metrics?.active_total]);
   const selectedCustomerLabel = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "TODOS";
-    if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} CLIENTES`;
+    const prefix = customerFilterMode === "exclude" ? "EXCETO" : "SOMENTE";
+    if (selectedCustomerKeys.length > 1) return `${prefix} ${selectedCustomerKeys.length} CLIENTES`;
     const selected = customerCards.find((customer) => customer.key === selectedCustomerKeys[0]);
-    return safeDisplayText(selected?.name, "CLIENTE").toUpperCase();
-  }, [customerCards, selectedCustomerKeys]);
+    return `${prefix} ${safeDisplayText(selected?.name, "CLIENTE")}`.toUpperCase();
+  }, [customerCards, customerFilterMode, selectedCustomerKeys]);
   const tableCustomerScope = useMemo(() => {
     if (selectedCustomerKeys.length === 0) return "todos os clientes";
-    if (selectedCustomerKeys.length > 1) return `${selectedCustomerKeys.length} clientes selecionados`;
+    if (selectedCustomerKeys.length > 1) {
+      return customerFilterMode === "exclude"
+        ? `todos, exceto ${selectedCustomerKeys.length} clientes`
+        : `somente ${selectedCustomerKeys.length} clientes`;
+    }
     const selected = customerCards.find((customer) => customer.key === selectedCustomerKeys[0]);
-    return safeDisplayText(selected?.name, "cliente selecionado");
-  }, [customerCards, selectedCustomerKeys]);
+    const name = safeDisplayText(selected?.name, "cliente selecionado");
+    return customerFilterMode === "exclude" ? `todos, exceto ${name}` : `somente ${name}`;
+  }, [customerCards, customerFilterMode, selectedCustomerKeys]);
 
   const operationalQueue = isOperationalQueue(alertsView) ? alertsView : undefined;
   const fetchAlertTableSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
       q,
       limit: 10,
-      customers: selectedCustomerKeys,
+      customers: customerFilterMode === "include" ? selectedCustomerKeys : [],
+      excludedCustomers: customerFilterMode === "exclude" ? selectedCustomerKeys : [],
       severities: selectedSeverities,
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue,
@@ -1709,7 +1731,7 @@ export default function AlertsPage() {
       oneviewAckStatuses,
       signal,
     }).then((response) => response.suggestions ?? [])
-  ), [oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [customerFilterMode, oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const localCustomerSearchSuggestions = useMemo(() => customerCards
     .filter((customer) => customer.key !== "all")
@@ -1718,14 +1740,15 @@ export default function AlertsPage() {
       value: customer.name,
       label: customer.name,
       customer_key: customer.key,
-      hint: "Adicionar aos clientes selecionados",
-    })), [customerCards]);
+      hint: customerFilterMode === "exclude" ? "Adicionar aos clientes excluídos" : "Adicionar aos clientes incluídos",
+    })), [customerCards, customerFilterMode]);
 
   const fetchAckActorSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
       q,
       limit: 8,
-      customers: selectedCustomerKeys,
+      customers: customerFilterMode === "include" ? selectedCustomerKeys : [],
+      excludedCustomers: customerFilterMode === "exclude" ? selectedCustomerKeys : [],
       severities: selectedSeverities,
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue,
@@ -1734,40 +1757,40 @@ export default function AlertsPage() {
       kind: "actor",
       signal,
     }).then((response) => (response.suggestions ?? []).filter((item) => item.kind === "actor"))
-  ), [oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [customerFilterMode, oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const fetchHostColumnSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
-      q, kind: "host", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
+      q, kind: "host", limit: 8, customers: customerFilterMode === "include" ? selectedCustomerKeys : [], excludedCustomers: customerFilterMode === "exclude" ? selectedCustomerKeys : [], severities: selectedSeverities,
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue, problemSearch: problemColumnSearch || undefined, incidentStates,
       incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
       acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
-  ), [ackActorFilter, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [ackActorFilter, customerFilterMode, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const fetchProblemColumnSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
-      q, kind: "problem", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
+      q, kind: "problem", limit: 8, customers: customerFilterMode === "include" ? selectedCustomerKeys : [], excludedCustomers: customerFilterMode === "exclude" ? selectedCustomerKeys : [], severities: selectedSeverities,
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue, hostSearch: hostColumnSearch || undefined, incidentStates,
       incidentNumber: incidentNumber || undefined, oneviewAckStatuses,
       acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
-  ), [ackActorFilter, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [ackActorFilter, customerFilterMode, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, operationalQueue, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const fetchIncidentNumberSuggestions = useCallback((q: string, signal: AbortSignal) => (
     fetchAlertSearchSuggestions({
-      q, kind: "number", limit: 8, customers: selectedCustomerKeys, severities: selectedSeverities,
+      q, kind: "number", limit: 8, customers: customerFilterMode === "include" ? selectedCustomerKeys : [], excludedCustomers: customerFilterMode === "exclude" ? selectedCustomerKeys : [], severities: selectedSeverities,
       status: operationalQueue ? "all" : statusFilter,
       operationalView: operationalQueue, hostSearch: hostColumnSearch || undefined, problemSearch: problemColumnSearch || undefined,
       incidentStates, oneviewAckStatuses,
       acknowledgedSource: effectiveOperationalSourceAckParam(operationalQueue, sourceAckFilter),
       ackActor: ackActorFilter || undefined, signal,
     }).then((response) => response.suggestions ?? [])
-  ), [ackActorFilter, hostColumnSearch, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
+  ), [ackActorFilter, customerFilterMode, hostColumnSearch, incidentStates, oneviewAckStatuses, operationalQueue, problemColumnSearch, selectedCustomerKeys, selectedSeverities, sourceAckFilter, statusFilter]);
 
   const applyAckActorFilter = useCallback((value: string) => {
     const next = value.trim().slice(0, 160);
@@ -1779,7 +1802,7 @@ export default function AlertsPage() {
   const activeFilterChips = [
     ...selectedCustomerKeys.map((customerKey) => ({
       key: `customer:${customerKey}`,
-      label: customerCards.find((customer) => customer.key === customerKey)?.name ?? customerKey,
+      label: `${customerFilterMode === "exclude" ? "Exceto" : "Somente"}: ${customerCards.find((customer) => customer.key === customerKey)?.name ?? customerKey}`,
       remove: () => setSelectedCustomerKeys((current) => current.filter((item) => item !== customerKey)),
     })),
     ...selectedSeverities.map((severity) => ({ key: `severity:${severity}`, label: severityCatalog[severity].label, remove: () => setSelectedSeverities((current) => current.filter((item) => item !== severity)) })),
@@ -1897,6 +1920,7 @@ export default function AlertsPage() {
     cancelAlertSearch();
     alertSearchIntent.current = null;
     setAlertSearchLoading(false);
+    setCustomerFilterMode("include");
     setSelectedCustomerKeys([]);
     setSelectedSeverities([]);
     setSourceAckFilter("all");
@@ -1990,6 +2014,11 @@ export default function AlertsPage() {
       return;
     }
     setSelectedCustomerKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+  };
+
+  const applyCustomerFilterMode = (mode: AlertsCustomerFilterMode) => {
+    setCustomerFilterMode(mode);
+    setPage(1);
   };
 
   const applyDatePreset = (preset: AlertsDatePreset) => {
@@ -2158,13 +2187,19 @@ export default function AlertsPage() {
     );
     if (column === "client") return (
       <OneViewColumnFilterPopover label="Filtrar clientes" activeCount={selectedCustomerKeys.length}>
-        <OperationalFacetChecklist
-          options={customerCards.filter((customer) => customer.key !== "all").map((customer) => ({ value: customer.key, label: customer.name, count: customer.alerts_count ?? undefined }))}
-          selectedValues={selectedCustomerKeys}
-          onChange={(values) => { setSelectedCustomerKeys(values); setPage(1); }}
-          allLabel="Todos"
-          searchPlaceholder="Buscar cliente..."
-        />
+        <div className="space-y-3">
+          <Select value={customerFilterMode} onValueChange={(value) => applyCustomerFilterMode(value as AlertsCustomerFilterMode)}>
+            <SelectTrigger className="h-9 w-full" aria-label="Modo do filtro de clientes"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="include">Incluir selecionados</SelectItem><SelectItem value="exclude">Excluir selecionados</SelectItem></SelectContent>
+          </Select>
+          <OperationalFacetChecklist
+            options={customerCards.filter((customer) => customer.key !== "all").map((customer) => ({ value: customer.key, label: customer.name, count: customer.alerts_count ?? undefined }))}
+            selectedValues={selectedCustomerKeys}
+            onChange={(values) => { setSelectedCustomerKeys(values); setPage(1); }}
+            allLabel={customerFilterMode === "exclude" ? "Nenhum excluído" : "Todos"}
+            searchPlaceholder="Buscar cliente..."
+          />
+        </div>
       </OneViewColumnFilterPopover>
     );
     if (column === "host") return (
@@ -2237,16 +2272,22 @@ export default function AlertsPage() {
     : `${subject} ${temporalLabels[preset]} · ${(count ?? 0).toLocaleString("pt-BR")} alertas`;
 
   const clientSelector = (
-    <ClientFilterCombobox
-      open={customerFilterOpen}
-      onOpenChange={setCustomerFilterOpen}
-      options={customerCards}
-      selectedKeys={selectedCustomerKeys}
-      selectedLabel={selectedCustomerLabel}
-      onToggle={toggleCustomer}
-      countNoun={customerFilterCountNoun("filter")}
-      triggerClassName="h-9 w-full min-w-0 max-w-none justify-between"
-    />
+    <div className="flex min-w-0 gap-2">
+      <Select value={customerFilterMode} onValueChange={(value) => applyCustomerFilterMode(value as AlertsCustomerFilterMode)}>
+        <SelectTrigger className="h-9 w-[7.25rem] shrink-0" aria-label="Modo do filtro de clientes"><SelectValue /></SelectTrigger>
+        <SelectContent><SelectItem value="include">Incluir</SelectItem><SelectItem value="exclude">Excluir</SelectItem></SelectContent>
+      </Select>
+      <ClientFilterCombobox
+        open={customerFilterOpen}
+        onOpenChange={setCustomerFilterOpen}
+        options={customerCards}
+        selectedKeys={selectedCustomerKeys}
+        selectedLabel={selectedCustomerLabel}
+        onToggle={toggleCustomer}
+        countNoun={customerFilterCountNoun("filter")}
+        triggerClassName="h-9 w-full min-w-0 max-w-none justify-between"
+      />
+    </div>
   );
   const compactPeriodSelector = (
     <label className="flex h-9 min-w-[8.5rem] items-center gap-1.5 text-xs text-muted-foreground" aria-label="Janela de tempo da Central">
@@ -2417,9 +2458,9 @@ export default function AlertsPage() {
           searchActivity={alertSearchActivity}
           searchActivityQuery={debouncedSearch}
           localSearchSuggestions={localCustomerSearchSuggestions}
-          getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? "Aplicar Cliente" : "Pesquisar"}
+          getSearchSuggestionActionLabel={(suggestion) => suggestion.kind === "customer" ? (customerFilterMode === "exclude" ? "Excluir Cliente" : "Incluir Cliente") : "Pesquisar"}
           isSearchSuggestionSelected={(suggestion) => suggestion.kind === "customer" && Boolean(suggestion.customer_key) && selectedCustomerKeys.includes(suggestion.customer_key!)}
-          scopeHint="Para filtrar clientes: digite 2 ou mais caracteres, escolha Aplicar Cliente e repita para adicionar outros."
+          scopeHint={`Filtro efetivo: ${tableCustomerScope}. Digite 2 ou mais caracteres para adicionar outros clientes.`}
           sort={{
             value: `${sortField}:${sortOrder}`,
             options: [...ALERT_TABLE_SORT_OPTIONS],
