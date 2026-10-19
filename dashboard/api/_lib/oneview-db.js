@@ -2869,11 +2869,24 @@ async function fetchDashboardSummaryPayload(
   config,
   timeZone = DEFAULT_OPERATIONAL_TIMEZONE,
   dataSourceNames = getOperationalDataSourceNames(),
+  { req } = {},
 ) {
   const scopedDataSourceNames = operationalDataSourceNames(dataSourceNames);
   const dailyMetrics = dailyOperationalMetricQueries(timeZone, new Date(), scopedDataSourceNames);
   const scopeValues = [scopedDataSourceNames];
   const dayValues = [scopedDataSourceNames, dailyMetrics.day.from, dailyMetrics.day.to];
+  return withOneViewReadonlyTransaction(config, async (query) => {
+    // node-postgres clients execute one statement at a time. Keep this explicit:
+    // dashboard summary has fourteen independent reads and must not consume the
+    // whole serverless pool before the first response is available.
+    let queuedQuery = Promise.resolve();
+    const serialQuery = (text, values = []) => {
+      const pending = queuedQuery.then(() => query(text, values));
+      queuedQuery = pending;
+      return pending;
+    };
+    const queryRows = async (text, values = []) => (await serialQuery(text, values)).rows;
+    const queryRow = async (text, values = []) => (await queryRows(text, values))[0] || null;
   const [
     totalAlertsRow,
     activeAlertsRow,
@@ -3019,6 +3032,7 @@ async function fetchDashboardSummaryPayload(
     avg_ack_time_seconds: integerValue(ackMetricsRow?.avg_ack_time_seconds, 0),
     avg_normalization_time_seconds: integerValue(normalizationMetricsRow?.avg_normalization_time_seconds, 0),
   };
+  }, { req, operation: "dashboard_summary" });
 }
 
 async function fetchGrafanaSummaryPayload(config, dataSourceNames = getOperationalDataSourceNames()) {
@@ -3633,7 +3647,7 @@ export async function fetchOneViewDatabase(routeName, req, config) {
       case "health":
         return fetchHealthPayload(dbConfig, config?.ackEnabled, config?.alertStaleMinutes, dataSourceNames);
       case "dashboard-summary":
-        return fetchDashboardSummaryPayload(dbConfig, config?.operationalTimezone, dataSourceNames);
+        return fetchDashboardSummaryPayload(dbConfig, config?.operationalTimezone, dataSourceNames, { req });
       case "grafana-summary":
         return fetchGrafanaSummaryPayload(dbConfig, dataSourceNames);
       case "alerts":

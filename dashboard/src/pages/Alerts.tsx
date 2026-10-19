@@ -1397,7 +1397,9 @@ export default function AlertsPage() {
       }
       const rejected = results.find((result) => result.status === "rejected");
       if (rejected?.status === "rejected") {
-        setSummaryError(rejected.reason instanceof Error ? rejected.reason.message : "Falha ao atualizar o resumo operacional.");
+        setSummaryError(results[0].status === "rejected"
+          ? "Resumo operacional temporariamente indisponível. A tabela de alertas continua usando sua própria resposta em tempo real."
+          : "Um recurso auxiliar da Central está temporariamente indisponível. A tabela de alertas continua usando sua própria resposta em tempo real.");
       }
       summaryDeadlineRef.current = Date.now() + SUMMARY_REFRESH_MS;
       if (includeStable) stableSummaryDeadlineRef.current = Date.now() + STABLE_SUMMARY_REFRESH_MS;

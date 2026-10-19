@@ -135,6 +135,26 @@ test("pool max=2 serves one alerts read with a single checkout and no leftover w
   assert.ok(readRequestDbTelemetry(req).db_query_total_ms >= 0);
 });
 
+test("dashboard summary serializes its fourteen reads on one readonly checkout", async () => {
+  const source = await read("api/_lib/oneview-db.js");
+  const body = source.slice(source.indexOf("async function fetchDashboardSummaryPayload"), source.indexOf("async function fetchGrafanaSummaryPayload"));
+  assert.match(body, /withOneViewReadonlyTransaction\(config/);
+  assert.match(body, /let queuedQuery = Promise\.resolve\(\)/);
+  assert.match(body, /const serialQuery = \(text, values = \[\]\)/);
+  assert.match(body, /queuedQuery = pending/);
+  assert.match(body, /operation: "dashboard_summary"/);
+  assert.doesNotMatch(body, /getOneViewDbPool\(config\)\.query/);
+});
+
+test("dashboard summary failure is localized and does not replace the live alert list", async () => {
+  const alerts = await read("src/pages/Alerts.tsx");
+  const body = alerts.slice(alerts.indexOf("const loadSummaryResources"), alerts.indexOf("const loadSelectedAlert"));
+  assert.match(body, /Promise\.allSettled/);
+  assert.match(body, /results\[0\]\.status === "rejected"/);
+  assert.match(body, /A tabela de alertas continua usando sua própria resposta em tempo real\./);
+  assert.doesNotMatch(body, /setAlertsError\(/);
+});
+
 test("ten concurrent alerts reads do not starve a pool of two", async () => {
   const pool = createFakePool(2);
   await Promise.all(Array.from({ length: 10 }, () => (
