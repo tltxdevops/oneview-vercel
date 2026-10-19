@@ -1405,12 +1405,20 @@ function rememberRequestDbTelemetry(req, stats) {
   requestDbTelemetry.set(req, stats);
 }
 
+function sanitizedPgRelation(error) {
+  const explicit = typeof error?.table === "string" ? error.table : "";
+  const matched = /^relation\s+"([A-Za-z0-9_]{1,64})"\s+does not exist$/i.exec(String(error?.message || ""));
+  const relation = explicit || matched?.[1] || "";
+  return /^[A-Za-z0-9_]{1,64}$/.test(relation) ? relation : null;
+}
+
 function logSanitizedDatabaseError(error, { operation }) {
   const errorClass = databaseFailureCode(error);
   console.error(JSON.stringify({
     event: "oneview_database_error",
     operation: safeOperationName(operation),
     pg_code: sanitizedPgCode(error),
+    pg_relation: sanitizedPgRelation(error),
     database_timeout: errorClass === "database_timeout",
     database_unavailable: errorClass === "database_unavailable",
   }));

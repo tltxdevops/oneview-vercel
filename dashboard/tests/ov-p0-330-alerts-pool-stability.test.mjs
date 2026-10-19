@@ -305,6 +305,7 @@ test("statement timeout stays a controlled error and the log omits SQL", async (
     event: "oneview_database_error",
     operation: "alerts_list",
     pg_code: "57014",
+    pg_relation: null,
     database_timeout: true,
     database_unavailable: false,
   });
