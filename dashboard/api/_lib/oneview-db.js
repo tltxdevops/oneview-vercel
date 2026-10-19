@@ -2019,7 +2019,16 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
         a.payload_normalized->>'suppress_until_kind' as payload_suppress_until_kind,
         a.payload_normalized->'suppression_data' as payload_suppression_data,
         a.first_seen_at, a.last_reopened_at, ${PROVEN_SOURCE_ACK_CLOCK_SQL} as ack_history_first_at,
-        a.last_seen_at, a.resolved_at, a.duration_seconds,
+        a.last_seen_at,
+        origin_snap.origin_snapshot_id,
+        origin_snap.origin_snapshot_started_at,
+        origin_snap.origin_snapshot_finished_at,
+        origin_snap.origin_snapshot_fetched,
+        origin_snap.origin_snapshot_mode,
+        origin_snap.origin_snapshot_complete,
+        a.payload_normalized->>'origin_seen_in_complete_snapshot' as payload_origin_seen_in_complete_snapshot,
+        a.resolved_at, a.duration_seconds,
+        d.last_success_at, d.last_sync_at, d.last_sync_status, d.sync_interval_seconds,
         a.created_at, a.updated_at,
         ((select count(*)::int from alert_history h where h.alert_id = a.id)
           + (select count(*)::int from alert_acknowledgements ack
@@ -2029,6 +2038,7 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
         (select count(*)::int from alert_acknowledgements ack where ack.alert_id = a.id) as acknowledgement_count
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
       left join zabbix_host_inventory host_inventory
         on host_inventory.data_source_id = a.data_source_id
        and host_inventory.source_host_id = a.source_host_id

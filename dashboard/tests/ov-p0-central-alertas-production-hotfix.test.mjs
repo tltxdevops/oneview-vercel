@@ -13,11 +13,13 @@ test("Central uses a defined canonical date field and accepts the legacy recent 
   assert.doesNotMatch(alerts, /\[ackActorFilter, alertsView, dateField,/);
 });
 
-test("operational summary and temporal SQL join the canonical origin snapshot", () => {
+test("operational reads, including drawer detail, join the canonical origin snapshot", () => {
   const database = read("api/_lib/oneview-db.js");
   const queue = read("api/_lib/oneview-operational-queue.js");
   assert.match(database, /const summarySql = `[\s\S]*?join data_sources d[\s\S]*?\$\{ORIGIN_SNAPSHOT_JOIN_SQL\}[\s\S]*?\$\{whereSql\}/);
   assert.match(database, /const temporalSql = `[\s\S]*?join data_sources d[\s\S]*?\$\{ORIGIN_SNAPSHOT_JOIN_SQL\}[\s\S]*?\$\{baseWhereSql\}/);
+  assert.match(database, /async function fetchAlertDetailPayload[\s\S]*?join data_sources d[\s\S]*?\$\{ORIGIN_SNAPSHOT_JOIN_SQL\}[\s\S]*?where a\.id = \$1/);
+  assert.match(database, /async function fetchAlertDetailPayload[\s\S]*?origin_snap\.origin_snapshot_complete[\s\S]*?payload_origin_seen_in_complete_snapshot[\s\S]*?d\.last_sync_status/);
   assert.match(queue, /left join lateral/);
   assert.match(queue, /order by sl\.started_at desc, sl\.id desc/);
   assert.match(queue, /limit 1/);
