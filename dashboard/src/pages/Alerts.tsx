@@ -142,6 +142,7 @@ import {
   parseAlertsDateUrlValue,
   writeAlertsUrlParams,
   type AlertsAckFilter,
+  type AlertsDateField,
   type AlertsOneViewAckFilter,
   type AlertsDatePreset,
   type AlertsSearchField,
@@ -243,6 +244,22 @@ const ALERTS_VIEWS: Array<{ id: OperationalQueue; label: string; description: st
 
 function isOperationalQueue(view: string): view is OperationalQueue {
   return (OPERATIONAL_QUEUES as readonly string[]).includes(view);
+}
+
+function operationalPeriodDefault(view: AlertsView): AlertsDatePreset {
+  return view === "history" ? "30d" : "7d";
+}
+
+function dateFieldFromUrl(value: string | null, view: AlertsView): AlertsDateField {
+  if (["first_seen", "last_seen", "acknowledged", "resolved"].includes(value || "")) return value as AlertsDateField;
+  return view === "history" ? "resolved" : ALERTS_DATE_FIELD;
+}
+
+function dateFieldLabel(field: AlertsDateField) {
+  if (field === "resolved") return "Período da recuperação";
+  if (field === "acknowledged") return "Período do reconhecimento";
+  if (field === "last_seen") return "Período da atualização";
+  return "Período do início";
 }
 
 const ALERT_STATUS_OPTIONS = [
@@ -1011,8 +1028,9 @@ export default function AlertsPage() {
     if (initialQuery.get("updated")) return temporalPresetFromUrl(initialQuery.get("updated"));
     if (initialQuery.get("resolved")) return temporalPresetFromUrl(initialQuery.get("resolved"));
     if (initialQuery.get("ack")) return temporalPresetFromUrl(initialQuery.get("ack"));
-    return "all";
+    return operationalPeriodDefault(initialView);
   });
+  const [dateField, setDateField] = useState<AlertsDateField>(() => dateFieldFromUrl(initialQuery.get("date_field"), initialView));
   const [dateRange, setDateRange] = useState<DateRange | undefined>(() => {
     const from = parseAlertsDateUrlValue(initialQuery.get("date_from"));
     const to = parseAlertsDateUrlValue(initialQuery.get("date_to"));
@@ -1110,13 +1128,14 @@ export default function AlertsPage() {
     hostColumnSearch,
     problemColumnSearch,
     datePreset,
+    dateField,
     dateFrom: dateRange?.from?.toISOString() ?? null,
     dateTo: dateRange?.to?.toISOString() ?? null,
     searchField,
     debouncedSearch,
     sortField,
     sortOrder,
-  }), [ackActorFilter, alertsView, datePreset, dateRange?.from, dateRange?.to, debouncedSearch, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }), [ackActorFilter, alertsView, dateField, datePreset, dateRange?.from, dateRange?.to, debouncedSearch, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   useEffect(() => {
     const next = writeAlertsUrlParams({
@@ -1133,7 +1152,7 @@ export default function AlertsPage() {
       ackActor: ackActorFilter,
       hostSearch: hostColumnSearch,
       problemSearch: problemColumnSearch,
-      dateField: "first_seen",
+      dateField,
       datePreset,
       dateRange,
       searchField,
@@ -1148,7 +1167,7 @@ export default function AlertsPage() {
     });
     if (recurrenceKey) next.set("recurrence_key", recurrenceKey);
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [ackActorFilter, alertsView, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, hostColumnSearch, incidentNumber, incidentStateFilter, incidentStates, oneviewAckFilter, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, requestedAlertId, searchField, searchParams, searchQuery, selectedCustomerKeys, selectedSeverities, setSearchParams, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   useEffect(() => {
     severityPopupSeenRef.current = readSeverityPopupSeen("alerts", actorId);
@@ -1210,7 +1229,7 @@ export default function AlertsPage() {
 
       request = applySearchToFetchParams(request, searchField, debouncedSearch);
       if (alertsDateActive(datePreset, dateRange)) {
-        request = applyDateFieldToFetchParams(request, ALERTS_DATE_FIELD, dateBounds);
+        request = applyDateFieldToFetchParams(request, dateField, dateBounds);
       }
 
       const shouldPrime = !options?.quiet && page === 1;
@@ -1360,7 +1379,7 @@ export default function AlertsPage() {
         setAlertSearchLoading(false);
       }
     }
-  }, [ackActorFilter, alertsView, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
+  }, [ackActorFilter, alertsView, dateField, datePreset, dateRange, debouncedSearch, feedbackQueryKey, hostColumnSearch, incidentNumber, incidentStates, oneviewAckStatuses, page, pageSize, problemColumnSearch, recurrenceKey, searchField, selectedCustomerKeys, selectedSeverities, sortField, sortOrder, sourceAckFilter, statusFilter]);
 
   const loadSummaryResources = useCallback((force = false, includeStable = true) => {
     if (summaryRequestRef.current) return summaryRequestRef.current;
@@ -1769,7 +1788,7 @@ export default function AlertsPage() {
     hostColumnSearch ? { label: `Host: ${hostColumnSearch}`, remove: () => { setHostColumnSearch(""); setHostColumnDraft(""); } } : null,
     problemColumnSearch ? { label: `Problema: ${problemColumnSearch}`, remove: () => { setProblemColumnSearch(""); setProblemColumnDraft(""); } } : null,
     hasTemporalFilter ? {
-      label: `Período ${temporalLabels[datePreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`,
+      label: `Janela ${temporalLabels[datePreset]} · ${listTotal.toLocaleString("pt-BR")} alertas`,
       remove: () => { setDatePreset("all"); setDateRange(undefined); },
     } : null,
     debouncedSearch ? {
@@ -1800,6 +1819,7 @@ export default function AlertsPage() {
   const lastVisible = pagination.total_items === 0 ? 0 : Math.min(firstVisible + displayedAlerts.length - 1, pagination.total_items);
   // Detail/history of the previously opened alert stay in state until the new ones arrive.
   const selectedAlert = (detail?.item && detail.item.id === selectedAlertId ? detail.item : null) ?? selectedPreview;
+  const selectedAlertOutsideCurrentList = Boolean(selectedAlertId && detail?.item && !alerts.some((item) => item.id === selectedAlertId));
   const selectedHistoryItems = history && history.alert_id === selectedAlertId ? history.items : EMPTY_HISTORY_ITEMS;
   useAlertDrawerLiveRefresh({
     alertId: selectedAlertId,
@@ -1893,7 +1913,8 @@ export default function AlertsPage() {
     setSearchField("all");
     setSearchQuery("");
     setDebouncedSearch("");
-    setDatePreset("all");
+    setDatePreset(operationalPeriodDefault("pending"));
+    setDateField(ALERTS_DATE_FIELD);
     setDateRange(undefined);
     setPage(1);
   };
@@ -1902,6 +1923,7 @@ export default function AlertsPage() {
     if (!isOperationalQueue(view)) return;
     setAlertsView(view);
     setPage(1);
+    if (datePreset !== "custom") setDateField(view === "history" ? "resolved" : ALERTS_DATE_FIELD);
     if (view === "history") {
       setSortField("resolved_at");
       setSortOrder("desc");
@@ -1964,6 +1986,7 @@ export default function AlertsPage() {
   const applyDatePreset = (preset: AlertsDatePreset) => {
     setDatePreset(preset);
     if (preset !== "custom") setDateRange(undefined);
+    if (preset !== "custom") setDateField(alertsView === "history" ? "resolved" : ALERTS_DATE_FIELD);
     setPage(1);
   };
 
@@ -2216,6 +2239,21 @@ export default function AlertsPage() {
       triggerClassName="h-9 w-full min-w-0 max-w-none justify-between"
     />
   );
+  const compactPeriodSelector = (
+    <label className="flex h-9 min-w-[8.5rem] items-center gap-1.5 text-xs text-muted-foreground" aria-label="Janela de tempo da Central">
+      <span className="hidden xl:inline">Janela</span>
+      <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}>
+        <SelectTrigger className="h-9 min-w-[7rem]" aria-label="Selecionar janela de tempo"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="24h">24 horas</SelectItem>
+          <SelectItem value="7d">7 dias</SelectItem>
+          <SelectItem value="30d">30 dias</SelectItem>
+          <SelectItem value="all">Todos</SelectItem>
+          {datePreset === "custom" ? <SelectItem value="custom">Personalizado</SelectItem> : null}
+        </SelectContent>
+      </Select>
+    </label>
+  );
   const configurableSummaryItems = alertsMetrics.visibleMetrics.flatMap((metric) => {
     const card = summaryCards.find((candidate) => candidate.filter === metric.id);
     if (!card) return [];
@@ -2379,6 +2417,7 @@ export default function AlertsPage() {
             },
             label: "Ordenar alertas",
           }}
+          trailing={compactPeriodSelector}
           filters={(
             <div className="grid min-w-0 grid-cols-1 gap-y-4">
               <OperationalFilterSection title="Escopo" gridClassName="lg:grid-cols-3">
@@ -2433,7 +2472,7 @@ export default function AlertsPage() {
                 <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Campo da busca
                   <Select value={searchField} onValueChange={(value) => { setSearchField(value as AlertsSearchField); setPage(1); }}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent>{ALERTS_SEARCH_FIELD_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent></Select>
                 </label>
-                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Período do início
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">{dateFieldLabel(dateField)}
                   <Select value={datePreset} onValueChange={(value) => applyDatePreset(value as AlertsDatePreset)}><SelectTrigger className="h-9 w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Sem período</SelectItem>{ALERTS_DATE_PRESET_OPTIONS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}<SelectItem value="custom">Personalizado</SelectItem></SelectContent></Select>
                 </label>
                 <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">Host
@@ -2649,7 +2688,7 @@ export default function AlertsPage() {
         historyItems={selectedHistoryItems}
         isLoading={isDetailLoading}
         error={detailError || historyLoadError}
-        description={alertsAreCopy ? "Cópia do alerta. Não é o estado operacional atual." : "Informações operacionais seguras e histórico do OneView."}
+        description={alertsAreCopy ? "Cópia do alerta. Não é o estado operacional atual." : selectedAlertOutsideCurrentList ? "Detalhe aberto por link. Este alerta pode estar fora da janela ou dos filtros atuais." : "Informações operacionais seguras e histórico do OneView."}
         onSourceAckRequestAccepted={handleSourceAckRequestAccepted}
         onSourceAcknowledged={handleSourceAcknowledged}
         onIncidentClaimed={() => { void loadAlerts({ quiet: true }); }}
