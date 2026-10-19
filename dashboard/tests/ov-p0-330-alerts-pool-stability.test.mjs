@@ -141,9 +141,55 @@ test("dashboard summary serializes its fourteen reads on one readonly checkout",
   assert.match(body, /withOneViewReadonlyTransaction\(config/);
   assert.match(body, /let queuedQuery = Promise\.resolve\(\)/);
   assert.match(body, /const serialQuery = \(text, values = \[\]\)/);
-  assert.match(body, /queuedQuery = pending/);
+  assert.match(body, /queuedQuery = pending\.then\(/);
   assert.match(body, /operation: "dashboard_summary"/);
+  assert.match(body, /const queryRows = async \(_config, text, values = \[\]\)/);
+  assert.match(body, /dashboard_summary_invalid_query_text/);
+  assert.match(body, /typeof text !== "string"/);
+  // Call sites still use the legacy (config, text, values) arity — wrappers must ignore config.
+  assert.match(body, /queryRow\(config,\s*`select count\(\*\)::int as value from alerts/);
   assert.doesNotMatch(body, /getOneViewDbPool\(config\)\.query/);
+});
+
+test("dashboard summary wrappers ignore config and only enqueue SQL strings", async () => {
+  const pool = createFakePool(2);
+  const seen = [];
+
+  await withOneViewReadonlyTransaction(config, async (query) => {
+    let queuedQuery = Promise.resolve();
+    const serialQuery = (text, values = []) => {
+      seen.push({ text, values });
+      const pending = queuedQuery.then(() => query(text, values));
+      queuedQuery = pending.then(() => undefined, () => undefined);
+      return pending;
+    };
+    const queryRows = async (_config, text, values = []) => {
+      if (typeof _config === "string") {
+        values = text || [];
+        text = _config;
+      }
+      if (typeof text !== "string" || !text.trim()) throw new Error("dashboard_summary_invalid_query_text");
+      return (await serialQuery(text, values)).rows;
+    };
+    const queryRow = async (_config, text, values = []) => (await queryRows(_config, text, values))[0] || null;
+
+    const fakeConfig = { connectionString: "must-not-become-sql" };
+    await Promise.all([
+      queryRow(fakeConfig, "select count(*)::int as value from alerts", ["teletex-http"]),
+      queryRows(fakeConfig, "select a.severity from alerts a group by a.severity", ["teletex-http"]),
+    ]);
+    await assert.rejects(
+      () => queryRow(fakeConfig, fakeConfig, []),
+      /dashboard_summary_invalid_query_text/,
+    );
+  }, { pool, operation: "dashboard_summary" });
+
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen.map((entry) => entry.text), [
+    "select count(*)::int as value from alerts",
+    "select a.severity from alerts a group by a.severity",
+  ]);
+  assert.equal(pool.stats().inUse, 0);
 });
 
 test("dashboard summary failure is localized and does not replace the live alert list", async () => {

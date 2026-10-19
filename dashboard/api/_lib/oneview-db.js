@@ -2882,11 +2882,23 @@ async function fetchDashboardSummaryPayload(
     let queuedQuery = Promise.resolve();
     const serialQuery = (text, values = []) => {
       const pending = queuedQuery.then(() => query(text, values));
-      queuedQuery = pending;
+      // Keep the queue alive after a rejected statement so later callers settle.
+      queuedQuery = pending.then(() => undefined, () => undefined);
       return pending;
     };
-    const queryRows = async (text, values = []) => (await serialQuery(text, values)).rows;
-    const queryRow = async (text, values = []) => (await queryRows(text, values))[0] || null;
+    // Legacy call sites pass (config, text, values). Ignore config — the
+    // transaction client is already bound. Never treat config as SQL text.
+    const queryRows = async (_config, text, values = []) => {
+      if (typeof _config === "string") {
+        values = text || [];
+        text = _config;
+      }
+      if (typeof text !== "string" || !text.trim()) {
+        throw new Error("dashboard_summary_invalid_query_text");
+      }
+      return (await serialQuery(text, values)).rows;
+    };
+    const queryRow = async (_config, text, values = []) => (await queryRows(_config, text, values))[0] || null;
   const [
     totalAlertsRow,
     activeAlertsRow,
