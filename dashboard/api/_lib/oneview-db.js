@@ -2944,15 +2944,16 @@ async function fetchDashboardSummaryPayload(
       from alerts a join data_sources d on d.id = a.data_source_id
       where d.name = any($1::text[]) and a.acknowledged_source = true
         and a.acknowledged_at >= $2::timestamptz and a.acknowledged_at < $3::timestamptz`, dayValues),
+    // The live alert record is the canonical operational projection. Do not
+    // make the Central summary depend on optional ACK audit tables: some
+    // production databases do not carry that historical relation.
     queryRow(config, `select count(*)::int as value
-      from alert_acknowledgements ack
-      join alerts a on a.id = ack.alert_id
+      from alerts a
       join data_sources d on d.id = a.data_source_id
       where d.name = any($1::text[])
-        and ack.acknowledgement_type = any($4::text[])
-        and ack.status = any($5::text[])
-        and ack.requested_at >= $2::timestamptz and ack.requested_at < $3::timestamptz`,
-    [...dayValues, INTERNAL_ACKNOWLEDGEMENT_TYPES, INTERNAL_ACKNOWLEDGEMENT_STATUSES]),
+        and a.acknowledged_internal = true
+        and a.acknowledged_internal_at >= $2::timestamptz and a.acknowledged_internal_at < $3::timestamptz`,
+    dayValues),
     queryRows(config, `select a.severity, count(*)::int as count
       from alerts a join data_sources d on d.id = a.data_source_id
       where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
@@ -3002,18 +3003,12 @@ async function fetchDashboardSummaryPayload(
         limit 10`,
       scopeValues,
     ),
-    queryRow(config, `with first_ack as (
-        select h.alert_id, min(h.created_at) as ack_at
-        from alert_history h
-        where h.new_status = 'acknowledged' or h.action_type in ('ack_requested', 'acknowledged')
-        group by h.alert_id
-      )
-      select coalesce(avg(extract(epoch from (first_ack.ack_at - a.first_seen_at))), 0)::int as avg_ack_time_seconds
+    queryRow(config, `select coalesce(avg(extract(epoch from (a.acknowledged_internal_at - a.first_seen_at))), 0)::int as avg_ack_time_seconds
       from alerts a
       join data_sources d on d.id = a.data_source_id
-      join first_ack on first_ack.alert_id = a.id
       where d.name = any($1::text[])
-        and first_ack.ack_at >= a.first_seen_at
+        and a.acknowledged_internal_at is not null
+        and a.acknowledged_internal_at >= a.first_seen_at
         and (a.resolved_at is null or a.resolved_at >= a.first_seen_at)`, scopeValues),
     queryRow(config, `select coalesce(avg(extract(epoch from (a.resolved_at - a.first_seen_at))), 0)::int as avg_normalization_time_seconds
       from alerts a join data_sources d on d.id = a.data_source_id

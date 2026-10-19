@@ -150,6 +150,10 @@ test("dashboard summary serializes its fourteen reads on one readonly checkout",
   assert.match(body, /query_label: queryLabel/);
   assert.match(body, /await Promise\.allSettled\(/);
   assert.match(body, /const rejected = results\.find/);
+  assert.match(body, /a\.acknowledged_internal = true/);
+  assert.match(body, /a\.acknowledged_internal_at - a\.first_seen_at/);
+  assert.doesNotMatch(body, /from alert_acknowledgements ack/);
+  assert.doesNotMatch(body, /from alert_history h/);
   // Call sites still use the legacy (config, text, values) arity — wrappers must ignore config.
   assert.match(body, /queryRow\(config,\s*`select count\(\*\)::int as value from alerts/);
   assert.doesNotMatch(body, /getOneViewDbPool\(config\)\.query/);
