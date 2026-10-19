@@ -2997,7 +2997,9 @@ async function fetchDashboardSummaryPayload(
       where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}
       group by a.host_name order by count desc, a.host_name asc limit 10`, scopeValues),
     queryRow(config, `select count(*)::int as value
-      from alerts a join data_sources d on d.id = a.data_source_id
+      from alerts a
+      join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
       where d.name = any($1::text[]) and ${OPERATIONAL_PENDING_SQL}`, scopeValues),
     queryRows(
       config,
