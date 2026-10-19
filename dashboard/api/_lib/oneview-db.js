@@ -2880,8 +2880,41 @@ async function fetchDashboardSummaryPayload(
     // dashboard summary has fourteen independent reads and must not consume the
     // whole serverless pool before the first response is available.
     let queuedQuery = Promise.resolve();
+    let queuedQueryIndex = 0;
+    const queryLabels = [
+      "total_alerts",
+      "active_alerts",
+      "resolved_today",
+      "source_acknowledgements_today",
+      "oneview_acknowledgements_today",
+      "by_severity",
+      "by_status",
+      "by_client",
+      "by_service",
+      "top_hosts",
+      "unacknowledged_total",
+      "longest_duration",
+      "avg_ack_time",
+      "avg_normalization_time",
+    ];
     const serialQuery = (text, values = []) => {
-      const pending = queuedQuery.then(() => query(text, values));
+      const queryLabel = queryLabels[queuedQueryIndex] || "unknown";
+      queuedQueryIndex += 1;
+      const pending = queuedQuery.then(async () => {
+        try {
+          return await query(text, values);
+        } catch (error) {
+          // Production diagnosis must identify the failed summary read without
+          // exposing SQL, values, database topology, or credentials.
+          console.error(JSON.stringify({
+            event: "dashboard_summary_query_error",
+            operation: "dashboard_summary",
+            query_label: queryLabel,
+            pg_code: sanitizedPgCode(error),
+          }));
+          throw error;
+        }
+      });
       // Keep the queue alive after a rejected statement so later callers settle.
       queuedQuery = pending.then(() => undefined, () => undefined);
       return pending;
@@ -2899,22 +2932,9 @@ async function fetchDashboardSummaryPayload(
       return (await serialQuery(text, values)).rows;
     };
     const queryRow = async (_config, text, values = []) => (await queryRows(_config, text, values))[0] || null;
-  const [
-    totalAlertsRow,
-    activeAlertsRow,
-    resolvedTodayRow,
-    sourceAcknowledgedTodayRow,
-    oneViewAcknowledgedTodayRow,
-    severityRows,
-    statusRows,
-    clientRows,
-    serviceRows,
-    topHostRows,
-    unacknowledgedRow,
-    longestDurationRows,
-    ackMetricsRow,
-    normalizationMetricsRow,
-  ] = await Promise.all([
+  const results = await Promise.allSettled([
+    // All pending reads must settle before the transaction is released. A
+    // rejection cannot leave a later queued read using a released checkout.
     queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = any($1::text[])`, scopeValues),
     queryRow(config, `select count(*)::int as value from alerts a join data_sources d on d.id = a.data_source_id where d.name = any($1::text[]) and ${ACTIVE_ALERT_SQL}`, scopeValues),
     queryRow(config, `select count(*)::int as value
@@ -3003,6 +3023,24 @@ async function fetchDashboardSummaryPayload(
         and a.resolved_at is not null
         and a.resolved_at >= a.first_seen_at`, scopeValues),
   ]);
+  const rejected = results.find((result) => result.status === "rejected");
+  if (rejected?.status === "rejected") throw rejected.reason;
+  const [
+    totalAlertsRow,
+    activeAlertsRow,
+    resolvedTodayRow,
+    sourceAcknowledgedTodayRow,
+    oneViewAcknowledgedTodayRow,
+    severityRows,
+    statusRows,
+    clientRows,
+    serviceRows,
+    topHostRows,
+    unacknowledgedRow,
+    longestDurationRows,
+    ackMetricsRow,
+    normalizationMetricsRow,
+  ] = results.map((result) => result.value);
 
   const alertsTotal = integerValue(totalAlertsRow?.value, 0);
   const activeTotal = integerValue(activeAlertsRow?.value, 0);
