@@ -69,7 +69,7 @@ test("a Central separa duração, tempo até ACK, claim e supressão indisponív
   assert.match(drawer, /Tempo até ACK/);
   assert.match(drawer, /visibleActions=\{\["claim"\]\}/);
   assert.match(drawer, /AlertSuppressAction/);
-  assert.match(alerts, /AlertSuppressAction/);
+  assert.doesNotMatch(alerts, /AlertSuppressAction/);
   assert.match(suppress, /SUPPRESS_WRITES_ENABLED = false/);
   assert.match(suppress, /disabled/);
   assert.match(suppress, /Escrita desligada até o canário real/);

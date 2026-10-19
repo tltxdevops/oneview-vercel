@@ -30,7 +30,6 @@ import {
 import { AlertDetailDrawer } from "@/components/oneview/AlertDetailDrawer";
 import { OperatorDisasterPopup, type OperatorSeverityPopupItem } from "@/components/oneview/OperatorDisasterPopup";
 import { AlertSourceAckRowAction } from "@/components/oneview/AlertSourceAckAction";
-import { AlertSuppressAction } from "@/components/oneview/AlertSuppressAction";
 import { ConfigurableMetricStrip } from "@/components/oneview/ConfigurableMetricStrip";
 import { IncidentTableActionsCell } from "@/components/oneview/IncidentTableActionsCell";
 import { ConfigurableDashboard, ConfigurableDashboardWidget } from "@/components/oneview/ConfigurableDashboard";
@@ -238,7 +237,7 @@ const ALERTS_VIEWS: Array<{ id: OperationalQueue; label: string; description: st
   { id: "pending", label: "Pendentes", description: "Ativos na origem e sem ACK. Alta e Disaster reconhecidos ficam em Acompanhamento." },
   { id: "acknowledged", label: "Acompanhamento", description: "Ativos na origem e já reconhecidos, inclusive High e Disaster." },
   { id: "suppressed", label: "Suprimidos", description: "Problema ativo com supressão válida na origem. ACK e recovery não são supressão." },
-  { id: "unconfirmed", label: "Em revisão", description: "Supressão não confirmada, problemas órfãos ou inconclusivos. Não são resolvidos nem ocultados." },
+  { id: "unconfirmed", label: "Em revisão", description: "Origem desatualizada, snapshot incompleto, supressão não confirmada ou estado inconclusivo. Não são resolvidos nem ocultados." },
   { id: "history", label: "Histórico", description: "Resolvido com recovery comprovado ou registro legado, distinguido pela evidência." },
 ];
 
@@ -302,7 +301,7 @@ const ALERTS_METRIC_OPTIONS = [
   { id: "pending", label: "Pendentes de ação", defaultSpan: 2 },
   { id: "acknowledged", label: "Em acompanhamento", defaultSpan: 2 },
   { id: "suppressed", label: "Suprimidos", defaultSpan: 2 },
-  { id: "unconfirmed", label: "Sem confirmação", defaultSpan: 2 },
+  { id: "unconfirmed", label: "Em revisão", defaultSpan: 2 },
   { id: "information", label: "Informação", defaultSpan: 1 },
   { id: "warning", label: "Warning", defaultSpan: 1 },
   { id: "average", label: "Average", defaultSpan: 1 },
@@ -1611,9 +1610,9 @@ export default function AlertsPage() {
     },
     {
       filter: "unconfirmed" as const,
-      title: "Sem confirmação",
+      title: "Em revisão",
       value: queueCounts?.unconfirmed ?? null,
-      description: temporalDescription ?? "Estados inconclusivos mantidos para revisão.",
+      description: temporalDescription ?? "Origem não confirmada ou estado inconclusivo.",
     },
   ];
   const severityCards = VISUAL_SEVERITY_STRIP.map((severity) => ({
@@ -2308,17 +2307,17 @@ export default function AlertsPage() {
           </div>
           {originSync.some((item) => item.stale) ? (
             <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100" role="status">
-              Sincronização desatualizada em {originSync.filter((item) => item.stale).map((item) => item.datasource_name).join(", ")}. Os alertas ativos sem ACK continuam em Pendentes e nada foi marcado como resolvido.
+              Sincronização desatualizada em {originSync.filter((item) => item.stale).map((item) => item.datasource_name).join(", ")}. Alertas sem atividade atual confirmada ficam em Em revisão; nenhum recovery é inferido.
             </p>
           ) : null}
           {originSync.some((item) => item.snapshot_available === false && !item.stale && item.state !== "failed") ? (
             <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100" role="status">
-              Sem snapshot completo identificado em {originSync.filter((item) => item.snapshot_available === false).map((item) => item.datasource_name).join(", ")}. A fila não foi esvaziada.
+              Sem snapshot completo identificado em {originSync.filter((item) => item.snapshot_available === false).map((item) => item.datasource_name).join(", ")}. Alertas abertos ficam em Em revisão até nova confirmação da origem.
             </p>
           ) : null}
           {alertsView === "unconfirmed" ? (
             <p className="mt-3 rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm" role="status">
-              Em revisão reúne evidência inconclusiva: supressão antiga fora do último problem.get persistido, confirmação ausente ou conflito. Ausência no snapshot não é recovery.
+              Em revisão reúne evidência inconclusiva: origem stale/failed, snapshot incompleto, ausência no último problem.get persistido ou conflito. Ausência no snapshot não é recovery.
             </p>
           ) : null}
           {alertsView === "suppressed" ? (
@@ -2595,7 +2594,6 @@ export default function AlertsPage() {
                           onOpenDetail={openAlert}
                           liveStateUnavailable={alertsAreCopy}
                         />
-                        <AlertSuppressAction alert={alert} variant="row" />
                         <Tooltip><TooltipTrigger asChild><OneViewButton type="button" variant="ghost" size="icon" className="ov-control-official-compact h-7 min-h-7 w-7 px-0" aria-label="Ver detalhes" onClick={(event) => { event.stopPropagation(); openAlert(alert); }}><Eye className="h-4 w-4" /><span className="sr-only">Ver detalhes</span></OneViewButton></TooltipTrigger><TooltipContent>Ver detalhes</TooltipContent></Tooltip>
                       </div>
                     </TableCell>

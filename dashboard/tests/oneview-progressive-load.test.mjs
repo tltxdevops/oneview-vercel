@@ -27,12 +27,20 @@ test("BFF skips summary and temporal SQL when include=items", async () => {
   const fallback = await read("api/_lib/oneview-fallback.js");
   assert.match(db, /export function parseAlertListInclude/);
   assert.match(db, /include\.summary \? await query/);
-  assert.match(db, /include\.temporal \? await query/);
+  assert.match(db, /include\.temporal && !temporalSharesSummaryScan \? await query/);
   assert.match(db, /include\.items \? await query/);
   assert.match(db, /if \(include\.summary\) payload\.filtered_summary/);
   assert.match(db, /if \(include\.temporal\) payload\.temporal_counts/);
   assert.match(fallback, /include\.summary \? \{ filtered_summary/);
   assert.match(fallback, /include\.items \? filteredItems\.slice/);
+});
+
+test("alerts BFF reuses the summary scan for temporal counters when scopes match", async () => {
+  const db = await read("api/_lib/oneview-db.js");
+  assert.match(db, /const temporalSharesSummaryScan = include\.summary/);
+  assert.match(db, /baseWhereSql === whereSql/);
+  assert.match(db, /include\.temporal && !temporalSharesSummaryScan \? await query/);
+  assert.match(db, /temporalSharesSummaryScan \? summaryResult\?\.rows\?\.\[0\]/);
 });
 
 test("health snapshot is compact, restored on mount, and cleared on logout", async () => {

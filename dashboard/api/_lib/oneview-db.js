@@ -24,7 +24,9 @@ import {
   describeDatasourceSync,
   describeSuppression,
   isOperationalQueueView,
+  OPERATIONAL_QUEUE_CASE_SQL,
   operationalQueueSql,
+  originActivityConfirmed,
   ORIGIN_SNAPSHOT_JOIN_SQL,
   recoveryDurationSeconds,
   recoveryEvidenceOf,
@@ -368,8 +370,8 @@ const PROVEN_SOURCE_ACK_CLOCK_SQL = `(
        or h.source_event_id = a.source_event_id
      )
 )`;
-/** Operational pending: active origin-unacked only. Resolved never counts. */
-const OPERATIONAL_PENDING_SQL = `(${ACTIVE_ALERT_SQL} and ${SOURCE_UNACK_SQL})`;
+/** Operational pending uses the same strict origin-confirmed queue as the tabs. */
+const OPERATIONAL_PENDING_SQL = operationalQueueSql("pending");
 
 const UNIDENTIFIED_CUSTOMER_SQL = `(
   a.customer_name is null
@@ -568,7 +570,7 @@ export function isSourceAcknowledged(alert) {
 }
 
 export function isOperationalPendingAlert(alert) {
-  return isActiveAlert(alert) && !isSourceAcknowledged(alert);
+  return classifyOperationalQueue(alert) === "pending";
 }
 
 export function isOneViewAckPending(alert) {
@@ -1299,6 +1301,7 @@ function mapAlertRows(rows) {
       suppressed_until: suppression.suppress_until || isoDate(row.suppressed_until),
       maintenance_status: nullableText(sanitizeText(row.maintenance_status, "", 80)),
       suppression,
+      origin_activity_confirmed: originActivityConfirmed(row),
       operational_queue: classifyOperationalQueue(row),
       recovery_evidence: recoveryEvidenceOf(row),
       first_seen_at: isoDate(row.first_seen_at, generatedAt()),
@@ -1536,34 +1539,17 @@ function alertTemporalCounts(row) {
 async function fetchAlertList(req, config, dataSourceNames) {
   const {
     page, pageSize, offset, params, whereSql, orderSql, baseParams, baseWhereSql, include,
-    scopeParams, scopeWhereSql,
+    scopeParams, scopeWhereSql, filters,
   } = buildAlertListQuery(
     req,
     dataSourceNames,
   );
 
-  const summarySql = `
-      select
-        count(*)::int as total,
-        count(*) filter (where ${ACTIVE_ALERT_SQL})::int as active,
-        count(*) filter (where ${RESOLVED_ALERT_SQL})::int as resolved,
-        count(*) filter (where ${SOURCE_ACK_SQL})::int as acknowledged_source,
-        count(*) filter (where ${SOURCE_UNACK_SQL})::int as unacknowledged_source,
-        count(*) filter (where ${OPERATIONAL_PENDING_SQL})::int as operational_pending,
-        count(*) filter (where ${ONEVIEW_ACK_PENDING_SQL})::int as oneview_ack_pending,
-        count(*) filter (where a.severity = 'information')::int as information,
-        count(*) filter (where a.severity = 'warning')::int as warning,
-        count(*) filter (where a.severity = 'average')::int as average,
-        count(*) filter (where a.severity in ('high', 'critical'))::int as high,
-        count(*) filter (where a.severity = 'disaster')::int as disaster,
-        count(*) filter (where a.severity = 'not_classified')::int as not_classified
-      from alerts a
-      join data_sources d on d.id = a.data_source_id
-      ${ORIGIN_SNAPSHOT_JOIN_SQL}
-      ${whereSql}
-    `;
-  const temporalSql = `
-      select
+  const temporalSharesSummaryScan = include.summary
+    && include.temporal
+    && baseWhereSql === whereSql
+    && baseParams.length === params.length;
+  const temporalColumnsSql = `
         count(*) filter (where a.first_seen_at >= now() - interval '15 minutes')::int as created_15m,
         count(*) filter (where a.first_seen_at >= now() - interval '1 hour')::int as created_1h,
         count(*) filter (where a.first_seen_at >= now() - interval '6 hours')::int as created_6h,
@@ -1579,7 +1565,34 @@ async function fetchAlertList(req, config, dataSourceNames) {
         count(*) filter (where a.resolved_at >= now() - interval '6 hours')::int as resolved_6h,
         count(*) filter (where a.resolved_at >= now() - interval '24 hours')::int as resolved_24h,
         count(*) filter (where a.resolved_at >= now() - interval '7 days')::int as resolved_7d,
-        count(*) filter (where a.resolved_at >= now() - interval '30 days')::int as resolved_30d
+        count(*) filter (where a.resolved_at >= now() - interval '30 days')::int as resolved_30d`;
+
+  const summarySql = `
+      select
+        count(*)::int as total,
+        count(*) filter (where ${ACTIVE_ALERT_SQL})::int as active,
+        count(*) filter (where ${RESOLVED_ALERT_SQL})::int as resolved,
+        count(*) filter (where ${SOURCE_ACK_SQL})::int as acknowledged_source,
+        count(*) filter (where ${SOURCE_UNACK_SQL})::int as unacknowledged_source,
+        ${filters.operationalView
+          ? (filters.operationalView === "pending" ? "count(*)::int" : "0::int")
+          : `count(*) filter (where ${OPERATIONAL_PENDING_SQL})::int`} as operational_pending,
+        count(*) filter (where ${ONEVIEW_ACK_PENDING_SQL})::int as oneview_ack_pending,
+        count(*) filter (where a.severity = 'information')::int as information,
+        count(*) filter (where a.severity = 'warning')::int as warning,
+        count(*) filter (where a.severity = 'average')::int as average,
+        count(*) filter (where a.severity in ('high', 'critical'))::int as high,
+        count(*) filter (where a.severity = 'disaster')::int as disaster,
+        count(*) filter (where a.severity = 'not_classified')::int as not_classified
+        ${temporalSharesSummaryScan ? `,${temporalColumnsSql}` : ""}
+      from alerts a
+      join data_sources d on d.id = a.data_source_id
+      ${ORIGIN_SNAPSHOT_JOIN_SQL}
+      ${whereSql}
+    `;
+  const temporalSql = `
+      select
+        ${temporalColumnsSql}
       from alerts a
       join data_sources d on d.id = a.data_source_id
       ${ORIGIN_SNAPSHOT_JOIN_SQL}
@@ -1701,15 +1714,19 @@ async function fetchAlertList(req, config, dataSourceNames) {
       `;
   const queueSql = `
       select
-        count(*) filter (where ${operationalQueueSql("pending")})::int as pending,
-        count(*) filter (where ${operationalQueueSql("acknowledged")})::int as acknowledged,
-        count(*) filter (where ${operationalQueueSql("suppressed")})::int as suppressed,
-        count(*) filter (where ${operationalQueueSql("history")})::int as history,
-        count(*) filter (where ${operationalQueueSql("unconfirmed")})::int as unconfirmed
-      from alerts a
-      join data_sources d on d.id = a.data_source_id
-      ${ORIGIN_SNAPSHOT_JOIN_SQL}
-      ${scopeWhereSql}
+        count(*) filter (where operational_queue = 'pending')::int as pending,
+        count(*) filter (where operational_queue = 'acknowledged')::int as acknowledged,
+        count(*) filter (where operational_queue = 'suppressed')::int as suppressed,
+        count(*) filter (where operational_queue = 'history')::int as history,
+        count(*) filter (where operational_queue = 'unconfirmed')::int as unconfirmed
+      from (
+        select ${OPERATIONAL_QUEUE_CASE_SQL} as operational_queue
+        from alerts a
+        join data_sources d on d.id = a.data_source_id
+        ${ORIGIN_SNAPSHOT_JOIN_SQL}
+        ${scopeWhereSql}
+        offset 0
+      ) classified
     `;
   const syncSql = `
       select d.name, d.last_success_at, d.last_sync_at, d.last_sync_status, d.sync_interval_seconds,
@@ -1725,13 +1742,13 @@ async function fetchAlertList(req, config, dataSourceNames) {
     const summaryResult = include.summary ? await query(summarySql, params) : null;
     const queueResult = include.summary ? await query(queueSql, scopeParams) : null;
     const syncResult = include.summary ? await query(syncSql, [operationalDataSourceNames(dataSourceNames)]) : null;
-    const temporalResult = include.temporal ? await query(temporalSql, baseParams) : null;
+    const temporalResult = include.temporal && !temporalSharesSummaryScan ? await query(temporalSql, baseParams) : null;
     const itemResult = include.items ? await query(itemsSql, [...params, pageSize, offset]) : null;
     return {
       summaryRow: summaryResult?.rows?.[0] || null,
       queueRow: queueResult?.rows?.[0] || null,
       syncRows: syncResult?.rows || [],
-      temporalRow: temporalResult?.rows?.[0] || null,
+      temporalRow: temporalResult?.rows?.[0] || (temporalSharesSummaryScan ? summaryResult?.rows?.[0] : null) || null,
       itemRows: itemResult?.rows || [],
     };
   }, { req, operation: "alerts_list" });

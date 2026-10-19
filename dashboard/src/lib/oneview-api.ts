@@ -714,6 +714,8 @@ export interface OneViewAlert {
     remaining_seconds?: number | null;
     evidence: "problem_get" | "column" | "conflict" | "unavailable";
   };
+  /** True only when this open problem is present in a fresh, complete origin snapshot. */
+  origin_activity_confirmed?: boolean;
   operational_queue?: "pending" | "acknowledged" | "suppressed" | "history" | "unconfirmed";
   recovery_evidence?: "proven" | "legacy" | null;
   first_seen_at: string;

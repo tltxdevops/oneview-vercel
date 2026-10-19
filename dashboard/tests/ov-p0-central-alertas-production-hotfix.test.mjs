@@ -18,9 +18,13 @@ test("operational summary and temporal SQL join the canonical origin snapshot", 
   const queue = read("api/_lib/oneview-operational-queue.js");
   assert.match(database, /const summarySql = `[\s\S]*?join data_sources d[\s\S]*?\$\{ORIGIN_SNAPSHOT_JOIN_SQL\}[\s\S]*?\$\{whereSql\}/);
   assert.match(database, /const temporalSql = `[\s\S]*?join data_sources d[\s\S]*?\$\{ORIGIN_SNAPSHOT_JOIN_SQL\}[\s\S]*?\$\{baseWhereSql\}/);
-  assert.match(queue, /select distinct on \(sl\.data_source_id\)/);
+  assert.match(queue, /left join lateral/);
+  assert.match(queue, /order by sl\.started_at desc, sl\.id desc/);
+  assert.match(queue, /limit 1/);
+  assert.match(queue, /offset 0/);
+  assert.doesNotMatch(queue, /select distinct on \(sl\.data_source_id\)/);
   assert.match(queue, /origin_snap on origin_snap\.data_source_id = d\.id/);
-  assert.doesNotMatch(queue, /where sl\.data_source_id = d\.id/);
+  assert.match(queue, /where sl\.data_source_id = d_snap\.id/);
 });
 
 test("legacy History is local-only and production redirects into Central", () => {
@@ -40,4 +44,25 @@ test("legacy History is local-only and production redirects into Central", () =>
 
 test("suppression writes remain disabled", () => {
   assert.match(read("src/components/oneview/AlertSuppressAction.tsx"), /SUPPRESS_WRITES_ENABLED = false/);
+});
+
+test("Central keeps suppression in the drawer and never as a row quick action", () => {
+  const alerts = read("src/pages/Alerts.tsx");
+  const drawer = read("src/components/oneview/AlertDetailDrawer.tsx");
+  assert.doesNotMatch(alerts, /AlertSuppressAction/);
+  assert.match(drawer, /AlertSuppressAction/);
+  assert.match(drawer, /Confirmação da origem/);
+});
+
+test("safe snapshot fails closed into review instead of inventing current activity", () => {
+  const fallback = read("api/_lib/oneview-fallback.js");
+  assert.match(fallback, /origin_activity_confirmed: false/);
+  assert.match(fallback, /state: "unknown",\s*stale: true/);
+  assert.match(fallback, /snapshot_available: false/);
+});
+
+test("source ACK clock accepts ACK events only; suppression action 36 is not ACK", () => {
+  const database = read("api/_lib/oneview-db.js");
+  assert.match(database, /action_type, ''\)\) in \('acknowledged', 'ack_message'\)/);
+  assert.doesNotMatch(database, /action_type[^\n]*36/);
 });

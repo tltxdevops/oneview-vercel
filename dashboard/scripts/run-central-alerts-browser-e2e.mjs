@@ -233,7 +233,7 @@ async function runBrowserCases(origin, { scenarioOrigin = origin, cases: request
     });
     await Promise.all([cdp.send("Runtime.enable"), cdp.send("Network.enable"), cdp.send("Page.enable")]);
 
-    const sample = await getOneViewSnapshotPayload("alerts", { query: { operational_view: "pending", page: "1", page_size: "1" } }, {});
+    const sample = await getOneViewSnapshotPayload("alerts", { query: { operational_view: "unconfirmed", page: "1", page_size: "1" } }, {});
     const sampleAlertId = sample.items?.[0]?.id;
     if (!sampleAlertId) throw new Error("browser_e2e_sample_alert_missing");
     const cases = requestedCases || [
@@ -245,6 +245,8 @@ async function runBrowserCases(origin, { scenarioOrigin = origin, cases: request
       { name: "suppressed", path: "/central-alertas?view=suppressed", scenario: "snapshot" },
       { name: "unconfirmed", path: "/central-alertas?view=unconfirmed", scenario: "snapshot" },
       { name: "drawer-tabs", path: `/central-alertas?alert=${encodeURIComponent(sampleAlertId)}`, scenario: "snapshot" },
+      { name: "mobile-central", path: "/central-alertas?view=unconfirmed", scenario: "snapshot", viewport: { width: 390, height: 844, mobile: true } },
+      { name: "mobile-drawer", path: `/central-alertas?view=unconfirmed&alert=${encodeURIComponent(sampleAlertId)}`, scenario: "snapshot", viewport: { width: 390, height: 844, mobile: true } },
       { name: "history-production", path: "/historico", scenario: "snapshot" },
       { name: "empty", path: "/central-alertas", scenario: "empty" },
       { name: "unauthorized", path: "/central-alertas", scenario: "401" },
@@ -255,10 +257,17 @@ async function runBrowserCases(origin, { scenarioOrigin = origin, cases: request
       exceptions.length = 0;
       consoleErrors.length = 0;
       responses.length = 0;
+      const viewport = testCase.viewport || { width: 1440, height: 900, mobile: false };
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: 1,
+        mobile: viewport.mobile,
+      });
       await cdp.send("Page.navigate", { url: `${origin}${testCase.path}` });
       await delay(1_500);
       const evaluated = await cdp.send("Runtime.evaluate", {
-        expression: `JSON.stringify({ text: document.body?.innerText || "", href: location.href, title: document.title })`,
+        expression: `JSON.stringify({ text: document.body?.innerText || "", href: location.href, title: document.title, bodyWidth: document.body?.scrollWidth || 0, viewportWidth: window.innerWidth })`,
         returnByValue: true,
       });
       const page = JSON.parse(evaluated.result.value || "{}");
@@ -268,7 +277,8 @@ async function runBrowserCases(origin, { scenarioOrigin = origin, cases: request
         central_visible: /Central de Alertas/i.test(page.text || ""),
         table_visible: /filtrados por/i.test(page.text || ""),
         error_boundary: /Não foi possível exibir esta tela/i.test(page.text || ""),
-        drawer_tabs: testCase.name !== "drawer-tabs" || ["Resumo", "Histórico", "Técnico"].every((label) => (page.text || "").includes(label)),
+        drawer_tabs: !testCase.name.includes("drawer") || ["Resumo", "Histórico", "Técnico"].every((label) => (page.text || "").includes(label)),
+        viewport_ok: !testCase.name.startsWith("mobile-") || Number(page.bodyWidth) <= Number(page.viewportWidth) + 1,
         legacy_history_visible: String(page.href || "").includes("/historico")
           && ["Histórico", "Alertas", "Eventos"].every((label) => (page.text || "").includes(label)),
         exceptions: exceptions.map((item) => ({ text: item.text, description: item.exception?.description || null, stack: item.stackTrace || null })),
@@ -308,6 +318,7 @@ try {
     || !result.table_visible
     || result.error_boundary
     || !result.drawer_tabs
+    || !result.viewport_ok
     || result.exceptions.length > 0
     || result.console_errors.length > 0
     || (result.name === "history-production" && (result.legacy_history_visible || !result.href.startsWith("/central-alertas")))
