@@ -457,6 +457,48 @@ function seenInLatestOriginSnapshot(alert) {
   return seen >= started;
 }
 
+/** Ordering slack between sync_logs.started_at, finished_at and alerts.last_seen_at. */
+export const THEO_ORIGIN_SNAPSHOT_CLOCK_GRACE_MS = 120_000;
+
+function openProblemPayloadEpisode(alert) {
+  if (text(alert?.status_source).toLowerCase() !== "active" || alert?.resolved_at) return false;
+  if (text(alert?.payload_value) !== "1") return false;
+  const payloadRecovery = text(alert?.payload_recovery_event_id);
+  if (payloadRecovery && payloadRecovery !== "0") return false;
+  const recovery = text(alert?.source_recovery_event_id);
+  return !recovery || recovery === "0";
+}
+
+/** True when last_seen_at falls inside the latest complete snapshot cycle window. */
+export function observedDuringLatestCompleteSnapshot(alert) {
+  if (snapshotCompleteFlag(alert) !== true) return false;
+  const started = clockMs(alert?.origin_snapshot_started_at);
+  const finished = clockMs(alert?.origin_snapshot_finished_at);
+  const seen = clockMs(alert?.last_seen_at);
+  if (!Number.isFinite(started) || !Number.isFinite(seen)) return false;
+  const upper = Number.isFinite(finished)
+    ? finished + THEO_ORIGIN_SNAPSHOT_CLOCK_GRACE_MS
+    : Number.POSITIVE_INFINITY;
+  return seen >= started - THEO_ORIGIN_SNAPSHOT_CLOCK_GRACE_MS && seen <= upper;
+}
+
+/**
+ * Theo dispatch gate only. Central queues keep originActivityConfirmed strict.
+ * When Worker persisted origin_seen_in_complete_snapshot=false but the open episode
+ * was still observed inside the latest complete snapshot window, do not treat the
+ * row as origin-unconfirmed.
+ */
+export function theoOriginActivityConfirmed(alert, now = Date.now()) {
+  if (!openForSuppression(alert)) return false;
+  const sync = describeDatasourceSync(alert, now);
+  if (sync.state !== "fresh" || sync.snapshot.available !== true) return false;
+  const explicit = text(alert?.payload_origin_seen_in_complete_snapshot).toLowerCase();
+  if (explicit === "true") return true;
+  if (!openProblemPayloadEpisode(alert)) return false;
+  if (explicit === "false") return observedDuringLatestCompleteSnapshot(alert);
+  return seenInLatestOriginSnapshot(alert) === true;
+}
+
 export function originActivityConfirmed(alert, now = Date.now()) {
   if (!openForSuppression(alert)) return false;
   const sync = describeDatasourceSync(alert, now);

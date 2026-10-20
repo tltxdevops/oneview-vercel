@@ -16,7 +16,7 @@ import {
 import {
   describeDatasourceSync,
   describeSuppression,
-  originActivityConfirmed,
+  theoOriginActivityConfirmed,
 } from "./oneview-operational-queue.js";
 
 // Legacy type is reserved for explicit smoke/canary operations. Automatic
@@ -303,6 +303,7 @@ export async function claimEligibleTheoOutbox(client, {
            and o.status in ('pending', 'failed')
            and o.attempts < o.max_attempts
            and o.next_attempt_at <= now()
+           and coalesce(o.available_at, o.created_at) <= now()
            and ($3::boolean or o.idempotency_key = $4 or ($5::text is not null and o.idempotency_key = $5))
          order by o.created_at asc, o.id asc
          limit 1
@@ -502,7 +503,7 @@ export async function confirmTheoCanonicalOrigin(reference, alert, now = new Dat
   const suppression = describeSuppression(current, now);
   const maintenance = text(current.maintenance_status).toLowerCase();
   const maintenanceInactive = !maintenance || ["none", "inactive", "false", "0", "not_maintained"].includes(maintenance);
-  if (!originActivityConfirmed(current, now)
+  if (!theoOriginActivityConfirmed(current, now)
     || sync.state !== "fresh"
     || sync.snapshot.complete !== true
     || suppression.state !== "none"
