@@ -8,8 +8,8 @@ const PROBE_ACTION_TYPE = "zabbix_event_access_probe";
 const ALERT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
 const CACHE_TTL_SECONDS = 60;
 
-function probeKey(dataSourceId, actorUsername, sourceHostId, sourceEventId, bucket) {
-  const material = `${dataSourceId}\n${actorUsername}\n${sourceHostId}\n${sourceEventId}\n${bucket}`;
+function probeKey(dataSourceId, actorOid, actorUpn, sourceHostId, sourceEventId, bucket) {
+  const material = `${dataSourceId}\n${actorOid}\n${actorUpn}\n${sourceHostId}\n${sourceEventId}\n${bucket}`;
   return `source-ack-probe:${createHash("sha256").update(material).digest("hex")}`;
 }
 
@@ -40,9 +40,10 @@ export function createSourceAckAccessHandler({
     if (!auth) return;
     const alertId = String(Array.isArray(req.query?.id) ? req.query.id[0] : req.query?.id || "").trim();
     const actorId = String(auth.id || "").trim().slice(0, 120);
-    const actorUsername = String(auth.preferred_username || auth.email || "").trim().slice(0, 255);
+    const actorOid = String(auth.oid || auth.id || "").trim().toLowerCase().slice(0, 120);
+    const actorUpn = String(auth.preferred_username || auth.email || "").trim().toLowerCase().slice(0, 255);
     if (!ALERT_ID_PATTERN.test(alertId)) return sendJson(res, 400, { error: "invalid_alert_id" });
-    if (!actorId || !actorUsername) return sendJson(res, 401, { error: "authentication_required" });
+    if (!actorId || !actorOid || !actorUpn) return sendJson(res, 401, { error: "authentication_required" });
     let stage = "config";
     let responseStatus = 200;
     try {
@@ -69,11 +70,12 @@ export function createSourceAckAccessHandler({
         stage = "lookup_cache";
         const cached = await client.query(
           `select status, result_payload from integration_outbox
-            where action_type = $1 and payload ->> 'data_source_id' = $2 and payload ->> 'actor_username' = $3
-              and payload ->> 'source_host_id' = $4 and payload ->> 'source_event_id' = $5
-              and created_at >= now() - make_interval(secs => $6::int)
+            where action_type = $1 and payload ->> 'data_source_id' = $2
+              and payload ->> 'actor_oid' = $3 and payload ->> 'actor_upn' = $4
+              and payload ->> 'source_host_id' = $5 and payload ->> 'source_event_id' = $6
+              and created_at >= now() - make_interval(secs => $7::int)
             order by created_at desc, id desc limit 1`,
-          [PROBE_ACTION_TYPE, String(alert.data_source_id), actorUsername, hostId, eventId, CACHE_TTL_SECONDS],
+          [PROBE_ACTION_TYPE, String(alert.data_source_id), actorOid, actorUpn, hostId, eventId, CACHE_TTL_SECONDS],
         );
         if (cached.rows[0]) return { ...capability, ...accessResponse(cached.rows[0]) };
         const timestamp = now();
@@ -88,8 +90,8 @@ export function createSourceAckAccessHandler({
            on conflict (idempotency_key) do nothing`,
           [outboxId, alert.id, alert.data_source_id, PROBE_ACTION_TYPE, JSON.stringify({
             alert_id: alert.id, data_source_id: alert.data_source_id, source_event_id: eventId, source_host_id: hostId,
-            actor_id: actorId, actor_username: actorUsername,
-          }), timestamp, probeKey(alert.data_source_id, actorUsername, hostId, eventId, bucket), actorId],
+            actor_id: actorId, actor_oid: actorOid, actor_upn: actorUpn, actor_username: actorUpn,
+          }), timestamp, probeKey(alert.data_source_id, actorOid, actorUpn, hostId, eventId, bucket), actorId],
         );
         stage = "transaction_commit";
         responseStatus = 202;
@@ -103,7 +105,6 @@ export function createSourceAckAccessHandler({
           event: "source_ack_access_error",
           stage,
           alert_id: alertId,
-          actor: actorUsername,
           error_code: safeErrorCode(error),
         });
       } catch {

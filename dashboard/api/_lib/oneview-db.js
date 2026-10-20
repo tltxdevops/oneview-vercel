@@ -2309,6 +2309,8 @@ export function humanizeOneViewAckReason(reason) {
     delegated_zabbix_user_not_found: "Usu\u00e1rio n\u00e3o dispon\u00edvel nesta origem",
     delegated_zabbix_user_ambiguous: "Usu\u00e1rio amb\u00edguo nesta origem",
     delegated_zabbix_user_not_permitted: "Usu\u00e1rio sem permiss\u00e3o nesta origem",
+    ack_identity_not_mapped: "Usu\u00e1rio n\u00e3o mapeado para esta origem",
+    ack_identity_mapping_invalid: "Mapeamento de identidade inv\u00e1lido nesta origem",
     delegated_ack_datasource_not_allowed: "Reconhecimento delegado n\u00e3o homologado para esta origem",
     delegated_ack_version_unsupported: "Vers\u00e3o da origem n\u00e3o compat\u00edvel com reconhecimento delegado",
     delegated_token_verification_failed: "N\u00e3o foi poss\u00edvel validar a identidade delegada",

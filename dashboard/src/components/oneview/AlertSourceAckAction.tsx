@@ -243,6 +243,10 @@ export function AlertSourceAckAction({
   const waitingForOrigin = Boolean(activeSubmission) || sourceAckIsPending(currentAlert);
   const accessMessage = actorAckReason === "operator_event_access_denied"
     ? "Seu usuário Zabbix não possui acesso a este alerta."
+    : actorAckReason === "ack_identity_not_mapped"
+      ? "Seu usu\u00e1rio n\u00e3o est\u00e1 mapeado para esta origem."
+      : actorAckReason === "ack_identity_mapping_invalid"
+        ? "O mapeamento do seu usu\u00e1rio nesta origem precisa ser revisado."
     : actorAckReason === "operator_not_found_in_zabbix"
       ? "Seu usuário ainda não está habilitado para reconhecimento nesta origem."
       : actorAckReason === "source_event_not_found"
@@ -251,9 +255,13 @@ export function AlertSourceAckAction({
           ? "O alerta já foi resolvido na origem."
           : actorAckReason === "source_already_acknowledged"
             ? "O alerta já foi reconhecido na origem."
-            : actorAckReason === "source_ack_access_unavailable"
-              ? "Não foi possível validar o acesso no Zabbix."
-            : null;
+            : actorAckReason === "delegated_ack_version_unsupported"
+              ? "A vers\u00e3o desta origem n\u00e3o suporta reconhecimento delegado."
+              : actorAckReason === "delegated_ack_datasource_not_allowed"
+                ? "Reconhecimento delegado ainda n\u00e3o homologado para esta origem."
+                : actorAckReason === "source_ack_access_unavailable"
+                  ? "Não foi possível validar o acesso no Zabbix."
+                  : null;
   const tooltip = liveStateUnavailable
     ? SNAPSHOT_MUTATION_UNAVAILABLE_REASON
     : waitingForOrigin
