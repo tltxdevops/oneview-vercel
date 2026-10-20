@@ -123,6 +123,34 @@ function activeProducedAlert() {
   };
 }
 
+function canonicalProducedAlert(overrides = {}) {
+  return {
+    ...activeProducedAlert(),
+    source_trigger_id: "22001",
+    source_recovery_event_id: null,
+    payload_event_id: "338976923",
+    payload_trigger_id: "22001",
+    payload_value: "1",
+    payload_recovery_event_id: "0",
+    payload_suppressed: "false",
+    suppressed: false,
+    maintenance_status: null,
+    payload_origin_seen_in_complete_snapshot: "true",
+    origin_snapshot_id: "sync-1",
+    origin_snapshot_started_at: "2026-08-24T20:58:00.000Z",
+    origin_snapshot_finished_at: "2026-08-24T20:59:00.000Z",
+    origin_snapshot_fetched: 12,
+    origin_snapshot_mode: "problem_get",
+    origin_snapshot_complete: true,
+    last_success_at: "2026-08-24T20:59:00.000Z",
+    last_sync_at: "2026-08-24T20:59:00.000Z",
+    last_sync_status: "success",
+    sync_interval_seconds: 60,
+    last_seen_at: "2026-08-24T20:59:00.000Z",
+    ...overrides,
+  };
+}
+
 async function dispatchProduced(actionType, {
   confirm = confirmedActiveOrigin(),
   alerts = null,
@@ -488,15 +516,30 @@ test("unavailable origin defers the notification without a POST", async () => {
   assert.equal(JSON.stringify(logs).includes("must-not-leak"), false);
 });
 
-test("production origin confirmer fails closed and does not query Zabbix", async () => {
-  const confirmation = await confirmTheoCanonicalOrigin();
-  assert.deepEqual(confirmation, { state: "unavailable", code: THEO_ORIGIN_UNCONFIRMED_CODE });
+test("production origin confirmer accepts only a fresh exact Worker snapshot and does not query Zabbix", async () => {
+  const reference = { alertId: CANARY_ALERT_ID, dataSourceId: "source-a", sourceEventId: "338976923" };
+  const confirmation = await confirmTheoCanonicalOrigin(reference, canonicalProducedAlert(), new Date("2026-08-24T21:00:00.000Z"));
+  assert.deepEqual(confirmation, { state: "active" });
+  for (const [name, alert, state] of [
+    ["recovered", canonicalProducedAlert({ source_recovery_event_id: "339000001", payload_recovery_event_id: "339000001" }), "resolved"],
+    ["suppressed", canonicalProducedAlert({ payload_suppressed: "true", suppressed: true }), "unavailable"],
+    ["maintenance", canonicalProducedAlert({ maintenance_status: "active" }), "unavailable"],
+    ["unknown origin", canonicalProducedAlert({ payload_event_id: "" }), "unavailable"],
+    ["stale datasource", canonicalProducedAlert({ last_success_at: "2026-08-24T19:00:00.000Z" }), "unavailable"],
+    ["reopened episode", canonicalProducedAlert({ source_event_id: "338976924", payload_event_id: "338976924" }), "unavailable"],
+  ]) {
+    const result = await confirmTheoCanonicalOrigin(reference, alert, new Date("2026-08-24T21:00:00.000Z"));
+    assert.equal(result.state, state, name);
+  }
   assert.equal(evaluateTheoOriginConfirmation({ state: "active" }, 1), null);
   assert.equal(evaluateTheoOriginConfirmation({ state: "resolved" }, 2).retryable, false);
   assert.equal(evaluateTheoOriginConfirmation({ state: "anything-else" }, 1).retryable, true);
 
   const source = readFileSync(new URL("../api/_lib/oneview-theo-dispatch.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /jsonrpc|event\.get|token_encrypted|api_url/i);
+
+  const database = readFileSync(new URL("../api/_lib/oneview-db.js", import.meta.url), "utf8");
+  assert.match(database, /async function findTheoProducedAlert[\s\S]*?a\.source_trigger_id[\s\S]*?payload_event_id[\s\S]*?payload_recovery_event_id[\s\S]*?origin_snapshot_complete[\s\S]*?d\.last_sync_status[\s\S]*?\$\{ORIGIN_SNAPSHOT_JOIN_SQL\}/);
 
   for (const actionType of [THEO_AUTO_ACTION_TYPE, THEO_UNSEEN_ALERT_ACTION_TYPE]) {
     let sends = 0;
@@ -513,6 +556,43 @@ test("production origin confirmer fails closed and does not query Zabbix", async
     assert.equal(response.body.retryable, true);
     assert.equal(response.body.code, THEO_ORIGIN_UNCONFIRMED_CODE);
     assert.equal(response.statusCode, 202);
+  }
+});
+
+test("default canonical gate dispatches only a complete current Worker snapshot", async () => {
+  let sends = 0;
+  const handler = dispatcher({
+    configProvider: () => config({ automationEnabled: true }),
+    claim: async () => producedClaim(),
+    findProducedAlert: async () => canonicalProducedAlert(),
+    fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+  });
+  const response = res();
+  await handler(req(), response);
+  assert.equal(sends, 1);
+  assert.equal(response.body.status, "success");
+});
+
+test("default canonical gate never POSTs a recovered, suppressed, maintained, stale, or unknown origin", async () => {
+  const cases = [
+    ["recovered", canonicalProducedAlert({ source_recovery_event_id: "339000001", payload_recovery_event_id: "339000001" }), THEO_ORIGIN_RESOLVED_CODE],
+    ["suppressed", canonicalProducedAlert({ payload_suppressed: "true", suppressed: true }), THEO_ORIGIN_UNCONFIRMED_CODE],
+    ["maintenance", canonicalProducedAlert({ maintenance_status: "active" }), THEO_ORIGIN_UNCONFIRMED_CODE],
+    ["stale", canonicalProducedAlert({ last_success_at: "2026-08-24T19:00:00.000Z" }), THEO_ORIGIN_UNCONFIRMED_CODE],
+    ["unknown", canonicalProducedAlert({ payload_value: "" }), THEO_ORIGIN_UNCONFIRMED_CODE],
+  ];
+  for (const [name, alert, expectedCode] of cases) {
+    let sends = 0;
+    const handler = dispatcher({
+      configProvider: () => config({ automationEnabled: true }),
+      claim: async () => producedClaim(),
+      findProducedAlert: async () => alert,
+      fetchFn: async () => { sends += 1; return { status: 200, headers: { get: () => null } }; },
+    });
+    const response = res();
+    await handler(req(), response);
+    assert.equal(sends, 0, name);
+    assert.equal(response.body.code, expectedCode, name);
   }
 });
 
