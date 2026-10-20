@@ -13,6 +13,11 @@ import {
   processDueOperatorReminders,
   THEO_OPERATOR_REMINDER_ACTION_TYPE,
 } from "./oneview-operator-reminder-execution.js";
+import {
+  describeDatasourceSync,
+  describeSuppression,
+  originActivityConfirmed,
+} from "./oneview-operational-queue.js";
 
 // Legacy type is reserved for explicit smoke/canary operations. Automatic
 // dispatch may claim only rows created by the persisted Worker producer.
@@ -453,14 +458,61 @@ export function theoOriginReference(alert, producerPayload = {}) {
 /**
  * Canonical origin gate.
  *
- * The worker has no request API, so this dispatcher cannot ask it whether the
- * Zabbix event is still open. The alerts row is only a lagging copy and can
- * still say active after the origin has recovered. Querying Zabbix from the
- * browser or from this BFF is intentionally not implemented. Until a trusted
- * confirmer is supplied, automatic alert delivery stays deferred.
+ * The worker has no request API, so this dispatcher never asks Zabbix directly.
+ * It authorizes only a complete, fresh Worker problem.get snapshot that proves
+ * the exact datasource/event/trigger episode is still open and unsuppressed.
+ * Missing, stale, or conflicting persisted evidence is never send authority.
  */
-export async function confirmTheoCanonicalOrigin() {
-  return Object.freeze({ state: "unavailable", code: THEO_ORIGIN_UNCONFIRMED_CODE });
+export async function confirmTheoCanonicalOrigin(reference, alert, now = new Date()) {
+  const current = payloadObject(alert);
+  const expected = payloadObject(reference);
+  const eventId = text(current.source_event_id);
+  const dataSourceId = text(current.data_source_id);
+  const triggerId = text(current.source_trigger_id);
+  const payloadEventId = text(current.payload_event_id);
+  const payloadTriggerId = text(current.payload_trigger_id);
+  const payloadValue = text(current.payload_value);
+  const payloadRecoveryId = text(current.payload_recovery_event_id);
+  const recoveryId = text(current.source_recovery_event_id || current.payload_recovery_event_id);
+  const sourceStatus = text(current.status_source).toLowerCase();
+  const internalStatus = text(current.status_internal).toLowerCase();
+
+  // A confirmed recovery is definitive; every other missing/old/conflicting
+  // datum remains retryable and never authorizes an external POST.
+  if (sourceStatus === "resolved" || current.resolved_at || recoveryId && recoveryId !== "0") {
+    return Object.freeze({ state: THEO_ORIGIN_CONFIRMED_RESOLVED, code: THEO_ORIGIN_RESOLVED_CODE });
+  }
+  if (!alert
+    || !expected.alertId
+    || text(current.id).toLowerCase() !== text(expected.alertId).toLowerCase()
+    || dataSourceId !== text(expected.dataSourceId)
+    || eventId !== text(expected.sourceEventId)
+    || !triggerId
+    || payloadEventId !== eventId
+    || payloadTriggerId !== triggerId
+    || payloadValue !== "1"
+    || payloadRecoveryId !== "0"
+    || sourceStatus !== "active"
+    || internalStatus === "normalized"
+  ) {
+    return Object.freeze({ state: "unavailable", code: THEO_ORIGIN_UNCONFIRMED_CODE });
+  }
+
+  const sync = describeDatasourceSync(current, now);
+  const suppression = describeSuppression(current, now);
+  const maintenance = text(current.maintenance_status).toLowerCase();
+  const maintenanceInactive = !maintenance || ["none", "inactive", "false", "0", "not_maintained"].includes(maintenance);
+  if (!originActivityConfirmed(current, now)
+    || sync.state !== "fresh"
+    || sync.snapshot.complete !== true
+    || suppression.state !== "none"
+    || suppression.confirmation !== "confirmed"
+    || suppression.origin !== null
+    || !maintenanceInactive
+  ) {
+    return Object.freeze({ state: "unavailable", code: THEO_ORIGIN_UNCONFIRMED_CODE });
+  }
+  return Object.freeze({ state: THEO_ORIGIN_CONFIRMED_ACTIVE });
 }
 
 /** Active is the only send authorization. Anything else fails closed. */
@@ -640,11 +692,11 @@ export function createTheoDispatchHandler({
           if (!isTheoProducedAlertOperational(alert)) return { code: "alert_not_operationally_active", retryable: false, retry_after_seconds: 0 };
           return null;
         };
-        const confirmOriginNow = async (reference) => {
+        const confirmOriginNow = async (reference, alert) => {
           let timer;
           try {
             const confirmation = await Promise.race([
-              Promise.resolve().then(() => confirmCanonicalOrigin(Object.freeze({ ...reference }))),
+              Promise.resolve().then(() => confirmCanonicalOrigin(Object.freeze({ ...reference }), Object.freeze({ ...alert }), now())),
               new Promise((_, reject) => {
                 timer = setTimeout(() => reject(new Error("origin_confirm_timeout")), config.timeoutMs);
               }),
@@ -664,7 +716,7 @@ export function createTheoDispatchHandler({
         }
         const reference = theoOriginReference(loaded.alert, producerPayload);
         const originFailure = reference
-          ? await confirmOriginNow(reference)
+          ? await confirmOriginNow(reference, loaded.alert)
           : evaluateTheoOriginConfirmation(null, claimed.attempts);
         if (originFailure) {
           await recordClaimFailure(originFailure);
@@ -682,7 +734,7 @@ export function createTheoDispatchHandler({
           && reference.dataSourceId === freshReference.dataSourceId
           && reference.sourceEventId === freshReference.sourceEventId;
         const freshOriginFailure = sameEvent
-          ? await confirmOriginNow(freshReference)
+          ? await confirmOriginNow(freshReference, fresh.alert)
           : evaluateTheoOriginConfirmation(null, claimed.attempts);
         if (freshOriginFailure) {
           await recordClaimFailure(freshOriginFailure);
