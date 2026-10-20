@@ -119,6 +119,7 @@ export function buildCorrelationCoverageReport({
   durationMs = 0,
   baseHost = null,
   primaryDataSourceName = null,
+  query = null,
 } = {}) {
   const analyzed = rows.length;
   const withEventId = rows.filter((row) => row.incident.zabbix_event_id);
@@ -179,7 +180,7 @@ export function buildCorrelationCoverageReport({
     mode: "read_only",
     match_strategy: "zabbix_event_id_eq_source_event_id",
     fallback: "none",
-    query: QUERY,
+    query,
     caller_display: "zabbix monitoring",
     base_host: baseHost,
     primary_data_source: primaryDataSourceName,
@@ -300,7 +301,9 @@ async function main() {
   const lookupByEventId = new Map();
   try {
     await mapPool(uniqueEventIds, LOOKUP_CONCURRENCY, async (eventId) => {
-      const alert = await findAlertBySourceEventId(eventId, dbConfig, primaryDataSourceName);
+      const alert = await findAlertBySourceEventId(eventId, dbConfig, {
+        dataSourceName: primaryDataSourceName,
+      });
       lookupByEventId.set(eventId, alert);
       return alert;
     });
@@ -333,6 +336,7 @@ async function main() {
     durationMs: Date.now() - startedAt,
     baseHost: hostOnly(snConfig.baseUrl),
     primaryDataSourceName,
+    query: QUERY,
   });
 
   console.log(JSON.stringify(report, null, 2));

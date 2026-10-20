@@ -12,6 +12,14 @@ export const ONEVIEW_OPERATIONAL_DATA_SOURCE_NAMES = Object.freeze([
   "fraport-poa",
 ]);
 
+export const DEFAULT_ONEVIEW_PRIMARY_DATA_SOURCE_NAME = "teletex-http";
+
+/** Compatibilidade dos relatórios read-only legados, sem ampliar o escopo BFF. */
+export function getPrimaryDataSourceName(env = process.env) {
+  const configured = String(env.ONEVIEW_PRIMARY_DATA_SOURCE_NAME || "").trim().toLowerCase();
+  return configured || DEFAULT_ONEVIEW_PRIMARY_DATA_SOURCE_NAME;
+}
+
 /** Fontes dedicadas sem customer_key persistido — filtro `customer=` remapeia para `d.name`. */
 export const DATASOURCE_ONLY_CUSTOMER_TOKENS = Object.freeze([
   "teletex-http",

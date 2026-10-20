@@ -369,7 +369,9 @@ test("related-alert não grava relação (somente leitura)", async () => {
   assert.match(source, /read-only|sem gravar|SN-P0-08/i);
   assert.doesNotMatch(source, /\b(insert|update|delete|upsert)\b/i);
   assert.match(dbLookup, /findAlertBySourceEventId/);
-  assert.match(dbLookup, /a\.source_event_id = \$1/);
+  assert.match(dbLookup, /findUniqueBy\("a\.source_event_id"\)/);
+  assert.match(dbLookup, /limit 2/);
+  assert.match(dbLookup, /ambiguous_source_event/);
   assert.doesNotMatch(
     dbLookup.slice(dbLookup.indexOf("findAlertBySourceEventId")),
     /\b(insert into|update alerts|delete from)\b/i,

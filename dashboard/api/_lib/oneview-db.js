@@ -3782,24 +3782,70 @@ export async function resetOneViewDbPoolForTests() {
   poolKey = "";
 }
 
+function sourceEventLookupError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+function sourceEventLookupScope(scope = {}) {
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
+    throw sourceEventLookupError("invalid_query");
+  }
+
+  const dataSourceId = textValue(scope.dataSourceId).toLowerCase();
+  const dataSourceName = textValue(scope.dataSourceName).toLowerCase();
+  if (dataSourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(dataSourceId)) {
+    throw sourceEventLookupError("invalid_query");
+  }
+  if (dataSourceName && !operationalDataSourceNames([dataSourceName]).includes(dataSourceName)) {
+    throw sourceEventLookupError("invalid_query");
+  }
+  if (dataSourceId && dataSourceName) throw sourceEventLookupError("invalid_query");
+  if (scope.queryRows !== undefined && typeof scope.queryRows !== "function") {
+    throw sourceEventLookupError("invalid_query");
+  }
+
+  if (dataSourceId) {
+    return {
+      queryRowsFn: scope.queryRows || queryRows,
+      sql: "and a.data_source_id = $2::uuid",
+      values: [dataSourceId],
+    };
+  }
+  if (dataSourceName) {
+    return {
+      queryRowsFn: scope.queryRows || queryRows,
+      sql: "and d.name = $2",
+      values: [dataSourceName],
+    };
+  }
+  return {
+    queryRowsFn: scope.queryRows || queryRows,
+    sql: "",
+    values: [],
+  };
+}
+
 /**
- * SN-P0-08 — lookup read-only por source_event_id (sem gravar relação).
- * Match estrito: alerts.source_event_id = zabbix_event_id.
+ * SN-P0-08/OV-P0-330 — lookup read-only por identidade canônica da origem.
+ * Event ID sem datasource só é aceito quando o resultado é globalmente único.
  */
 export async function findAlertBySourceEventId(
   sourceEventId,
   config = getOneViewDbConfig(),
+  scope = {},
 ) {
   const eventId = String(sourceEventId || "").trim();
   if (!eventId || !/^[A-Za-z0-9._:-]{1,80}$/.test(eventId)) {
-    const error = new Error("invalid_query");
-    error.code = "invalid_query";
-    throw error;
+    throw sourceEventLookupError("invalid_query");
   }
+  const normalizedScope = sourceEventLookupScope(scope);
 
-  const row = await queryRow(
-    config,
-    `
+  const findUniqueBy = async (column) => {
+    const rows = await normalizedScope.queryRowsFn(
+      config,
+      `
     select
       a.id::text as id,
       a.data_source_id::text as data_source_id,
@@ -3821,13 +3867,19 @@ export async function findAlertBySourceEventId(
       d.name::text as datasource_name
     from alerts a
     left join data_sources d on d.id = a.data_source_id
-    where a.source_event_id = $1
-       or a.source_problem_id = $1
-    order by a.first_seen_at desc nulls last, a.last_seen_at desc nulls last, a.id desc
-    limit 1
+    where ${column} = $1
+      ${normalizedScope.sql}
+    limit 2
     `,
-    [eventId],
-  );
+      [eventId, ...normalizedScope.values],
+    );
+    if (rows.length > 1) throw sourceEventLookupError("ambiguous_source_event");
+    return rows[0] || null;
+  };
+
+  // Prefer the exact episode event; source_problem_id is only a scoped fallback.
+  const row = await findUniqueBy("a.source_event_id")
+    || await findUniqueBy("a.source_problem_id");
 
   if (!row) return null;
   return mapIncidentRelatedAlertRow(row, { sourceEventId: eventId });
@@ -3875,17 +3927,24 @@ function mapIncidentRelatedAlertRow(row, { sourceEventId = null } = {}) {
 export async function findAlertForIncidentReverseLookup(
   { sysId = null, number = null, zabbixEventId = null } = {},
   config = getOneViewDbConfig(),
+  {
+    findByExplicitServiceNowReference = findAlertByExplicitServiceNowReference,
+    findBySourceEventId = findAlertBySourceEventId,
+  } = {},
 ) {
-  const result = await findAlertByExplicitServiceNowReference({ sysId, number }, config);
+  const result = await findByExplicitServiceNowReference({ sysId, number }, config);
   if (result.alert) return result;
 
   const eventId = textValue(zabbixEventId);
   if (eventId) {
     try {
-      const alert = await findAlertBySourceEventId(eventId, config);
+      const alert = await findBySourceEventId(eventId, config);
       if (alert) return { relation_source: "event_id", alert };
     } catch (error) {
-      if (error?.code !== "invalid_query") throw error;
+      if (![
+        "invalid_query",
+        "ambiguous_source_event",
+      ].includes(error?.code)) throw error;
     }
   }
 
