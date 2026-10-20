@@ -21,7 +21,7 @@ test("OV-P0-255 intervalos: 10s nas quatro telas; Histórico/Settings mais lento
   assert.match(home, /SUMMARY_REFRESH_MS = 10_000/);
   assert.match(home, /LIST_REFRESH_MS = 10_000/);
   assert.match(monitoring, /REFRESH_MS = 10_000/);
-  assert.match(alerts, /SUMMARY_REFRESH_MS = 10_000/);
+  assert.match(alerts, /SUMMARY_REFRESH_MS = 30_000/);
   assert.match(alerts, /ALERTS_REFRESH_MS = 10_000/);
   assert.match(operators, /REFRESH_MS = 10_000/);
 

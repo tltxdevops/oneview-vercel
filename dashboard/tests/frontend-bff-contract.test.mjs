@@ -70,7 +70,7 @@ test("um único controle coordena refresh e timers sem Pausar", async () => {
     read("src/components/oneview/AlertOperationalSummary.tsx"),
     read("src/components/layout/AppLayout.tsx"),
   ]);
-  assert.match(alerts, /SUMMARY_REFRESH_MS = 10_000/);
+  assert.match(alerts, /SUMMARY_REFRESH_MS = 30_000/);
   assert.match(alerts, /ALERTS_REFRESH_MS = 10_000/);
   assert.match(alerts, /if \(document\.hidden\) return/);
   assert.doesNotMatch(alerts, /topbarRightSection=\{<PlatformHealthStrip/);

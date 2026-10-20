@@ -72,7 +72,7 @@ export async function withOneViewRuntimeCache(key, loader, options = {}) {
   return (await withOneViewRuntimeCacheEntry(key, loader, options)).value;
 }
 
-export async function withOneViewSummaryCache(loader, { bypass = false, ttlMs = 15_000 } = {}) {
+export async function withOneViewSummaryCache(loader, { bypass = false, ttlMs = 30_000 } = {}) {
   return withOneViewRuntimeCache(SUMMARY_CACHE_KEY, loader, { bypass, ttlMs });
 }
 

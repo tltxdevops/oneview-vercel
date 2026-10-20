@@ -334,7 +334,7 @@ const ALERTS_METRIC_OPTIONS = [
 ] as const;
 
 /** OV-P0-255 — polling operacional 10s. */
-const SUMMARY_REFRESH_MS = 10_000;
+const SUMMARY_REFRESH_MS = 30_000;
 const ALERTS_REFRESH_MS = 10_000;
 const ALERTS_DATE_FIELD = "first_seen" as const;
 const EMPTY_HISTORY_ITEMS: AlertHistoryItem[] = [];
@@ -1213,6 +1213,10 @@ export default function AlertsPage() {
       alertPinnedRef.current = new Map();
       setFreshAttentionIds(new Set());
       setAlertTransitions(new Map());
+      setFilteredSummary(undefined);
+      setQueueCounts(null);
+      setTemporalCounts(undefined);
+      setSnapshotCoverage(null);
     }
     const controller = alertsRequestGate.begin();
     const requestId = ++alertsRequestIdRef.current;
@@ -1267,7 +1271,7 @@ export default function AlertsPage() {
         setAlertsMeta(metaOf(primed));
       }
 
-      const response = await fetchAlerts(request);
+      const response = await fetchAlerts({ ...request, include: "items" });
       if (requestId !== alertsRequestIdRef.current) return;
       const normalized = normalizeAlertResponse(response, page, pageSize);
       const safeResponse = response ?? ({} as AlertListResponse);
@@ -1377,16 +1381,26 @@ export default function AlertsPage() {
 
       setAlerts(normalized.items);
       setPagination(normalized.pagination);
-      setFilteredSummary(safeResponse.filtered_summary);
-      if (safeResponse.operational_queues) setQueueCounts(safeResponse.operational_queues);
-      if (safeResponse.origin_sync) setOriginSync(safeResponse.origin_sync);
-      setTemporalCounts(safeResponse.temporal_counts);
-      setSnapshotCoverage(safeResponse.snapshot_coverage ?? null);
       setAlertsMeta(metaOf(safeResponse));
       setHasLoadedAlerts(true);
       setIsAlertsFilling(false);
       setAlertsError(null);
       alertsDeadlineRef.current = Date.now() + ALERTS_REFRESH_MS;
+
+      void fetchAlerts({ ...request, include: "summary,temporal" })
+        .then((counters) => {
+          if (controller.signal.aborted || requestId !== alertsRequestIdRef.current) return;
+          setPagination(normalizeAlertResponse(counters, page, pageSize).pagination);
+          setFilteredSummary(counters.filtered_summary);
+          if (counters.operational_queues) setQueueCounts(counters.operational_queues);
+          if (counters.origin_sync) setOriginSync(counters.origin_sync);
+          setTemporalCounts(counters.temporal_counts);
+          setSnapshotCoverage(counters.snapshot_coverage ?? null);
+          setAlertsMeta(metaOf(counters));
+        })
+        .catch((counterError) => {
+          if (controller.signal.aborted || isOneViewAbortError(counterError)) return;
+        });
     } catch (error) {
       if (controller.signal.aborted || isOneViewAbortError(error)) return;
       setAlertsError("A sincronização não respondeu. A fila anterior foi mantida; isso não significa que não existam alertas.");
@@ -1507,9 +1521,9 @@ export default function AlertsPage() {
   }, [loadAlerts, loadSelectedAlert, loadSummaryResources, selectedAlertId]);
 
   useEffect(() => {
-    if (!hasLoadedAlerts) return;
+    if (!hasLoadedAlerts || isAlertsFilling) return;
     void loadSummaryResources();
-  }, [hasLoadedAlerts, loadSummaryResources]);
+  }, [hasLoadedAlerts, isAlertsFilling, loadSummaryResources]);
 
   useEffect(() => {
     void loadAlerts();

@@ -4067,22 +4067,26 @@ export function classifyRuntimeWorker({ heartbeatAt = null, lastSuccessAt = null
 }
 
 async function fetchRuntimeHealthPayload(config, { summaryOnly = false } = {}) {
+  return withOneViewReadonlyTransaction(config, async (query) => {
+  let queuedQuery = Promise.resolve();
+  const serialQuery = (text, values = []) => {
+    const pending = queuedQuery.then(() => query(text, values));
+    queuedQuery = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
+  const queryRows = async (_config, text, values = []) => {
+    if (typeof _config === "string") {
+      values = text || [];
+      text = _config;
+    }
+    if (typeof text !== "string" || !text.trim()) throw new Error("runtime_health_invalid_query_text");
+    return (await serialQuery(text, values)).rows;
+  };
+  const queryRow = async (_config, text, values = []) => (await queryRows(_config, text, values))[0] || null;
   const startedAt = Date.now();
   const now = Date.now();
   const checkedAt = new Date(now).toISOString();
-  const [
-    probe,
-    sources,
-    serviceNow,
-    workerHeartbeats,
-    theoSignals,
-    sourceFacts,
-    customerIntegrityRow,
-    incidentIdentityIntegrityRow,
-    linkInventoryRow,
-    hostRegistryRow,
-    outboxTotals,
-  ] = await Promise.all([
+  const results = await Promise.allSettled([
     queryRow(config, "select 1 as reachable"),
     queryRows(config, `select d.id, d.name, d.sync_enabled, d.sync_interval_seconds, d.last_success_at, d.last_sync_at, d.last_sync_error, d.last_error, d.failure_count, (d.token_encrypted is not null and d.token_encrypted <> '') as has_token, nullif(btrim(d.api_url), '') is not null as has_api_url from data_sources d where coalesce(d.type, 'zabbix') = 'zabbix' order by d.display_order, d.name`),
     queryRows(config, `select s.last_success_at, s.watermark_sys_updated_on, to_jsonb(s)->>'last_error' as last_error, to_jsonb(s)->>'status' as status from servicenow_sync_state s where s.sync_key = 'incident' limit 1`),
@@ -4212,6 +4216,21 @@ async function fetchRuntimeHealthPayload(config, { summaryOnly = false } = {}) {
       from integration_outbox
     `).catch(() => ({ pending: 0, failed: 0 })),
   ]);
+  const rejected = results.find((result) => result.status === "rejected");
+  if (rejected?.status === "rejected") throw rejected.reason;
+  const [
+    probe,
+    sources,
+    serviceNow,
+    workerHeartbeats,
+    theoSignals,
+    sourceFacts,
+    customerIntegrityRow,
+    incidentIdentityIntegrityRow,
+    linkInventoryRow,
+    hostRegistryRow,
+    outboxTotals,
+  ] = results.map((result) => result.value);
 
   const components = [];
   const duration = Date.now() - startedAt;
@@ -4558,6 +4577,7 @@ async function fetchRuntimeHealthPayload(config, { summaryOnly = false } = {}) {
   }));
 
   return { overall_status: runtimeOverallStatus(components), generated_at: generatedAt(), components };
+  }, { operation: "runtime_health" });
 }
 
 const EXPLICIT_SERVICENOW_TAG_SQL = `

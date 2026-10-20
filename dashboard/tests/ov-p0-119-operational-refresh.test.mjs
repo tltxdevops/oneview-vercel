@@ -18,7 +18,7 @@ test("OV-P0-119 aplica polling operacional pelo BFF sem perder estado local", as
   assert.match(home, /SUMMARY_REFRESH_MS = 10_000/);
   assert.match(home, /LIST_REFRESH_MS = 10_000/);
   assert.match(monitoring, /REFRESH_MS = 10_000/);
-  assert.match(alerts, /SUMMARY_REFRESH_MS = 10_000/);
+  assert.match(alerts, /SUMMARY_REFRESH_MS = 30_000/);
   assert.match(alerts, /ALERTS_REFRESH_MS = 10_000/);
   assert.match(history, /HISTORY_REFRESH_MS = 60_000/);
   assert.match(history, /tab === "eventos"\) void loadEvents\(\);\s*else void loadAlerts\(\)/);
