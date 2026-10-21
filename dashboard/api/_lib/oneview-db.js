@@ -18,6 +18,12 @@ import { discoverOperatorCircuits } from "./oneview-operator-circuits.js";
 import { buildOperationalSubject } from "./oneview-operational-subject.js";
 import { getAckRequestConfig } from "./oneview-ack-request.js";
 import { sourceAckCapability } from "./oneview-source-acknowledge.js";
+import {
+  buildCanonicalHistoryAckEvent,
+  mergeSourceAckAuthorship,
+  resolveOneViewAckInitiator,
+  resolveZabbixPayloadAckAuthorship,
+} from "./oneview-source-ack-authorship.js";
 import { buildHostNetwork } from "./oneview-host-network.js";
 import {
   classifyOperationalQueue,
@@ -2041,6 +2047,7 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
         a.payload_normalized->>'suppress_until' as payload_suppress_until,
         a.payload_normalized->>'suppress_until_kind' as payload_suppress_until_kind,
         a.payload_normalized->'suppression_data' as payload_suppression_data,
+        a.payload_normalized->'acknowledges' as payload_acknowledges,
         a.first_seen_at, a.last_reopened_at, ${PROVEN_SOURCE_ACK_CLOCK_SQL} as ack_history_first_at,
         a.last_seen_at,
         origin_snap.origin_snapshot_id,
@@ -2212,11 +2219,18 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
     };
   });
   const source_ack = resolveSourceAck({
+    id: item.id,
+    source_event_id: item.source_event_id,
     acknowledged_source: item.acknowledged_source,
     acknowledged_source_by: item.acknowledged_source_by,
     acknowledged_by: item.acknowledged_by,
     acknowledged_source_at: item.acknowledged_source_at,
     acknowledged_at: item.acknowledged_at,
+    payload_acknowledges: sanitizeStructuredValue(row.payload_acknowledges),
+    oneview_ack_status: row.oneview_ack_status,
+    oneview_ack_actor_name: row.oneview_ack_actor_name,
+    oneview_ack_requested_at: row.oneview_ack_requested_at,
+    oneview_ack_processed_at: row.oneview_ack_processed_at,
   }, sourceAckHistoryItems);
   return {
     generated_at: generatedAt(),
@@ -2429,7 +2443,7 @@ function historySummary(items, { acknowledgedSource = false } = {}) {
  * Prioridade do responsável: actor_name → operator_name → acknowledged_by (já resolvidos via resolveAckActorName).
  * Comentário vem apenas de message/description dos eventos acknowledged/ack_message.
  */
-export function resolveSourceAck(alertFields = {}, historyItems = []) {
+function resolveSourceAckFromHistory(alertFields = {}, historyItems = []) {
   const acknowledged = Boolean(alertFields?.acknowledged_source);
   const sourceHistory = (historyItems || []).filter((item) => {
     const eventType = textValue(item?.event_type).toLowerCase();
@@ -2442,41 +2456,78 @@ export function resolveSourceAck(alertFields = {}, historyItems = []) {
   if (latest) {
     return Object.freeze({
       acknowledged: true,
+      origin: "zabbix",
       actor_name: resolveAckActorName(
         latest.ack_actor_name,
         latest.actor_name,
         alertFields?.acknowledged_source_by,
         alertFields?.acknowledged_by,
       ),
+      author_username: null,
+      zabbix_userid: null,
+      technical_account: false,
+      author_unresolved: Boolean(latest.ack_actor_unresolved),
       acknowledged_at: isoDate(latest.occurred_at || alertFields?.acknowledged_source_at || alertFields?.acknowledged_at),
       comment: nullableText(sanitizeText(latest.comment, "", 500)),
       acknowledge_id: nullableText(sanitizeText(latest.acknowledge_id, "", 120)),
       history_available: true,
+      canonical_from_payload: false,
     });
   }
 
   if (acknowledged) {
+    const actorName = resolveAckActorName(
+      alertFields?.acknowledged_source_by,
+      alertFields?.acknowledged_by,
+    );
     return Object.freeze({
       acknowledged: true,
-      actor_name: resolveAckActorName(
-        alertFields?.acknowledged_source_by,
-        alertFields?.acknowledged_by,
-      ),
+      origin: "zabbix",
+      actor_name: actorName || "Autor não identificado",
+      author_username: null,
+      zabbix_userid: null,
+      technical_account: false,
+      author_unresolved: !actorName,
       acknowledged_at: isoDate(alertFields?.acknowledged_source_at || alertFields?.acknowledged_at),
       comment: null,
       acknowledge_id: null,
       history_available: false,
+      canonical_from_payload: false,
     });
   }
 
   return Object.freeze({
     acknowledged: false,
     actor_name: null,
+    author_username: null,
+    zabbix_userid: null,
+    origin: null,
+    technical_account: false,
+    author_unresolved: false,
     acknowledged_at: null,
     comment: null,
     acknowledge_id: null,
     history_available: false,
+    canonical_from_payload: false,
   });
+}
+
+export function resolveSourceAck(alertFields = {}, historyItems = []) {
+  const acknowledged = Boolean(alertFields?.acknowledged_source);
+  const payloadAcknowledges = Array.isArray(alertFields?.payload_acknowledges)
+    ? alertFields.payload_acknowledges
+    : null;
+  const canonical = payloadAcknowledges?.length
+    ? resolveZabbixPayloadAckAuthorship(payloadAcknowledges, acknowledged)
+    : null;
+  const historyResolved = resolveSourceAckFromHistory(alertFields, historyItems);
+  const oneviewInitiator = resolveOneViewAckInitiator({
+    oneview_ack_status: alertFields?.oneview_ack_status,
+    oneview_ack_actor_name: alertFields?.oneview_ack_actor_name,
+    oneview_ack_requested_at: alertFields?.oneview_ack_requested_at,
+    oneview_ack_processed_at: alertFields?.oneview_ack_processed_at,
+  });
+  return mergeSourceAckAuthorship(canonical, historyResolved, oneviewInitiator);
 }
 
 function historySource(value, legacy = false) {
@@ -2498,9 +2549,21 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
   const alert = await queryRow(
     config,
     `select a.id, a.source_event_id, a.host_name, a.acknowledged_source,
-            a.acknowledged_at, a.acknowledged_by
+            a.acknowledged_at, a.acknowledged_by,
+            a.payload_normalized->'acknowledges' as payload_acknowledges,
+            oneview_ack.status as oneview_ack_status,
+            oneview_ack.operator_name as oneview_ack_actor_name,
+            oneview_ack.requested_at as oneview_ack_requested_at,
+            oneview_ack.processed_at as oneview_ack_processed_at
       from alerts a
       join data_sources d on d.id = a.data_source_id
+      left join lateral (
+        select ack.status, ack.requested_at, ack.processed_at, ack.operator_name
+          from alert_acknowledgements ack
+         where ack.alert_id = a.id and ack.acknowledgement_type = 'source'
+         order by ack.requested_at desc, ack.id desc
+         limit 1
+      ) oneview_ack on true
       where a.id = $1 and d.name = any($2::text[])
       limit 1`,
     [id, operationalDataSourceNames(dataSourceNames)],
@@ -2660,7 +2723,25 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
       legacy,
     };
   });
-  const consolidated = consolidateAlertHistoryItems(mappedItems);
+  const sourceAckResolved = resolveSourceAck({
+    id: alert.id,
+    source_event_id: alert.source_event_id,
+    acknowledged_source: alert.acknowledged_source,
+    acknowledged_source_by: alert.acknowledged_by,
+    acknowledged_source_at: alert.acknowledged_at,
+    acknowledged_at: alert.acknowledged_at,
+    payload_acknowledges: sanitizeStructuredValue(alert.payload_acknowledges),
+    oneview_ack_status: alert.oneview_ack_status,
+    oneview_ack_actor_name: alert.oneview_ack_actor_name,
+    oneview_ack_requested_at: alert.oneview_ack_requested_at,
+    oneview_ack_processed_at: alert.oneview_ack_processed_at,
+  }, mappedItems);
+  const canonicalHistoryEvent = buildCanonicalHistoryAckEvent(sourceAckResolved, alert);
+  const historySeed = canonicalHistoryEvent
+    && !mappedItems.some((item) => item.canonical_source_ack)
+    ? [canonicalHistoryEvent, ...mappedItems]
+    : mappedItems;
+  const consolidated = consolidateAlertHistoryItems(historySeed);
   const items = consolidated.map(({ acknowledge_id: _acknowledgeId, ...item }) => item);
   const summary = historySummary(items, { acknowledgedSource: Boolean(alert.acknowledged_source) });
   return {

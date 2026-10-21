@@ -657,10 +657,18 @@ export interface OneViewAlert {
   source_ack?: {
     acknowledged: boolean;
     actor_name: string | null;
+    author_username?: string | null;
+    zabbix_userid?: string | null;
+    origin?: "zabbix" | "oneview" | string | null;
+    technical_account?: boolean;
+    author_unresolved?: boolean;
     acknowledged_at: string | null;
     comment: string | null;
     acknowledge_id: string | null;
     history_available: boolean;
+    canonical_from_payload?: boolean;
+    oneview_initiated_by?: string | null;
+    oneview_initiated_at?: string | null;
   } | null;
   service_name: string | null;
   item_name: string | null;
