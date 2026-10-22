@@ -74,13 +74,73 @@ export function isTechnicalZabbixAccount(username) {
   return TECHNICAL_USERNAME_PATTERN.test(normalized) || normalized === "api.tltx";
 }
 
-export function displayZabbixAckAuthor(username, userid) {
+export function zabbixAckUserDirectoryKey(dataSourceId, userid) {
+  const sourceId = textValue(dataSourceId);
+  const userId = textValue(userid);
+  if (!sourceId || !userId) return "";
+  return `${sourceId}:${userId}`;
+}
+
+export function collectAckUserIdsFromPayload(payloadAcknowledges) {
+  const ids = new Set();
+  for (const row of Array.isArray(payloadAcknowledges) ? payloadAcknowledges : []) {
+    if (!row || typeof row !== "object") continue;
+    const userId = textValue(row.userid);
+    if (userId && /^\d+$/.test(userId)) ids.add(userId);
+  }
+  return [...ids];
+}
+
+/**
+ * @param {Map<string, { username?: string, display_name?: string | null }> | Record<string, { username?: string, display_name?: string | null }> | null | undefined} directory
+ */
+export function enrichPayloadAcknowledgesWithUserDirectory(payloadAcknowledges, directory, dataSourceId) {
+  if (!Array.isArray(payloadAcknowledges) || !directory || !dataSourceId) {
+    return Array.isArray(payloadAcknowledges) ? payloadAcknowledges : [];
+  }
+  const lookup = (userid) => {
+    const key = zabbixAckUserDirectoryKey(dataSourceId, userid);
+    if (directory instanceof Map) return directory.get(key) || null;
+    return directory[key] || null;
+  };
+  return payloadAcknowledges.map((row) => {
+    if (!row || typeof row !== "object") return row;
+    const userId = textValue(row.userid);
+    const existingUsername = textValue(row.username || row.alias);
+    if (existingUsername) return row;
+    const cached = userId ? lookup(userId) : null;
+    if (!cached?.username) return row;
+    return {
+      ...row,
+      username: cached.username,
+      ...(cached.display_name ? { name: cached.display_name } : {}),
+    };
+  });
+}
+
+export function formatUnresolvedZabbixAckAuthor(userid, datasourceLabel) {
+  const userId = textValue(userid);
+  const source = textValue(datasourceLabel);
+  const suffix = source ? ` (${source})` : "";
+  return `Usuário Zabbix #${userId}${suffix}`;
+}
+
+export function displayZabbixAckAuthor(username, userid, { displayName, datasourceLabel } = {}) {
   const resolvedUsername = textValue(username);
+  const resolvedDisplayName = textValue(displayName);
   if (isTechnicalZabbixAccount(resolvedUsername)) {
     return Object.freeze({
       actor_name: "Conta técnica",
       author_username: resolvedUsername,
       technical_account: true,
+      author_unresolved: false,
+    });
+  }
+  if (resolvedDisplayName && !isTechnicalZabbixAccount(resolvedDisplayName)) {
+    return Object.freeze({
+      actor_name: resolvedDisplayName,
+      author_username: resolvedUsername || null,
+      technical_account: false,
       author_unresolved: false,
     });
   }
@@ -96,7 +156,7 @@ export function displayZabbixAckAuthor(username, userid) {
   const userId = textValue(userid);
   if (userId && /^\d+$/.test(userId)) {
     return Object.freeze({
-      actor_name: "Autor não identificado",
+      actor_name: formatUnresolvedZabbixAckAuthor(userId, datasourceLabel),
       author_username: null,
       technical_account: false,
       author_unresolved: true,
@@ -117,13 +177,16 @@ function clockToIso(clock) {
   return new Date(seconds * 1000).toISOString();
 }
 
-export function resolveZabbixPayloadAckAuthorship(payloadAcknowledges, acknowledgedSource) {
+export function resolveZabbixPayloadAckAuthorship(payloadAcknowledges, acknowledgedSource, options = {}) {
   const effective = pickEffectiveZabbixAcknowledgement(payloadAcknowledges, acknowledgedSource);
   if (!effective) return null;
 
   const username = textValue(effective.username || effective.alias);
   const userid = textValue(effective.userid);
-  const display = displayZabbixAckAuthor(username, userid);
+  const display = displayZabbixAckAuthor(username, userid, {
+    displayName: textValue(effective.name) || options.displayName || null,
+    datasourceLabel: textValue(options.datasourceLabel) || null,
+  });
   const acknowledgeId = textValue(effective.acknowledgeid || effective.acknowledge_id);
 
   return Object.freeze({

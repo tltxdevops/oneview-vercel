@@ -20,9 +20,12 @@ import { getAckRequestConfig } from "./oneview-ack-request.js";
 import { sourceAckCapability } from "./oneview-source-acknowledge.js";
 import {
   buildCanonicalHistoryAckEvent,
+  collectAckUserIdsFromPayload,
+  enrichPayloadAcknowledgesWithUserDirectory,
   mergeSourceAckAuthorship,
   resolveOneViewAckInitiator,
   resolveZabbixPayloadAckAuthorship,
+  zabbixAckUserDirectoryKey,
 } from "./oneview-source-ack-authorship.js";
 import { buildHostNetwork } from "./oneview-host-network.js";
 import {
@@ -2218,20 +2221,28 @@ async function fetchAlertDetailPayload(req, config, dataSourceNames) {
       legacy: false,
     };
   });
+  const payloadAcknowledges = sanitizeStructuredValue(row.payload_acknowledges);
+  const ackUserDirectory = await fetchZabbixAckUserDirectory(
+    config,
+    row.data_source_id,
+    collectAckUserIdsFromPayload(payloadAcknowledges),
+  );
   const source_ack = resolveSourceAck({
     id: item.id,
+    data_source_id: row.data_source_id,
+    datasource_name: row.datasource_name,
     source_event_id: item.source_event_id,
     acknowledged_source: item.acknowledged_source,
     acknowledged_source_by: item.acknowledged_source_by,
     acknowledged_by: item.acknowledged_by,
     acknowledged_source_at: item.acknowledged_source_at,
     acknowledged_at: item.acknowledged_at,
-    payload_acknowledges: sanitizeStructuredValue(row.payload_acknowledges),
+    payload_acknowledges: payloadAcknowledges,
     oneview_ack_status: row.oneview_ack_status,
     oneview_ack_actor_name: row.oneview_ack_actor_name,
     oneview_ack_requested_at: row.oneview_ack_requested_at,
     oneview_ack_processed_at: row.oneview_ack_processed_at,
-  }, sourceAckHistoryItems);
+  }, sourceAckHistoryItems, ackUserDirectory);
   return {
     generated_at: generatedAt(),
     item: {
@@ -2514,13 +2525,49 @@ function resolveSourceAckFromHistory(alertFields = {}, historyItems = []) {
   });
 }
 
-export function resolveSourceAck(alertFields = {}, historyItems = []) {
+async function fetchZabbixAckUserDirectory(config, dataSourceId, userIds) {
+  const normalizedIds = [...new Set((userIds || []).map((value) => textValue(value)).filter((value) => /^\d+$/.test(value)))];
+  const sourceId = textValue(dataSourceId);
+  if (!sourceId || !normalizedIds.length) return null;
+  try {
+    const rows = await queryRows(
+      config,
+      `
+      select zabbix_userid, zabbix_username, display_name
+        from zabbix_ack_user_cache
+       where data_source_id = $1
+         and zabbix_userid = any($2::text[])
+      `,
+      [sourceId, normalizedIds],
+    );
+    const directory = new Map();
+    for (const row of rows) {
+      const key = zabbixAckUserDirectoryKey(sourceId, row.zabbix_userid);
+      if (!key) continue;
+      directory.set(key, {
+        username: textValue(row.zabbix_username),
+        display_name: nullableText(textValue(row.display_name)) || null,
+      });
+    }
+    return directory.size ? directory : null;
+  } catch (error) {
+    if (String(error?.code || "") === "42P01") return null;
+    throw error;
+  }
+}
+
+export function resolveSourceAck(alertFields = {}, historyItems = [], userDirectory = null) {
   const acknowledged = Boolean(alertFields?.acknowledged_source);
   const payloadAcknowledges = Array.isArray(alertFields?.payload_acknowledges)
     ? alertFields.payload_acknowledges
     : null;
-  const canonical = payloadAcknowledges?.length
-    ? resolveZabbixPayloadAckAuthorship(payloadAcknowledges, acknowledged)
+  const dataSourceId = textValue(alertFields?.data_source_id);
+  const datasourceLabel = textValue(alertFields?.datasource_name);
+  const enrichedPayload = (payloadAcknowledges?.length && dataSourceId && userDirectory)
+    ? enrichPayloadAcknowledgesWithUserDirectory(payloadAcknowledges, userDirectory, dataSourceId)
+    : payloadAcknowledges;
+  const canonical = enrichedPayload?.length
+    ? resolveZabbixPayloadAckAuthorship(enrichedPayload, acknowledged, { datasourceLabel })
     : null;
   const historyResolved = resolveSourceAckFromHistory(alertFields, historyItems);
   const oneviewInitiator = resolveOneViewAckInitiator({
@@ -2550,7 +2597,7 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
   const id = alertId(req);
   const alert = await queryRow(
     config,
-    `select a.id, a.source_event_id, a.host_name, a.acknowledged_source,
+    `select a.id, a.data_source_id, d.name as datasource_name, a.source_event_id, a.host_name, a.acknowledged_source,
             a.acknowledged_at, a.acknowledged_by,
             a.payload_normalized->'acknowledges' as payload_acknowledges,
             oneview_ack.status as oneview_ack_status,
@@ -2725,19 +2772,27 @@ async function fetchAlertHistoryPayload(req, config, dataSourceNames) {
       legacy,
     };
   });
+  const historyPayloadAcknowledges = sanitizeStructuredValue(alert.payload_acknowledges);
+  const historyAckUserDirectory = await fetchZabbixAckUserDirectory(
+    config,
+    alert.data_source_id,
+    collectAckUserIdsFromPayload(historyPayloadAcknowledges),
+  );
   const sourceAckResolved = resolveSourceAck({
     id: alert.id,
+    data_source_id: alert.data_source_id,
+    datasource_name: alert.datasource_name,
     source_event_id: alert.source_event_id,
     acknowledged_source: alert.acknowledged_source,
     acknowledged_source_by: alert.acknowledged_by,
     acknowledged_source_at: alert.acknowledged_at,
     acknowledged_at: alert.acknowledged_at,
-    payload_acknowledges: sanitizeStructuredValue(alert.payload_acknowledges),
+    payload_acknowledges: historyPayloadAcknowledges,
     oneview_ack_status: alert.oneview_ack_status,
     oneview_ack_actor_name: alert.oneview_ack_actor_name,
     oneview_ack_requested_at: alert.oneview_ack_requested_at,
     oneview_ack_processed_at: alert.oneview_ack_processed_at,
-  }, mappedItems);
+  }, mappedItems, historyAckUserDirectory);
   const canonicalHistoryEvent = buildCanonicalHistoryAckEvent(sourceAckResolved, alert);
   const historySeed = canonicalHistoryEvent
     && !mappedItems.some((item) => item.canonical_source_ack)
