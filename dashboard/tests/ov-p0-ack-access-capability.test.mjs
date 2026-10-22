@@ -7,7 +7,7 @@ import { createSourceAckAccessHandler } from "../api/_lib/oneview-source-ack-acc
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const config = { enabled: true, allowedDatasources: new Set(["teletex-http"]) };
 
-test("Teletex-http suporta ACK e começa unknown; Zurich permanece fechado", () => {
+test("sete fontes conhecidas suportam ACK, mas somente allowlist fica disponível", () => {
   assert.deepEqual(sourceAckCapability({ datasourceName: "teletex-http", syncEnabled: true, config }), {
     source_ack_supported: true,
     actor_ack_access: "unknown",
@@ -15,8 +15,8 @@ test("Teletex-http suporta ACK e começa unknown; Zurich permanece fechado", () 
     source_ack_unavailable_reason: null,
   });
   const zurich = sourceAckCapability({ datasourceName: "zurich", syncEnabled: true, config });
-  assert.equal(zurich.source_ack_supported, false);
-  assert.equal(zurich.actor_ack_access, false);
+  assert.equal(zurich.source_ack_supported, true);
+  assert.equal(zurich.actor_ack_access, "unknown");
   assert.equal(zurich.source_ack_available, false);
 });
 
@@ -30,7 +30,7 @@ test("probe é BFF-only, drawer-only, sem fallback/token/event.acknowledge", asy
   assert.match(probe, /requireOneViewAuth/);
   assert.match(probe, /source_host_id/);
   assert.match(probe, /CACHE_TTL_SECONDS = 60/);
-  assert.match(probe, /payload ->> 'source_event_id' = \$5/);
+  assert.match(probe, /payload ->> 'source_event_id' = \$6/);
   assert.match(probe, /zabbix_event_access_probe/);
   assert.match(route, /oneview-source-ack-access/);
   assert.match(ui, /probeEnabled/);
@@ -118,7 +118,8 @@ test("BFF enqueues only delegated probes; resolved or acknowledged alerts do not
     action_type: "zabbix_event_access_probe",
     payload: {
       alert_id: "alert-1", data_source_id: "ds-1", source_event_id: "419733038", source_host_id: "39533",
-      actor_id: "guilherme", actor_username: "guilherme@teletex.com.br",
+      actor_id: "guilherme", actor_oid: "guilherme", actor_upn: "guilherme@teletex.com.br",
+      actor_username: "guilherme@teletex.com.br",
     },
     created_by: "guilherme",
     parameter_count: 8,
@@ -159,7 +160,6 @@ test("erro de banco retorna 503 terminal e log sanitizado", async () => {
     event: "source_ack_access_error",
     stage: "transaction_start",
     alert_id: "alert-1",
-    actor: "guilherme@teletex.com.br",
     error_code: "42703",
   }]);
   assert.doesNotMatch(JSON.stringify(logs), /secret|private\.internal/);
@@ -251,8 +251,8 @@ test("cache positivo do evento A nunca autoriza evento B do mesmo host", async (
     const normalized = sql.replace(/\s+/g, " ").trim().toLowerCase();
     if (normalized.startsWith("select a.id")) return { rows: [alert] };
     if (normalized.startsWith("select status, result_payload")) {
-      assert.equal(values[4], "434144284");
-      return { rows: cacheByEvent.has(values[4]) ? [cacheByEvent.get(values[4])] : [] };
+      assert.equal(values[5], "434144284");
+      return { rows: cacheByEvent.has(values[5]) ? [cacheByEvent.get(values[5])] : [] };
     }
     if (normalized.startsWith("insert into integration_outbox")) {
       inserted.push(JSON.parse(values[4]));

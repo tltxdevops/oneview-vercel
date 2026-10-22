@@ -64,7 +64,8 @@ import {
 } from "@/lib/oneview-alert-operational-share";
 import { buildAlertArtifactFromOneViewAlert } from "@/lib/oneview-alert-artifact";
 import { filterOperationalAlertTags } from "@/lib/oneview-inc-correlation";
-import { type AlertTimelineServiceNowReference } from "@/lib/oneview-alert-timeline";
+import { buildAlertOperationalTimeline, type AlertTimelineServiceNowReference } from "@/lib/oneview-alert-timeline";
+import { buildSourceAckAuthorshipView, formatSourceAckAuthorshipSummary } from "@/lib/oneview-source-ack-authorship";
 import { primaryPersistedOperatorTag } from "@/lib/oneview-operator-display";
 import {
   formatZabbixSourceAudit,
@@ -517,10 +518,6 @@ export function AlertDetailDrawer({
     if (!alert || !nestedIncident) return null;
     return buildAlertArtifactFromOneViewAlert(alert, nestedIncident);
   }, [alert, nestedIncident]);
-  const ackAt = visualAlert ? (visualAlert.acknowledged_source_at || visualAlert.acknowledged_at) : null;
-  const ackBy = visualAlert
-    ? safeActorName(visualAlert.oneview_ack?.actor_name || visualAlert.acknowledged_source_by || visualAlert.acknowledged_by)
-    : null;
   const originAckKind = sourceAckRowKind(visualAlert);
   const sourceAckLabel = sourceAckRowLabel(originAckKind);
   const episodeDuration = alert ? problemDurationSeconds(alert, durationNow) : null;
@@ -567,6 +564,23 @@ export function AlertDetailDrawer({
     }
     return alert?.servicenow_reference || null;
   })();
+  const sourceAckAuthorship = useMemo(() => buildSourceAckAuthorshipView(visualAlert), [visualAlert]);
+  const ackAt = visualAlert
+    ? (sourceAckAuthorship?.acknowledgedAt || visualAlert.acknowledged_source_at || visualAlert.acknowledged_at)
+    : null;
+  const ackBy = visualAlert
+    ? safeActorName(
+      sourceAckAuthorship?.recognizedBy
+        || visualAlert.source_ack?.actor_name
+        || visualAlert.oneview_ack?.actor_name
+        || visualAlert.acknowledged_source_by
+        || visualAlert.acknowledged_by,
+    )
+    : null;
+  const operationalTimeline = useMemo(
+    () => buildAlertOperationalTimeline(alert, historyItems, { serviceNowReference: incidentReference }),
+    [alert, historyItems, incidentReference],
+  );
   const claimIncident = relatedIncidents.find((item) => item.sys_id || item.number)
     || (alert?.servicenow_reference?.sys_id || alert?.servicenow_reference?.number
       ? {
@@ -605,7 +619,11 @@ export function AlertDetailDrawer({
   const previousHistoryTotal = Math.max(previousHistoryEpisodes.length, Math.max(0, recurrenceTimelineTotal - 1));
   const ackDetail = [
     originAckKind === "acknowledged"
-      ? [ackBy ? `por ${ackBy}` : null, ackAt ? formatDateTime(ackAt) : null].filter(Boolean).join(" · ") || "Confirmado na origem"
+      ? [
+        formatSourceAckAuthorshipSummary(sourceAckAuthorship) ? `por ${formatSourceAckAuthorshipSummary(sourceAckAuthorship)}` : (ackBy ? `por ${ackBy}` : null),
+        sourceAckAuthorship?.originLabel ? `origem ${sourceAckAuthorship.originLabel}` : null,
+        ackAt ? formatDateTime(ackAt) : null,
+      ].filter(Boolean).join(" · ") || "Confirmado na origem"
       : sourceAckIsPending(visualAlert)
         ? "Aguardando confirmação da origem"
         : originAckKind === "pending"
@@ -926,6 +944,24 @@ export function AlertDetailDrawer({
                 </TabsContent>
 
                 <TabsContent value="history" className="mt-4 space-y-4">
+                  {operationalTimeline.length ? (
+                    <section aria-label="Histórico do episódio" className="rounded-xl border border-border/70 bg-background p-4">
+                      <h3 className="text-sm font-semibold">Histórico do episódio</h3>
+                      <p className="mt-0.5 text-xs text-muted-foreground">Reconhecimentos, comentários e eventos operacionais deste alerta.</p>
+                      <ol className="mt-4 space-y-3">
+                        {operationalTimeline.map((event) => (
+                          <li key={event.id} className="rounded-lg border border-border/60 bg-muted/15 p-3 text-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-medium text-foreground">{event.label}</span>
+                              <span className="text-xs text-muted-foreground">{formatDateTime(event.occurred_at)}</span>
+                            </div>
+                            {event.actor ? <p className="mt-1 text-xs text-muted-foreground">Por {event.actor}</p> : null}
+                            {event.description ? <p className="mt-1 text-xs text-foreground/90">{event.description}</p> : null}
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
+                  ) : null}
                   <section aria-label="Histórico de ocorrências" className="rounded-xl border border-border/70 bg-background p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
                       <div>
@@ -1005,8 +1041,22 @@ export function AlertDetailDrawer({
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                       <DetailField label="Estado da origem" value={originStatusLabel(alert.alert_status || alert.status_source)} />
                       <DetailField label="ACK origem" value={sourceAckLabel} />
+                      <DetailField label="Reconhecido por" value={sourceAckAuthorship?.recognizedBy || ackBy || "Sem responsável"} />
+                      <DetailField
+                        label="Username Zabbix"
+                        value={sourceAckAuthorship?.username || (sourceAckAuthorship?.technicalAccount ? "Conta técnica" : "—")}
+                      />
+                      <DetailField label="Origem do ACK" value={sourceAckAuthorship?.originLabel || "—"} />
+                      <DetailField label="Data/hora ACK" value={ackAt ? formatDateTime(ackAt) : "—"} />
+                      <DetailField label="ACK ID" value={sourceAckAuthorship?.acknowledgeId || "—"} mono />
+                      {sourceAckAuthorship?.zabbixUserId ? (
+                        <DetailField label="Zabbix userid" value={sourceAckAuthorship.zabbixUserId} mono />
+                      ) : null}
+                      {sourceAckAuthorship?.oneViewInitiatedBy ? (
+                        <DetailField label="Solicitado no OneView" value={sourceAckAuthorship.oneViewInitiatedBy} />
+                      ) : null}
                       <DetailField label="ACK OneView" value={oneViewAckStatusLabel(alert.oneview_ack?.status)} />
-                      <DetailField label="Responsável" value={ackBy || "Sem responsável"} />
+                      <DetailField label="Responsável (legado)" value={ackBy || "Sem responsável"} />
                       <DetailField label="Primeira ocorrência" value={formatDateTime(alert.first_seen_at)} />
                       <DetailField label="Última ocorrência" value={formatDateTime(alert.last_seen_at)} />
                       <DetailField label="Recuperação" value={formatDateTime(alert.resolved_at)} />

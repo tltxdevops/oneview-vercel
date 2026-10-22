@@ -140,6 +140,8 @@ test("source ACK: válido cria pending + outbox, sem alterar ACK da origem", asy
   assert.equal(database.state.outboxes[0].action_type, "zabbix_event_acknowledge");
   assert.equal(database.state.outboxes[0].payload.actor_id, operator.id);
   assert.equal(database.state.outboxes[0].payload.actor_name, operator.name);
+  assert.equal(database.state.outboxes[0].payload.actor_oid, operator.id);
+  assert.equal(database.state.outboxes[0].payload.actor_upn, operator.preferred_username);
   assert.equal(database.state.outboxes[0].payload.actor_username, operator.preferred_username);
 });
 
@@ -223,6 +225,37 @@ test("source ACK: teletex-http com sync cria outbox; outras origens e sync desli
   assert.equal(denied.statusCode, 403);
   assert.equal(denied.body.error, "datasource_not_allowed");
   assert.equal(unsynced.state.outboxes.length, 0);
+});
+
+test("source ACK: cada fonte canônica exige allowlist explícita", () => {
+  const names = ["teletex-http", "rhp", "maps", "fraport-for", "fraport-poa", "castrolanda", "zurich"];
+  const config = getSourceAcknowledgeConfig({
+    ONEVIEW_SOURCE_ACK_REQUEST_ENABLED: "true",
+    ONEVIEW_SOURCE_ACK_ALLOWED_DATASOURCES: names.join(","),
+  });
+  assert.deepEqual([...config.allowedDatasources].sort(), [...names].sort());
+  const unknown = getSourceAcknowledgeConfig({
+    ONEVIEW_SOURCE_ACK_REQUEST_ENABLED: "true",
+    ONEVIEW_SOURCE_ACK_ALLOWED_DATASOURCES: "teletex-http,unknown-source",
+  });
+  assert.equal(unknown.allowedDatasources.has("unknown-source"), false);
+});
+
+test("source ACK: datasource homologada preserva identidade composta mesmo com eventid repetido", async () => {
+  const database = fakeDatabase({ alert: { data_source_id: "ds-rhp", datasource_name: "rhp" } });
+  const res = response();
+  await createSourceAcknowledgeHandler({
+    authorize: async () => operator,
+    transaction: database.transaction,
+    configProvider: () => ({ enabled: true, allowedDatasources: new Set(["teletex-http", "rhp"]) }),
+    idFactory: () => "rhp-id",
+    logger: () => undefined,
+  })(request(), res);
+  assert.equal(res.statusCode, 202);
+  assert.equal(database.state.outboxes.length, 1);
+  assert.equal(database.state.outboxes[0].payload.data_source_id, "ds-rhp");
+  assert.equal(database.state.outboxes[0].payload.source_event_id, "event-1");
+  assert.equal(database.state.outboxes[0].payload.actor_oid, operator.id);
 });
 
 test("source ACK: feature desligada responde source_acknowledge_disabled e não cria outbox", async () => {

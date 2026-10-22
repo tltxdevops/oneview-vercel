@@ -160,9 +160,9 @@ export function buildAlertOperationalTimeline(
     });
   }
 
-  const ackAt = alert?.acknowledged_source_at || alert?.acknowledged_at || alert?.source_ack?.acknowledged_at || null;
+  const ackAt = alert?.source_ack?.acknowledged_at || alert?.acknowledged_source_at || alert?.acknowledged_at || null;
   const ackActor = safeActor(
-    alert?.acknowledged_source_by || alert?.acknowledged_by || alert?.source_ack?.actor_name || null,
+    alert?.source_ack?.actor_name || alert?.acknowledged_source_by || alert?.acknowledged_by || null,
   );
   if ((alert?.acknowledged_source || ackAt || ackActor) && !hasKind("acknowledged")) {
     events.push({

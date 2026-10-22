@@ -264,6 +264,10 @@ async function fetchApi<T>(path: string, init?: OneViewFetchInit): Promise<T> {
       ack_request_disabled: "A solicitação de reconhecimento está desabilitada.",
       datasource_not_allowed: "Esta fonte ainda não permite solicitação de reconhecimento.",
       operator_event_access_denied: "Seu usuário Zabbix não possui acesso a este alerta.",
+      ack_identity_not_mapped: "Seu usu\u00e1rio n\u00e3o est\u00e1 mapeado para esta origem.",
+      ack_identity_mapping_invalid: "O mapeamento do seu usu\u00e1rio nesta origem precisa ser revisado.",
+      delegated_ack_version_unsupported: "A vers\u00e3o desta origem n\u00e3o suporta reconhecimento delegado.",
+      delegated_ack_datasource_not_allowed: "Reconhecimento delegado ainda n\u00e3o homologado para esta origem.",
       operator_not_found_in_zabbix: "Seu usuário ainda não está habilitado para reconhecimento nesta origem.",
       source_event_not_found: "O evento não está mais disponível na origem.",
       source_event_resolved: "O alerta já foi resolvido na origem.",
@@ -657,10 +661,18 @@ export interface OneViewAlert {
   source_ack?: {
     acknowledged: boolean;
     actor_name: string | null;
+    author_username?: string | null;
+    zabbix_userid?: string | null;
+    origin?: "zabbix" | "oneview" | string | null;
+    technical_account?: boolean;
+    author_unresolved?: boolean;
     acknowledged_at: string | null;
     comment: string | null;
     acknowledge_id: string | null;
     history_available: boolean;
+    canonical_from_payload?: boolean;
+    oneview_initiated_by?: string | null;
+    oneview_initiated_at?: string | null;
   } | null;
   service_name: string | null;
   item_name: string | null;

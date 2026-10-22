@@ -59,11 +59,17 @@ function idempotencyKey(req, alertId, actorId, comment) {
   return `source-ack:${createHash("sha256").update(`${alertId}\n${actorId}\n${material}`).digest("hex")}`;
 }
 
-/** Homologated source. Other datasources stay closed unless named in the env allowlist. */
+/** Canonical Zabbix sources known by OneView. Availability remains explicitly allowlisted. */
+export const SOURCE_ACK_DATASOURCES = Object.freeze([
+  "teletex-http", "rhp", "maps", "fraport-for", "fraport-poa", "castrolanda", "zurich",
+]);
+const SOURCE_ACK_DATASOURCE_SET = new Set(SOURCE_ACK_DATASOURCES);
 const HOMOLOGATED_SOURCE_ACK_DATASOURCE = "teletex-http";
 
 export function getSourceAcknowledgeConfig(env = process.env) {
-  const allowedDatasources = csv(env.ONEVIEW_SOURCE_ACK_ALLOWED_DATASOURCES);
+  const allowedDatasources = new Set(
+    [...csv(env.ONEVIEW_SOURCE_ACK_ALLOWED_DATASOURCES)].filter((name) => SOURCE_ACK_DATASOURCE_SET.has(name)),
+  );
   allowedDatasources.add(HOMOLOGATED_SOURCE_ACK_DATASOURCE);
   return Object.freeze({
     enabled: booleanValue(env.ONEVIEW_SOURCE_ACK_REQUEST_ENABLED, false),
@@ -76,7 +82,7 @@ export const SOURCE_ACK_ORIGIN_UNAVAILABLE_REASON = "Reconhecimento pelo OneView
 /** Same allowlist the POST uses. The UI must not invent a second datasource list. */
 export function sourceAckCapability({ datasourceName, syncEnabled, config = getSourceAcknowledgeConfig() } = {}) {
   const name = String(datasourceName || "").trim().toLowerCase();
-  const supported = name === HOMOLOGATED_SOURCE_ACK_DATASOURCE;
+  const supported = SOURCE_ACK_DATASOURCE_SET.has(name);
   const available = Boolean(supported && config.enabled && syncIsEnabled(syncEnabled) && config.allowedDatasources.has(name));
   return {
     source_ack_supported: supported,
@@ -114,8 +120,9 @@ export function createSourceAcknowledgeHandler({
 
     const actorId = String(auth.id || "").trim().slice(0, 120);
     const actorName = String(auth.name || auth.email || "Usuário SSO").trim().slice(0, 120);
-    const actorUsername = String(auth.preferred_username || auth.email || "").trim().slice(0, 255);
-    if (!actorId || !actorUsername) return sendJson(res, 401, { error: "authentication_required" });
+    const actorOid = String(auth.oid || auth.id || "").trim().toLowerCase().slice(0, 120);
+    const actorUpn = String(auth.preferred_username || auth.email || "").trim().toLowerCase().slice(0, 255);
+    if (!actorId || !actorOid || !actorUpn) return sendJson(res, 401, { error: "authentication_required" });
     const config = configProvider();
     if (!config.enabled) return sendJson(res, 403, { error: "source_acknowledge_disabled" });
     const key = idempotencyKey(req, alertId, actorId, comment);
@@ -179,7 +186,9 @@ export function createSourceAcknowledgeHandler({
           source_event_id: alert.source_event_id,
           actor_id: actorId,
           actor_name: actorName,
-          actor_username: actorUsername,
+          actor_oid: actorOid,
+          actor_upn: actorUpn,
+          actor_username: actorUpn,
           comment,
         };
         await client.query(
